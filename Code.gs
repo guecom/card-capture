@@ -1,6 +1,6 @@
 /**
- * CardCapture — 명함 캡처 업로드 엔드포인트 (G0)
- * Kairen PRJ-000005 / TSK-000106
+ * CardCapture — 명함 캡처 업로드 엔드포인트
+ * Kairen PRJ-000005 / TSK-000106 (G0) · PRJ-000006 / TSK-000154 (search·doc) · TSK-000155 (notify) · TSK-000148 (correction)
  *
  * 배포: Google Apps Script 웹 앱 (실행 계정: 나, 액세스: 모든 사용자)
  *
@@ -18,6 +18,12 @@
  *   }
  *   GET ?action=ping           → 상태 확인
  *   GET ?action=whoami&k=토큰  → 토큰 유효성/이름 확인
+ *   GET ?action=list&k=토큰    → 브리핑 목록 (토큰 scope, OWNER_NAMES는 전체)
+ *   GET ?action=persondoc&k=토큰&captureId=ID → Person .md 전문 (OWNER_NAMES 한정)
+ *   GET ?action=search&k=토큰&q=검색어        → Person 검색 (OWNER_NAMES 한정)
+ *   GET ?action=doc&k=토큰&id=파일ID          → 검색 결과 Person .md 전문 (OWNER_NAMES 한정, Person 폴더 내부만)
+ *   GET ?action=notify&k=토큰&captureId=ID    → 처리 완료 알림 메일 발송 (소유자 메일로, 캡처 6시간 dedup)
+ *   POST {action:'correction', k, captureId, text} → 수정 요청 저장 + 재처리 대기 전환
  */
 
 var CONF = PropertiesService.getScriptProperties();
@@ -37,7 +43,133 @@ function doGet(e) {
   if (action === 'persondoc') {
     return personDoc_(e.parameter.k, e.parameter.captureId);
   }
+  if (action === 'search') {
+    return searchPersons_(e.parameter.k, e.parameter.q);
+  }
+  if (action === 'doc') {
+    return personDocById_(e.parameter.k, e.parameter.id);
+  }
+  if (action === 'notify') {
+    return notifyProcessed_(e.parameter.k, e.parameter.captureId);
+  }
   return json_({ ok: false, error: 'unknown_action' });
+}
+
+/* OWNER_NAMES 판정 */
+function isOwner_(name) {
+  var owners = String(CONF.getProperty('OWNER_NAMES') || '').split(',').map(function (s) { return s.trim(); }).filter(String);
+  return owners.indexOf(name) >= 0;
+}
+
+/* vault Person 폴더 탐색: inbox → 00_Inbox → Kairen → 02_Kairen_OS/30_Instance/Person */
+function personFolder_() {
+  var inbox = DriveApp.getFolderById(CONF.getProperty('INBOX_FOLDER_ID'));
+  var p1 = inbox.getParents(); if (!p1.hasNext()) return null;
+  var p2 = p1.next().getParents(); if (!p2.hasNext()) return null;
+  var kairen = p2.next();
+  return subFolder_(subFolder_(subFolder_(kairen, '02_Kairen_OS'), '30_Instance'), 'Person');
+}
+
+/* 인맥 검색 — OWNER_NAMES 토큰만 (Person 전문에 Private 섹션이 있을 수 있음).
+   이름(title) 우선, 부족하면 본문(fullText)까지. 최대 10건. */
+function searchPersons_(token, q) {
+  var name = capturerFor_(token);
+  if (!name) return json_({ ok: false, error: 'invalid_token' });
+  if (!isOwner_(name)) return json_({ ok: false, error: 'owner_only' });
+  var query = String(q || '').replace(/['"\\]/g, ' ').trim().slice(0, 80);
+  if (!query) return json_({ ok: false, error: 'empty_query' });
+  var folder = personFolder_();
+  if (!folder) return json_({ ok: false, error: 'person_folder_not_found' });
+  var seen = {};
+  var items = [];
+  var collect = function (files, via) {
+    while (files.hasNext() && items.length < 10) {
+      var f = files.next();
+      if (seen[f.getId()]) continue;
+      seen[f.getId()] = true;
+      if (f.getName().slice(-3) !== '.md') continue;
+      items.push({ id: f.getId(), title: f.getName().replace(/\.md$/, ''), via: via });
+    }
+  };
+  collect(folder.searchFiles("title contains '" + query + "'"), 'title');
+  if (items.length < 10) collect(folder.searchFiles("fullText contains '" + query + "'"), 'content');
+  return json_({ ok: true, q: query, items: items });
+}
+
+/* Person 문서 조회(검색 결과 파일 ID) — Person 폴더 직속 파일만, OWNER_NAMES 한정 */
+function personDocById_(token, fileId) {
+  var name = capturerFor_(token);
+  if (!name) return json_({ ok: false, error: 'invalid_token' });
+  if (!isOwner_(name)) return json_({ ok: false, error: 'owner_only' });
+  var id = String(fileId || '');
+  if (!/^[A-Za-z0-9_-]{10,80}$/.test(id)) return json_({ ok: false, error: 'bad_id' });
+  var folder = personFolder_();
+  if (!folder) return json_({ ok: false, error: 'person_folder_not_found' });
+  var f;
+  try { f = DriveApp.getFileById(id); } catch (err) { return json_({ ok: false, error: 'not_found' }); }
+  var inPerson = false;
+  var parents = f.getParents();
+  while (parents.hasNext()) { if (parents.next().getId() === folder.getId()) { inPerson = true; break; } }
+  if (!inPerson) return json_({ ok: false, error: 'outside_person_folder' });
+  return json_({ ok: true, person: f.getName().replace(/\.md$/, ''), markdown: f.getBlob().getDataAsString('UTF-8').slice(0, 60000) });
+}
+
+/* 처리 완료 알림 — 유효 토큰 필수(자기 캡처 또는 owner), 소유자 메일로 최소 정보만 발송.
+   같은 captureId는 6시간 dedup. 실패해도 처리 상태에는 영향 없음(호출측 계약). */
+function notifyProcessed_(token, captureId) {
+  var name = capturerFor_(token);
+  if (!name) return json_({ ok: false, error: 'invalid_token' });
+  var cid = sanitizeId_(captureId);
+  if (!cid) return json_({ ok: false, error: 'bad_capture_id' });
+  var inbox = DriveApp.getFolderById(CONF.getProperty('INBOX_FOLDER_ID'));
+  var it = inbox.getFoldersByName(cid);
+  if (!it.hasNext()) return json_({ ok: false, error: 'not_found' });
+  var meta = readJsonFile_(it.next());
+  if (!meta || meta.status !== 'processed') return json_({ ok: false, error: 'not_processed' });
+  if (meta.capturer !== name && !isOwner_(name)) return json_({ ok: false, error: 'not_your_capture' });
+  var cache = CacheService.getScriptCache();
+  var key = 'ntf_' + cid;
+  if (cache.get(key)) return json_({ ok: true, deduped: true });
+  cache.put(key, '1', 6 * 60 * 60);
+  var to = Session.getEffectiveUser().getEmail();
+  if (!to) return json_({ ok: false, error: 'no_owner_email' });
+  MailApp.sendEmail({
+    to: to,
+    subject: '[명함] 처리 완료: ' + (meta.person || cid),
+    body: '명함 처리가 끝났어요.\n\n' +
+      '대상: ' + (meta.person || '(미상)') + (meta.personAction ? ' (' + meta.personAction + ')' : '') + '\n' +
+      '촬영: ' + (meta.capturer || '') + (meta.event ? ' / ' + meta.event : '') + '\n\n' +
+      '브리핑 보기: https://guecom.github.io/card-capture/\n\n' +
+      '- Kairen Card Capture (자동 발송, 회신 불필요)'
+  });
+  return json_({ ok: true, notified: to.replace(/^(.).*(@.*)$/, '$1***$2') });
+}
+
+/* 수정 요청 저장 — 캡처를 찍은 본인 또는 owner. correction-*.json 기록 후 재처리 대기(received) 전환.
+   처리 파이프라인이 correction을 사용자 정정 출처로 반영한다(CardCapture_Processing 규칙 2-1). */
+function correction_(req) {
+  var name = capturerFor_(req.k);
+  if (!name) return json_({ ok: false, error: 'invalid_token' });
+  var cid = sanitizeId_(req.captureId);
+  if (!cid) return json_({ ok: false, error: 'bad_capture_id' });
+  var text = String(req.text || '').trim().slice(0, 2000);
+  if (!text) return json_({ ok: false, error: 'empty_text' });
+  var inbox = DriveApp.getFolderById(CONF.getProperty('INBOX_FOLDER_ID'));
+  var it = inbox.getFoldersByName(cid);
+  if (!it.hasNext()) return json_({ ok: false, error: 'not_found' });
+  var folder = it.next();
+  var meta = readJsonFile_(folder);
+  if (!meta) return json_({ ok: false, error: 'no_capture_json' });
+  if (meta.capturer !== name && !isOwner_(name)) return json_({ ok: false, error: 'not_your_capture' });
+  var stamp = Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyyMMdd-HHmmss');
+  var correction = { captureId: cid, capturer: name, text: text, requestedAt: new Date().toISOString() };
+  folder.createFile(Utilities.newBlob(JSON.stringify(correction, null, 2), 'application/json', 'correction-' + stamp + '.json'));
+  meta.status = 'received';
+  meta.receivedAt = new Date().toISOString();
+  meta.correctionRequested = true;
+  upsertFile_(folder, 'capture.json',
+    Utilities.newBlob(JSON.stringify(meta, null, 2), 'application/json', 'capture.json'));
+  return json_({ ok: true, captureId: cid });
 }
 
 /* Person Instance .md 전문 조회 — OWNER_NAMES 토큰만 (Private 섹션 포함이므로) */
@@ -139,6 +271,7 @@ function readJsonFile_(folder) {
 function doPost(e) {
   try {
     var req = JSON.parse(e.postData.contents);
+    if (req.action === 'correction') return correction_(req);
     var name = capturerFor_(req.k);
     if (!name) return json_({ ok: false, error: 'invalid_token' });
     if (!withinDailyLimit_(req.k)) return json_({ ok: false, error: 'daily_limit' });
