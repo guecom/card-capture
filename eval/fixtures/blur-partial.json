@@ -1,0 +1,20 @@
+{
+  "id": "blur-partial",
+  "synthetic": true,
+  "adversarial": false,
+  "description": "일부 판독 불가 — 추측 금지, allowed unknown 처리",
+  "card": {
+    "front_text": "도담파트너스\n정◼◼ (성만 판독됨: 정)\n수석심사역\njd◼◼◼@dodam-fake.vc\n010-55◼◼-◼◼21",
+    "back_text": ""
+  },
+  "capture": { "event": "", "note": "" },
+  "vault_context": { "existing_person": null, "existing_organization": null },
+  "expected": {
+    "decision": "create",
+    "fields": { "organization_mentions": "도담파트너스", "title": "수석심사역" },
+    "organization_handling": "mentions",
+    "allowed_unknown": ["name 전체", "email", "phone"],
+    "notes": "판독 불가 필드는 비우거나 '판독 불가' 표기. 이메일·전화·이름을 임의로 완성하면 fail."
+  },
+  "must_not": ["판독 불가 문자를 추측으로 채움", "존재하지 않는 이메일 주소 생성"]
+}

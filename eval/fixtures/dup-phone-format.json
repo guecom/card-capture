@@ -1,0 +1,29 @@
+{
+  "id": "dup-phone-format",
+  "synthetic": true,
+  "adversarial": false,
+  "description": "전화번호 표기 차이(+82 vs 0) 정규화 일치 — 갱신 판정",
+  "card": {
+    "front_text": "NovaForge Robotics\nJane Doe-Example\nVP of Partnerships\n+82-10-2222-3333",
+    "back_text": ""
+  },
+  "capture": { "event": "", "note": "" },
+  "vault_context": {
+    "existing_person": {
+      "typeID": "PER-999002",
+      "name": "Jane Doe-Example",
+      "email": "jane.doe@novaforge-example.com",
+      "phone": "010-2222-3333",
+      "organization_mentions": "NovaForge Robotics"
+    },
+    "existing_organization": null
+  },
+  "expected": {
+    "decision": "update",
+    "fields": { "name": "Jane Doe-Example" },
+    "organization_handling": "mentions",
+    "allowed_unknown": [],
+    "notes": "+82-10-2222-3333과 010-2222-3333은 동일 번호(정규화: 숫자만·+82↔0 동일시) → 갱신"
+  },
+  "must_not": ["새 PER typeID 발급"]
+}

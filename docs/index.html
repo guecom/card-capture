@@ -71,7 +71,8 @@
   .st.failed { color: var(--err); background: color-mix(in srgb, var(--err) 12%, transparent); cursor: pointer; }
   h2 { font-size: 15px; color: var(--muted); font-weight: 600; margin: 4px 2px 8px; }
   .toast {
-    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+    /* 상단 배치: 하단 배치는 앞면 촬영 직후 '뒷면 추가' 버튼을 가렸음 (2026-07-24 실사용 피드백) */
+    position: fixed; left: 50%; top: calc(env(safe-area-inset-top, 0px) + 14px); transform: translateX(-50%);
     background: var(--text); color: var(--bg); font-size: 14px; border-radius: 999px;
     padding: 10px 18px; opacity: 0; transition: opacity .25s; pointer-events: none; max-width: 90%;
     z-index: 40; text-align: center;
@@ -178,9 +179,21 @@
   <h2>최근 캡처</h2>
   <div class="card" id="recentCard"><div id="recentList" style="min-height:20px"></div></div>
 
+  <h2 id="searchHead" style="display:none">인맥 검색 <span style="font-weight:400;font-size:12px;color:var(--muted)">미팅 전 10초 회상</span></h2>
+  <div class="card" id="searchCard" style="display:none">
+    <div style="display:flex;gap:8px">
+      <input id="searchInput" type="search" placeholder="이름·회사·만난 곳으로 검색" autocomplete="off"
+             style="flex:1;min-width:0;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font-size:14px;background:var(--bg)">
+      <button class="chip" id="searchBtn" type="button">검색</button>
+    </div>
+    <div id="recentSearches" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
+    <div id="searchList" style="min-height:20px;margin-top:8px"></div>
+  </div>
+
   <h2 style="display:flex;justify-content:space-between;align-items:center">받은 명함 브리핑
     <button class="chip" id="briefRefresh" type="button">새로고침</button></h2>
-  <div class="card" id="briefCard"><div id="briefList" style="min-height:20px"></div></div>
+  <div class="card" id="briefCard"><div id="briefList" style="min-height:20px"></div>
+    <button class="chip" id="briefMore" type="button" style="display:none;margin-top:8px">예전 브리핑 더 보기</button></div>
 </div>
 
 <!-- 카메라 화면 -->
@@ -926,7 +939,9 @@ $('sendBtn').onclick = function () {
     return qPut(item);
   }).then(function () {
     renderRecent();
-    toastMsg('대기열에 저장했어요. 업로드 시작!');
+    toastMsg('업로드 시작! 다음 명함을 이어서 찍을 수 있어요');
+    /* 행사장 연속 캡처: 전송 즉시 촬영 버튼이 보이게 상단 복귀 */
+    window.scrollTo({ top: 0, behavior: 'smooth' });
     flush();
   });
 };
@@ -978,7 +993,7 @@ function renderRecent() {
     }
     el.innerHTML = '';
     var names = briefNameMap();
-    items.slice(0, 30).forEach(function (i) {
+    items.slice(0, recentLimit).forEach(function (i) {
       var div = document.createElement('div');
       div.className = 'item';
       var stCls = i.state === 'sent' ? 'sent' : (i.state === 'failed' ? 'failed' : 'queued');
@@ -1002,8 +1017,17 @@ function renderRecent() {
       if (i.state === 'failed') div.querySelector('.st').onclick = function (ev2) { ev2.stopPropagation(); i.state = 'queued'; qPut(i).then(function () { renderRecent(); flush(); }); };
       el.appendChild(div);
     });
+    if (items.length > recentLimit) {
+      var more = document.createElement('button');
+      more.className = 'chip';
+      more.style.cssText = 'margin-top:8px';
+      more.textContent = '예전 캡처 더 보기 (' + (items.length - recentLimit) + '건)';
+      more.onclick = function () { recentLimit += 30; renderRecent(); };
+      el.appendChild(more);
+    }
   });
 }
+var recentLimit = 30;
 
 /* ── 받은 명함 브리핑 ── */
 function mdLite(text) {
@@ -1034,11 +1058,21 @@ function briefNameMap() {
   var map = {};
   try {
     (JSON.parse(store.get('briefs') || '[]') || []).forEach(function (b) {
-      var n = nameFromBrief(b.brief);
+      /* 브리핑 제목 우선, 없으면 2-phase 빠른 추출의 contact.name (처리 완료 전에도 이름 표시) */
+      var n = nameFromBrief(b.brief) || (b.contact && b.contact.name) || null;
       if (n) map[b.captureId] = n;
     });
   } catch (e) {}
   return map;
+}
+/* captureId(YYYYMMDD-HHmmss-…, KST)로 경과 분 계산 */
+function elapsedMinOf(captureId) {
+  var m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/.exec(String(captureId || ''));
+  if (!m) return null;
+  var t = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();
+  if (isNaN(t)) return null;
+  var min = Math.round((Date.now() - t) / 60000);
+  return min >= 0 && min < 60 * 24 * 30 ? min : null;
 }
 function renderBriefs(items) {
   var el = $('briefList');
@@ -1053,7 +1087,20 @@ function renderBriefs(items) {
     wrap.style.cssText = 'flex-direction:column;align-items:stretch;cursor:pointer';
     var stTxt = it.status === 'processed' ? '브리핑 도착' : (it.status === 'skipped' ? '건너뜀' : '처리 대기 중');
     var stCls = it.status === 'processed' ? 'sent' : (it.status === 'skipped' ? 'failed' : 'queued');
-    var title = (it.brief && it.brief.indexOf('# ') === 0) ? it.brief.split('\n')[0].slice(2) : (it.event || it.captureId);
+    /* 처리 대기: 경과 시간 + 통상 소요를 보여줘 '깜깜무소식'을 없앤다 (2026-07-24 실사용 피드백) */
+    var pendingLine = '';
+    var pendingLate = false;
+    if (it.status !== 'processed' && it.status !== 'skipped') {
+      var em = elapsedMinOf(it.captureId);
+      if (em !== null) {
+        if (em > 30) { pendingLate = true; pendingLine = 'OCR·웹 조사 처리 중 · ' + em + '분 경과 — 평소(6~20분)보다 오래 걸리고 있어요.'; }
+        else pendingLine = 'OCR·웹 조사 처리 중 · ' + em + '분 경과 · 보통 6~20분 걸려요.';
+      }
+    }
+    var title = (it.brief && it.brief.indexOf('# ') === 0) ? it.brief.split('\n')[0].slice(2)
+      : (it.type === 'note' ? '메모 → ' + (it.person || '처리 중')
+        : (it.contact && it.contact.name ? it.contact.name + ' — 브리핑 준비 중' /* 2-phase 빠른 추출 결과 */
+          : (it.event || it.captureId)));
     var when = String(it.captureId).slice(4, 6) + '/' + String(it.captureId).slice(6, 8);
     var head = document.createElement('div');
     head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px';
@@ -1063,6 +1110,30 @@ function renderBriefs(items) {
     var sub = document.createElement('div');
     sub.className = 't2';
     sub.textContent = when + (it.event ? ' · ' + it.event : '') + (it.capturer ? ' · 촬영: ' + it.capturer : '');
+    var prog = null;
+    if (pendingLine) {
+      prog = document.createElement('div');
+      prog.className = 't2';
+      prog.style.cssText = 'margin-top:4px;color:var(--warn)';
+      prog.textContent = pendingLine;
+      if (pendingLate) {
+        var lateRow = document.createElement('div');
+        lateRow.style.cssText = 'display:flex;gap:8px;margin-top:6px';
+        lateRow.onclick = function (ev2) { ev2.stopPropagation(); };
+        var rq = document.createElement('button');
+        rq.className = 'chip';
+        rq.textContent = '다시 처리 요청';
+        rq.onclick = function (ev2) { ev2.stopPropagation(); requeueCapture(it); };
+        lateRow.appendChild(rq);
+        var ask = document.createElement('a');
+        ask.className = 'chip';
+        ask.style.textDecoration = 'none';
+        ask.textContent = '문의하기';
+        ask.href = 'mailto:guecom90@gmail.com?subject=' + encodeURIComponent('[명함] 처리 지연 문의 ' + it.captureId);
+        lateRow.appendChild(ask);
+        prog.appendChild(lateRow);
+      }
+    }
     var body = document.createElement('div');
     body.style.display = briefExpanded[it.captureId] ? '' : 'none';
     if (it.brief) body.appendChild(mdLite(it.brief.split('\n').slice(1).join('\n')));
@@ -1074,7 +1145,33 @@ function renderBriefs(items) {
       docBtn.onclick = function (ev2) { ev2.stopPropagation(); openPersonDoc(it); };
       body.appendChild(docBtn);
     }
-    wrap.appendChild(head); wrap.appendChild(sub); wrap.appendChild(body);
+    if (it.status === 'processed' && it.type !== 'note') {
+      var btnRow = document.createElement('div');
+      btnRow.style.cssText = 'display:flex;gap:8px;margin-top:8px';
+      var fixBtn = document.createElement('button');
+      fixBtn.className = 'chip';
+      fixBtn.textContent = '수정 요청';
+      fixBtn.onclick = function (ev2) { ev2.stopPropagation(); requestCorrection(it); };
+      btnRow.appendChild(fixBtn);
+      if (it.person) {
+        var noteBtn = document.createElement('button');
+        noteBtn.className = 'chip';
+        noteBtn.textContent = '메모 추가';
+        noteBtn.onclick = function (ev2) { ev2.stopPropagation(); addNoteFlow({ captureId: it.captureId, label: it.person }); };
+        btnRow.appendChild(noteBtn);
+      }
+      body.appendChild(btnRow);
+      /* 바로 연락: 서버 contact 요약 우선, 없으면 brief 텍스트에서 추출 (기존 캡처도 동작) */
+      var c = it.contact || null;
+      if (!c && it.brief) {
+        var ext = contactsFromBrief(it.brief);
+        if (ext.emails.length || ext.phones.length) c = { name: nameFromBrief(it.brief) || '', organization: '', title: '', emails: ext.emails, phones: ext.phones };
+      }
+      if (c) { var cr = contactRow(c); if (cr) body.appendChild(cr); }
+    }
+    wrap.appendChild(head); wrap.appendChild(sub);
+    if (prog) wrap.appendChild(prog);
+    wrap.appendChild(body);
     wrap.onclick = function () {
       var open = body.style.display === 'none';
       body.style.display = open ? '' : 'none';
@@ -1115,17 +1212,20 @@ function openPersonDoc(it) {
         $('docBody').innerHTML = '<p class="hint">불러오지 못했어요: ' + (res.error === 'owner_only' ? '소유자 토큰만 볼 수 있어요' : (res.error === 'unknown_action' ? '서버 업데이트(GAS 재배포) 후 열려요' : res.error)) + '</p>';
         return;
       }
+      $('docBody').appendChild(prepCardOf(res.markdown, it.person));
       $('docBody').appendChild(renderPersonMd(res.markdown));
     })
     .catch(function () { $('docBody').innerHTML = '<p class="hint">네트워크 오류 — 다시 시도해 주세요</p>'; });
 }
 $('docClose').onclick = function () { $('docOverlay').classList.remove('show'); };
+var briefLimit = 30; /* '예전 브리핑 더 보기'로 30씩 확장 (서버 상한 100) */
 function loadBriefs(manual) {
   if (!API || !TOKEN) return;
   briefSeeAll = store.get('briefSeeAll') === '1';
+  toggleSearchUI();
   var cached = store.get('briefs');
   if (cached && !manual) { try { renderBriefs(JSON.parse(cached)); } catch (e) {} }
-  fetch(API + '?action=list&k=' + encodeURIComponent(TOKEN))
+  fetch(API + '?action=list&k=' + encodeURIComponent(TOKEN) + '&limit=' + briefLimit)
     .then(function (r) { return r.json(); })
     .then(function (res) {
       if (!res.ok) {
@@ -1134,8 +1234,13 @@ function loadBriefs(manual) {
       }
       briefSeeAll = !!res.seeAll;
       store.set('briefSeeAll', briefSeeAll ? '1' : '');
+      toggleSearchUI();
+      /* 더 보기: 서버가 hasMore를 주면 버튼 노출 (구서버는 필드 없음 → 숨김 유지) */
+      $('briefMore').style.display = res.hasMore ? '' : 'none';
       var json = JSON.stringify(res.items);
-      if (json === lastBriefsJson && !manual) return; /* 변화 없으면 다시 그리지 않음 — 펼쳐 읽는 중 방해 금지 */
+      var hasPending = (res.items || []).some(function (i) { return i.status !== 'processed' && i.status !== 'skipped'; });
+      /* 변화 없으면 다시 그리지 않음 — 단, 처리 대기 건은 경과 시간 갱신을 위해 다시 그린다 */
+      if (json === lastBriefsJson && !manual && !hasPending) return;
       lastBriefsJson = json;
       store.set('briefs', json);
       renderBriefs(res.items);
@@ -1143,10 +1248,227 @@ function loadBriefs(manual) {
     })
     .catch(function () { if (manual) toastMsg('브리핑을 불러오지 못했어요 — 네트워크 확인'); });
 }
+$('briefMore').onclick = function () { briefLimit = Math.min(briefLimit + 30, 100); toastMsg('예전 브리핑 불러오는 중…'); loadBriefs(true); };
+
+/* ── 홈화면 shortcut 직행: ?view=search|briefs (manifest shortcuts) ── */
+(function initView() {
+  try {
+    var v = new URLSearchParams(location.search).get('view');
+    if (v === 'search') setTimeout(function () { $('searchCard').scrollIntoView({ behavior: 'smooth' }); $('searchInput').focus(); }, 400);
+    else if (v === 'briefs') setTimeout(function () { $('briefCard').scrollIntoView({ behavior: 'smooth' }); }, 400);
+  } catch (e) {}
+})();
 $('briefRefresh').onclick = function () { toastMsg('브리핑 새로고침 중…'); loadBriefs(true); };
 /* 자동 새로고침: 화면이 보이는 동안 20초마다 + 앱으로 돌아올 때마다 */
 setInterval(function () { if (!document.hidden) loadBriefs(); }, 20000);
 window.addEventListener('focus', function () { loadBriefs(); });
+
+/* ── 인맥 검색 (owner 토큰 전용) ── */
+function toggleSearchUI() {
+  var show = briefSeeAll ? '' : 'none';
+  $('searchHead').style.display = show;
+  $('searchCard').style.display = show;
+  if (briefSeeAll) renderRecentSearches();
+}
+/* 최근 검색 3건 — 미팅 직전 같은 사람을 반복 회상하는 패턴 */
+function renderRecentSearches() {
+  var el = $('recentSearches');
+  el.innerHTML = '';
+  var arr = [];
+  try { arr = JSON.parse(store.get('recentSearches') || '[]') || []; } catch (e) {}
+  arr.slice(0, 3).forEach(function (q) {
+    var b = document.createElement('button');
+    b.className = 'chip';
+    b.textContent = q;
+    b.onclick = function () { $('searchInput').value = q; runSearch(); };
+    el.appendChild(b);
+  });
+}
+function pushRecentSearch(q) {
+  var arr = [];
+  try { arr = JSON.parse(store.get('recentSearches') || '[]') || []; } catch (e) {}
+  arr = [q].concat(arr.filter(function (x) { return x !== q; })).slice(0, 3);
+  store.set('recentSearches', JSON.stringify(arr));
+  renderRecentSearches();
+}
+function runSearch() {
+  var q = $('searchInput').value.trim();
+  if (!q) { $('searchInput').focus(); return; }
+  $('searchList').innerHTML = '<p class="hint" style="margin:6px 0">검색 중…</p>';
+  fetch(API + '?action=search&k=' + encodeURIComponent(TOKEN) + '&q=' + encodeURIComponent(q))
+    .then(function (r) { return r.json(); })
+    .then(function (res) {
+      var el = $('searchList'); el.innerHTML = '';
+      if (!res.ok) {
+        var msg = res.error === 'owner_only' ? '소유자 토큰만 검색할 수 있어요'
+          : res.error === 'unknown_action' ? '검색은 서버 업데이트(GAS 재배포) 후 열려요'
+          : '검색 실패: ' + res.error;
+        el.innerHTML = '<p class="hint" style="margin:6px 0">' + msg + '</p>';
+        return;
+      }
+      if (!res.items || !res.items.length) {
+        el.innerHTML = '<p class="hint" style="margin:6px 0">아직 등록되지 않은 분이에요. 명함을 찍으면 여기서 찾을 수 있게 돼요.</p>';
+        return;
+      }
+      pushRecentSearch(q);
+      res.items.forEach(function (it) {
+        var div = document.createElement('div');
+        div.className = 'item';
+        div.style.cssText = 'cursor:pointer';
+        var t1 = document.createElement('div'); t1.className = 't1'; t1.style.fontWeight = '600';
+        t1.textContent = it.title.replace(/^PER-\d+\s*/, '');
+        var t2 = document.createElement('div'); t2.className = 't2';
+        t2.textContent = it.title.split(' ')[0] + (it.via === 'content' ? ' · 본문 일치' : '');
+        var col = document.createElement('div'); col.appendChild(t1); col.appendChild(t2);
+        div.appendChild(col);
+        div.onclick = function () { openPersonDocById(it); };
+        el.appendChild(div);
+      });
+    })
+    .catch(function () { $('searchList').innerHTML = '<p class="hint" style="margin:6px 0">네트워크 오류 — 다시 시도해 주세요</p>'; });
+}
+$('searchBtn').onclick = runSearch;
+$('searchInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); runSearch(); } });
+/* 미팅 프렙 카드: 전문 md 위에 핵심(이름·직함·회사·최근 확인·바로 연락)을 먼저 보여준다 */
+function prepCardOf(markdown, fallbackName) {
+  var fm = parseFm(markdown);
+  var nm = fm.vals.name || fallbackName || '';
+  var orgText = (fm.vals.organization || '').replace(/^ORG-\d+\s*/, '') || (fm.lists.organization_mentions || [])[0] || '';
+  var card = document.createElement('div');
+  card.style.cssText = 'background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:10px';
+  var l1 = document.createElement('div');
+  l1.style.cssText = 'font-weight:700;font-size:16px';
+  l1.textContent = nm + (fm.vals.title ? ' · ' + fm.vals.title : '');
+  card.appendChild(l1);
+  if (orgText) {
+    var l2 = document.createElement('div');
+    l2.className = 't2';
+    l2.textContent = orgText;
+    card.appendChild(l2);
+  }
+  if (fm.vals.last_contacted) {
+    var l3 = document.createElement('div');
+    l3.className = 't2';
+    l3.textContent = '마지막 확인 ' + fm.vals.last_contacted;
+    card.appendChild(l3);
+  }
+  var cr = contactRow({ name: nm, organization: orgText, title: fm.vals.title || '', emails: fm.lists.emails || [], phones: fm.lists.phones || [] });
+  if (cr) card.appendChild(cr);
+  return card;
+}
+function openPersonDocById(it) {
+  $('docTitle').textContent = it.title.replace(/^PER-\d+\s*/, '');
+  $('docBody').innerHTML = '<p class="hint">프로필 불러오는 중…</p>';
+  $('docOverlay').classList.add('show');
+  fetch(API + '?action=doc&k=' + encodeURIComponent(TOKEN) + '&id=' + encodeURIComponent(it.id))
+    .then(function (r) { return r.json(); })
+    .then(function (res) {
+      $('docBody').innerHTML = '';
+      if (!res.ok) {
+        $('docBody').innerHTML = '<p class="hint">불러오지 못했어요: ' + (res.error === 'unknown_action' ? '서버 업데이트(GAS 재배포) 후 열려요' : res.error) + '</p>';
+        return;
+      }
+      $('docBody').appendChild(prepCardOf(res.markdown, it.title.replace(/^PER-\d+\s*/, '')));
+      $('docBody').appendChild(renderPersonMd(res.markdown));
+    })
+    .catch(function () { $('docBody').innerHTML = '<p class="hint">네트워크 오류 — 다시 시도해 주세요</p>'; });
+}
+
+/* ── 연락 실행: 브리핑·프렙 카드에서 바로 전화·문자·메일·연락처 저장 ── */
+function contactsFromBrief(briefText) {
+  var t = String(briefText || '');
+  var emails = (t.match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g) || []).filter(function (v, i, a) { return a.indexOf(v) === i; }).slice(0, 2);
+  var phones = (t.match(/(?:\+82[\s-]?)?0?1[016789][\s-]?\d{3,4}[\s-]?\d{4}/g) || []).map(function (p) { return p.trim(); }).filter(function (v, i, a) { return a.indexOf(v) === i; }).slice(0, 2);
+  return { emails: emails, phones: phones };
+}
+function vcardDownload(c) {
+  var lines = ['BEGIN:VCARD', 'VERSION:3.0', 'FN:' + (c.name || '연락처'), 'N:' + (c.name || '') + ';;;;'];
+  if (c.organization) lines.push('ORG:' + c.organization);
+  if (c.title) lines.push('TITLE:' + c.title);
+  (c.phones || []).forEach(function (p) { lines.push('TEL;TYPE=CELL:' + p); });
+  (c.emails || []).forEach(function (e2) { lines.push('EMAIL:' + e2); });
+  lines.push('NOTE:Kairen Card Capture', 'END:VCARD');
+  var blob = new Blob([lines.join('\r\n')], { type: 'text/vcard;charset=utf-8' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (c.name || 'contact') + '.vcf';
+  document.body.appendChild(a); a.click();
+  setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+}
+function contactRow(c) {
+  var row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:8px;margin-top:8px;flex-wrap:wrap';
+  row.onclick = function (ev2) { ev2.stopPropagation(); };
+  function chip(label, href, fn) {
+    var b = document.createElement(href ? 'a' : 'button');
+    b.className = 'chip';
+    if (href) { b.href = href; b.style.textDecoration = 'none'; }
+    b.textContent = label;
+    if (fn) b.onclick = function (ev2) { ev2.preventDefault(); ev2.stopPropagation(); fn(); };
+    row.appendChild(b);
+  }
+  if (c.phones && c.phones[0]) { chip('전화', 'tel:' + c.phones[0]); chip('문자', 'sms:' + c.phones[0]); }
+  if (c.emails && c.emails[0]) chip('메일', 'mailto:' + c.emails[0]);
+  if ((c.phones && c.phones[0]) || (c.emails && c.emails[0])) chip('연락처 저장', null, function () { vcardDownload(c); });
+  return row.children.length ? row : null;
+}
+/* Person .md frontmatter 경량 파서 (미팅 프렙 카드용) */
+function parseFm(md) {
+  var vals = {}, lists = {};
+  var text = String(md || '');
+  if (text.indexOf('---') === 0) {
+    var end = text.indexOf('\n---', 3);
+    if (end > 0) {
+      var cur = null;
+      text.slice(4, end).split('\n').forEach(function (ln) {
+        var mi = /^\s+-\s*(.+)$/.exec(ln);
+        if (mi && cur) { (lists[cur] = lists[cur] || []).push(mi[1].replace(/^"|"$/g, '').replace(/^\[\[|\]\]$/g, '')); return; }
+        var mk = /^([A-Za-z_]+):\s*(.*)$/.exec(ln);
+        if (mk) { cur = mk[1]; var v = mk[2].trim().replace(/^"|"$/g, ''); if (v) vals[cur] = v.replace(/^\[\[|\]\]$/g, ''); }
+      });
+    }
+  }
+  return { vals: vals, lists: lists };
+}
+/* 재처리 요청: 처리 지연·이상 시 사용자가 스스로 다시 큐에 넣는다 */
+function requeueCapture(it) {
+  fetch(API + '?action=requeue&k=' + encodeURIComponent(TOKEN) + '&captureId=' + encodeURIComponent(it.captureId))
+    .then(function (r) { return r.json(); })
+    .then(function (res) {
+      if (res.ok) { toastMsg('다시 처리를 요청했어요 — 몇 분 안에 처리돼요'); loadBriefs(true); }
+      else toastMsg('실패: ' + (res.error === 'unknown_action' ? '서버 업데이트(GAS 재배포) 후 가능해요' : res.error));
+    })
+    .catch(function () { toastMsg('네트워크 오류 — 다시 시도해 주세요'); });
+}
+
+/* ── 사후 메모 추가: 회의 끝나고, 또는 나중에 기억났을 때 그 사람에게 메모를 붙인다 ── */
+function addNoteFlow(target) {
+  var txt = prompt('이 분에 대한 메모를 남겨주세요.\n다음 처리 때 인물 기록에 병합돼요.\n예: 회의에서 3분기 협력 논의, 다음주 자료 보내기로 함', '');
+  if (!txt || !txt.trim()) return;
+  var payload = { action: 'addnote', k: TOKEN, text: txt.trim().slice(0, 2000) };
+  if (target.captureId) payload.captureId = target.captureId;
+  else if (target.person) payload.person = target.person;
+  fetch(API, { method: 'POST', body: JSON.stringify(payload) })
+    .then(function (r) { return r.json(); })
+    .then(function (res) {
+      if (res.ok) { toastMsg('메모를 접수했어요 — 잠시 후 인물 기록에 병합돼요'); loadBriefs(true); }
+      else toastMsg('실패: ' + (res.error === 'unknown_action' ? '서버 업데이트(GAS 재배포) 후 가능해요' : (res.error === 'not_processed' ? '브리핑 도착 후 메모할 수 있어요' : res.error)));
+    })
+    .catch(function () { toastMsg('네트워크 오류 — 다시 시도해 주세요'); });
+}
+
+/* ── 수정 요청 ── */
+function requestCorrection(it) {
+  var txt = prompt('무엇이 틀렸는지 적어주세요.\n예: 직함이 CTO가 아니라 CPO / 이름 표기가 달라요', '');
+  if (!txt || !txt.trim()) return;
+  fetch(API, { method: 'POST', body: JSON.stringify({ action: 'correction', k: TOKEN, captureId: it.captureId, text: txt.trim().slice(0, 2000) }) })
+    .then(function (r) { return r.json(); })
+    .then(function (res) {
+      if (res.ok) toastMsg('수정 요청을 보냈어요 — 다음 처리 때 반영돼요');
+      else toastMsg('실패: ' + (res.error === 'unknown_action' ? '서버 업데이트(GAS 재배포) 후 가능해요' : res.error));
+    })
+    .catch(function () { toastMsg('네트워크 오류 — 다시 시도해 주세요'); });
+}
 
 /* ── 토스트/이벤트 ── */
 var toastTimer = null;

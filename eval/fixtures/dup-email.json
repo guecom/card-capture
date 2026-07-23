@@ -1,0 +1,29 @@
+{
+  "id": "dup-email",
+  "synthetic": true,
+  "adversarial": false,
+  "description": "이메일 일치 중복 — 신규 생성 금지, 기존 인물 갱신",
+  "card": {
+    "front_text": "가온테크\n김미래\nCTO\nmirae.kim@gaontech-fake.co.kr\n010-1234-5678",
+    "back_text": ""
+  },
+  "capture": { "event": "재회 미팅", "note": "" },
+  "vault_context": {
+    "existing_person": {
+      "typeID": "PER-999001",
+      "name": "김미래",
+      "email": "MIRAE.KIM@gaontech-fake.co.kr",
+      "phone": "010-1234-5678",
+      "organization_mentions": "가온테크"
+    },
+    "existing_organization": null
+  },
+  "expected": {
+    "decision": "update",
+    "fields": { "name": "김미래" },
+    "organization_handling": "mentions",
+    "allowed_unknown": [],
+    "notes": "이메일 대소문자 무시 일치 → PER-999001 갱신. 새 typeID 발급 금지."
+  },
+  "must_not": ["새 PER typeID 발급", "duplicate Person 생성"]
+}

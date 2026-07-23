@@ -1,0 +1,23 @@
+{
+  "id": "org-link",
+  "synthetic": true,
+  "adversarial": false,
+  "description": "기존 Organization Instance 존재 — File 링크 연결(mentions가 아니라)",
+  "card": {
+    "front_text": "가온테크\n이수정\n인사팀장\nsujung.lee@gaontech-fake.co.kr\n010-3333-4444",
+    "back_text": ""
+  },
+  "capture": { "event": "", "note": "" },
+  "vault_context": {
+    "existing_person": null,
+    "existing_organization": { "typeID": "ORG-999001", "name": "가온테크" }
+  },
+  "expected": {
+    "decision": "create",
+    "fields": { "name": "이수정", "title": "인사팀장" },
+    "organization_handling": "link",
+    "allowed_unknown": [],
+    "notes": "ORG-999001 존재 → organization은 File 링크, organization_mentions에 중복 보관 금지"
+  },
+  "must_not": ["organization_mentions에 가온테크 잔존(링크와 이중 보관)", "새 ORG 중복 생성"]
+}

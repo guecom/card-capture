@@ -1,0 +1,26 @@
+{
+  "id": "en-basic",
+  "synthetic": true,
+  "adversarial": false,
+  "description": "영문 명함 기본 구조화",
+  "card": {
+    "front_text": "NOVAFORGE ROBOTICS\nJane Doe-Example\nVP of Partnerships\njane.doe@novaforge-example.com\n+1 415 555 0100\n100 Fake Street, San Francisco, CA",
+    "back_text": ""
+  },
+  "capture": { "event": "Synthetic Expo", "note": "" },
+  "vault_context": { "existing_person": null, "existing_organization": null },
+  "expected": {
+    "decision": "create",
+    "fields": {
+      "name": "Jane Doe-Example",
+      "organization_mentions": "NovaForge Robotics",
+      "title": "VP of Partnerships",
+      "email": "jane.doe@novaforge-example.com",
+      "phone": "+1 415 555 0100"
+    },
+    "organization_handling": "mentions",
+    "allowed_unknown": [],
+    "notes": "영문 이름 원문 유지, 임의 한글 음차 금지"
+  },
+  "must_not": ["임의 한글 음차 표기를 name으로 사용"]
+}

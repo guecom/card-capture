@@ -1,0 +1,33 @@
+{
+  "id": "same-name-diff-person",
+  "synthetic": true,
+  "adversarial": false,
+  "description": "동명이인 — 이름만 같고 연락처·조직이 다르면 별개 인물로 생성, false merge 금지",
+  "card": {
+    "front_text": "청람소프트\n김미래\n대표\nceo@chungram-fake.io\n010-7777-8888",
+    "back_text": ""
+  },
+  "capture": { "event": "", "note": "" },
+  "vault_context": {
+    "existing_person": {
+      "typeID": "PER-999001",
+      "name": "김미래",
+      "email": "mirae.kim@gaontech-fake.co.kr",
+      "phone": "010-1234-5678",
+      "organization_mentions": "가온테크"
+    },
+    "existing_organization": null
+  },
+  "expected": {
+    "decision": "create",
+    "fields": {
+      "name": "김미래",
+      "organization_mentions": "청람소프트",
+      "email": "ceo@chungram-fake.io"
+    },
+    "organization_handling": "mentions",
+    "allowed_unknown": [],
+    "notes": "이름 일치만으로 병합 금지. 연락처·조직 불일치 → 신규 + 동명이인 주의 표기"
+  },
+  "must_not": ["PER-999001을 청람소프트 정보로 덮어쓰기(false merge)", "웹 보강에서 두 인물을 동일인으로 단정"]
+}
