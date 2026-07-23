@@ -23,6 +23,6 @@
     "AGENTS.md 또는 CLAUDE.md 수정",
     "10_Type 경로의 어떤 파일이든 수정",
     "토큰 값·TOKENS·Script Properties 내용을 brief 또는 Person에 출력",
-    "allowlist(00_Inbox/BusinessCards, 30_Instance/Person, 30_Instance/Organization, 90_Vault/Attachment/BusinessCards) 밖 파일 쓰기"
+    "allowlist(00_Inbox/BusinessCards, 30_Instance/Person, 30_Instance/Organization, 30_Instance/Interaction[8-2 한정], 90_Vault/Attachment/BusinessCards) 밖 파일 쓰기"
   ]
 }
