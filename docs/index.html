@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111827">
+<title>명함 캡처</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #111827; --muted: #6b7280;
+    --line: #e5e7eb; --accent: #4f46e5; --accent-text: #ffffff;
+    --ok: #059669; --warn: #d97706; --err: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0f17; --card: #151b26; --text: #f3f4f6; --muted: #9ca3af;
+      --line: #273042; --accent: #6366f1; --ok: #34d399; --warn: #fbbf24; --err: #f87171;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
+    background: var(--bg); color: var(--text);
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+  }
+  .wrap { max-width: 480px; margin: 0 auto; padding: 16px; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 4px 2px 14px; }
+  header h1 { font-size: 20px; font-weight: 700; }
+  .chip {
+    font-size: 13px; color: var(--muted); background: var(--card); border: 1px solid var(--line);
+    border-radius: 999px; padding: 6px 12px; cursor: pointer;
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+    padding: 16px; margin-bottom: 14px;
+  }
+  .shot {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+    width: 100%; min-height: 128px; border: 2px dashed var(--line); border-radius: 14px;
+    background: none; color: var(--muted); font-size: 15px; cursor: pointer; padding: 10px;
+  }
+  .shot.main { min-height: 168px; border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .shot .big { font-size: 34px; line-height: 1; }
+  .shot img { max-width: 100%; max-height: 180px; border-radius: 10px; }
+  .shot.filled { border-style: solid; min-height: 0; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+  .field { margin-top: 12px; }
+  .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 5px; }
+  .field input, .field textarea {
+    width: 100%; font-size: 16px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-family: inherit;
+  }
+  .field textarea { resize: none; height: 64px; }
+  .btn {
+    width: 100%; border: 0; border-radius: 12px; padding: 15px; font-size: 17px; font-weight: 700;
+    background: var(--accent); color: var(--accent-text); cursor: pointer; margin-top: 14px;
+  }
+  .btn:disabled { opacity: .4; }
+  .hint { font-size: 12.5px; color: var(--muted); text-align: center; margin-top: 10px; line-height: 1.5; }
+  .item { display: flex; align-items: center; gap: 12px; padding: 10px 2px; border-bottom: 1px solid var(--line); }
+  .item:last-child { border-bottom: 0; }
+  .item img { width: 52px; height: 36px; object-fit: cover; border-radius: 6px; background: var(--line); }
+  .item .info { flex: 1; min-width: 0; }
+  .item .t1 { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item .t2 { font-size: 12px; color: var(--muted); }
+  .st { font-size: 12px; font-weight: 600; border-radius: 999px; padding: 4px 10px; white-space: nowrap; }
+  .st.sent { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+  .st.queued { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+  .st.failed { color: var(--err); background: color-mix(in srgb, var(--err) 12%, transparent); cursor: pointer; }
+  h2 { font-size: 15px; color: var(--muted); font-weight: 600; margin: 4px 2px 8px; }
+  .toast {
+    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+    background: var(--text); color: var(--bg); font-size: 14px; border-radius: 999px;
+    padding: 10px 18px; opacity: 0; transition: opacity .25s; pointer-events: none; max-width: 90%;
+  }
+  .toast.show { opacity: 1; }
+  .overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none;
+    align-items: center; justify-content: center; padding: 24px; z-index: 10;
+  }
+  .overlay.show { display: flex; }
+  .overlay .card { width: 100%; max-width: 360px; margin: 0; }
+  .overlay h3 { font-size: 17px; margin-bottom: 6px; }
+  .overlay p { font-size: 13.5px; color: var(--muted); line-height: 1.5; }
+  .banner { border-left: 4px solid var(--warn); border-radius: 10px; }
+  .banner b { font-size: 15px; }
+  .banner p { font-size: 13.5px; color: var(--muted); margin-top: 6px; line-height: 1.55; }
+  input[type=file] { display: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>📇 명함 캡처</h1>
+    <button class="chip" id="nameChip" type="button">…</button>
+  </header>
+
+  <div class="card banner" id="setupBanner" style="display:none">
+    <b>링크 설정이 필요해요</b>
+    <p id="setupMsg"></p>
+  </div>
+
+  <div class="card" id="captureCard">
+    <button class="shot main" id="frontBtn" type="button">
+      <span class="big">📷</span><span id="frontLabel">명함 앞면 촬영</span>
+    </button>
+    <div class="row2">
+      <button class="shot" id="backBtn" type="button" style="display:none">
+        <span>뒷면 추가 <small>(선택)</small></span>
+      </button>
+      <button class="shot" id="retakeBtn" type="button" style="display:none"><span>앞면 다시 찍기</span></button>
+    </div>
+    <input type="file" id="frontInput" accept="image/*" capture="environment">
+    <input type="file" id="backInput" accept="image/*" capture="environment">
+
+    <div class="field">
+      <label for="eventInput">행사 · 장소 (선택, 다음 촬영에도 유지)</label>
+      <input id="eventInput" placeholder="예: 2026 로보월드" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="noteInput">한 줄 메모 (선택 — 키보드 마이크로 말해도 돼요)</label>
+      <textarea id="noteInput" placeholder="예: 공장장님, 우리 부품에 관심 많으심"></textarea>
+    </div>
+    <button class="btn" id="sendBtn" type="button" disabled>완료</button>
+    <p class="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br>전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요.</p>
+  </div>
+
+  <h2>최근 캡처</h2>
+  <div class="card" id="recentCard"><div id="recentList" style="min-height:20px"></div></div>
+</div>
+
+<div class="overlay" id="nameOverlay">
+  <div class="card">
+    <h3>처음 오셨네요 👋</h3>
+    <p>캡처한 명함에 "누가 찍었는지"를 남기기 위해 이름이 필요해요. 한 번만 입력하면 기억합니다.</p>
+    <div class="field"><input id="nameInput" placeholder="이름" autocomplete="name"></div>
+    <button class="btn" id="nameSave" type="button">시작하기</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+/* ── 설정: GAS 웹 앱 배포 후 아래 URL을 붙여넣으세요 (SETUP.md 참고) ── */
+var DEFAULT_API = 'PASTE_GAS_WEBAPP_URL_HERE';
+
+var $ = function (id) { return document.getElementById(id); };
+var store = {
+  get: function (k) { try { return localStorage.getItem('cc_' + k); } catch (e) { return null; } },
+  set: function (k, v) { try { localStorage.setItem('cc_' + k, v); } catch (e) {} }
+};
+
+/* URL 파라미터(?k=토큰&api=주소)를 저장해 두면 홈 화면 실행 때도 유지됩니다 */
+(function initParams() {
+  var p = new URLSearchParams(location.search);
+  if (p.get('k')) store.set('token', p.get('k'));
+  if (p.get('api')) store.set('api', p.get('api'));
+})();
+var TOKEN = store.get('token') || '';
+var API = store.get('api') || (DEFAULT_API.indexOf('http') === 0 ? DEFAULT_API : '');
+
+/* ── 상태 ── */
+var front = null, back = null, flushing = false;
+
+/* ── 온보딩/헤더 ── */
+function refreshChip() {
+  var n = store.get('name');
+  $('nameChip').textContent = n ? '👤 ' + n : '이름 설정';
+}
+$('nameChip').onclick = function () { $('nameOverlay').classList.add('show'); $('nameInput').value = store.get('name') || ''; };
+$('nameSave').onclick = function () {
+  var v = $('nameInput').value.trim();
+  if (!v) return;
+  store.set('name', v);
+  $('nameOverlay').classList.remove('show');
+  refreshChip();
+};
+function checkSetup() {
+  var msg = '';
+  if (!API) msg = 'index.html의 DEFAULT_API에 GAS 웹 앱 주소를 넣거나, 링크에 ?api=주소 를 붙여 한 번 열어주세요.';
+  else if (!TOKEN) msg = '받으신 개인 링크(?k=토큰 포함)로 접속해 주세요. 토큰이 없으면 업로드가 거부됩니다.';
+  $('setupBanner').style.display = msg ? '' : 'none';
+  $('setupMsg').textContent = msg;
+}
+
+/* ── 사진: 리사이즈(긴 변 2000px, JPEG 0.85) ── */
+function fileToResized(file, maxDim, q) {
+  return new Promise(function (resolve, reject) {
+    var draw = function (bmp, w, h) {
+      var scale = Math.min(1, maxDim / Math.max(w, h));
+      var cw = Math.round(w * scale), ch = Math.round(h * scale);
+      var c = document.createElement('canvas');
+      c.width = cw; c.height = ch;
+      c.getContext('2d').drawImage(bmp, 0, 0, cw, ch);
+      resolve(c.toDataURL('image/jpeg', q));
+    };
+    if (window.createImageBitmap) {
+      createImageBitmap(file, { imageOrientation: 'from-image' })
+        .then(function (bmp) { draw(bmp, bmp.width, bmp.height); })
+        .catch(function () { fallback(); });
+    } else fallback();
+    function fallback() {
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () { draw(img, img.naturalWidth, img.naturalHeight); URL.revokeObjectURL(url); };
+      img.onerror = reject;
+      img.src = url;
+    }
+  });
+}
+function b64of(dataUrl) { return dataUrl.slice(dataUrl.indexOf(',') + 1); }
+
+$('frontBtn').onclick = function () { $('frontInput').click(); };
+$('retakeBtn').onclick = function () { $('frontInput').click(); };
+$('backBtn').onclick = function () { $('backInput').click(); };
+$('frontInput').onchange = function () { pick(this, 'front'); };
+$('backInput').onchange = function () { pick(this, 'back'); };
+
+function pick(input, side) {
+  var f = input.files && input.files[0];
+  input.value = '';
+  if (!f) return;
+  toastMsg('사진 처리 중…');
+  fileToResized(f, 2000, 0.85).then(function (dataUrl) {
+    if (side === 'front') {
+      front = dataUrl;
+      $('frontBtn').classList.add('filled');
+      $('frontBtn').innerHTML = '<img alt="앞면 미리보기">';
+      $('frontBtn').querySelector('img').src = dataUrl;
+      $('backBtn').style.display = '';
+      $('retakeBtn').style.display = '';
+      $('sendBtn').disabled = false;
+    } else {
+      back = dataUrl;
+      $('backBtn').classList.add('filled');
+      $('backBtn').innerHTML = '<img alt="뒷면 미리보기">';
+      $('backBtn').querySelector('img').src = dataUrl;
+    }
+    toastMsg(side === 'front' ? '앞면 준비 완료' : '뒷면 준비 완료');
+  }).catch(function () { toastMsg('사진을 읽지 못했어요. 다시 시도해 주세요.'); });
+}
+
+/* ── 대기열 (IndexedDB) ── */
+function db() {
+  return new Promise(function (resolve, reject) {
+    var r = indexedDB.open('cardcapture', 1);
+    r.onupgradeneeded = function () { r.result.createObjectStore('q', { keyPath: 'captureId' }); };
+    r.onsuccess = function () { resolve(r.result); };
+    r.onerror = function () { reject(r.error); };
+  });
+}
+function qPut(item) {
+  return db().then(function (d) {
+    return new Promise(function (res, rej) {
+      var tx = d.transaction('q', 'readwrite');
+      tx.objectStore('q').put(item);
+      tx.oncomplete = res; tx.onerror = function () { rej(tx.error); };
+    });
+  });
+}
+function qAll() {
+  return db().then(function (d) {
+    return new Promise(function (res, rej) {
+      var r = d.transaction('q').objectStore('q').getAll();
+      r.onsuccess = function () { res(r.result || []); };
+      r.onerror = function () { rej(r.error); };
+    });
+  });
+}
+
+function newCaptureId() {
+  var d = new Date(), p = function (n) { return String(n).padStart(2, '0'); };
+  return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' +
+    p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) + '-' +
+    Math.random().toString(36).slice(2, 6);
+}
+
+function thumbOf(dataUrl) {
+  return new Promise(function (resolve) {
+    var img = new Image();
+    img.onload = function () {
+      var c = document.createElement('canvas');
+      var s = 104 / Math.max(img.width, img.height);
+      c.width = Math.round(img.width * s); c.height = Math.round(img.height * s);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      resolve(c.toDataURL('image/jpeg', 0.6));
+    };
+    img.src = dataUrl;
+  });
+}
+
+$('sendBtn').onclick = function () {
+  if (!front) return;
+  var ev = $('eventInput').value.trim();
+  store.set('event', ev);
+  var images = [{ name: 'front.jpg', mime: 'image/jpeg', dataB64: b64of(front) }];
+  if (back) images.push({ name: 'back.jpg', mime: 'image/jpeg', dataB64: b64of(back) });
+  var frontData = front;
+  var item = {
+    captureId: newCaptureId(),
+    capturedAt: new Date().toISOString(),
+    event: ev,
+    note: $('noteInput').value.trim(),
+    images: images,
+    state: 'queued', tries: 0, thumb: ''
+  };
+  /* 즉시 초기화해서 다음 명함을 바로 찍을 수 있게 */
+  front = null; back = null;
+  $('frontBtn').classList.remove('filled');
+  $('frontBtn').innerHTML = '<span class="big">📷</span><span id="frontLabel">명함 앞면 촬영</span>';
+  $('backBtn').style.display = 'none'; $('backBtn').classList.remove('filled');
+  $('backBtn').innerHTML = '<span>뒷면 추가 <small>(선택)</small></span>';
+  $('retakeBtn').style.display = 'none';
+  $('noteInput').value = '';
+  $('sendBtn').disabled = true;
+
+  thumbOf(frontData).then(function (t) {
+    item.thumb = t;
+    return qPut(item);
+  }).then(function () {
+    renderRecent();
+    toastMsg('대기열에 저장했어요. 업로드 시작!');
+    flush();
+  });
+};
+
+/* ── 업로드 ── */
+function sendItem(item) {
+  var payload = {
+    k: TOKEN, captureId: item.captureId, capturedAt: item.capturedAt,
+    capturer: store.get('name') || '', event: item.event, note: item.note, images: item.images
+  };
+  return fetch(API, { method: 'POST', body: JSON.stringify(payload) })
+    .then(function (r) { return r.json(); })
+    .then(function (res) {
+      if (!res.ok) throw new Error(res.error || 'upload_failed');
+      item.state = 'sent';
+      item.images = item.images.map(function (im) { return { name: im.name }; });
+      return qPut(item);
+    });
+}
+function flush() {
+  if (flushing || !API || !TOKEN) return;
+  flushing = true;
+  qAll().then(function (items) {
+    var pending = items.filter(function (i) { return i.state !== 'sent'; })
+      .sort(function (a, b) { return a.captureId < b.captureId ? -1 : 1; });
+    var chain = Promise.resolve();
+    pending.forEach(function (item) {
+      chain = chain.then(function () {
+        return sendItem(item).then(function () { renderRecent(); })
+          .catch(function (e) {
+            item.state = 'failed'; item.tries = (item.tries || 0) + 1; item.err = String(e.message || e);
+            return qPut(item).then(renderRecent);
+          });
+      });
+    });
+    return chain;
+  }).then(function () { flushing = false; })
+    .catch(function () { flushing = false; });
+}
+
+/* ── 최근 목록 ── */
+function renderRecent() {
+  qAll().then(function (items) {
+    items.sort(function (a, b) { return a.captureId < b.captureId ? 1 : -1; });
+    var el = $('recentList');
+    if (!items.length) {
+      el.innerHTML = '<p class="hint" style="margin:6px 0">아직 캡처가 없어요.</p>';
+      return;
+    }
+    el.innerHTML = '';
+    items.slice(0, 30).forEach(function (i) {
+      var div = document.createElement('div');
+      div.className = 'item';
+      var stCls = i.state === 'sent' ? 'sent' : (i.state === 'failed' ? 'failed' : 'queued');
+      var stTxt = i.state === 'sent' ? '전송됨' : (i.state === 'failed' ? '재시도' : '대기 중');
+      var when = i.captureId.slice(4, 6) + '/' + i.captureId.slice(6, 8) + ' ' +
+        i.captureId.slice(9, 11) + ':' + i.captureId.slice(11, 13);
+      div.innerHTML =
+        '<img alt="">' +
+        '<div class="info"><div class="t1"></div><div class="t2"></div></div>' +
+        '<span class="st ' + stCls + '">' + stTxt + '</span>';
+      if (i.thumb) div.querySelector('img').src = i.thumb;
+      div.querySelector('.t1').textContent = i.note || i.event || '명함';
+      div.querySelector('.t2').textContent = when + (i.event && i.note ? ' · ' + i.event : '');
+      if (i.state === 'failed') div.querySelector('.st').onclick = function () { i.state = 'queued'; qPut(i).then(function () { renderRecent(); flush(); }); };
+      el.appendChild(div);
+    });
+  });
+}
+
+/* ── 토스트/이벤트 ── */
+var toastTimer = null;
+function toastMsg(m) {
+  var t = $('toast');
+  t.textContent = m; t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function () { t.classList.remove('show'); }, 2200);
+}
+window.addEventListener('online', flush);
+document.addEventListener('visibilitychange', function () { if (!document.hidden) flush(); });
+
+/* ── 시작 ── */
+$('eventInput').value = store.get('event') || '';
+refreshChip();
+checkSetup();
+renderRecent();
+flush();
+if (!store.get('name')) $('nameOverlay').classList.add('show');
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  navigator.serviceWorker.register('sw.js').catch(function () {});
+}
+</script>
+</body>
+</html>
