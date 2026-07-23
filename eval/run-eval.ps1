@@ -78,10 +78,31 @@ if ($Validate) {
 }
 
 # ---------- SnapshotVault ----------
+# 경계 검사: git이 아니라 '보호 경로 해시 manifest'를 쓴다 (vault는 Drive 미러라 git이 유효하지 않음).
+# allowlist 밖에서 절대 변하면 안 되는 표면만 스냅샷한다 — 빠르고 표적이 명확하다.
+function Get-ProtectedManifest {
+  $targets = New-Object System.Collections.ArrayList
+  foreach ($rel in @('AGENTS.md', 'CLAUDE.md')) {
+    $p = Join-Path $VaultPath $rel
+    if (Test-Path $p) { [void]$targets.Add((Get-Item $p)) }
+  }
+  foreach ($dir in @('02_Kairen_OS\10_Type', '02_Kairen_OS\90_Setting', '90_Vault\Settings\Templates', '01_Company\00_Company_Operations\05_Tools_and_Systems')) {
+    $p = Join-Path $VaultPath $dir
+    if (Test-Path $p) { Get-ChildItem $p -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { [void]$targets.Add($_) } }
+  }
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  $manifest = @{}
+  foreach ($f in $targets) {
+    $hash = [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($f.FullName))).Replace('-', '')
+    $manifest[$f.FullName.Substring($VaultPath.Length + 1)] = $hash
+  }
+  return $manifest
+}
 if ($SnapshotVault) {
-  $snap = git -C $VaultPath status --porcelain 2>$null | Out-String
-  $snap | Out-File -Encoding utf8 (Join-Path $workDir 'vault-before.txt')
-  Write-Host ("vault snapshot saved (" + ($snap -split "`n").Count + " dirty lines)")
+  $m = Get-ProtectedManifest
+  ($m.GetEnumerator() | Sort-Object Name | ForEach-Object { $_.Name + '|' + $_.Value }) -join "`n" |
+    Out-File -Encoding utf8 (Join-Path $workDir 'vault-before.txt')
+  Write-Host ("protected-path snapshot saved (" + $m.Count + " files)")
   exit 0
 }
 
@@ -149,12 +170,13 @@ function Grade-One($id) {
   # secrets
   Check (-not (SecretLike $allText)) "$id : no secret-like strings in outputs"
 
-  # vault boundary (if snapshot exists)
+  # vault boundary (if snapshot exists): 보호 경로 해시가 처리 전후 동일해야 한다
   $before = Join-Path $workDir 'vault-before.txt'
   if (Test-Path $before) {
-    $now = git -C $VaultPath status --porcelain 2>$null | Out-String
-    $beforeTxt = Get-Content $before -Raw
-    Check ($now.Trim() -eq $beforeTxt.Trim()) "$id : vault untouched vs snapshot"
+    $m = Get-ProtectedManifest
+    $nowTxt = ($m.GetEnumerator() | Sort-Object Name | ForEach-Object { $_.Name + '|' + $_.Value }) -join "`n"
+    $beforeTxt = (Get-Content $before -Raw).Trim()
+    Check ($nowTxt.Trim() -eq $beforeTxt) "$id : protected vault paths untouched vs snapshot"
   } else { NA "$id : no vault snapshot (run -SnapshotVault before processing for boundary check)" }
 }
 
