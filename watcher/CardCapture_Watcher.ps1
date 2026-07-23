@@ -1,4 +1,4 @@
-# CardCapture_Watcher.ps1 — 명함 캡처 즉시 처리 워처 (Codex 엔진)
+﻿# CardCapture_Watcher.ps1 — 명함 캡처 즉시 처리 워처 (Codex 엔진)
 # 역할: Drive 동기화로 00_Inbox/BusinessCards에 새 캡처(status=received)가 도착하면
 #       즉시 Codex(codex exec, gpt-5.6-sol/xhigh)로 명함 처리 절차를 실행한다.
 #       시작 시 1회 스윕(놓친 캡처 처리) + 파일 이벤트 + 60초 폴백 폴링.
@@ -77,33 +77,54 @@ function Invoke-Processing {
     }
 }
 
-Write-Log '=== watcher started (codex engine) ==='
+# 싱글턴: 이미 다른 인스턴스가 돌고 있으면 종료
+$mtx = New-Object System.Threading.Mutex($false, 'Local\CardCaptureWatcher')
+if (-not $mtx.WaitOne(0)) { Write-Log "another instance running, exit (PID=$PID)"; exit }
 
-# 시작 스윕: 꺼져 있는 동안 도착한 캡처 처리
-if (Test-NewCapture) {
-    Write-Log 'startup sweep: new capture found'
-    Start-Sleep -Seconds 30
-    Invoke-Processing
-}
+Write-Log "=== watcher started (codex engine) PID=$PID ==="
 
-# 파일 이벤트 감시 + 60초 폴백 폴링
-$fsw = New-Object System.IO.FileSystemWatcher
-$fsw.Path = $Inbox
-$fsw.Filter = '*.json'
-$fsw.IncludeSubdirectories = $true
-$fsw.EnableRaisingEvents = $true
-Register-ObjectEvent -InputObject $fsw -EventName Created -SourceIdentifier CCWCreated | Out-Null
-Register-ObjectEvent -InputObject $fsw -EventName Changed -SourceIdentifier CCWChanged | Out-Null
-
-while ($true) {
-    $ev = Wait-Event -Timeout 60
-    if ($ev) {
-        Remove-Event -EventIdentifier $ev.EventIdentifier -ErrorAction SilentlyContinue
-        Get-Event -ErrorAction SilentlyContinue | Remove-Event -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 45   # 이미지·capture.json 동기화 완료 대기 (디바운스)
-    }
+try {
+    # 시작 스윕: 꺼져 있는 동안 도착한 캡처 처리
     if (Test-NewCapture) {
-        Write-Log ($(if ($ev) { 'event trigger' } else { 'poll trigger' }) + ': new capture found')
+        Write-Log 'startup sweep: new capture found'
+        Start-Sleep -Seconds 30
         Invoke-Processing
     }
+
+    # 파일 이벤트 감시 + 60초 폴백 폴링
+    $fsw = New-Object System.IO.FileSystemWatcher
+    $fsw.Path = $Inbox
+    $fsw.Filter = '*.json'
+    $fsw.IncludeSubdirectories = $true
+    $fsw.EnableRaisingEvents = $true
+    Register-ObjectEvent -InputObject $fsw -EventName Created -SourceIdentifier CCWCreated | Out-Null
+    Register-ObjectEvent -InputObject $fsw -EventName Changed -SourceIdentifier CCWChanged | Out-Null
+
+    $lastBeat = Get-Date
+    while ($true) {
+        try {
+            $ev = Wait-Event -Timeout 60
+            if ($ev) {
+                Remove-Event -EventIdentifier $ev.EventIdentifier -ErrorAction SilentlyContinue
+                Get-Event -ErrorAction SilentlyContinue | Remove-Event -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 45   # 이미지·capture.json 동기화 완료 대기 (디바운스)
+            }
+            if (Test-NewCapture) {
+                Write-Log ($(if ($ev) { 'event trigger' } else { 'poll trigger' }) + ': new capture found')
+                Invoke-Processing
+            }
+            if (((Get-Date) - $lastBeat).TotalMinutes -ge 10) {
+                Write-Log "heartbeat (PID=$PID, loop alive)"
+                $lastBeat = Get-Date
+            }
+        } catch {
+            Write-Log ("loop error: " + $_.Exception.Message)
+            Start-Sleep -Seconds 10
+        }
+    }
+} catch {
+    Write-Log ("FATAL: " + $_.Exception.Message)
+} finally {
+    Write-Log "watcher exiting (PID=$PID)"
+    $mtx.ReleaseMutex() 2>$null
 }

@@ -172,7 +172,7 @@
       <textarea id="noteInput" placeholder="예: 공장장님, 우리 부품에 관심 많으심"></textarea>
     </div>
     <button class="btn" id="sendBtn" type="button" disabled>완료</button>
-    <p class="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br>전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요. <span style="opacity:.55">v0.7</span></p>
+    <p class="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br>전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요. <span style="opacity:.55">v0.8</span></p>
   </div>
 
   <h2>최근 캡처</h2>
@@ -1112,6 +1112,9 @@ function loadBriefs(manual) {
     .catch(function () { if (manual) toastMsg('브리핑을 불러오지 못했어요 — 네트워크 확인'); });
 }
 $('briefRefresh').onclick = function () { toastMsg('브리핑 새로고침 중…'); loadBriefs(true); };
+/* 자동 새로고침: 화면이 보이는 동안 20초마다 + 앱으로 돌아올 때마다 */
+setInterval(function () { if (!document.hidden) loadBriefs(); }, 20000);
+window.addEventListener('focus', function () { loadBriefs(); });
 
 /* ── 토스트/이벤트 ── */
 var toastTimer = null;
@@ -1122,7 +1125,7 @@ function toastMsg(m) {
   toastTimer = setTimeout(function () { t.classList.remove('show'); }, 2200);
 }
 window.addEventListener('online', flush);
-document.addEventListener('visibilitychange', function () { if (!document.hidden) flush(); });
+document.addEventListener('visibilitychange', function () { if (!document.hidden) { flush(); loadBriefs(); } });
 
 /* ── 저장 공간 정리: 최신 50개 이후의 전송 완료 캡처는 사진 원본을 비운다 ── */
 function pruneOld() {

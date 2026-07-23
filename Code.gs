@@ -103,7 +103,7 @@ function listCaptures_(token) {
       person: meta.person || '',
       personAction: meta.personAction || ''
     };
-    var brief = readTextFile_(folder, 'brief.md');
+    var brief = readNewestText_(folder, 'brief', '.md');
     if (brief) item.brief = brief.slice(0, 6000);
     items.push(item);
   }
@@ -115,22 +115,24 @@ function readTextFile_(folder, fname) {
   return it.hasNext() ? it.next().getBlob().getDataAsString('UTF-8') : null;
 }
 
-/* capture.json을 읽되, Drive 동기화가 만든 "capture (1).json" 변형도 최신 수정본으로 허용 */
-function readJsonFile_(folder) {
-  var txt = readTextFile_(folder, 'capture.json');
-  if (txt === null) {
-    var files = folder.getFiles();
-    var best = null;
-    while (files.hasNext()) {
-      var f = files.next();
-      var n = f.getName();
-      if (n.indexOf('capture') === 0 && n.slice(-5) === '.json') {
-        if (!best || f.getLastUpdated() > best.getLastUpdated()) best = f;
-      }
+/* 접두사·확장자가 맞는 파일 중 '가장 최근 수정본'을 읽는다.
+   Drive 동기화가 같은 이름의 중복 파일("capture (1).json" 또는 동명 2개)을 만들어도 최신이 진실. */
+function readNewestText_(folder, prefix, suffix) {
+  var files = folder.getFiles();
+  var best = null;
+  while (files.hasNext()) {
+    var f = files.next();
+    var n = f.getName();
+    if (n.indexOf(prefix) === 0 && n.slice(-suffix.length) === suffix) {
+      if (!best || f.getLastUpdated() > best.getLastUpdated()) best = f;
     }
-    if (!best) return null;
-    txt = best.getBlob().getDataAsString('UTF-8');
   }
+  return best ? best.getBlob().getDataAsString('UTF-8') : null;
+}
+
+function readJsonFile_(folder) {
+  var txt = readNewestText_(folder, 'capture', '.json');
+  if (txt === null) return null;
   try { return JSON.parse(txt); } catch (err) { return null; }
 }
 
