@@ -172,11 +172,15 @@
       <textarea id="noteInput" placeholder="예: 공장장님, 우리 부품에 관심 많으심"></textarea>
     </div>
     <button class="btn" id="sendBtn" type="button" disabled>완료</button>
-    <p class="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br>전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요. <span style="opacity:.55">v0.4</span></p>
+    <p class="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br>전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요. <span style="opacity:.55">v0.5</span></p>
   </div>
 
   <h2>최근 캡처</h2>
   <div class="card" id="recentCard"><div id="recentList" style="min-height:20px"></div></div>
+
+  <h2 style="display:flex;justify-content:space-between;align-items:center">받은 명함 브리핑
+    <button class="chip" id="briefRefresh" type="button">새로고침</button></h2>
+  <div class="card" id="briefCard"><div id="briefList" style="min-height:20px"></div></div>
 </div>
 
 <!-- 카메라 화면 -->
@@ -941,6 +945,71 @@ function renderRecent() {
   });
 }
 
+/* ── 받은 명함 브리핑 ── */
+function mdLite(text) {
+  var root = document.createElement('div');
+  String(text || '').split('\n').forEach(function (ln) {
+    ln = ln.replace(/\[\[([^\]|]+)(\|[^\]]+)?\]\]/g, '$1').replace(/\*\*/g, '');
+    var d = document.createElement('div');
+    if (ln.indexOf('# ') === 0) { d.style.cssText = 'font-weight:700;font-size:15px;margin:8px 0 4px'; d.textContent = ln.slice(2); }
+    else if (ln.indexOf('## ') === 0) { d.style.cssText = 'font-weight:600;font-size:13.5px;margin:8px 0 3px'; d.textContent = ln.slice(3); }
+    else if (ln.indexOf('- ') === 0) { d.style.cssText = 'font-size:13px;color:var(--muted);margin:2px 0 2px 8px'; d.textContent = '• ' + ln.slice(2); }
+    else if (ln.indexOf('→') === 0) { d.style.cssText = 'font-size:13px;margin-top:6px'; d.textContent = ln; }
+    else if (!ln.trim()) { d.style.height = '4px'; }
+    else { d.style.cssText = 'font-size:13.5px;line-height:1.55'; d.textContent = ln; }
+    root.appendChild(d);
+  });
+  return root;
+}
+function renderBriefs(items) {
+  var el = $('briefList');
+  el.innerHTML = '';
+  if (!items || !items.length) {
+    el.innerHTML = '<p class="hint" style="margin:6px 0">아직 도착한 브리핑이 없어요. 명함을 찍으면 시스템이 처리 후 여기로 알려드려요.</p>';
+    return;
+  }
+  items.forEach(function (it) {
+    var wrap = document.createElement('div');
+    wrap.className = 'item';
+    wrap.style.cssText = 'flex-direction:column;align-items:stretch;cursor:pointer';
+    var stTxt = it.status === 'processed' ? '브리핑 도착' : (it.status === 'skipped' ? '건너뜀' : '처리 대기 중');
+    var stCls = it.status === 'processed' ? 'sent' : (it.status === 'skipped' ? 'failed' : 'queued');
+    var title = (it.brief && it.brief.indexOf('# ') === 0) ? it.brief.split('\n')[0].slice(2) : (it.event || it.captureId);
+    var when = String(it.captureId).slice(4, 6) + '/' + String(it.captureId).slice(6, 8);
+    var head = document.createElement('div');
+    head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px';
+    head.innerHTML = '<div class="t1" style="font-weight:600"></div><span class="st ' + stCls + '"></span>';
+    head.querySelector('.t1').textContent = title;
+    head.querySelector('.st').textContent = stTxt;
+    var sub = document.createElement('div');
+    sub.className = 't2';
+    sub.textContent = when + (it.event ? ' · ' + it.event : '') + (it.capturer ? ' · 촬영: ' + it.capturer : '');
+    var body = document.createElement('div');
+    body.style.display = 'none';
+    if (it.brief) body.appendChild(mdLite(it.brief.split('\n').slice(1).join('\n')));
+    wrap.appendChild(head); wrap.appendChild(sub); wrap.appendChild(body);
+    wrap.onclick = function () { body.style.display = body.style.display === 'none' ? '' : 'none'; };
+    el.appendChild(wrap);
+  });
+}
+function loadBriefs(manual) {
+  if (!API || !TOKEN) return;
+  var cached = store.get('briefs');
+  if (cached && !manual) { try { renderBriefs(JSON.parse(cached)); } catch (e) {} }
+  fetch(API + '?action=list&k=' + encodeURIComponent(TOKEN))
+    .then(function (r) { return r.json(); })
+    .then(function (res) {
+      if (!res.ok) {
+        if (res.error === 'unknown_action') $('briefList').innerHTML = '<p class="hint" style="margin:6px 0">브리핑 기능은 서버 업데이트(GAS 재배포) 후 열려요.</p>';
+        return;
+      }
+      store.set('briefs', JSON.stringify(res.items));
+      renderBriefs(res.items);
+    })
+    .catch(function () { if (manual) toastMsg('브리핑을 불러오지 못했어요 — 네트워크 확인'); });
+}
+$('briefRefresh').onclick = function () { toastMsg('브리핑 새로고침 중…'); loadBriefs(true); };
+
 /* ── 토스트/이벤트 ── */
 var toastTimer = null;
 function toastMsg(m) {
@@ -972,6 +1041,7 @@ checkSetup();
 renderRecent();
 flush();
 pruneOld();
+loadBriefs();
 if (!store.get('name')) $('nameOverlay').classList.add('show');
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').catch(function () {});

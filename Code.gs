@@ -8,6 +8,7 @@
  *   INBOX_FOLDER_ID  필수. vault의 00_Inbox/BusinessCards 폴더의 Drive 폴더 ID
  *   TOKENS           필수. JSON 문자열: {"긴랜덤토큰1":"강규","긴랜덤토큰2":"홍길동"}
  *   DAILY_LIMIT      선택. 토큰당 하루 업로드 상한 (기본 100)
+ *   OWNER_NAMES      선택. 쉼표 구분 이름 목록 (예: "강규") — 이 이름의 토큰은 모든 캡처의 브리핑을 봄. 그 외는 자기 캡처만.
  *
  * 클라이언트 계약 (webapp/index.html):
  *   POST body (text/plain, JSON): {
@@ -30,7 +31,70 @@ function doGet(e) {
     var name = capturerFor_(e.parameter.k);
     return json_(name ? { ok: true, name: name } : { ok: false, error: 'invalid_token' });
   }
+  if (action === 'list') {
+    return listCaptures_(e.parameter.k);
+  }
   return json_({ ok: false, error: 'unknown_action' });
+}
+
+/* 브리핑 목록: 토큰 소유자의 캡처(OWNER_NAMES에 있으면 전체)를 최신순으로 반환 */
+function listCaptures_(token) {
+  var name = capturerFor_(token);
+  if (!name) return json_({ ok: false, error: 'invalid_token' });
+  var owners = String(CONF.getProperty('OWNER_NAMES') || '').split(',').map(function (s) { return s.trim(); }).filter(String);
+  var seeAll = owners.indexOf(name) >= 0;
+  var inboxId = CONF.getProperty('INBOX_FOLDER_ID');
+  if (!inboxId) return json_({ ok: false, error: 'not_configured' });
+
+  var folders = DriveApp.getFolderById(inboxId).getFolders();
+  var entries = [];
+  while (folders.hasNext()) entries.push(folders.next());
+  entries.sort(function (a, b) { return a.getName() < b.getName() ? 1 : -1; }); /* captureId 최신순 */
+
+  var items = [];
+  for (var i = 0; i < entries.length && items.length < 30; i++) {
+    var folder = entries[i];
+    var meta = readJsonFile_(folder);
+    if (!meta) continue;
+    if (!seeAll && String(meta.capturer || '') !== name) continue;
+    var item = {
+      captureId: meta.captureId || folder.getName(),
+      capturer: meta.capturer || '',
+      capturedAt: meta.capturedAt || '',
+      event: meta.event || '',
+      status: meta.status || 'received',
+      person: meta.person || '',
+      personAction: meta.personAction || ''
+    };
+    var brief = readTextFile_(folder, 'brief.md');
+    if (brief) item.brief = brief.slice(0, 6000);
+    items.push(item);
+  }
+  return json_({ ok: true, name: name, seeAll: seeAll, items: items });
+}
+
+function readTextFile_(folder, fname) {
+  var it = folder.getFilesByName(fname);
+  return it.hasNext() ? it.next().getBlob().getDataAsString('UTF-8') : null;
+}
+
+/* capture.json을 읽되, Drive 동기화가 만든 "capture (1).json" 변형도 최신 수정본으로 허용 */
+function readJsonFile_(folder) {
+  var txt = readTextFile_(folder, 'capture.json');
+  if (txt === null) {
+    var files = folder.getFiles();
+    var best = null;
+    while (files.hasNext()) {
+      var f = files.next();
+      var n = f.getName();
+      if (n.indexOf('capture') === 0 && n.slice(-5) === '.json') {
+        if (!best || f.getLastUpdated() > best.getLastUpdated()) best = f;
+      }
+    }
+    if (!best) return null;
+    txt = best.getBlob().getDataAsString('UTF-8');
+  }
+  try { return JSON.parse(txt); } catch (err) { return null; }
 }
 
 function doPost(e) {
