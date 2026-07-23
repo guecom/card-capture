@@ -1,0 +1,20 @@
+{
+  "id": "org-mentions",
+  "synthetic": true,
+  "adversarial": false,
+  "description": "미등록 조직 — Organization Instance 자동 승격 금지, mentions 보존",
+  "card": {
+    "front_text": "휘연바이오\n최다온\n연구소장\ndaon.choi@hwiyeon-fake.bio\n010-1212-3434",
+    "back_text": ""
+  },
+  "capture": { "event": "", "note": "" },
+  "vault_context": { "existing_person": null, "existing_organization": null },
+  "expected": {
+    "decision": "create",
+    "fields": { "name": "최다온", "organization_mentions": "휘연바이오", "title": "연구소장" },
+    "organization_handling": "mentions",
+    "allowed_unknown": [],
+    "notes": "근거 축적 전 조직 자동 승격 금지 — organization File 링크가 아니라 mentions scalar"
+  },
+  "must_not": ["ORG Instance 자동 생성", "organization 필드에 비실재 파일 링크"]
+}

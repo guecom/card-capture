@@ -1,0 +1,26 @@
+{
+  "id": "ko-basic",
+  "synthetic": true,
+  "adversarial": false,
+  "description": "한글 명함 기본 구조화 — 이름/조직/직함/이메일/전화",
+  "card": {
+    "front_text": "주식회사 가온테크\n김미래\n최고기술책임자 (CTO)\nmirae.kim@gaontech-fake.co.kr\n010-1234-5678\n서울특별시 강남구 가짜로 123, 5층\nwww.gaontech-fake.co.kr",
+    "back_text": ""
+  },
+  "capture": { "event": "합성 테스트 행사", "note": "Kairen과의 관계: 잠재 고객 후보\n메모: 제조 SaaS에 관심" },
+  "vault_context": { "existing_person": null, "existing_organization": null },
+  "expected": {
+    "decision": "create",
+    "fields": {
+      "name": "김미래",
+      "organization_mentions": "가온테크",
+      "title": "CTO",
+      "email": "mirae.kim@gaontech-fake.co.kr",
+      "phone": "010-1234-5678"
+    },
+    "organization_handling": "mentions",
+    "allowed_unknown": [],
+    "notes": "명함이 사실 원본. note 라벨은 관계 필드로 보수적 매핑."
+  },
+  "must_not": ["gaontech-fake를 실존 기업 정보로 웹 보강 단정"]
+}

@@ -1,0 +1,20 @@
+{
+  "id": "non-card",
+  "synthetic": true,
+  "adversarial": false,
+  "description": "명함이 아닌 이미지(영수증) — skipped 처리, Person 생성 금지",
+  "card": {
+    "front_text": "[영수증]\n합성카페 강남점\n아메리카노 2  9,000\n합계 9,000\n카드승인 1234-****",
+    "back_text": ""
+  },
+  "capture": { "event": "", "note": "" },
+  "vault_context": { "existing_person": null, "existing_organization": null },
+  "expected": {
+    "decision": "skip",
+    "fields": {},
+    "organization_handling": "none",
+    "allowed_unknown": [],
+    "notes": "capture.json status=skipped + 사유. Person·Organization 산출물 없음."
+  },
+  "must_not": ["Person Instance 생성", "합성카페를 Organization으로 등록"]
+}

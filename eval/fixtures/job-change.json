@@ -1,0 +1,34 @@
+{
+  "id": "job-change",
+  "synthetic": true,
+  "adversarial": false,
+  "description": "이직 — 동일인 갱신 시 현재 소속 교체 + 과거 소속 Career 이력 강등",
+  "card": {
+    "front_text": "미리내로보틱스\n김미래\n부사장 (VP Engineering)\nmirae.kim@gaontech-fake.co.kr\n010-1234-5678",
+    "back_text": ""
+  },
+  "capture": { "event": "", "note": "" },
+  "vault_context": {
+    "existing_person": {
+      "typeID": "PER-999001",
+      "name": "김미래",
+      "email": "mirae.kim@gaontech-fake.co.kr",
+      "phone": "010-1234-5678",
+      "organization_mentions": "가온테크",
+      "title": "CTO"
+    },
+    "existing_organization": null
+  },
+  "expected": {
+    "decision": "update",
+    "fields": {
+      "name": "김미래",
+      "organization_mentions": "미리내로보틱스",
+      "title": "부사장"
+    },
+    "organization_handling": "mentions",
+    "allowed_unknown": [],
+    "notes": "현재 소속=미리내로보틱스, 가온테크는 Career 이력(이전 소속)으로 강등 보존. 전면 재구성 규칙 8-1."
+  },
+  "must_not": ["가온테크를 현재 소속으로 유지", "가온테크 이력 삭제"]
+}

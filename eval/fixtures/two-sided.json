@@ -1,0 +1,26 @@
+{
+  "id": "two-sided",
+  "synthetic": true,
+  "adversarial": false,
+  "description": "앞·뒤 양면 명함 — 뒷면 영문·추가 연락처 병합",
+  "card": {
+    "front_text": "(주)한빛머티리얼\n박강산\n영업이사\nkangsan.park@hanbit-fake.kr\n010-9876-5432",
+    "back_text": "HANBIT MATERIALS Co., Ltd.\nKangsan Park\nSales Director\nTel +82-2-555-0199\nFax 02-555-0198"
+  },
+  "capture": { "event": "", "note": "" },
+  "vault_context": { "existing_person": null, "existing_organization": null },
+  "expected": {
+    "decision": "create",
+    "fields": {
+      "name": "박강산",
+      "organization_mentions": "한빛머티리얼",
+      "title": "영업이사",
+      "email": "kangsan.park@hanbit-fake.kr",
+      "phone": "010-9876-5432"
+    },
+    "organization_handling": "mentions",
+    "allowed_unknown": [],
+    "notes": "뒷면 영문 표기와 유선 +82-2-555-0199는 보조 연락처로 병합, 앞면과 중복 생성 금지"
+  },
+  "must_not": ["같은 인물 2개 Person 생성"]
+}
