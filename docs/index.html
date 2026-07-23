@@ -172,7 +172,7 @@
       <textarea id="noteInput" placeholder="예: 공장장님, 우리 부품에 관심 많으심"></textarea>
     </div>
     <button class="btn" id="sendBtn" type="button" disabled>완료</button>
-    <p class="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br>전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요. <span style="opacity:.55">v0.6</span></p>
+    <p class="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br>전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요. <span style="opacity:.55">v0.7</span></p>
   </div>
 
   <h2>최근 캡처</h2>
@@ -461,7 +461,8 @@ function blurScore(canvas) {
 /* ── 카메라 ── */
 var cam = {
   stream: null, track: null, side: 'front', raf: 0, lastDet: 0,
-  liveQuad: null, liveQuadAt: 0, small: document.createElement('canvas'), on: false, waiting: false
+  liveQuad: null, liveQuadAt: 0, small: document.createElement('canvas'), on: false, waiting: false,
+  dispQuad: null, detStart: 0
 };
 function camChoiceUI(show, thumbUrl) {
   cam.waiting = show;
@@ -493,6 +494,8 @@ function camOpen(side) {
     v.srcObject = stream;
     $('cam').classList.add('show');
     cam.on = true;
+    cam.dispQuad = null;
+    cam.detStart = 0;
     loadCv();
     cvStatus();
     v.play().catch(function () {});
@@ -506,6 +509,8 @@ function camClose() {
   cam.on = false;
   cancelAnimationFrame(cam.raf);
   cam.liveQuad = null;
+  cam.dispQuad = null;
+  cam.detStart = 0;
   camChoiceUI(false);
   if (cam.stream) { cam.stream.getTracks().forEach(function (t) { t.stop(); }); cam.stream = null; cam.track = null; }
   $('cam').classList.remove('show');
@@ -549,40 +554,78 @@ function camLoop() {
     }
   }
 
-  /* 가이드 프레임 */
-  var r = guideRectDisp(m.dw, m.dh);
-  g.strokeStyle = 'rgba(255,255,255,.75)';
-  g.lineWidth = 2;
-  g.setLineDash([10, 7]);
-  roundRectPath(g, r.x, r.y, r.w, r.h, 14);
-  g.stroke();
-  g.setLineDash([]);
+  /* 인식 상태: 최근 감지면 명함, 아니면 가이드 프레임으로 부드럽게 전환 */
+  var detected = cam.liveQuad && (now - cam.liveQuadAt < 450);
+  if (detected) { if (!cam.detStart) cam.detStart = now; } else { cam.detStart = 0; }
+  var locked = detected && cam.detStart && (now - cam.detStart > 420);
 
-  /* 인식된 사각형 (0.5초 유지) */
-  if (cam.liveQuad && now - cam.liveQuadAt < 500) {
-    g.strokeStyle = '#22c55e';
-    g.fillStyle = 'rgba(34,197,94,.12)';
-    g.lineWidth = 3;
-    g.beginPath();
-    cam.liveQuad.forEach(function (p, i) {
-      var x = p.x * m.s + m.ox, y = p.y * m.s + m.oy;
-      if (i) g.lineTo(x, y); else g.moveTo(x, y);
-    });
-    g.closePath(); g.fill(); g.stroke();
-    $('camHint').textContent = '명함 인식됨 — 셔터를 누르세요';
+  var target;
+  if (detected) {
+    target = cam.liveQuad.map(function (p) { return { x: p.x * m.s + m.ox, y: p.y * m.s + m.oy }; });
   } else {
-    $('camHint').textContent = CV ? '명함을 테두리 안에 맞추면 자동으로 잘라져요'
-      : '명함을 테두리 안에 맞춰 찍으면 잘라져요';
+    var r = guideRectDisp(m.dw, m.dh);
+    target = [{ x: r.x, y: r.y }, { x: r.x + r.w, y: r.y }, { x: r.x + r.w, y: r.y + r.h }, { x: r.x, y: r.y + r.h }];
   }
+
+  /* 프레임 간 보간으로 떨림 제거 */
+  if (!cam.dispQuad) {
+    cam.dispQuad = target.map(function (p) { return { x: p.x, y: p.y }; });
+  } else {
+    var k = detected ? 0.3 : 0.18;
+    for (var i = 0; i < 4; i++) {
+      cam.dispQuad[i].x += (target[i].x - cam.dispQuad[i].x) * k;
+      cam.dispQuad[i].y += (target[i].y - cam.dispQuad[i].y) * k;
+    }
+  }
+  var dq = cam.dispQuad;
+
+  /* 주변만 은은하게 어둡게 — 명함이 화면에서 떠오르도록 */
+  g.fillStyle = detected ? 'rgba(0,0,0,0.5)' : 'rgba(0,0,0,0.34)';
+  g.fillRect(0, 0, ov.width, ov.height);
+  g.save();
+  g.globalCompositeOperation = 'destination-out';
+  quadPath(g, dq);
+  g.fill();
+  g.restore();
+
+  /* 얇고 정갈한 가장자리 선 */
+  quadPath(g, dq);
+  g.lineJoin = 'round';
+  g.lineWidth = 1.5;
+  g.strokeStyle = locked ? 'rgba(255,255,255,0.95)'
+    : (detected ? 'rgba(255,255,255,0.68)' : 'rgba(255,255,255,0.36)');
+  if (locked) { g.fillStyle = 'rgba(255,255,255,0.05)'; g.fill(); }
+  g.stroke();
+
+  /* 코너 브래킷 (명함과 함께 회전) */
+  drawCorners(g, dq, locked ? 26 : 20,
+    locked ? 'rgba(255,255,255,0.98)' : 'rgba(255,255,255,0.82)',
+    locked ? 2.5 : 2);
+
+  $('camHint').textContent = detected ? '인식됨 · 셔터를 누르세요'
+    : (CV ? '명함을 화면 안에 담아 주세요' : '명함을 화면 안에 담아 찍어 주세요');
 }
-function roundRectPath(g, x, y, w, h, r) {
+function quadPath(g, q) {
   g.beginPath();
-  g.moveTo(x + r, y);
-  g.arcTo(x + w, y, x + w, y + h, r);
-  g.arcTo(x + w, y + h, x, y + h, r);
-  g.arcTo(x, y + h, x, y, r);
-  g.arcTo(x, y, x + w, y, r);
+  g.moveTo(q[0].x, q[0].y);
+  g.lineTo(q[1].x, q[1].y);
+  g.lineTo(q[2].x, q[2].y);
+  g.lineTo(q[3].x, q[3].y);
   g.closePath();
+}
+function drawCorners(g, q, len, color, width) {
+  g.strokeStyle = color; g.lineWidth = width; g.lineCap = 'round'; g.lineJoin = 'round';
+  for (var i = 0; i < 4; i++) {
+    var p = q[i], a = q[(i + 3) % 4], b = q[(i + 1) % 4];
+    var d1 = Math.hypot(a.x - p.x, a.y - p.y) || 1;
+    var d2 = Math.hypot(b.x - p.x, b.y - p.y) || 1;
+    var l1 = Math.min(len, d1 * 0.4), l2 = Math.min(len, d2 * 0.4);
+    g.beginPath();
+    g.moveTo(p.x + (a.x - p.x) / d1 * l1, p.y + (a.y - p.y) / d1 * l1);
+    g.lineTo(p.x, p.y);
+    g.lineTo(p.x + (b.x - p.x) / d2 * l2, p.y + (b.y - p.y) / d2 * l2);
+    g.stroke();
+  }
 }
 function camCapture() {
   var v = $('camVideo');
