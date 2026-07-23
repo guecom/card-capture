@@ -34,7 +34,44 @@ function doGet(e) {
   if (action === 'list') {
     return listCaptures_(e.parameter.k);
   }
+  if (action === 'persondoc') {
+    return personDoc_(e.parameter.k, e.parameter.captureId);
+  }
   return json_({ ok: false, error: 'unknown_action' });
+}
+
+/* Person Instance .md 전문 조회 — OWNER_NAMES 토큰만 (Private 섹션 포함이므로) */
+function personDoc_(token, captureId) {
+  var name = capturerFor_(token);
+  if (!name) return json_({ ok: false, error: 'invalid_token' });
+  var owners = String(CONF.getProperty('OWNER_NAMES') || '').split(',').map(function (s) { return s.trim(); }).filter(String);
+  if (owners.indexOf(name) < 0) return json_({ ok: false, error: 'owner_only' });
+  var cid = sanitizeId_(captureId);
+  if (!cid) return json_({ ok: false, error: 'bad_capture_id' });
+
+  var inbox = DriveApp.getFolderById(CONF.getProperty('INBOX_FOLDER_ID'));
+  var it = inbox.getFoldersByName(cid);
+  if (!it.hasNext()) return json_({ ok: false, error: 'not_found' });
+  var meta = readJsonFile_(it.next());
+  if (!meta || !meta.person) return json_({ ok: false, error: 'not_processed' });
+
+  /* vault 경로 탐색: BusinessCards → 00_Inbox → Kairen → 02_Kairen_OS/30_Instance/Person */
+  var p1 = inbox.getParents(); if (!p1.hasNext()) return json_({ ok: false, error: 'vault_walk_failed' });
+  var p2 = p1.next().getParents(); if (!p2.hasNext()) return json_({ ok: false, error: 'vault_walk_failed' });
+  var kairen = p2.next();
+  var personFolder = subFolder_(subFolder_(subFolder_(kairen, '02_Kairen_OS'), '30_Instance'), 'Person');
+  if (!personFolder) return json_({ ok: false, error: 'person_folder_not_found' });
+
+  var files = personFolder.searchFiles("title contains '" + String(meta.person).replace(/'/g, '') + "'");
+  if (!files.hasNext()) return json_({ ok: false, error: 'doc_not_found' });
+  var doc = files.next().getBlob().getDataAsString('UTF-8');
+  return json_({ ok: true, person: meta.person, markdown: doc.slice(0, 60000) });
+}
+
+function subFolder_(folder, name) {
+  if (!folder) return null;
+  var it = folder.getFoldersByName(name);
+  return it.hasNext() ? it.next() : null;
 }
 
 /* 브리핑 목록: 토큰 소유자의 캡처(OWNER_NAMES에 있으면 전체)를 최신순으로 반환 */

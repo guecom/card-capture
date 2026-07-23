@@ -172,7 +172,7 @@
       <textarea id="noteInput" placeholder="예: 공장장님, 우리 부품에 관심 많으심"></textarea>
     </div>
     <button class="btn" id="sendBtn" type="button" disabled>완료</button>
-    <p class="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br>전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요. <span style="opacity:.55">v0.5</span></p>
+    <p class="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br>전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요. <span style="opacity:.55">v0.6</span></p>
   </div>
 
   <h2>최근 캡처</h2>
@@ -234,6 +234,17 @@
     <div class="field"><label for="dMemo">메모</label><textarea id="dMemo"></textarea></div>
     <button class="btn" id="dSave" type="button">저장하고 다시 보내기</button>
     <p class="hint" id="dStatus"></p>
+  </div>
+</div>
+
+<!-- Person 프로필(.md) 뷰어 -->
+<div class="overlay" id="docOverlay">
+  <div class="card" style="max-height:90vh;overflow-y:auto;max-width:440px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <h3 style="margin:0" id="docTitle">프로필</h3>
+      <button class="chip" id="docClose" type="button">닫기</button>
+    </div>
+    <div id="docBody" style="font-size:13.5px"></div>
   </div>
 </div>
 
@@ -961,6 +972,7 @@ function mdLite(text) {
   });
   return root;
 }
+var briefSeeAll = false;
 function renderBriefs(items) {
   var el = $('briefList');
   el.innerHTML = '';
@@ -987,13 +999,59 @@ function renderBriefs(items) {
     var body = document.createElement('div');
     body.style.display = 'none';
     if (it.brief) body.appendChild(mdLite(it.brief.split('\n').slice(1).join('\n')));
+    if (it.person && briefSeeAll) {
+      var docBtn = document.createElement('button');
+      docBtn.className = 'chip';
+      docBtn.style.cssText = 'margin-top:8px;align-self:flex-start';
+      docBtn.textContent = '전체 프로필(.md) 보기 — ' + it.person;
+      docBtn.onclick = function (ev2) { ev2.stopPropagation(); openPersonDoc(it); };
+      body.appendChild(docBtn);
+    }
     wrap.appendChild(head); wrap.appendChild(sub); wrap.appendChild(body);
     wrap.onclick = function () { body.style.display = body.style.display === 'none' ? '' : 'none'; };
     el.appendChild(wrap);
   });
 }
+/* Person .md 뷰어: 프런트매터는 회색 블록, 본문은 mdLite, 이미지 embed는 라벨로 */
+function renderPersonMd(md) {
+  var root = document.createElement('div');
+  var text = String(md || '');
+  var body = text;
+  if (text.indexOf('---') === 0) {
+    var end = text.indexOf('\n---', 3);
+    if (end > 0) {
+      var fm = text.slice(4, end);
+      body = text.slice(end + 4);
+      var fmBox = document.createElement('div');
+      fmBox.style.cssText = 'background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:10px;font-size:11.5px;color:var(--muted);white-space:pre-wrap;word-break:break-all;max-height:180px;overflow-y:auto';
+      fmBox.textContent = fm.trim();
+      root.appendChild(fmBox);
+    }
+  }
+  body = body.replace(/!\[\[([^\]]+)\]\]/g, '(이미지: $1)');
+  root.appendChild(mdLite(body));
+  return root;
+}
+function openPersonDoc(it) {
+  $('docTitle').textContent = it.person;
+  $('docBody').innerHTML = '<p class="hint">프로필 불러오는 중…</p>';
+  $('docOverlay').classList.add('show');
+  fetch(API + '?action=persondoc&k=' + encodeURIComponent(TOKEN) + '&captureId=' + encodeURIComponent(it.captureId))
+    .then(function (r) { return r.json(); })
+    .then(function (res) {
+      $('docBody').innerHTML = '';
+      if (!res.ok) {
+        $('docBody').innerHTML = '<p class="hint">불러오지 못했어요: ' + (res.error === 'owner_only' ? '소유자 토큰만 볼 수 있어요' : (res.error === 'unknown_action' ? '서버 업데이트(GAS 재배포) 후 열려요' : res.error)) + '</p>';
+        return;
+      }
+      $('docBody').appendChild(renderPersonMd(res.markdown));
+    })
+    .catch(function () { $('docBody').innerHTML = '<p class="hint">네트워크 오류 — 다시 시도해 주세요</p>'; });
+}
+$('docClose').onclick = function () { $('docOverlay').classList.remove('show'); };
 function loadBriefs(manual) {
   if (!API || !TOKEN) return;
+  briefSeeAll = store.get('briefSeeAll') === '1';
   var cached = store.get('briefs');
   if (cached && !manual) { try { renderBriefs(JSON.parse(cached)); } catch (e) {} }
   fetch(API + '?action=list&k=' + encodeURIComponent(TOKEN))
@@ -1003,7 +1061,9 @@ function loadBriefs(manual) {
         if (res.error === 'unknown_action') $('briefList').innerHTML = '<p class="hint" style="margin:6px 0">브리핑 기능은 서버 업데이트(GAS 재배포) 후 열려요.</p>';
         return;
       }
+      briefSeeAll = !!res.seeAll;
       store.set('briefs', JSON.stringify(res.items));
+      store.set('briefSeeAll', briefSeeAll ? '1' : '');
       renderBriefs(res.items);
     })
     .catch(function () { if (manual) toastMsg('브리핑을 불러오지 못했어요 — 네트워크 확인'); });
