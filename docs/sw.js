@@ -1,5 +1,5 @@
 /* CardCapture service worker — 앱 셸 캐시 (v1) */
-var CACHE = 'cardcapture-v2';
+var CACHE = 'cardcapture-v3';
 var SHELL = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', function (e) {

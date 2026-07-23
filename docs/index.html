@@ -151,15 +151,23 @@
     <input type="file" id="backInput" accept="image/*" capture="environment">
 
     <div class="field">
-      <label for="eventInput">행사 · 장소 (선택, 다음 촬영에도 유지)</label>
-      <input id="eventInput" placeholder="예: 2026 로보월드" autocomplete="off">
+      <label for="eventInput">어디서 만났는지 (선택, 다음 촬영에도 유지)</label>
+      <input id="eventInput" placeholder="예: 2026 로보월드 전시회" autocomplete="off">
     </div>
     <div class="field">
-      <label for="noteInput">한 줄 메모 (선택 — 키보드 마이크로 말해도 돼요)</label>
+      <label for="relSelfInput">나와 이 사람과의 관계 (선택)</label>
+      <input id="relSelfInput" placeholder="예: 대학 선배 / 오늘 처음 인사" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="relKairenInput">Kairen과 이 사람과의 관계 (선택)</label>
+      <input id="relKairenInput" placeholder="예: 잠재 고객 / 부품 공급사 담당자" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="noteInput">메모 (선택 — 키보드 마이크로 말해도 돼요)</label>
       <textarea id="noteInput" placeholder="예: 공장장님, 우리 부품에 관심 많으심"></textarea>
     </div>
     <button class="btn" id="sendBtn" type="button" disabled>완료</button>
-    <p class="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br>전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요. <span style="opacity:.55">v0.2</span></p>
+    <p class="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br>전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요. <span style="opacity:.55">v0.3</span></p>
   </div>
 
   <h2>최근 캡처</h2>
@@ -675,6 +683,14 @@ $('sendBtn').onclick = function () {
   if (!front) return;
   var ev = $('eventInput').value.trim();
   store.set('event', ev);
+  var relSelf = $('relSelfInput').value.trim();
+  var relKairen = $('relKairenInput').value.trim();
+  var memo = $('noteInput').value.trim();
+  /* 라벨 붙은 한 텍스트로 합쳐 전송 — 처리 파이프라인이 라벨로 구분 */
+  var noteLines = [];
+  if (relSelf) noteLines.push('나와의 관계: ' + relSelf);
+  if (relKairen) noteLines.push('Kairen과의 관계: ' + relKairen);
+  if (memo) noteLines.push('메모: ' + memo);
   var images = [{ name: 'front.jpg', mime: 'image/jpeg', dataB64: b64of(front) }];
   if (back) images.push({ name: 'back.jpg', mime: 'image/jpeg', dataB64: b64of(back) });
   var frontData = front;
@@ -682,17 +698,20 @@ $('sendBtn').onclick = function () {
     captureId: newCaptureId(),
     capturedAt: new Date().toISOString(),
     event: ev,
-    note: $('noteInput').value.trim(),
+    note: noteLines.join('\n'),
+    disp: memo || relSelf || relKairen,
     images: images,
     state: 'queued', tries: 0, thumb: ''
   };
-  /* 즉시 초기화해서 다음 명함을 바로 찍을 수 있게 */
+  /* 즉시 초기화해서 다음 명함을 바로 찍을 수 있게 (만난 곳은 유지) */
   front = null; back = null;
   $('frontBtn').classList.remove('filled');
   $('frontBtn').innerHTML = '<span class="big">📷</span><span id="frontLabel">명함 앞면 촬영</span>';
   $('backBtn').style.display = 'none'; $('backBtn').classList.remove('filled');
   $('backBtn').innerHTML = '<span>뒷면 추가 <small>(선택)</small></span>';
   $('retakeBtn').style.display = 'none';
+  $('relSelfInput').value = '';
+  $('relKairenInput').value = '';
   $('noteInput').value = '';
   $('sendBtn').disabled = true;
 
@@ -764,8 +783,9 @@ function renderRecent() {
         '<div class="info"><div class="t1"></div><div class="t2"></div></div>' +
         '<span class="st ' + stCls + '">' + stTxt + '</span>';
       if (i.thumb) div.querySelector('img').src = i.thumb;
-      div.querySelector('.t1').textContent = i.note || i.event || '명함';
-      div.querySelector('.t2').textContent = when + (i.event && i.note ? ' · ' + i.event : '');
+      var label = i.disp || i.note || i.event || '명함';
+      div.querySelector('.t1').textContent = label;
+      div.querySelector('.t2').textContent = when + (i.event && label !== i.event ? ' · ' + i.event : '');
       if (i.state === 'failed') div.querySelector('.st').onclick = function () { i.state = 'queued'; qPut(i).then(function () { renderRecent(); flush(); }); };
       el.appendChild(div);
     });
