@@ -123,6 +123,11 @@
   }
   .cam .fb { display: block; margin: 12px auto 0; background: none; border: 0; color: rgba(255,255,255,.75); font-size: 12.5px; cursor: pointer; }
   .cam .guidehint { color: rgba(255,255,255,.85); font-size: 13px; margin-bottom: 12px; }
+  #camChoiceThumb { width: 110px; border-radius: 8px; display: block; margin: 0 auto 12px; border: 2px solid rgba(255,255,255,.7); }
+  .cam .choiceRow { display: flex; gap: 10px; max-width: 340px; margin: 0 auto; }
+  .cam .cbtn { flex: 1; border: 0; border-radius: 12px; padding: 14px 10px; font-size: 15px; font-weight: 700; background: rgba(255,255,255,.18); color: #fff; cursor: pointer; }
+  .cam .cbtn.primary { background: #4f46e5; }
+  .dimg { width: 100%; border-radius: 10px; background: var(--line); min-height: 64px; object-fit: cover; display: block; }
 </style>
 </head>
 <body>
@@ -167,7 +172,7 @@
       <textarea id="noteInput" placeholder="예: 공장장님, 우리 부품에 관심 많으심"></textarea>
     </div>
     <button class="btn" id="sendBtn" type="button" disabled>완료</button>
-    <p class="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br>전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요. <span style="opacity:.55">v0.3</span></p>
+    <p class="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br>전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요. <span style="opacity:.55">v0.4</span></p>
   </div>
 
   <h2>최근 캡처</h2>
@@ -188,10 +193,44 @@
   </div>
   <div class="bottom">
     <div class="guidehint" id="camHint">명함을 테두리 안에 맞추면 자동으로 잘라져요</div>
-    <button class="shutter" id="camShot" type="button" aria-label="촬영"></button>
-    <button class="fb" id="camNative" type="button">기본 카메라 앱으로 찍기</button>
+    <div id="camShotUI">
+      <button class="shutter" id="camShot" type="button" aria-label="촬영"></button>
+      <button class="fb" id="camNative" type="button">기본 카메라 앱으로 찍기</button>
+    </div>
+    <div id="camChoice" style="display:none">
+      <img id="camChoiceThumb" alt="앞면 미리보기">
+      <div class="choiceRow">
+        <button class="cbtn primary" id="camGoBack2" type="button">뒷면도 찍기</button>
+        <button class="cbtn" id="camDone" type="button">뒷면 없이 완료</button>
+      </div>
+    </div>
   </div>
-  <button class="skip" id="camSkip" type="button" style="display:none">뒷면 없이 완료</button>
+</div>
+
+<!-- 캡처 상세 (다시 찍기 / 정보 수정 / 재전송) -->
+<div class="overlay" id="detailOverlay">
+  <div class="card" style="max-height:88vh;overflow-y:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <h3 style="margin:0">캡처 상세 <span id="dTime" style="font-size:12px;color:var(--muted);font-weight:400"></span></h3>
+      <button class="chip" id="dClose" type="button">닫기</button>
+    </div>
+    <div class="row2" style="margin-top:0">
+      <div style="text-align:center">
+        <img id="dFrontImg" class="dimg" alt="앞면">
+        <button class="chip" id="dRetakeFront" type="button" style="margin-top:6px">앞면 다시 찍기</button>
+      </div>
+      <div style="text-align:center">
+        <img id="dBackImg" class="dimg" alt="뒷면">
+        <button class="chip" id="dRetakeBack" type="button" style="margin-top:6px">뒷면 다시 찍기</button>
+      </div>
+    </div>
+    <div class="field"><label for="dEvent">어디서 만났는지</label><input id="dEvent" autocomplete="off"></div>
+    <div class="field"><label for="dRelSelf">나와 이 사람과의 관계</label><input id="dRelSelf" autocomplete="off"></div>
+    <div class="field"><label for="dRelKairen">Kairen과 이 사람과의 관계</label><input id="dRelKairen" autocomplete="off"></div>
+    <div class="field"><label for="dMemo">메모</label><textarea id="dMemo"></textarea></div>
+    <button class="btn" id="dSave" type="button">저장하고 다시 보내기</button>
+    <p class="hint" id="dStatus"></p>
+  </div>
 </div>
 
 <div class="overlay" id="nameOverlay">
@@ -227,6 +266,8 @@ var API = store.get('api') || (DEFAULT_API.indexOf('http') === 0 ? DEFAULT_API :
 
 /* ── 상태 ── */
 var front = null, back = null, flushing = false;
+var targetMode = 'new';   /* 'new' = 새 캡처, 'edit' = 상세에서 다시 찍기 */
+var edit = null;          /* 상세 화면 작업 사본 */
 
 /* ── OpenCV 로딩 (명함 사각형 인식 엔진, 셀프호스팅) ── */
 var CV = null, cvLoading = false;
@@ -405,12 +446,19 @@ function blurScore(canvas) {
 /* ── 카메라 ── */
 var cam = {
   stream: null, track: null, side: 'front', raf: 0, lastDet: 0,
-  liveQuad: null, liveQuadAt: 0, small: document.createElement('canvas'), on: false
+  liveQuad: null, liveQuadAt: 0, small: document.createElement('canvas'), on: false, waiting: false
 };
+function camChoiceUI(show, thumbUrl) {
+  cam.waiting = show;
+  $('camShotUI').style.display = show ? 'none' : '';
+  $('camChoice').style.display = show ? '' : 'none';
+  if (show && thumbUrl) $('camChoiceThumb').src = thumbUrl;
+  if (show) $('camHint').textContent = '앞면 저장됨 — 뒷면도 찍을까요? (선택)';
+}
 function camOpen(side) {
   cam.side = side;
+  camChoiceUI(false);
   $('camSide').textContent = side === 'front' ? '명함 앞면' : '명함 뒷면';
-  $('camSkip').style.display = side === 'back' ? '' : 'none';
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { nativeShot(side); return; }
   navigator.mediaDevices.getUserMedia({
     video: { facingMode: { ideal: 'environment' }, width: { ideal: 2560 }, height: { ideal: 1440 } },
@@ -443,6 +491,7 @@ function camClose() {
   cam.on = false;
   cancelAnimationFrame(cam.raf);
   cam.liveQuad = null;
+  camChoiceUI(false);
   if (cam.stream) { cam.stream.getTracks().forEach(function (t) { t.stop(); }); cam.stream = null; cam.track = null; }
   $('cam').classList.remove('show');
 }
@@ -471,6 +520,7 @@ function camLoop() {
   g.clearRect(0, 0, ov.width, ov.height);
 
   var now = performance.now();
+  if (cam.waiting) return; /* 뒷면 선택 대기 중에는 오버레이·힌트 갱신 안 함 */
   if (CV && m.vw > 0 && now - cam.lastDet > 160) {
     cam.lastDet = now;
     var sw = 320, sh = Math.max(1, Math.round(sw * m.vh / m.vw));
@@ -569,23 +619,25 @@ function camCapture() {
     } catch (e) {}
   }
 
-  setShot(cam.side, dataUrl);
+  applyShot(cam.side, dataUrl);
   toastMsg(cam.side === 'front'
     ? (detected ? '앞면 저장 — 자동 크롭됨' : '앞면 저장')
     : (detected ? '뒷면 저장 — 자동 크롭됨' : '뒷면 저장'));
 
+  if (targetMode === 'edit') { camClose(); return; } /* 수정 모드: 한 장 찍고 상세로 복귀 */
   if (cam.side === 'front') {
     cam.side = 'back';
     cam.liveQuad = null;
     $('camSide').textContent = '명함 뒷면';
-    $('camSkip').style.display = '';
+    camChoiceUI(true, dataUrl); /* 명확한 선택: 뒷면도 찍기 / 뒷면 없이 완료 */
   } else {
     camClose();
   }
 }
 $('camShot').onclick = camCapture;
 $('camClose').onclick = camClose;
-$('camSkip').onclick = camClose;
+$('camGoBack2').onclick = function () { camChoiceUI(false); cam.liveQuad = null; };
+$('camDone').onclick = camClose;
 $('camNative').onclick = function () { var s = cam.side; camClose(); nativeShot(s); };
 $('camTorch').onclick = function () {
   if (!cam.track) return;
@@ -612,10 +664,24 @@ function setShot(side, dataUrl) {
     $('backBtn').querySelector('img').src = dataUrl;
   }
 }
+function applyShot(side, dataUrl) {
+  if (targetMode === 'edit' && edit) {
+    var name = side === 'front' ? 'front.jpg' : 'back.jpg';
+    var entry = { name: name, mime: 'image/jpeg', dataB64: b64of(dataUrl) };
+    var i = edit.images.findIndex(function (im) { return im.name === name; });
+    if (i >= 0) edit.images[i] = entry; else edit.images.push(entry);
+    if (side === 'front') { edit.thumbStale = true; $('dFrontImg').src = dataUrl; }
+    else $('dBackImg').src = dataUrl;
+    $('dRetakeBack').textContent = edit.images.some(function (im) { return im.name === 'back.jpg'; }) ? '뒷면 다시 찍기' : '뒷면 추가 (선택)';
+    $('dStatus').textContent = '변경됨 — "저장하고 다시 보내기"를 눌러야 반영돼요';
+  } else {
+    setShot(side, dataUrl);
+  }
+}
 
-$('frontBtn').onclick = function () { camOpen('front'); };
-$('retakeBtn').onclick = function () { camOpen('front'); };
-$('backBtn').onclick = function () { camOpen('back'); };
+$('frontBtn').onclick = function () { targetMode = 'new'; camOpen('front'); };
+$('retakeBtn').onclick = function () { targetMode = 'new'; camOpen('front'); };
+$('backBtn').onclick = function () { targetMode = 'new'; camOpen('back'); };
 $('frontInput').onchange = function () { pick(this, 'front'); };
 $('backInput').onchange = function () { pick(this, 'back'); };
 
@@ -625,10 +691,90 @@ function pick(input, side) {
   if (!f) return;
   toastMsg('사진 처리 중…');
   fileToResized(f, 2000, 0.85).then(function (dataUrl) {
-    setShot(side, dataUrl);
+    applyShot(side, dataUrl);
     toastMsg(side === 'front' ? '앞면 준비 완료' : '뒷면 준비 완료');
   }).catch(function () { toastMsg('사진을 읽지 못했어요. 다시 시도해 주세요.'); });
 }
+
+/* ── 캡처 상세: 다시 찍기 / 정보 수정 / 재전송 ── */
+function imgUrlOf(item, name) {
+  var im = (item.images || []).filter(function (x) { return x.name === name; })[0];
+  if (im && im.dataB64) return 'data:' + (im.mime || 'image/jpeg') + ';base64,' + im.dataB64;
+  return null;
+}
+function parseNoteLegacy(note) {
+  var out = { relSelf: '', relKairen: '', memo: '' };
+  var P1 = '나와의 관계: ', P2 = 'Kairen과의 관계: ', P3 = '메모: ';
+  String(note || '').split('\n').forEach(function (ln) {
+    if (ln.indexOf(P1) === 0) out.relSelf = ln.slice(P1.length);
+    else if (ln.indexOf(P2) === 0) out.relKairen = ln.slice(P2.length);
+    else if (ln.indexOf(P3) === 0) out.memo = ln.slice(P3.length);
+    else if (ln.trim()) out.memo = out.memo ? out.memo + ' ' + ln : ln.trim();
+  });
+  return out;
+}
+function openDetail(item) {
+  edit = JSON.parse(JSON.stringify(item));
+  if (edit.relSelf === undefined) {
+    var p = parseNoteLegacy(edit.note);
+    edit.relSelf = p.relSelf; edit.relKairen = p.relKairen; edit.memo = p.memo;
+  }
+  var when = edit.captureId.slice(0, 4) + '.' + edit.captureId.slice(4, 6) + '.' + edit.captureId.slice(6, 8) + ' ' +
+    edit.captureId.slice(9, 11) + ':' + edit.captureId.slice(11, 13);
+  $('dTime').textContent = when;
+  var fUrl = imgUrlOf(edit, 'front.jpg') || edit.thumb || '';
+  var bUrl = imgUrlOf(edit, 'back.jpg') || '';
+  $('dFrontImg').src = fUrl;
+  $('dBackImg').src = bUrl;
+  $('dBackImg').style.display = bUrl ? '' : 'none';
+  var hasBack = (edit.images || []).some(function (im) { return im.name === 'back.jpg'; });
+  $('dRetakeBack').textContent = hasBack ? '뒷면 다시 찍기' : '뒷면 추가 (선택)';
+  $('dEvent').value = edit.event || '';
+  $('dRelSelf').value = edit.relSelf || '';
+  $('dRelKairen').value = edit.relKairen || '';
+  $('dMemo').value = edit.memo || '';
+  $('dStatus').textContent = edit.state === 'sent' ? '전송된 캡처예요 — 수정하면 같은 캡처로 다시 보내 교체해요'
+    : (edit.state === 'failed' ? '전송 실패 상태예요 — 저장하면 다시 시도해요' : '아직 전송 대기 중이에요');
+  $('detailOverlay').classList.add('show');
+}
+function closeDetail() {
+  $('detailOverlay').classList.remove('show');
+  edit = null;
+  targetMode = 'new';
+}
+$('dClose').onclick = closeDetail;
+$('dRetakeFront').onclick = function () { targetMode = 'edit'; camOpen('front'); };
+$('dRetakeBack').onclick = function () { targetMode = 'edit'; camOpen('back'); };
+$('dSave').onclick = function () {
+  if (!edit) return;
+  var hasImage = (edit.images || []).some(function (im) { return im.dataB64; });
+  if (!hasImage) { toastMsg('예전 캡처라 사진 원본이 없어요 — 사진을 다시 찍으면 재전송할 수 있어요'); return; }
+  edit.event = $('dEvent').value.trim();
+  edit.relSelf = $('dRelSelf').value.trim();
+  edit.relKairen = $('dRelKairen').value.trim();
+  edit.memo = $('dMemo').value.trim();
+  var lines = [];
+  if (edit.relSelf) lines.push('나와의 관계: ' + edit.relSelf);
+  if (edit.relKairen) lines.push('Kairen과의 관계: ' + edit.relKairen);
+  if (edit.memo) lines.push('메모: ' + edit.memo);
+  edit.note = lines.join('\n');
+  edit.disp = edit.memo || edit.relSelf || edit.relKairen;
+  edit.state = 'queued'; edit.tries = 0;
+  var fin = function () {
+    qPut(edit).then(function () {
+      renderRecent();
+      toastMsg('저장했어요 — 다시 보낼게요');
+      closeDetail();
+      flush();
+    });
+  };
+  if (edit.thumbStale) {
+    var fUrl = imgUrlOf(edit, 'front.jpg');
+    delete edit.thumbStale;
+    if (fUrl) thumbOf(fUrl).then(function (t) { edit.thumb = t; fin(); });
+    else fin();
+  } else { delete edit.thumbStale; fin(); }
+};
 
 /* ── 대기열 (IndexedDB) ── */
 function db() {
@@ -698,6 +844,7 @@ $('sendBtn').onclick = function () {
     captureId: newCaptureId(),
     capturedAt: new Date().toISOString(),
     event: ev,
+    relSelf: relSelf, relKairen: relKairen, memo: memo,
     note: noteLines.join('\n'),
     disp: memo || relSelf || relKairen,
     images: images,
@@ -736,7 +883,7 @@ function sendItem(item) {
     .then(function (res) {
       if (!res.ok) throw new Error(res.error || 'upload_failed');
       item.state = 'sent';
-      item.images = item.images.map(function (im) { return { name: im.name }; });
+      /* 사진 원본을 보관해 상세 화면에서 다시 찍기·재전송이 가능하게 한다 (오래된 항목은 정리됨) */
       return qPut(item);
     });
 }
@@ -786,7 +933,9 @@ function renderRecent() {
       var label = i.disp || i.note || i.event || '명함';
       div.querySelector('.t1').textContent = label;
       div.querySelector('.t2').textContent = when + (i.event && label !== i.event ? ' · ' + i.event : '');
-      if (i.state === 'failed') div.querySelector('.st').onclick = function () { i.state = 'queued'; qPut(i).then(function () { renderRecent(); flush(); }); };
+      div.style.cursor = 'pointer';
+      div.onclick = function () { openDetail(i); };
+      if (i.state === 'failed') div.querySelector('.st').onclick = function (ev2) { ev2.stopPropagation(); i.state = 'queued'; qPut(i).then(function () { renderRecent(); flush(); }); };
       el.appendChild(div);
     });
   });
@@ -803,12 +952,26 @@ function toastMsg(m) {
 window.addEventListener('online', flush);
 document.addEventListener('visibilitychange', function () { if (!document.hidden) flush(); });
 
+/* ── 저장 공간 정리: 최신 50개 이후의 전송 완료 캡처는 사진 원본을 비운다 ── */
+function pruneOld() {
+  qAll().then(function (items) {
+    items.sort(function (a, b) { return a.captureId < b.captureId ? 1 : -1; });
+    items.slice(50).forEach(function (i) {
+      if (i.state === 'sent' && (i.images || []).some(function (im) { return im.dataB64; })) {
+        i.images = i.images.map(function (im) { return { name: im.name }; });
+        qPut(i);
+      }
+    });
+  });
+}
+
 /* ── 시작 ── */
 $('eventInput').value = store.get('event') || '';
 refreshChip();
 checkSetup();
 renderRecent();
 flush();
+pruneOld();
 if (!store.get('name')) $('nameOverlay').classList.add('show');
 if ('serviceWorker' in navigator && location.protocol === 'https:') {
   navigator.serviceWorker.register('sw.js').catch(function () {});
