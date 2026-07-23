@@ -71,7 +71,8 @@
   .st.failed { color: var(--err); background: color-mix(in srgb, var(--err) 12%, transparent); cursor: pointer; }
   h2 { font-size: 15px; color: var(--muted); font-weight: 600; margin: 4px 2px 8px; }
   .toast {
-    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+    /* 상단 배치: 하단 배치는 앞면 촬영 직후 '뒷면 추가' 버튼을 가렸음 (2026-07-24 실사용 피드백) */
+    position: fixed; left: 50%; top: calc(env(safe-area-inset-top, 0px) + 14px); transform: translateX(-50%);
     background: var(--text); color: var(--bg); font-size: 14px; border-radius: 999px;
     padding: 10px 18px; opacity: 0; transition: opacity .25s; pointer-events: none; max-width: 90%;
     z-index: 40; text-align: center;
@@ -180,7 +181,8 @@
 
   <h2 style="display:flex;justify-content:space-between;align-items:center">받은 명함 브리핑
     <button class="chip" id="briefRefresh" type="button">새로고침</button></h2>
-  <div class="card" id="briefCard"><div id="briefList" style="min-height:20px"></div></div>
+  <div class="card" id="briefCard"><div id="briefList" style="min-height:20px"></div>
+    <button class="chip" id="briefMore" type="button" style="display:none;margin-top:8px">예전 브리핑 더 보기</button></div>
 
   <h2 id="searchHead" style="display:none">인맥 검색</h2>
   <div class="card" id="searchCard" style="display:none">
@@ -988,7 +990,7 @@ function renderRecent() {
     }
     el.innerHTML = '';
     var names = briefNameMap();
-    items.slice(0, 30).forEach(function (i) {
+    items.slice(0, recentLimit).forEach(function (i) {
       var div = document.createElement('div');
       div.className = 'item';
       var stCls = i.state === 'sent' ? 'sent' : (i.state === 'failed' ? 'failed' : 'queued');
@@ -1012,8 +1014,17 @@ function renderRecent() {
       if (i.state === 'failed') div.querySelector('.st').onclick = function (ev2) { ev2.stopPropagation(); i.state = 'queued'; qPut(i).then(function () { renderRecent(); flush(); }); };
       el.appendChild(div);
     });
+    if (items.length > recentLimit) {
+      var more = document.createElement('button');
+      more.className = 'chip';
+      more.style.cssText = 'margin-top:8px';
+      more.textContent = '예전 캡처 더 보기 (' + (items.length - recentLimit) + '건)';
+      more.onclick = function () { recentLimit += 30; renderRecent(); };
+      el.appendChild(more);
+    }
   });
 }
+var recentLimit = 30;
 
 /* ── 받은 명함 브리핑 ── */
 function mdLite(text) {
@@ -1050,6 +1061,15 @@ function briefNameMap() {
   } catch (e) {}
   return map;
 }
+/* captureId(YYYYMMDD-HHmmss-…, KST)로 경과 분 계산 */
+function elapsedMinOf(captureId) {
+  var m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/.exec(String(captureId || ''));
+  if (!m) return null;
+  var t = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();
+  if (isNaN(t)) return null;
+  var min = Math.round((Date.now() - t) / 60000);
+  return min >= 0 && min < 60 * 24 * 30 ? min : null;
+}
 function renderBriefs(items) {
   var el = $('briefList');
   el.innerHTML = '';
@@ -1063,7 +1083,17 @@ function renderBriefs(items) {
     wrap.style.cssText = 'flex-direction:column;align-items:stretch;cursor:pointer';
     var stTxt = it.status === 'processed' ? '브리핑 도착' : (it.status === 'skipped' ? '건너뜀' : '처리 대기 중');
     var stCls = it.status === 'processed' ? 'sent' : (it.status === 'skipped' ? 'failed' : 'queued');
-    var title = (it.brief && it.brief.indexOf('# ') === 0) ? it.brief.split('\n')[0].slice(2) : (it.event || it.captureId);
+    /* 처리 대기: 경과 시간 + 통상 소요를 보여줘 '깜깜무소식'을 없앤다 (2026-07-24 실사용 피드백) */
+    var pendingLine = '';
+    if (it.status !== 'processed' && it.status !== 'skipped') {
+      var em = elapsedMinOf(it.captureId);
+      if (em !== null) {
+        if (em > 30) pendingLine = 'OCR·웹 조사 처리 중 · ' + em + '분 경과 — 평소(6~20분)보다 오래 걸리고 있어요. 잠시 후에도 그대로면 관리자에게 알려주세요.';
+        else pendingLine = 'OCR·웹 조사 처리 중 · ' + em + '분 경과 · 보통 6~20분 걸려요.';
+      }
+    }
+    var title = (it.brief && it.brief.indexOf('# ') === 0) ? it.brief.split('\n')[0].slice(2)
+      : (it.type === 'note' ? '메모 → ' + (it.person || '처리 중') : (it.event || it.captureId));
     var when = String(it.captureId).slice(4, 6) + '/' + String(it.captureId).slice(6, 8);
     var head = document.createElement('div');
     head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px';
@@ -1073,6 +1103,13 @@ function renderBriefs(items) {
     var sub = document.createElement('div');
     sub.className = 't2';
     sub.textContent = when + (it.event ? ' · ' + it.event : '') + (it.capturer ? ' · 촬영: ' + it.capturer : '');
+    var prog = null;
+    if (pendingLine) {
+      prog = document.createElement('div');
+      prog.className = 't2';
+      prog.style.cssText = 'margin-top:4px;color:var(--warn)';
+      prog.textContent = pendingLine;
+    }
     var body = document.createElement('div');
     body.style.display = briefExpanded[it.captureId] ? '' : 'none';
     if (it.brief) body.appendChild(mdLite(it.brief.split('\n').slice(1).join('\n')));
@@ -1084,15 +1121,26 @@ function renderBriefs(items) {
       docBtn.onclick = function (ev2) { ev2.stopPropagation(); openPersonDoc(it); };
       body.appendChild(docBtn);
     }
-    if (it.status === 'processed') {
+    if (it.status === 'processed' && it.type !== 'note') {
+      var btnRow = document.createElement('div');
+      btnRow.style.cssText = 'display:flex;gap:8px;margin-top:8px';
       var fixBtn = document.createElement('button');
       fixBtn.className = 'chip';
-      fixBtn.style.cssText = 'margin-top:8px;align-self:flex-start';
       fixBtn.textContent = '수정 요청';
       fixBtn.onclick = function (ev2) { ev2.stopPropagation(); requestCorrection(it); };
-      body.appendChild(fixBtn);
+      btnRow.appendChild(fixBtn);
+      if (it.person) {
+        var noteBtn = document.createElement('button');
+        noteBtn.className = 'chip';
+        noteBtn.textContent = '메모 추가';
+        noteBtn.onclick = function (ev2) { ev2.stopPropagation(); addNoteFlow({ captureId: it.captureId, label: it.person }); };
+        btnRow.appendChild(noteBtn);
+      }
+      body.appendChild(btnRow);
     }
-    wrap.appendChild(head); wrap.appendChild(sub); wrap.appendChild(body);
+    wrap.appendChild(head); wrap.appendChild(sub);
+    if (prog) wrap.appendChild(prog);
+    wrap.appendChild(body);
     wrap.onclick = function () {
       var open = body.style.display === 'none';
       body.style.display = open ? '' : 'none';
@@ -1138,13 +1186,14 @@ function openPersonDoc(it) {
     .catch(function () { $('docBody').innerHTML = '<p class="hint">네트워크 오류 — 다시 시도해 주세요</p>'; });
 }
 $('docClose').onclick = function () { $('docOverlay').classList.remove('show'); };
+var briefLimit = 30; /* '예전 브리핑 더 보기'로 30씩 확장 (서버 상한 100) */
 function loadBriefs(manual) {
   if (!API || !TOKEN) return;
   briefSeeAll = store.get('briefSeeAll') === '1';
   toggleSearchUI();
   var cached = store.get('briefs');
   if (cached && !manual) { try { renderBriefs(JSON.parse(cached)); } catch (e) {} }
-  fetch(API + '?action=list&k=' + encodeURIComponent(TOKEN))
+  fetch(API + '?action=list&k=' + encodeURIComponent(TOKEN) + '&limit=' + briefLimit)
     .then(function (r) { return r.json(); })
     .then(function (res) {
       if (!res.ok) {
@@ -1154,8 +1203,12 @@ function loadBriefs(manual) {
       briefSeeAll = !!res.seeAll;
       store.set('briefSeeAll', briefSeeAll ? '1' : '');
       toggleSearchUI();
+      /* 더 보기: 서버가 hasMore를 주면 버튼 노출 (구서버는 필드 없음 → 숨김 유지) */
+      $('briefMore').style.display = res.hasMore ? '' : 'none';
       var json = JSON.stringify(res.items);
-      if (json === lastBriefsJson && !manual) return; /* 변화 없으면 다시 그리지 않음 — 펼쳐 읽는 중 방해 금지 */
+      var hasPending = (res.items || []).some(function (i) { return i.status !== 'processed' && i.status !== 'skipped'; });
+      /* 변화 없으면 다시 그리지 않음 — 단, 처리 대기 건은 경과 시간 갱신을 위해 다시 그린다 */
+      if (json === lastBriefsJson && !manual && !hasPending) return;
       lastBriefsJson = json;
       store.set('briefs', json);
       renderBriefs(res.items);
@@ -1163,6 +1216,7 @@ function loadBriefs(manual) {
     })
     .catch(function () { if (manual) toastMsg('브리핑을 불러오지 못했어요 — 네트워크 확인'); });
 }
+$('briefMore').onclick = function () { briefLimit = Math.min(briefLimit + 30, 100); toastMsg('예전 브리핑 불러오는 중…'); loadBriefs(true); };
 $('briefRefresh').onclick = function () { toastMsg('브리핑 새로고침 중…'); loadBriefs(true); };
 /* 자동 새로고침: 화면이 보이는 동안 20초마다 + 앱으로 돌아올 때마다 */
 setInterval(function () { if (!document.hidden) loadBriefs(); }, 20000);
@@ -1226,6 +1280,22 @@ function openPersonDocById(it) {
       $('docBody').appendChild(renderPersonMd(res.markdown));
     })
     .catch(function () { $('docBody').innerHTML = '<p class="hint">네트워크 오류 — 다시 시도해 주세요</p>'; });
+}
+
+/* ── 사후 메모 추가: 회의 끝나고, 또는 나중에 기억났을 때 그 사람에게 메모를 붙인다 ── */
+function addNoteFlow(target) {
+  var txt = prompt('이 분에 대한 메모를 남겨주세요.\n다음 처리 때 인물 기록에 병합돼요.\n예: 회의에서 3분기 협력 논의, 다음주 자료 보내기로 함', '');
+  if (!txt || !txt.trim()) return;
+  var payload = { action: 'addnote', k: TOKEN, text: txt.trim().slice(0, 2000) };
+  if (target.captureId) payload.captureId = target.captureId;
+  else if (target.person) payload.person = target.person;
+  fetch(API, { method: 'POST', body: JSON.stringify(payload) })
+    .then(function (r) { return r.json(); })
+    .then(function (res) {
+      if (res.ok) { toastMsg('메모를 접수했어요 — 잠시 후 인물 기록에 병합돼요'); loadBriefs(true); }
+      else toastMsg('실패: ' + (res.error === 'unknown_action' ? '서버 업데이트(GAS 재배포) 후 가능해요' : (res.error === 'not_processed' ? '브리핑 도착 후 메모할 수 있어요' : res.error)));
+    })
+    .catch(function () { toastMsg('네트워크 오류 — 다시 시도해 주세요'); });
 }
 
 /* ── 수정 요청 ── */

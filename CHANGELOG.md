@@ -2,14 +2,18 @@
 
 사용자에게 보이는 변화 중심으로 기록한다. 형식: 버전 — 날짜 — 커밋. 배포(GAS/Pages) 시점은 `RELEASE.md`의 release evidence가 진실이다.
 
-## [Unreleased] — v1.1 후보 (branch `agent/product-baseline-v1`, Kairen-Ref: TSK-000140·141·142·143·148·153·154·155)
+## [Unreleased] — v1.1 후보 (branch `agent/product-baseline-v1`, Kairen-Ref: TSK-000140~164)
 
 추가 (배포 전 — GAS 재배포·사람 승인 필요):
 - **검색**: owner 토큰 한정 Person 검색(`action=search`) + 웹앱 "검색" 탭 — 이름·회사로 축적된 인맥을 폰에서 회상.
+- **사후 메모**: 브리핑·검색 결과에서 "메모 추가"(`action=addnote`) — 회의 끝나고, 또는 나중에 기억났을 때 그 사람 기록에 병합(-note 캡처로 파이프라인 재사용).
+- **더 보기**: 브리핑(`action=list` limit/offset·hasMore)과 최근 캡처 목록에서 예전 것까지 조회.
+- **처리 진행 표시**: 대기 중 브리핑에 경과 시간·통상 소요(6~20분)·30분 초과 경고 표시 — "깜깜무소식" 해소 (2026-07-24 실사용 피드백).
+- **촬영 확인 토스트 상단 이동**: 하단 토스트가 "뒷면 추가" 버튼을 가리던 문제 수정 (2026-07-24 실사용 피드백).
 - **처리 완료 알림**: 워처가 처리 완료 시 GAS(`action=notify`)를 통해 소유자 메일로 알림(0원, 옵트인 설정 파일).
 - **수정 요청**: 브리핑에서 "수정 요청" 전송(`action=correction`) → 다음 처리 때 사용자 정정으로 반영.
 - **워처 v2**: health 파일(`watcher-health.json`)·상태 점검 스크립트·연속 실패 추적·백로그 나이 노출 + 처리 프롬프트에 쓰기 allowlist·untrusted 입력 방어 삽입.
-- **저장소 거버넌스**: AGENTS.md, SECURITY.md(위협 모델·토큰 runbook), RELEASE.md(release evidence 계약), CHANGELOG.md, `scripts/validate.ps1`(secret scan 포함), `eval/`(합성 회귀 fixture 14종 + 채점기).
+- **저장소 거버넌스**: AGENTS.md, SECURITY.md(위협 모델·토큰 runbook), RELEASE.md(release evidence 계약), CHANGELOG.md, `scripts/validate.ps1`(secret scan 포함), `eval/`(합성 회귀 fixture 16종 + 채점기).
 
 ## v1.0 — 2026-07-23 — `2d4704c`
 - 어디서·관계 유지 필드에 2시간 만료 도입(오래된 행사명이 다음 캡처에 잘못 남는 문제 방지).
