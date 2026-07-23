@@ -14,6 +14,9 @@ $Lock   = Join-Path $Inbox 'processing.lock'
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
+# codex(UTF-8) 출력을 로그에 올바르게 기록하기 위한 콘솔 인코딩 (콘솔 없는 hidden 모드 대비 try)
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
+
 function Write-Log($m) {
     "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $m" | Out-File -Append -Encoding utf8 $LogFile
     try {
@@ -42,15 +45,15 @@ $Prompt = @'
 명함 캡처를 처리해라. 이 vault의 표준 절차 문서 `01_Company/00_Company_Operations/05_Tools_and_Systems/CardCapture_Processing.md`를 먼저 읽고 그 절차를 그대로 따른다.
 
 핵심 요약:
-1. `00_Inbox/BusinessCards/` 하위 폴더의 capture.json(변형 `capture (1).json`이면 가장 최신 파일이 진실)을 확인해 status가 "received"인 캡처, 또는 status가 "processed"여도 receivedAt이 processedAt보다 최신인 재전송 캡처만 처리한다.
-2. 처리 대상이 없으면 아무 것도 바꾸지 말고 "새 캡처 없음"으로 즉시 종료한다.
+1. `00_Inbox/BusinessCards/` 하위 폴더의 capture.json(변형 `capture (1).json`이면 가장 최신 파일이 진실)을 확인해 status가 'received'인 캡처, 또는 status가 'processed'여도 receivedAt이 processedAt보다 최신인 재전송 캡처만 처리한다.
+2. 처리 대상이 없으면 아무 것도 바꾸지 말고 '새 캡처 없음'으로 즉시 종료한다.
 3. 명함 이미지를 직접 읽어 OCR하고, 기존 Person과 이메일·전화(정규화)·이름으로 중복검사한다. 중복이면 신규 생성 금지, 기존 인스턴스를 프런트매터+본문 전면 재구성으로 갱신한다(과거 소속은 Career 이력으로 내리고 provenance는 보존). 신규면 PER typeID를 쓰기 직전 재스캔(max+1)으로 발급해 Template_Person 스키마로 생성한다.
 4. 이미지를 `90_Vault/Attachment/BusinessCards/PER-ID_YYYYMMDD_front|back.jpg`로 옮기고 source_refs에 기록한다.
-5. 심층 웹 보강: 사람과 회사를 각각 웹 검색(각 4회 이상). LinkedIn 공개 프로필을 이메일 prefix·중간이름·소속으로 교차검증해 동일인 확정 근거를 남기고, 경력·학력·투자·제품·수상까지. 항목별 신뢰도(high/medium)와 출처 URL을 본문 "공개 출처"에 남긴다. 미특정은 미특정이라 쓴다.
+5. 심층 웹 보강: 사람과 회사를 각각 웹 검색(각 4회 이상). LinkedIn 공개 프로필을 이메일 prefix·중간이름·소속으로 교차검증해 동일인 확정 근거를 남기고, 경력·학력·투자·제품·수상까지. 항목별 신뢰도(high/medium)와 출처 URL을 본문 '공개 출처' 섹션에 남긴다. 미특정은 미특정이라 쓴다.
 6. 조직은 기존 Organization Instance가 있으면 File 링크, 없으면 organization_mentions로 보존한다.
-7. 캡처 폴더에 brief.md(사용자용 "이런 분이에요" 브리핑)를 쓰고, capture.json을 status="processed"(명함이 아니면 "skipped"+사유), person, personAction, processedAt, processedBy로 갱신한다.
+7. 캡처 폴더에 brief.md(사용자용 브리핑, 제목은 이런 분이에요 형식)를 쓰고, capture.json을 status='processed'(명함이 아니면 'skipped'+사유), person, personAction, processedAt, processedBy로 갱신한다.
 8. reviewStatus는 agent_checked까지만. human_validated는 절대 설정하지 않는다.
-9. 완료 전 반드시 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "02_Kairen_OS/90_Setting/Validation/Validate-KairenOntology.ps1"`를 실행해 PASS를 확인한다. FAIL이면 고치고 재실행한다.
+9. 완료 전 반드시 vault의 02_Kairen_OS/90_Setting/Validation/Validate-KairenOntology.ps1 을 powershell.exe -NoProfile -ExecutionPolicy Bypass -File 로 실행해 PASS를 확인한다. FAIL이면 고치고 재실행한다.
 
 AGENTS.md와 CLAUDE.md의 vault 규칙(change_policy, 링크 온톨로지, 마크다운 표 파이프 이스케이프)을 준수해라. 개인적 인상·민감 메모는 Person 본문 Private 섹션에만 보존해라. 유료 API를 새로 호출하지 마라.
 '@
@@ -66,8 +69,9 @@ function Invoke-Processing {
     Write-Log 'processing start (codex)'
     try {
         Set-Location $Vault
-        # 프롬프트는 stdin으로 전달('-')하고 codex가 vault를 workspace로 쓰며 파일을 편집
-        $Prompt | & $Codex exec -C $Vault -s workspace-write -c 'tools.web_search=true' - 2>&1 |
+        # 프롬프트는 인자로 전달 (stdin은 PS5.1이 CP949로 인코딩해 한글이 깨짐).
+        # windows.sandbox=unelevated: headless에서는 elevated 샌드박스 헬퍼가 못 떠서 셸 실행이 전부 실패함.
+        & $Codex exec -C $Vault -s workspace-write -c 'tools.web_search=true' -c 'windows.sandbox="unelevated"' $Prompt 2>&1 |
             Out-File -Append -Encoding utf8 $LogFile
         Write-Log "processing done, exit=$LASTEXITCODE"
     } catch {

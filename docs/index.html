@@ -160,19 +160,19 @@
       <input id="eventInput" placeholder="예: 2026 로보월드 전시회" autocomplete="off">
     </div>
     <div class="field">
-      <label for="relSelfInput">나와 이 사람과의 관계 (선택)</label>
-      <input id="relSelfInput" placeholder="예: 대학 선배 / 오늘 처음 인사" autocomplete="off">
+      <label for="relKairenInput">Kairen과 이 사람과의 관계 (선택, 다음 촬영에도 유지)</label>
+      <input id="relKairenInput" placeholder="예: 잠재 고객 / 부품 공급사 담당자" autocomplete="off">
     </div>
     <div class="field">
-      <label for="relKairenInput">Kairen과 이 사람과의 관계 (선택)</label>
-      <input id="relKairenInput" placeholder="예: 잠재 고객 / 부품 공급사 담당자" autocomplete="off">
+      <label for="relSelfInput">나와 이 사람과의 관계 (선택, 다음 촬영에도 유지)</label>
+      <input id="relSelfInput" placeholder="예: 대학 선배 / 오늘 처음 인사" autocomplete="off">
     </div>
     <div class="field">
       <label for="noteInput">메모 (선택 — 키보드 마이크로 말해도 돼요)</label>
       <textarea id="noteInput" placeholder="예: 공장장님, 우리 부품에 관심 많으심"></textarea>
     </div>
     <button class="btn" id="sendBtn" type="button" disabled>완료</button>
-    <p class="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br>전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요. <span style="opacity:.55">v0.8</span></p>
+    <p class="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br>전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요. <span style="opacity:.55">v0.9</span></p>
   </div>
 
   <h2>최근 캡처</h2>
@@ -886,10 +886,12 @@ function thumbOf(dataUrl) {
 $('sendBtn').onclick = function () {
   if (!front) return;
   var ev = $('eventInput').value.trim();
-  store.set('event', ev);
   var relSelf = $('relSelfInput').value.trim();
   var relKairen = $('relKairenInput').value.trim();
   var memo = $('noteInput').value.trim();
+  store.set('event', ev);
+  store.set('relSelf', relSelf);
+  store.set('relKairen', relKairen);
   /* 라벨 붙은 한 텍스트로 합쳐 전송 — 처리 파이프라인이 라벨로 구분 */
   var noteLines = [];
   if (relSelf) noteLines.push('나와의 관계: ' + relSelf);
@@ -908,15 +910,13 @@ $('sendBtn').onclick = function () {
     images: images,
     state: 'queued', tries: 0, thumb: ''
   };
-  /* 즉시 초기화해서 다음 명함을 바로 찍을 수 있게 (만난 곳은 유지) */
+  /* 즉시 초기화해서 다음 명함을 바로 찍을 수 있게 (만난 곳·관계 2개는 유지, 메모만 비움) */
   front = null; back = null;
   $('frontBtn').classList.remove('filled');
   $('frontBtn').innerHTML = '<span class="big">📷</span><span id="frontLabel">명함 앞면 촬영</span>';
   $('backBtn').style.display = 'none'; $('backBtn').classList.remove('filled');
   $('backBtn').innerHTML = '<span>뒷면 추가 <small>(선택)</small></span>';
   $('retakeBtn').style.display = 'none';
-  $('relSelfInput').value = '';
-  $('relKairenInput').value = '';
   $('noteInput').value = '';
   $('sendBtn').disabled = true;
 
@@ -976,21 +976,26 @@ function renderRecent() {
       return;
     }
     el.innerHTML = '';
+    var names = briefNameMap();
     items.slice(0, 30).forEach(function (i) {
       var div = document.createElement('div');
       div.className = 'item';
       var stCls = i.state === 'sent' ? 'sent' : (i.state === 'failed' ? 'failed' : 'queued');
       var stTxt = i.state === 'sent' ? '전송됨' : (i.state === 'failed' ? '재시도' : '대기 중');
-      var when = i.captureId.slice(4, 6) + '/' + i.captureId.slice(6, 8) + ' ' +
-        i.captureId.slice(9, 11) + ':' + i.captureId.slice(11, 13);
       div.innerHTML =
         '<img alt="">' +
         '<div class="info"><div class="t1"></div><div class="t2"></div></div>' +
         '<span class="st ' + stCls + '">' + stTxt + '</span>';
       if (i.thumb) div.querySelector('img').src = i.thumb;
-      var label = i.disp || i.note || i.event || '명함';
-      div.querySelector('.t1').textContent = label;
-      div.querySelector('.t2').textContent = when + (i.event && label !== i.event ? ' · ' + i.event : '');
+      /* 표시: 이름(처리 후 브리핑에서) / 어디서 · Kairen 관계 · 나와의 관계 — 메모는 표시하지 않음 */
+      var rel = { relSelf: i.relSelf, relKairen: i.relKairen };
+      if (rel.relSelf === undefined) { var p2 = parseNoteLegacy(i.note); rel.relSelf = p2.relSelf; rel.relKairen = p2.relKairen; }
+      div.querySelector('.t1').textContent = names[i.captureId] || '이름 인식 대기';
+      var parts = [];
+      if (i.event) parts.push(i.event);
+      if (rel.relKairen) parts.push('Kairen: ' + rel.relKairen);
+      if (rel.relSelf) parts.push('나: ' + rel.relSelf);
+      div.querySelector('.t2').textContent = parts.join(' · ') || i.captureId.slice(4, 8);
       div.style.cursor = 'pointer';
       div.onclick = function () { openDetail(i); };
       if (i.state === 'failed') div.querySelector('.st').onclick = function (ev2) { ev2.stopPropagation(); i.state = 'queued'; qPut(i).then(function () { renderRecent(); flush(); }); };
@@ -1016,6 +1021,24 @@ function mdLite(text) {
   return root;
 }
 var briefSeeAll = false;
+var briefExpanded = {};   /* captureId → true, 자동 새로고침에도 펼침 상태 유지 */
+var lastBriefsJson = '';
+function nameFromBrief(brief) {
+  if (!brief) return null;
+  var first = String(brief).split('\n')[0];
+  if (first.indexOf('# ') !== 0) return null;
+  return first.slice(2).split('—')[0].trim() || null;
+}
+function briefNameMap() {
+  var map = {};
+  try {
+    (JSON.parse(store.get('briefs') || '[]') || []).forEach(function (b) {
+      var n = nameFromBrief(b.brief);
+      if (n) map[b.captureId] = n;
+    });
+  } catch (e) {}
+  return map;
+}
 function renderBriefs(items) {
   var el = $('briefList');
   el.innerHTML = '';
@@ -1040,7 +1063,7 @@ function renderBriefs(items) {
     sub.className = 't2';
     sub.textContent = when + (it.event ? ' · ' + it.event : '') + (it.capturer ? ' · 촬영: ' + it.capturer : '');
     var body = document.createElement('div');
-    body.style.display = 'none';
+    body.style.display = briefExpanded[it.captureId] ? '' : 'none';
     if (it.brief) body.appendChild(mdLite(it.brief.split('\n').slice(1).join('\n')));
     if (it.person && briefSeeAll) {
       var docBtn = document.createElement('button');
@@ -1051,7 +1074,11 @@ function renderBriefs(items) {
       body.appendChild(docBtn);
     }
     wrap.appendChild(head); wrap.appendChild(sub); wrap.appendChild(body);
-    wrap.onclick = function () { body.style.display = body.style.display === 'none' ? '' : 'none'; };
+    wrap.onclick = function () {
+      var open = body.style.display === 'none';
+      body.style.display = open ? '' : 'none';
+      briefExpanded[it.captureId] = open;
+    };
     el.appendChild(wrap);
   });
 }
@@ -1105,9 +1132,13 @@ function loadBriefs(manual) {
         return;
       }
       briefSeeAll = !!res.seeAll;
-      store.set('briefs', JSON.stringify(res.items));
       store.set('briefSeeAll', briefSeeAll ? '1' : '');
+      var json = JSON.stringify(res.items);
+      if (json === lastBriefsJson && !manual) return; /* 변화 없으면 다시 그리지 않음 — 펼쳐 읽는 중 방해 금지 */
+      lastBriefsJson = json;
+      store.set('briefs', json);
       renderBriefs(res.items);
+      renderRecent(); /* 처리 완료로 이름이 생겼을 수 있으니 최근 캡처도 갱신 */
     })
     .catch(function () { if (manual) toastMsg('브리핑을 불러오지 못했어요 — 네트워크 확인'); });
 }
@@ -1142,6 +1173,8 @@ function pruneOld() {
 
 /* ── 시작 ── */
 $('eventInput').value = store.get('event') || '';
+$('relSelfInput').value = store.get('relSelf') || '';
+$('relKairenInput').value = store.get('relKairen') || '';
 refreshChip();
 checkSetup();
 renderRecent();
