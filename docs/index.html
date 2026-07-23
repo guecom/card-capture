@@ -156,15 +156,15 @@
     <input type="file" id="backInput" accept="image/*" capture="environment">
 
     <div class="field">
-      <label for="eventInput">어디서 만났는지 (선택, 다음 촬영에도 유지)</label>
+      <label for="eventInput">어디서 만났는지 (선택, 2시간 유지)</label>
       <input id="eventInput" placeholder="예: 2026 로보월드 전시회" autocomplete="off">
     </div>
     <div class="field">
-      <label for="relKairenInput">Kairen과 이 사람과의 관계 (선택, 다음 촬영에도 유지)</label>
+      <label for="relKairenInput">Kairen과 이 사람과의 관계 (선택, 2시간 유지)</label>
       <input id="relKairenInput" placeholder="예: 잠재 고객 / 부품 공급사 담당자" autocomplete="off">
     </div>
     <div class="field">
-      <label for="relSelfInput">나와 이 사람과의 관계 (선택, 다음 촬영에도 유지)</label>
+      <label for="relSelfInput">나와 이 사람과의 관계 (선택, 2시간 유지)</label>
       <input id="relSelfInput" placeholder="예: 대학 선배 / 오늘 처음 인사" autocomplete="off">
     </div>
     <div class="field">
@@ -172,7 +172,7 @@
       <textarea id="noteInput" placeholder="예: 공장장님, 우리 부품에 관심 많으심"></textarea>
     </div>
     <button class="btn" id="sendBtn" type="button" disabled>완료</button>
-    <p class="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br>전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요. <span style="opacity:.55">v0.9</span></p>
+    <p class="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br>전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요. <span style="opacity:.55">v1.0</span></p>
   </div>
 
   <h2>최근 캡처</h2>
@@ -892,6 +892,7 @@ $('sendBtn').onclick = function () {
   store.set('event', ev);
   store.set('relSelf', relSelf);
   store.set('relKairen', relKairen);
+  store.set('stickyAt', String(Date.now()));   /* 마지막 촬영 시각 — 2시간 유지의 기준 */
   /* 라벨 붙은 한 텍스트로 합쳐 전송 — 처리 파이프라인이 라벨로 구분 */
   var noteLines = [];
   if (relSelf) noteLines.push('나와의 관계: ' + relSelf);
@@ -1156,7 +1157,7 @@ function toastMsg(m) {
   toastTimer = setTimeout(function () { t.classList.remove('show'); }, 2200);
 }
 window.addEventListener('online', flush);
-document.addEventListener('visibilitychange', function () { if (!document.hidden) { flush(); loadBriefs(); } });
+document.addEventListener('visibilitychange', function () { if (!document.hidden) { flush(); loadBriefs(); applySticky(); } });
 
 /* ── 저장 공간 정리: 최신 50개 이후의 전송 완료 캡처는 사진 원본을 비운다 ── */
 function pruneOld() {
@@ -1172,9 +1173,20 @@ function pruneOld() {
 }
 
 /* ── 시작 ── */
-$('eventInput').value = store.get('event') || '';
-$('relSelfInput').value = store.get('relSelf') || '';
-$('relKairenInput').value = store.get('relKairen') || '';
+/* 유지 필드는 마지막 촬영 후 2시간까지만 — 지나면 자동으로 비움 */
+function applySticky() {
+  var at = parseInt(store.get('stickyAt') || '0', 10) || 0;
+  if (at && Date.now() - at > 2 * 60 * 60 * 1000) {
+    store.set('event', ''); store.set('relSelf', ''); store.set('relKairen', ''); store.set('stickyAt', '');
+    $('eventInput').value = ''; $('relSelfInput').value = ''; $('relKairenInput').value = '';
+    return;
+  }
+  /* 입력 중인 값은 건드리지 않고 빈 칸만 복원 */
+  if (!$('eventInput').value) $('eventInput').value = store.get('event') || '';
+  if (!$('relSelfInput').value) $('relSelfInput').value = store.get('relSelf') || '';
+  if (!$('relKairenInput').value) $('relKairenInput').value = store.get('relKairen') || '';
+}
+applySticky();
 refreshChip();
 checkSetup();
 renderRecent();
