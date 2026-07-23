@@ -1058,7 +1058,8 @@ function briefNameMap() {
   var map = {};
   try {
     (JSON.parse(store.get('briefs') || '[]') || []).forEach(function (b) {
-      var n = nameFromBrief(b.brief);
+      /* 브리핑 제목 우선, 없으면 2-phase 빠른 추출의 contact.name (처리 완료 전에도 이름 표시) */
+      var n = nameFromBrief(b.brief) || (b.contact && b.contact.name) || null;
       if (n) map[b.captureId] = n;
     });
   } catch (e) {}
@@ -1097,7 +1098,9 @@ function renderBriefs(items) {
       }
     }
     var title = (it.brief && it.brief.indexOf('# ') === 0) ? it.brief.split('\n')[0].slice(2)
-      : (it.type === 'note' ? '메모 → ' + (it.person || '처리 중') : (it.event || it.captureId));
+      : (it.type === 'note' ? '메모 → ' + (it.person || '처리 중')
+        : (it.contact && it.contact.name ? it.contact.name + ' — 브리핑 준비 중' /* 2-phase 빠른 추출 결과 */
+          : (it.event || it.captureId)));
     var when = String(it.captureId).slice(4, 6) + '/' + String(it.captureId).slice(6, 8);
     var head = document.createElement('div');
     head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px';
