@@ -23,6 +23,7 @@
  *   GET ?action=search&k=토큰&q=검색어        → Person 검색 (OWNER_NAMES 한정)
  *   GET ?action=doc&k=토큰&id=파일ID          → 검색 결과 Person .md 전문 (OWNER_NAMES 한정, Person 폴더 내부만)
  *   GET ?action=notify&k=토큰&captureId=ID    → 처리 완료 알림 메일 발송 (소유자 메일로, 캡처 6시간 dedup)
+ *   GET ?action=requeue&k=토큰&captureId=ID   → 재처리 요청 (자기 캡처, received 재전환, 10분 dedup)
  *   POST {action:'correction', k, captureId, text} → 수정 요청 저장 + 재처리 대기 전환
  *   POST {action:'addnote', k, text, captureId|person} → 사후 메모 접수(-note 캡처로 파이프라인 재사용)
  */
@@ -53,7 +54,36 @@ function doGet(e) {
   if (action === 'notify') {
     return notifyProcessed_(e.parameter.k, e.parameter.captureId);
   }
+  if (action === 'requeue') {
+    return requeue_(e.parameter.k, e.parameter.captureId);
+  }
   return json_({ ok: false, error: 'unknown_action' });
+}
+
+/* 재처리 요청 — 처리가 오래 걸리거나 이상할 때 사용자가 스스로 다시 큐에 넣는다.
+   자기 캡처(또는 owner)만. status를 received로 되돌리면 워처가 자연히 집어간다. */
+function requeue_(token, captureId) {
+  var name = capturerFor_(token);
+  if (!name) return json_({ ok: false, error: 'invalid_token' });
+  var cid = sanitizeId_(captureId);
+  if (!cid) return json_({ ok: false, error: 'bad_capture_id' });
+  var inbox = DriveApp.getFolderById(CONF.getProperty('INBOX_FOLDER_ID'));
+  var it = inbox.getFoldersByName(cid);
+  if (!it.hasNext()) return json_({ ok: false, error: 'not_found' });
+  var folder = it.next();
+  var meta = readJsonFile_(folder);
+  if (!meta) return json_({ ok: false, error: 'no_capture_json' });
+  if (meta.capturer !== name && !isOwner_(name)) return json_({ ok: false, error: 'not_your_capture' });
+  var cache = CacheService.getScriptCache();
+  var key = 'rq_' + cid;
+  if (cache.get(key)) return json_({ ok: true, deduped: true });
+  cache.put(key, '1', 10 * 60); /* 10분 dedup — 연타 방지 */
+  meta.status = 'received';
+  meta.receivedAt = new Date().toISOString();
+  meta.requeueRequested = true;
+  upsertFile_(folder, 'capture.json',
+    Utilities.newBlob(JSON.stringify(meta, null, 2), 'application/json', 'capture.json'));
+  return json_({ ok: true, captureId: cid });
 }
 
 /* OWNER_NAMES 판정 */
@@ -242,7 +272,8 @@ function listCaptures_(token, limitParam, offsetParam) {
       status: meta.status || 'received',
       person: meta.person || '',
       personAction: meta.personAction || '',
-      type: meta.type || 'capture'
+      type: meta.type || 'capture',
+      contact: meta.contact || null
     };
     var brief = readNewestText_(folder, 'brief', '.md');
     if (brief) item.brief = brief.slice(0, 6000);
