@@ -1041,19 +1041,57 @@ function renderRecent() {
 var recentLimit = 30;
 
 /* ── 받은 명함 브리핑 ── */
+function mdInline(s) {
+  return String(s || '').replace(/\[\[([^\]|]+)(\|([^\]]+))?\]\]/g, function (mm, p1, p2, p3) { return p3 || p1; }).replace(/\*\*/g, '').replace(/`/g, '');
+}
+/* 마크다운 표 블록 → 실제 <table> (전체 프로필의 Career 이력·공개 출처 표가 읽히게 — 2026-07-24 실사용 피드백) */
+function mdTable(lines) {
+  var wrap = document.createElement('div');
+  wrap.style.cssText = 'overflow-x:auto;margin:6px 0';
+  var tbl = document.createElement('table');
+  tbl.style.cssText = 'border-collapse:collapse;font-size:12px;min-width:100%';
+  lines.forEach(function (ln, i) {
+    /* escaped pipe(\|)는 셀 구분자가 아님 — lookbehind는 구형 iOS Safari가 파싱 단계에서 죽으므로 플레이스홀더로 처리 */
+    var ESC = String.fromCharCode(1);
+    var cells = ln.split('\\|').join(ESC).replace(/^\||\|$/g, '').split('|').map(function (c) { return mdInline(c.split(ESC).join('|')).trim(); });
+    if (cells.every(function (c) { return /^:?-{2,}:?$/.test(c) || c === ''; })) return; /* 구분행 스킵 */
+    var tr = document.createElement('tr');
+    cells.forEach(function (c) {
+      var td = document.createElement(i === 0 ? 'th' : 'td');
+      td.style.cssText = 'border:1px solid var(--line);padding:4px 8px;text-align:left;vertical-align:top' + (i === 0 ? ';background:var(--bg);font-weight:600' : '');
+      td.textContent = c;
+      tr.appendChild(td);
+    });
+    tbl.appendChild(tr);
+  });
+  wrap.appendChild(tbl);
+  return wrap;
+}
 function mdLite(text) {
   var root = document.createElement('div');
-  String(text || '').split('\n').forEach(function (ln) {
-    ln = ln.replace(/\[\[([^\]|]+)(\|[^\]]+)?\]\]/g, '$1').replace(/\*\*/g, '');
+  var lines = String(text || '').split('\n');
+  var i = 0;
+  while (i < lines.length) {
+    /* 표 블록: | 로 시작하는 연속 라인 */
+    if (/^\s*\|/.test(lines[i])) {
+      var tblLines = [];
+      while (i < lines.length && /^\s*\|/.test(lines[i])) { tblLines.push(lines[i]); i++; }
+      root.appendChild(mdTable(tblLines));
+      continue;
+    }
+    var ln = mdInline(lines[i]);
     var d = document.createElement('div');
-    if (ln.indexOf('# ') === 0) { d.style.cssText = 'font-weight:700;font-size:15px;margin:8px 0 4px'; d.textContent = ln.slice(2); }
+    if (ln.indexOf('### ') === 0) { d.style.cssText = 'font-weight:600;font-size:13px;margin:7px 0 3px'; d.textContent = ln.slice(4); }
+    else if (ln.indexOf('# ') === 0) { d.style.cssText = 'font-weight:700;font-size:15px;margin:8px 0 4px'; d.textContent = ln.slice(2); }
     else if (ln.indexOf('## ') === 0) { d.style.cssText = 'font-weight:600;font-size:13.5px;margin:8px 0 3px'; d.textContent = ln.slice(3); }
     else if (ln.indexOf('- ') === 0) { d.style.cssText = 'font-size:13px;color:var(--muted);margin:2px 0 2px 8px'; d.textContent = '• ' + ln.slice(2); }
+    else if (/^-{3,}$/.test(ln.trim())) { d.style.cssText = 'border-top:1px solid var(--line);margin:8px 0'; }
     else if (ln.indexOf('→') === 0) { d.style.cssText = 'font-size:13px;margin-top:6px'; d.textContent = ln; }
     else if (!ln.trim()) { d.style.height = '4px'; }
     else { d.style.cssText = 'font-size:13.5px;line-height:1.55'; d.textContent = ln; }
     root.appendChild(d);
-  });
+    i++;
+  }
   return root;
 }
 var briefSeeAll = false;
@@ -1104,8 +1142,17 @@ function renderBriefs(items) {
     if (it.status !== 'processed' && it.status !== 'skipped') {
       var em = elapsedMinOf(it.captureId);
       if (em !== null) {
-        if (em > 30) { pendingLate = true; pendingLine = 'OCR·웹 조사 처리 중 · ' + em + '분 경과 — 평소(6~20분)보다 오래 걸리고 있어요.'; }
-        else pendingLine = 'OCR·웹 조사 처리 중 · ' + em + '분 경과 · 보통 6~20분 걸려요.';
+        /* 단계 표시: 1 이름 인식(OCR) → 2 웹 조사·정리 → 3 브리핑 도착. contact 존재 = 1단계 완료 신호 (2026-07-24 실사용 피드백) */
+        var named = !!(it.contact && it.contact.name);
+        if (em > 30) {
+          pendingLate = true;
+          pendingLine = (named ? '2/3단계 웹 조사·정리 중' : '1/3단계 이름 인식 중') + ' · ' + em + '분 경과 — 평소(6~20분)보다 오래 걸리고 있어요.';
+        } else if (!named) {
+          pendingLine = '1/3단계 이름 인식(OCR) 중 · ' + em + '분 경과 · 이 단계는 보통 3분 안에 끝나요 · 다음: 웹 조사 → 브리핑';
+        } else {
+          var remainMin = Math.max(1, 14 - em);
+          pendingLine = '2/3단계 웹 조사·기록 정리 중 (이름 인식 ✓) · ' + em + '분 경과 · 완료까지 약 ' + remainMin + '분 남음(추정, 보통 6~20분)';
+        }
       }
     }
     var title = (it.brief && it.brief.indexOf('# ') === 0) ? it.brief.split('\n')[0].slice(2)
