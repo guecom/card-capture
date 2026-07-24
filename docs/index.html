@@ -143,6 +143,17 @@
     <p id="setupMsg"></p>
   </div>
 
+  <h2 id="searchHead" style="display:none">인맥 검색 <span style="font-weight:400;font-size:12px;color:var(--muted)">미팅 전 10초 회상</span></h2>
+  <div class="card" id="searchCard" style="display:none">
+    <div style="display:flex;gap:8px">
+      <input id="searchInput" type="search" placeholder="이름·회사·만난 곳으로 검색" autocomplete="off"
+             style="flex:1;min-width:0;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font-size:14px;background:var(--bg)">
+      <button class="chip" id="searchBtn" type="button">검색</button>
+    </div>
+    <div id="recentSearches" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
+    <div id="searchList" style="min-height:20px;margin-top:8px"></div>
+  </div>
+
   <div class="card" id="captureCard">
     <button class="shot main" id="frontBtn" type="button">
       <span class="big">📷</span><span id="frontLabel">명함 앞면 촬영</span>
@@ -176,21 +187,10 @@
     <p class="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br>전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요. <span style="opacity:.55">v1.0</span></p>
   </div>
 
-  <h2>최근 캡처</h2>
+  <h2 id="recentHead" style="cursor:pointer;user-select:none"><span id="recentCaret">▾</span> 최근 캡처</h2>
   <div class="card" id="recentCard"><div id="recentList" style="min-height:20px"></div></div>
 
-  <h2 id="searchHead" style="display:none">인맥 검색 <span style="font-weight:400;font-size:12px;color:var(--muted)">미팅 전 10초 회상</span></h2>
-  <div class="card" id="searchCard" style="display:none">
-    <div style="display:flex;gap:8px">
-      <input id="searchInput" type="search" placeholder="이름·회사·만난 곳으로 검색" autocomplete="off"
-             style="flex:1;min-width:0;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font-size:14px;background:var(--bg)">
-      <button class="chip" id="searchBtn" type="button">검색</button>
-    </div>
-    <div id="recentSearches" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px"></div>
-    <div id="searchList" style="min-height:20px;margin-top:8px"></div>
-  </div>
-
-  <h2 style="display:flex;justify-content:space-between;align-items:center">받은 명함 브리핑
+  <h2 id="briefHead" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;user-select:none"><span><span id="briefCaret">▾</span> 받은 명함 브리핑</span>
     <button class="chip" id="briefRefresh" type="button">새로고침</button></h2>
   <div class="card" id="briefCard"><div id="briefList" style="min-height:20px"></div>
     <button class="chip" id="briefMore" type="button" style="display:none;margin-top:8px">예전 브리핑 더 보기</button></div>
@@ -1101,7 +1101,10 @@ function nameFromBrief(brief) {
   if (!brief) return null;
   var first = String(brief).split('\n')[0];
   if (first.indexOf('# ') !== 0) return null;
-  return first.slice(2).split('—')[0].trim() || null;
+  /* 제목이 "이름 — 이런 분이에요" 또는 "이런 분이에요 — 이름" 어느 순서든 이름만 뽑는다 (2026-07-24 순서 역전 사례) */
+  var t = first.slice(2);
+  var name = t.replace(/이런\s*분이에요/g, '').replace(/^[\s—\-–:·]+|[\s—\-–:·]+$/g, '').trim();
+  return name || null;
 }
 function briefNameMap() {
   var map = {};
@@ -1155,10 +1158,18 @@ function renderBriefs(items) {
         }
       }
     }
-    var title = (it.brief && it.brief.indexOf('# ') === 0) ? it.brief.split('\n')[0].slice(2)
-      : (it.type === 'note' ? '메모 → ' + (it.person || '처리 중')
-        : (it.contact && it.contact.name ? it.contact.name + ' — 브리핑 준비 중' /* 2-phase 빠른 추출 결과 */
-          : (it.event || it.captureId)));
+    /* 제목은 항상 "이름 — 이런 분이에요" 순서로 재조립 — 처리 세션이 순서를 뒤집어 써도 화면은 일관 (2026-07-24 피드백) */
+    var title;
+    if (it.brief && it.brief.indexOf('# ') === 0) {
+      var bn = nameFromBrief(it.brief);
+      title = bn ? bn + ' — 이런 분이에요' : it.brief.split('\n')[0].slice(2);
+    } else if (it.type === 'note') {
+      title = '메모 → ' + (it.person || '처리 중');
+    } else if (it.contact && it.contact.name) {
+      title = it.contact.name + ' — 브리핑 준비 중'; /* 2-phase 빠른 추출 결과 */
+    } else {
+      title = it.event || it.captureId;
+    }
     var when = String(it.captureId).slice(4, 6) + '/' + String(it.captureId).slice(6, 8);
     var head = document.createElement('div');
     head.style.cssText = 'display:flex;justify-content:space-between;align-items:center;gap:8px';
@@ -1316,7 +1327,24 @@ $('briefMore').onclick = function () { briefLimit = Math.min(briefLimit + 30, 10
     else if (v === 'briefs') setTimeout(function () { $('briefCard').scrollIntoView({ behavior: 'smooth' }); }, 400);
   } catch (e) {}
 })();
-$('briefRefresh').onclick = function () { toastMsg('브리핑 새로고침 중…'); loadBriefs(true); };
+$('briefRefresh').onclick = function (ev) { ev.stopPropagation(); toastMsg('브리핑 새로고침 중…'); loadBriefs(true); };
+
+/* ── 섹션 접기/펼치기: 명함이 쌓여도 목록 스크롤 부담 없이 (2026-07-24 실사용 피드백) ── */
+function initCollapse(headId, caretId, cardId, storeKey) {
+  var apply = function (collapsed) {
+    $(cardId).style.display = collapsed ? 'none' : '';
+    $(caretId).textContent = collapsed ? '▸' : '▾';
+  };
+  apply(store.get(storeKey) === '1');
+  $(headId).addEventListener('click', function () {
+    var collapsed = $(cardId).style.display === 'none';
+    var next = !collapsed;
+    store.set(storeKey, next ? '1' : '');
+    apply(next);
+  });
+}
+initCollapse('recentHead', 'recentCaret', 'recentCard', 'collapse_recent');
+initCollapse('briefHead', 'briefCaret', 'briefCard', 'collapse_briefs');
 /* 자동 새로고침: 화면이 보이는 동안 20초마다 + 앱으로 돌아올 때마다 */
 setInterval(function () { if (!document.hidden) loadBriefs(); }, 20000);
 window.addEventListener('focus', function () { loadBriefs(); });

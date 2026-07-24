@@ -131,7 +131,7 @@ $Prompt = @'
 5. 이미지를 `90_Vault/Attachment/BusinessCards/PER-ID_YYYYMMDD_front|back.jpg`로 옮기고 source_refs에 기록한다.
 6. 심층 웹 보강: 사람과 회사를 각각 웹 검색(각 4회 이상). LinkedIn 공개 프로필을 이메일 prefix·중간이름·소속으로 교차검증해 동일인 확정 근거를 남기고, 경력·학력·투자·제품·수상까지. 항목별 신뢰도(high/medium)와 출처 URL을 본문 '공개 출처' 섹션에 남긴다. 미특정은 미특정이라 쓴다.
 7. 조직은 기존 Organization Instance가 있으면 File 링크, 없으면 organization_mentions로 보존한다.
-8. 캡처 폴더에 brief.md(사용자용 브리핑, 제목은 이런 분이에요 형식)를 쓰고, capture.json을 status='processed'(명함이 아니면 'skipped'+사유), person, personAction, processedAt, processedBy로 갱신한다.
+8. 캡처 폴더에 brief.md를 쓴다 — 첫 줄 제목은 반드시 '# <이름> — 이런 분이에요' 형식(이름이 먼저). capture.json을 status='processed'(명함이 아니면 'skipped'+사유), person, personAction, processedAt, processedBy로 갱신한다.
 9. reviewStatus는 agent_checked까지만. human_validated는 절대 설정하지 않는다.
 10. 완료 전 반드시 vault의 02_Kairen_OS/90_Setting/Validation/Validate-KairenOntology.ps1 을 powershell.exe -NoProfile -ExecutionPolicy Bypass -File 로 실행해 PASS를 확인한다. FAIL이면 고치고 재실행한다.
 
