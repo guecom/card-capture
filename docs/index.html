@@ -32,6 +32,19 @@
     font-size: 13px; color: var(--muted); background: var(--card); border: 1px solid var(--line);
     border-radius: 999px; padding: 6px 12px; cursor: pointer;
   }
+  /* 눈에 띄는 액션 버튼 — 전화·문자·메일·연락처 저장·메모 (2026-07-24 실사용 피드백: 가시성) */
+  .actrow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .act {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 14px; font-weight: 600; line-height: 1; color: var(--accent); text-decoration: none;
+    background: color-mix(in srgb, var(--accent) 13%, transparent);
+    border: 1.5px solid color-mix(in srgb, var(--accent) 34%, transparent);
+    border-radius: 11px; padding: 11px 14px; min-height: 44px; cursor: pointer;
+  }
+  .act:active { background: color-mix(in srgb, var(--accent) 24%, transparent); }
+  .act.solid { color: var(--accent-text); background: var(--accent); border-color: var(--accent); }
+  .act.sm { min-height: 34px; padding: 7px 11px; font-size: 13px; }
+  .act .ico { font-size: 15px; line-height: 1; }
   .card {
     background: var(--card); border: 1px solid var(--line); border-radius: 16px;
     padding: 16px; margin-bottom: 14px;
@@ -1057,9 +1070,10 @@ function renderRecent() {
       /* 처리 완료(이름 인식됨)면 최근 캡처에서도 바로 메모 (2026-07-24 실사용 피드백) */
       if (names[i.captureId]) {
         var mb = document.createElement('button');
-        mb.className = 'chip';
+        mb.className = 'act sm';
         mb.style.cssText = 'margin-left:8px;flex:0 0 auto';
-        mb.textContent = '메모';
+        var mbi = document.createElement('span'); mbi.className = 'ico'; mbi.textContent = '📝';
+        mb.appendChild(mbi); mb.appendChild(document.createTextNode('메모'));
         mb.onclick = function (ev2) { ev2.stopPropagation(); addNoteFlow({ captureId: i.captureId, label: names[i.captureId] }); };
         div.appendChild(mb);
       }
@@ -1245,27 +1259,30 @@ function renderBriefs(items) {
     if (it.brief) body.appendChild(mdLite(it.brief.split('\n').slice(1).join('\n')));
     if (it.person && briefSeeAll) {
       var docBtn = document.createElement('button');
-      docBtn.className = 'chip';
-      docBtn.style.cssText = 'margin-top:8px;align-self:flex-start';
-      docBtn.textContent = '전체 프로필(.md) 보기 — ' + it.person;
+      docBtn.className = 'act sm';
+      docBtn.style.cssText = 'margin-top:10px;align-self:flex-start';
+      var di = document.createElement('span'); di.className = 'ico'; di.textContent = '👤';
+      docBtn.appendChild(di); docBtn.appendChild(document.createTextNode('전체 프로필 보기'));
       docBtn.onclick = function (ev2) { ev2.stopPropagation(); openPersonDoc(it); };
       body.appendChild(docBtn);
     }
     if (it.status === 'processed' && it.type !== 'note') {
       var btnRow = document.createElement('div');
-      btnRow.style.cssText = 'display:flex;gap:8px;margin-top:8px';
-      var fixBtn = document.createElement('button');
-      fixBtn.className = 'chip';
-      fixBtn.textContent = '수정 요청';
-      fixBtn.onclick = function (ev2) { ev2.stopPropagation(); requestCorrection(it); };
-      btnRow.appendChild(fixBtn);
+      btnRow.className = 'actrow';
       if (it.person) {
         var noteBtn = document.createElement('button');
-        noteBtn.className = 'chip';
-        noteBtn.textContent = '메모 추가';
+        noteBtn.className = 'act solid';
+        var ni = document.createElement('span'); ni.className = 'ico'; ni.textContent = '📝';
+        noteBtn.appendChild(ni); noteBtn.appendChild(document.createTextNode('메모 추가'));
         noteBtn.onclick = function (ev2) { ev2.stopPropagation(); addNoteFlow({ captureId: it.captureId, label: it.person }); };
         btnRow.appendChild(noteBtn);
       }
+      var fixBtn = document.createElement('button');
+      fixBtn.className = 'act';
+      var fi = document.createElement('span'); fi.className = 'ico'; fi.textContent = '✏️';
+      fixBtn.appendChild(fi); fixBtn.appendChild(document.createTextNode('수정 요청'));
+      fixBtn.onclick = function (ev2) { ev2.stopPropagation(); requestCorrection(it); };
+      btnRow.appendChild(fixBtn);
       body.appendChild(btnRow);
       /* 바로 연락: 서버 contact 요약 우선, 없으면 brief 텍스트에서 추출 (기존 캡처도 동작) */
       var c = it.contact || null;
@@ -1480,9 +1497,10 @@ function prepCardOf(markdown, fallbackName, noteTarget) {
   /* 어디서 열든(검색·전체 프로필) 이 사람에게 바로 메모 추가 (2026-07-24 실사용 피드백) */
   if (noteTarget) {
     var nb = document.createElement('button');
-    nb.className = 'chip';
-    nb.style.cssText = 'margin-top:8px';
-    nb.textContent = '메모 추가';
+    nb.className = 'act solid';
+    nb.style.cssText = 'margin-top:10px';
+    var nbi = document.createElement('span'); nbi.className = 'ico'; nbi.textContent = '📝';
+    nb.appendChild(nbi); nb.appendChild(document.createTextNode('메모 추가'));
     nb.onclick = function () { addNoteFlow(noteTarget); };
     card.appendChild(nb);
   }
@@ -1530,19 +1548,20 @@ function vcardDownload(c) {
 }
 function contactRow(c) {
   var row = document.createElement('div');
-  row.style.cssText = 'display:flex;gap:8px;margin-top:8px;flex-wrap:wrap';
+  row.className = 'actrow';
   row.onclick = function (ev2) { ev2.stopPropagation(); };
-  function chip(label, href, fn) {
+  function act(icon, label, href, fn) {
     var b = document.createElement(href ? 'a' : 'button');
-    b.className = 'chip';
-    if (href) { b.href = href; b.style.textDecoration = 'none'; }
-    b.textContent = label;
+    b.className = 'act';
+    if (href) b.href = href;
+    var ic = document.createElement('span'); ic.className = 'ico'; ic.textContent = icon;
+    b.appendChild(ic); b.appendChild(document.createTextNode(label));
     if (fn) b.onclick = function (ev2) { ev2.preventDefault(); ev2.stopPropagation(); fn(); };
     row.appendChild(b);
   }
-  if (c.phones && c.phones[0]) { chip('전화', 'tel:' + c.phones[0]); chip('문자', 'sms:' + c.phones[0]); }
-  if (c.emails && c.emails[0]) chip('메일', 'mailto:' + c.emails[0]);
-  if ((c.phones && c.phones[0]) || (c.emails && c.emails[0])) chip('연락처 저장', null, function () { vcardDownload(c); });
+  if (c.phones && c.phones[0]) { act('📞', '전화', 'tel:' + c.phones[0]); act('💬', '문자', 'sms:' + c.phones[0]); }
+  if (c.emails && c.emails[0]) act('✉️', '메일', 'mailto:' + c.emails[0]);
+  if ((c.phones && c.phones[0]) || (c.emails && c.emails[0])) act('📇', '연락처 저장', null, function () { vcardDownload(c); });
   return row.children.length ? row : null;
 }
 /* Person .md frontmatter 경량 파서 (미팅 프렙 카드용) */
