@@ -388,42 +388,70 @@ function orderQuad(pts) {
   var byDiff = pts.slice().sort(function (a, b) { return (a.y - a.x) - (b.y - b.x); });
   return [bySum[0], byDiff[0], bySum[3], byDiff[3]]; /* TL, TR, BR, BL */
 }
-function detectCardQuad(canvas, minAreaRatio) {
+/* 다중 전략 명함 인식 — 흰 배경/저대비에서도 잡히게 (2026-07-24 실사용 피드백):
+   대비 보정(equalizeHist) → Otsu 기반 auto-Canny + 적응형 임계값 두 경로의 후보를
+   모아, 면적뿐 아니라 명함 종횡비 타당성으로 점수화해 최적 사각형을 고른다.
+   fast=true(라이브 프리뷰)는 auto-Canny 한 경로만 써 프레임 비용을 낮춘다. */
+function detectCardQuad(canvas, minAreaRatio, fast) {
   if (!CV) return null;
-  var src = null, gray = null, edges = null, kernel = null, contours = null, hier = null;
+  var mats = [];
+  function track(m) { if (m) mats.push(m); return m; }
+  var W = canvas.width, H = canvas.height;
+  var minA = (minAreaRatio || 0.1) * W * H, maxA = 0.96 * W * H;
+  var best = null, bestScore = 0;
   try {
-    src = CV.imread(canvas); gray = new CV.Mat();
+    var src = track(CV.imread(canvas));
+    var gray = track(new CV.Mat());
     CV.cvtColor(src, gray, CV.COLOR_RGBA2GRAY);
     CV.GaussianBlur(gray, gray, new CV.Size(5, 5), 0);
-    edges = new CV.Mat();
-    CV.Canny(gray, edges, 40, 120);
-    kernel = CV.getStructuringElement(CV.MORPH_RECT, new CV.Size(3, 3));
-    CV.dilate(edges, edges, kernel);
-    contours = new CV.MatVector(); hier = new CV.Mat();
-    CV.findContours(edges, contours, hier, CV.RETR_LIST, CV.CHAIN_APPROX_SIMPLE);
-    var W = canvas.width, H = canvas.height;
-    var minA = (minAreaRatio || 0.1) * W * H, maxA = 0.96 * W * H;
-    var best = null, bestA = 0;
-    for (var i = 0; i < contours.size(); i++) {
-      var c = contours.get(i);
-      var peri = CV.arcLength(c, true);
-      var approx = new CV.Mat();
-      CV.approxPolyDP(c, approx, 0.03 * peri, true);
-      if (approx.rows === 4 && CV.isContourConvex(approx)) {
-        var a = CV.contourArea(approx);
-        if (a > bestA && a > minA && a < maxA) {
-          bestA = a;
-          best = [];
-          for (var j = 0; j < 4; j++) best.push({ x: approx.data32S[j * 2], y: approx.data32S[j * 2 + 1] });
-        }
-      }
-      approx.delete(); c.delete();
+    var eq = track(new CV.Mat());
+    CV.equalizeHist(gray, eq); /* 명함-배경 대비를 끌어올려 약한 경계도 살린다 */
+    var kernel = track(CV.getStructuringElement(CV.MORPH_RECT, new CV.Size(3, 3)));
+
+    /* 경로 1: Otsu 임계값으로 자동 조정한 Canny (배경 밝기에 적응) */
+    var edgeMaps = [];
+    var otsuMat = track(new CV.Mat());
+    var otsu = CV.threshold(eq, otsuMat, 0, 255, CV.THRESH_BINARY + CV.THRESH_OTSU);
+    var e1 = track(new CV.Mat());
+    CV.Canny(eq, e1, Math.max(10, 0.5 * otsu), Math.max(40, otsu));
+    CV.dilate(e1, e1, kernel);
+    edgeMaps.push(e1);
+
+    /* 경로 2: 적응형 임계값 — 흰 배경 위 밝은 명함처럼 전역 대비가 낮을 때 경계 포착 */
+    if (!fast) {
+      var at = track(new CV.Mat());
+      CV.adaptiveThreshold(gray, at, 255, CV.ADAPTIVE_THRESH_GAUSSIAN_C, CV.THRESH_BINARY_INV, 21, 6);
+      CV.morphologyEx(at, at, CV.MORPH_CLOSE, kernel);
+      edgeMaps.push(at);
     }
-    return best ? orderQuad(best) : null;
+
+    for (var mi = 0; mi < edgeMaps.length; mi++) {
+      var contours = new CV.MatVector(); mats.push(contours);
+      var hier = track(new CV.Mat());
+      CV.findContours(edgeMaps[mi], contours, hier, CV.RETR_LIST, CV.CHAIN_APPROX_SIMPLE);
+      for (var i = 0; i < contours.size(); i++) {
+        var c = contours.get(i);
+        var peri = CV.arcLength(c, true);
+        var approx = new CV.Mat();
+        CV.approxPolyDP(c, approx, 0.02 * peri, true);
+        if (approx.rows === 4 && CV.isContourConvex(approx)) {
+          var a = CV.contourArea(approx);
+          if (a > minA && a < maxA) {
+            var q = [];
+            for (var j = 0; j < 4; j++) q.push({ x: approx.data32S[j * 2], y: approx.data32S[j * 2 + 1] });
+            var ordered = orderQuad(q);
+            /* 명함 종횡비면 가중, 아니면 감점 — 저대비에서 생기는 엉뚱한 큰 사각형 억제 */
+            var score = a * (plausibleCard(ordered) ? 1.6 : 0.35);
+            if (score > bestScore) { bestScore = score; best = ordered; }
+          }
+        }
+        approx.delete(); c.delete();
+      }
+    }
+    return best;
   } catch (e) { return null; }
   finally {
-    [src, gray, edges, kernel, hier].forEach(function (m) { try { if (m) m.delete(); } catch (e2) {} });
-    try { if (contours) contours.delete(); } catch (e2) {}
+    mats.forEach(function (m) { try { if (m) m.delete(); } catch (e2) {} });
   }
 }
 function plausibleCard(quad) {
@@ -562,7 +590,7 @@ function camLoop() {
     var sw = 320, sh = Math.max(1, Math.round(sw * m.vh / m.vw));
     cam.small.width = sw; cam.small.height = sh;
     cam.small.getContext('2d').drawImage($('camVideo'), 0, 0, sw, sh);
-    var q = detectCardQuad(cam.small, 0.08);
+    var q = detectCardQuad(cam.small, 0.08, true); /* 라이브: 빠른 단일 경로 */
     if (q && plausibleCard(q)) {
       var f = m.vw / sw;
       cam.liveQuad = q.map(function (p) { return { x: p.x * f, y: p.y * f }; });
@@ -1026,6 +1054,15 @@ function renderRecent() {
       div.style.cursor = 'pointer';
       div.onclick = function () { openDetail(i); };
       if (i.state === 'failed') div.querySelector('.st').onclick = function (ev2) { ev2.stopPropagation(); i.state = 'queued'; qPut(i).then(function () { renderRecent(); flush(); }); };
+      /* 처리 완료(이름 인식됨)면 최근 캡처에서도 바로 메모 (2026-07-24 실사용 피드백) */
+      if (names[i.captureId]) {
+        var mb = document.createElement('button');
+        mb.className = 'chip';
+        mb.style.cssText = 'margin-left:8px;flex:0 0 auto';
+        mb.textContent = '메모';
+        mb.onclick = function (ev2) { ev2.stopPropagation(); addNoteFlow({ captureId: i.captureId, label: names[i.captureId] }); };
+        div.appendChild(mb);
+      }
       el.appendChild(div);
     });
     if (items.length > recentLimit) {
@@ -1281,7 +1318,7 @@ function openPersonDoc(it) {
         $('docBody').innerHTML = '<p class="hint">불러오지 못했어요: ' + (res.error === 'owner_only' ? '소유자 토큰만 볼 수 있어요' : (res.error === 'unknown_action' ? '서버 업데이트(GAS 재배포) 후 열려요' : res.error)) + '</p>';
         return;
       }
-      $('docBody').appendChild(prepCardOf(res.markdown, it.person));
+      $('docBody').appendChild(prepCardOf(res.markdown, it.person, { person: it.person }));
       $('docBody').appendChild(renderPersonMd(res.markdown));
     })
     .catch(function () { $('docBody').innerHTML = '<p class="hint">네트워크 오류 — 다시 시도해 주세요</p>'; });
@@ -1416,7 +1453,7 @@ function runSearch() {
 $('searchBtn').onclick = runSearch;
 $('searchInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); runSearch(); } });
 /* 미팅 프렙 카드: 전문 md 위에 핵심(이름·직함·회사·최근 확인·바로 연락)을 먼저 보여준다 */
-function prepCardOf(markdown, fallbackName) {
+function prepCardOf(markdown, fallbackName, noteTarget) {
   var fm = parseFm(markdown);
   var nm = fm.vals.name || fallbackName || '';
   var orgText = (fm.vals.organization || '').replace(/^ORG-\d+\s*/, '') || (fm.lists.organization_mentions || [])[0] || '';
@@ -1440,6 +1477,15 @@ function prepCardOf(markdown, fallbackName) {
   }
   var cr = contactRow({ name: nm, organization: orgText, title: fm.vals.title || '', emails: fm.lists.emails || [], phones: fm.lists.phones || [] });
   if (cr) card.appendChild(cr);
+  /* 어디서 열든(검색·전체 프로필) 이 사람에게 바로 메모 추가 (2026-07-24 실사용 피드백) */
+  if (noteTarget) {
+    var nb = document.createElement('button');
+    nb.className = 'chip';
+    nb.style.cssText = 'margin-top:8px';
+    nb.textContent = '메모 추가';
+    nb.onclick = function () { addNoteFlow(noteTarget); };
+    card.appendChild(nb);
+  }
   return card;
 }
 function openPersonDocById(it) {
@@ -1454,7 +1500,8 @@ function openPersonDocById(it) {
         $('docBody').innerHTML = '<p class="hint">불러오지 못했어요: ' + (res.error === 'unknown_action' ? '서버 업데이트(GAS 재배포) 후 열려요' : res.error) + '</p>';
         return;
       }
-      $('docBody').appendChild(prepCardOf(res.markdown, it.title.replace(/^PER-\d+\s*/, '')));
+      var perId = (String(it.title).match(/PER-\d{6}/) || [null])[0];
+      $('docBody').appendChild(prepCardOf(res.markdown, it.title.replace(/^PER-\d+\s*/, ''), perId ? { person: perId } : null));
       $('docBody').appendChild(renderPersonMd(res.markdown));
     })
     .catch(function () { $('docBody').innerHTML = '<p class="hint">네트워크 오류 — 다시 시도해 주세요</p>'; });
