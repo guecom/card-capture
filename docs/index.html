@@ -220,6 +220,9 @@
         <button class="cbtn primary" id="camGoBack2" type="button">뒷면도 찍기</button>
         <button class="cbtn" id="camDone" type="button">뒷면 없이 완료</button>
       </div>
+      <div class="choiceRow" style="margin-top:8px">
+        <button class="cbtn" id="camRetakeFront" type="button">앞면 다시 찍기</button>
+      </div>
     </div>
   </div>
 </div>
@@ -708,6 +711,14 @@ function camCapture() {
 $('camShot').onclick = camCapture;
 $('camClose').onclick = camClose;
 $('camGoBack2').onclick = function () { camChoiceUI(false); cam.liveQuad = null; };
+/* 앞면 다시 찍기: 카메라 세션 유지한 채 앞면 모드로 복귀 — 다음 촬영이 앞면을 교체 (2026-07-24 실사용 피드백) */
+$('camRetakeFront').onclick = function () {
+  cam.side = 'front';
+  cam.liveQuad = null;
+  $('camSide').textContent = '명함 앞면';
+  camChoiceUI(false);
+  toastMsg('앞면을 다시 찍어주세요');
+};
 $('camDone').onclick = camClose;
 $('camNative').onclick = function () { var s = cam.side; camClose(); nativeShot(s); };
 $('camTorch').onclick = function () {
