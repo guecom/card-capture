@@ -2,6 +2,10 @@
 
 사용자에게 보이는 변화 중심으로 기록한다. 형식: 버전 — 날짜 — 커밋. 배포(GAS/Pages) 시점은 `RELEASE.md`의 release evidence가 진실이다.
 
+## [Unreleased] — branch `agent/ux-retake`
+
+- **앞면 다시 찍기**: 앞면 촬영 직후 선택지([뒷면도 찍기 / 뒷면 없이 완료])에 "앞면 다시 찍기" 추가 — 카메라를 벗어나지 않고 앞면 교체 (2026-07-24 실사용 피드백), sw v13.
+
 ## [Unreleased] — v1.1 후보 (branch `agent/product-baseline-v1`, Kairen-Ref: TSK-000140~164)
 
 추가 (배포 전 — GAS 재배포·사람 승인 필요):
