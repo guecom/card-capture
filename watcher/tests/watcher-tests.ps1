@@ -113,6 +113,41 @@ T (-not (Test-Path $NotifyConf)) 'notify.conf absent'
 Send-Notify @('T0001-received')   # must not throw
 T $true 'notify without conf: silent no-op'
 
+# 11. per-card loop (v3): smart stub가 한 번에 가장 이른 received 1건만 processed로 바꿈 →
+#     루프가 대기 3건을 한 건씩 소진하고 카드별로 codex를 호출한다.
+Get-ChildItem $sbInbox -Directory | Remove-Item -Recurse -Force
+$callLog = Join-Path $sandbox 'smart-calls.txt'
+Remove-Item $callLog -ErrorAction SilentlyContinue
+$smartPs = Join-Path $sandbox 'smart-process.ps1'
+@"
+`$inbox = '$sbInbox'
+`$d = Get-ChildItem `$inbox -Directory | Where-Object { (Get-Content (Join-Path `$_.FullName 'capture.json') -Raw) -match '"status"\s*:\s*"received"' } | Sort-Object Name | Select-Object -First 1
+if (`$d) {
+  `$p = Join-Path `$d.FullName 'capture.json'
+  `$m = Get-Content `$p -Raw | ConvertFrom-Json
+  `$m.status = 'processed'
+  `$m | Add-Member -NotePropertyName person -NotePropertyValue ('PER-' + `$d.Name) -Force
+  `$m | ConvertTo-Json | Out-File -Encoding utf8 `$p
+  Add-Content -Path '$callLog' -Value `$d.Name
+}
+"@ | Out-File -Encoding utf8 $smartPs
+$smartStub = Join-Path $sandbox 'codex-smart.cmd'
+"@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"$smartPs`"`r`nexit /b 0" | Out-File -Encoding ascii $smartStub
+$Codex = $smartStub
+$null = New-Capture 'B0002' 'received' $null $null
+$null = New-Capture 'A0001' 'received' $null $null
+$null = New-Capture 'C0003' 'received' $null $null
+T ((Get-Backlog).Count -eq 3) 'per-card: 3 received queued'
+$script:ConsecutiveFailures = 0
+Invoke-Processing
+T ((Get-Backlog).Count -eq 0) 'per-card: loop drained all 3'
+$calls = @(Get-Content $callLog -ErrorAction SilentlyContinue)
+T ($calls.Count -eq 3) 'per-card: one codex call per card (3 calls)'
+T ($calls[0] -eq 'A0001' -and $calls[2] -eq 'C0003') 'per-card: oldest-first order'
+T (@(Get-Content $LogFile | Where-Object { $_ -match 'processing loop done' }).Count -ge 1) 'per-card: loop-done summary logged'
+$h3 = Get-Content $HealthFile -Raw -Encoding UTF8 | ConvertFrom-Json
+T ($h3.backlogCount -eq 0) 'per-card: health backlog 0 after drain'
+
 # ---- summary + cleanup ----
 Write-Host ''
 Write-Host ("summary: pass=" + $pass + " fail=" + $fail)

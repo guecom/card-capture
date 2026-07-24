@@ -9,7 +9,7 @@
 # 알림(옵트인): %LOCALAPPDATA%\CardCapture\notify.conf 가 있으면 처리 완료 시 GAS notify 호출
 # 주의: 이 파일은 반드시 UTF-8 BOM으로 저장한다 (한글 경로 — PS5.1 CP949 오독 방지).
 
-$Version = 'watcher-v2.0'
+$Version = 'watcher-v3.0'
 $Vault  = 'C:\Users\gueco\내 드라이브\00_MetaBrain_Vault\Kairen'
 $Inbox  = Join-Path $Vault '00_Inbox\BusinessCards'
 $Codex  = 'C:\Users\gueco\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe'
@@ -124,7 +124,7 @@ $Prompt = @'
 - 토큰·Script Properties·폴더 ID 값을 brief나 Person에 쓰지 마라.
 
 핵심 요약:
-1. `00_Inbox/BusinessCards/` 하위 폴더의 capture.json(변형 `capture (1).json`이면 가장 최신 파일이 진실)을 확인해 status가 'received'인 캡처, 또는 status가 'processed'여도 receivedAt이 processedAt보다 최신인 재전송 캡처만 처리한다.
+1. `00_Inbox/BusinessCards/` 하위 폴더의 capture.json(변형 `capture (1).json`이면 가장 최신 파일이 진실)을 확인해 status가 'received'인 캡처, 또는 status가 'processed'여도 receivedAt이 processedAt보다 최신인 재전송 캡처 중 **captureId가 가장 이른 한 건만** 완결 처리하고 종료한다. 여러 건이 대기해도 나머지는 건드리지 마라 — 워처가 곧바로 다시 불러 다음 한 건을 처리한다(카드별 진행 표시·하트비트 유지를 위한 계약).
 2. 처리 대상이 없으면 아무 것도 바꾸지 말고 '새 캡처 없음'으로 즉시 종료한다.
 3. 캡처 폴더에 correction*.json이 있으면 사용자 수정 요청이다 — 절차 문서 규칙 2-1에 따라 정정을 우선 반영한다. capture.json의 type이 'note'면 사후 메모다 — 규칙 2-2에 따라 이미지 없이 해당 Person에 병합한다. event가 있는 명함 캡처는 규칙 8-2에 따라 Interaction·met_at을 닫는다.
 4. 명함 이미지를 직접 읽어 OCR하고, 기존 Person과 이메일·전화(정규화)·이름으로 중복검사한다. 중복이면 신규 생성 금지, 기존 인스턴스를 프런트매터+본문 전면 재구성으로 갱신한다(과거 소속은 Career 이력으로 내리고 provenance는 보존). 신규면 PER typeID를 쓰기 직전 재스캔(max+1)으로 발급해 Template_Person 스키마로 생성한다.
@@ -168,30 +168,50 @@ function Invoke-Processing {
     'watcher' | Out-File -Encoding ascii $Lock
     $script:LastRunStart = Get-Date
     Write-Health
+    # quick-pass: 대기 캡처 전체의 이름을 웹검색 없이 빠르게 채워 폰에 즉시 표시(ISS-000051)
     Invoke-QuickExtract
-    Write-Log 'processing start (codex)'
-    $beforeProcessed = Get-ProcessedSet
+    # deep: 카드별로 한 건씩 처리 — 카드마다 status가 전환돼 폰에 하나씩 도착하고
+    #       사이마다 하트비트·backlog가 갱신된다(ISS-000065: 대량 배치 단일 실행 opacity 해소).
     try {
         Set-Location $Vault
-        # 프롬프트는 인자로 전달 (stdin은 PS5.1이 CP949로 인코딩해 한글이 깨짐).
-        # windows.sandbox=unelevated: headless에서는 elevated 샌드박스 헬퍼가 못 떠서 셸 실행이 전부 실패함.
-        & $Codex exec -C $Vault -s workspace-write -c 'tools.web_search=true' -c 'windows.sandbox="unelevated"' $Prompt 2>&1 |
-            Out-File -Append -Encoding utf8 $LogFile
-        $script:LastExitCode = $LASTEXITCODE
-        $script:LastRunEnd = Get-Date
-        if ($LASTEXITCODE -eq 0) {
-            $script:ConsecutiveFailures = 0
-            Write-Log "processing done, exit=0"
-            $afterProcessed = Get-ProcessedSet
-            $newly = @($afterProcessed.Keys | Where-Object { -not $beforeProcessed.ContainsKey($_) })
-            if ($newly.Count -gt 0) { Send-Notify $newly }
-        } else {
-            $script:ConsecutiveFailures++
-            Write-Log ("processing FAILED, exit=" + $LASTEXITCODE + " consecutiveFailures=" + $script:ConsecutiveFailures)
-            if ($script:ConsecutiveFailures -ge 3) {
-                Write-Log 'WARNING: 3+ consecutive failures - captures remain received; check codex auth/sandbox/log'
+        $maxCards = 25   # 한 Invoke-Processing에서 처리 상한(무한 루프 방지). 초과분은 다음 트리거가 이어받는다.
+        $done = 0
+        while ($done -lt $maxCards) {
+            $backlog = (Get-Backlog).Count
+            if ($backlog -le 0) { break }
+            $before = Get-ProcessedSet
+            Write-Log ("processing card (deep) — 남은 대기 " + $backlog)
+            # 프롬프트는 인자로 전달 (stdin은 PS5.1이 CP949로 인코딩해 한글이 깨짐).
+            # windows.sandbox=unelevated: headless에서는 elevated 샌드박스 헬퍼가 못 떠서 셸 실행이 전부 실패함.
+            & $Codex exec -C $Vault -s workspace-write -c 'tools.web_search=true' -c 'windows.sandbox="unelevated"' $Prompt 2>&1 |
+                Out-File -Append -Encoding utf8 $LogFile
+            $script:LastExitCode = $LASTEXITCODE
+            $script:LastRunEnd = Get-Date
+            $done++
+            if ($LASTEXITCODE -eq 0) {
+                $script:ConsecutiveFailures = 0   # 정상 종료 — 진행 여부와 무관하게 실패 카운터 리셋
+                $after = Get-ProcessedSet
+                $newly = @($after.Keys | Where-Object { -not $before.ContainsKey($_) })
+                if ($newly.Count -gt 0) {
+                    Write-Log ("card done — 처리됨: " + ($newly -join ', '))
+                    Send-Notify $newly
+                } else {
+                    # exit 0이지만 신규 processed 없음: skipped 처리했거나 무진행 — 무한 루프 방지 위해 중단
+                    Write-Log 'card run: 신규 processed 없음(exit 0) — 루프 종료(무진행 가드)'
+                    break
+                }
+            } else {
+                $script:ConsecutiveFailures++
+                Write-Log ("card FAILED, exit=" + $LASTEXITCODE + " consecutiveFailures=" + $script:ConsecutiveFailures)
+                if ($script:ConsecutiveFailures -ge 3) {
+                    Write-Log 'WARNING: 3+ consecutive failures - captures remain received; check codex auth/sandbox/log'
+                    break
+                }
+                break  # 이번 실행은 중단, 다음 트리거가 재시도(캡처는 received로 보존)
             }
+            Write-Health   # 카드 사이마다 하트비트·backlog 갱신
         }
+        Write-Log ("processing loop done — 이번 실행 처리 " + $done + "장")
     } catch {
         $script:LastRunEnd = Get-Date
         $script:ConsecutiveFailures++

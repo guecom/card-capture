@@ -2,7 +2,11 @@
 
 사용자에게 보이는 변화 중심으로 기록한다. 형식: 버전 — 날짜 — 커밋. 배포(GAS/Pages) 시점은 `RELEASE.md`의 release evidence가 진실이다.
 
-## [Unreleased] — branch `agent/ux-retake`
+## [Unreleased] — watcher v3 (branch `agent/watcher-v3`)
+
+- **워처 v3 카드별 처리**: 대량 연속 캡처를 한 번의 긴 실행이 아니라 가장 이른 캡처부터 **한 건씩** 처리 → 카드마다 폰에 하나씩 도착하고, 사이마다 하트비트·backlog가 갱신됨. 무한 루프 방지 상한(25장/실행)·무진행 가드 포함 (ISS-000065, fixture 31/31 PASS). **라이브 워처 교체는 별도 단계**(로컬 pull+재시작, Setup 참조).
+
+## v1.x UI (merged: PR #2 `agent/ux-retake`, PR #3 `agent/ux-round3`, PR #4 `agent/ux-round4`)
 
 - **앞면 다시 찍기**: 앞면 촬영 직후 선택지([뒷면도 찍기 / 뒷면 없이 완료])에 "앞면 다시 찍기" 추가 — 카메라를 벗어나지 않고 앞면 교체 (2026-07-24 실사용 피드백), sw v13.
 
