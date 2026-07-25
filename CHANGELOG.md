@@ -7,6 +7,7 @@
 - **병렬 app shell**: React·TypeScript·Vite와 Ionic React로 `docs/next/` 후보를 만들고 legacy `docs/index.html`은 rollback baseline으로 유지한다.
 - **style ownership**: Ionic은 mobile shell·safe area·modal·toast를 소유하고, Tailwind는 Preflight 없이 Kairen-owned layout·content에만 사용한다.
 - **contract adapter**: 기존 GAS `list`·`search`·upload payload와 IndexedDB `cardcapture/q`를 typed boundary로 고정했다.
+- **offline queue fixture**: IndexedDB reopen 보존, captureId 순차 전송, local `sent` 비중복, 실패 data·tries 보존과 후속 retry 성공을 합성 sender로 검증한다.
 - **점진 전환**: 후보의 촬영 action은 아직 검증된 legacy camera로 연결한다. write queue·camera·OCR·service worker는 각 parity gate 뒤 옮긴다.
 
 ## [Unreleased] — capture experience wave (branch `agent/card-capture-interview-wave`, Kairen-Ref: TSK-000178, TSK-000217, TSK-000218, TSK-000219, TSK-000220)

@@ -56,6 +56,15 @@ export async function searchPeople(config: RuntimeConfig, query: string): Promis
   return getJson<SearchResponse>(buildSearchUrl(config, query));
 }
 
+export async function uploadCapture(config: RuntimeConfig, item: CaptureQueueItem): Promise<void> {
+  const response = await fetch(normalizedBase(config.apiUrl), {
+    method: 'POST',
+    body: JSON.stringify(toUploadPayload(item, config)),
+  });
+  const result = (await response.json()) as { ok?: boolean; error?: string };
+  if (!result.ok) throw new Error(result.error ?? 'upload_failed');
+}
+
 export function isTerminalStatus(status: string): boolean {
   return status === 'processed' || status === 'skipped';
 }

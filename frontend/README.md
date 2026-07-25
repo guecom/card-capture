@@ -25,6 +25,6 @@ The Vite build writes only `docs/next/`. The public root `docs/index.html` remai
 
 1. Typed contract and read-only shell.
 2. List/search/detail parity against synthetic and existing server fixtures.
-3. IndexedDB write/retry parity and offline recovery.
+3. IndexedDB write/retry parity: reopen persistence, oldest-first send, terminal non-duplication and failed retry fixture implemented; browser offline/reconnect remains.
 4. Camera/detector/OCR adapter parity on actual phones.
 5. Exact candidate SHA review, then separate human merge and release decisions.
