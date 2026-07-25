@@ -20,6 +20,7 @@ import { ArrowUpRight, Camera, ChevronRight, ContactRound, RefreshCw, Search, Se
 import type { LucideIcon } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import type { BriefItem, CaptureQueueItem, RuntimeConfig, SearchItem } from './contracts/capture';
+import { CameraPreviewModal } from './components/CameraPreviewModal';
 import { StatusBadge } from './components/StatusBadge';
 import { listBriefs, searchPeople } from './services/api';
 import { readQueue } from './services/queue';
@@ -63,6 +64,7 @@ function App() {
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchItem[]>([]);
+  const [cameraPreviewOpen, setCameraPreviewOpen] = useState(false);
 
   const configured = Boolean(config.apiUrl && config.token);
 
@@ -121,11 +123,16 @@ function App() {
         <section className="hero-card">
           <div className="eyebrow"><ShieldCheck aria-hidden="true" size={14} /> Contract-safe migration</div>
           <h1>명함은 지금처럼 찍고,<br />새 셸은 옆에서 검증합니다.</h1>
-          <p>카메라·OCR 전환 전까지 촬영은 검증된 legacy 경로를 엽니다. 이 후보에서는 상태·목록·설정부터 React로 옮깁니다.</p>
-          <IonButton className="primary-action" expand="block" href="../index.html">
-            <Camera aria-hidden="true" slot="start" size={20} />
-            검증된 카메라 열기
-          </IonButton>
+          <p>촬영·OCR 저장은 검증된 legacy 경로를 유지합니다. 후보 카메라는 이미지를 저장하지 않는 미리보기로 permission·후면 camera·fallback 계약만 병렬 검증합니다.</p>
+          <div className="capture-actions">
+            <IonButton className="primary-action" expand="block" href="../index.html">
+              <Camera aria-hidden="true" slot="start" size={20} />
+              검증된 카메라 열기
+            </IonButton>
+            <IonButton className="secondary-action" fill="outline" expand="block" onClick={() => setCameraPreviewOpen(true)}>
+              후보 카메라 시험
+            </IonButton>
+          </div>
         </section>
 
         <section className="signal-grid" aria-label="현재 상태">
@@ -140,8 +147,8 @@ function App() {
           <ol className="migration-list">
             <li className="done"><span>1</span><div><strong>Shell·contract</strong><small>Ionic shell과 typed adapter</small></div></li>
             <li className="active"><span>2</span><div><strong>Read surfaces</strong><small>진행·검색·설정 병렬 검증</small></div></li>
-            <li><span>3</span><div><strong>Offline·API</strong><small>golden fixture 뒤 write 연결</small></div></li>
-            <li><span>4</span><div><strong>Camera·OCR</strong><small>actual phone gate 뒤 전환</small></div></li>
+            <li className="done"><span>3</span><div><strong>Offline·API</strong><small>queue·server-off 계약 검증</small></div></li>
+            <li className="active"><span>4</span><div><strong>Camera·OCR</strong><small>typed preview 뒤 actual phone gate</small></div></li>
           </ol>
         </section>
       </div>
@@ -254,6 +261,7 @@ function App() {
           </IonContent>
         </IonModal>
         <IonToast isOpen={Boolean(message)} message={message} duration={2600} position="top" onDidDismiss={() => setMessage('')} />
+        <CameraPreviewModal isOpen={cameraPreviewOpen} onDismiss={() => setCameraPreviewOpen(false)} />
       </IonPage>
     </IonApp>
   );

@@ -83,3 +83,32 @@ test('serves the cached candidate shell after the origin server stops', async ({
     if (!stopped) await stopStaticServer(server);
   }
 });
+
+test('opens the candidate camera preview without saving or uploading an image', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getUserMedia: async () => new MediaStream(),
+      },
+    });
+    HTMLMediaElement.prototype.play = async () => undefined;
+  });
+
+  const server = await startStaticServer();
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
+
+  try {
+    await page.goto(`http://127.0.0.1:${address.port}/`, { waitUntil: 'networkidle' });
+    await page.getByRole('button', { name: '후보 카메라 시험' }).click();
+
+    await expect(page.getByText('후보 카메라 계약', { exact: true })).toBeVisible();
+    await expect(page.getByLabel('후면 카메라 미리보기')).toBeVisible();
+    await expect(page.getByText('미리보기 계약 연결됨', { exact: true })).toBeVisible();
+    await expect(page.getByText('이 화면은 아직 이미지를 저장하거나 전송하지 않습니다.', { exact: false })).toBeVisible();
+    await expect(page.getByRole('link', { name: '검증된 카메라로 촬영' })).toBeVisible();
+  } finally {
+    await stopStaticServer(server);
+  }
+});
