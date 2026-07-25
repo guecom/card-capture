@@ -8,6 +8,9 @@ import '@ionic/react/css/padding.css';
 import '@ionic/react/css/flex-utils.css';
 import './styles/app.css';
 import App from './App';
+import { registerCandidateServiceWorker } from './services/service-worker';
+
+void registerCandidateServiceWorker();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
