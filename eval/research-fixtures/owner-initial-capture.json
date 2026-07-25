@@ -1,0 +1,9 @@
+{
+  "id": "research-owner-initial-capture",
+  "synthetic": true,
+  "channel": "research_instruction",
+  "actor": "owner",
+  "target": { "captureId": "20260725-120000-a001" },
+  "input": "공개 자료에서 이 사람의 주요 경력과 현재 회사 이력을 교차 확인해줘.",
+  "expected": { "accepted": true, "riskFlags": [] }
+}

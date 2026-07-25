@@ -2,13 +2,16 @@
 
 사용자에게 보이는 변화 중심으로 기록한다. 형식: 버전 — 날짜 — 커밋. 배포(GAS/Pages) 시점은 `RELEASE.md`의 release evidence가 진실이다.
 
-## [Unreleased] — capture experience wave (branch `agent/card-capture-interview-wave`, Kairen-Ref: TSK-000178, TSK-000217, TSK-000219, TSK-000220)
+## [Unreleased] — capture experience wave (branch `agent/card-capture-interview-wave`, Kairen-Ref: TSK-000178, TSK-000217, TSK-000218, TSK-000219, TSK-000220)
 
 - **이름 먼저 확인**: 촬영 직후 브라우저 내장 OCR을 먼저 시도하고, 미지원 기기에서는 자체 호스팅 Tesseract.js 한국어+영어 모델을 사용한다. 이름은 즉시 확인·수정할 수 있으며 기기 OCR 결과와 provenance를 `quickName`으로 보존한다. 명함 이미지는 제3자 OCR 서비스로 전송하지 않는다.
 - **안정 감지 자동 촬영**: 명함 사각형, 프레임 간 흔들림, 선명도, 심한 과노출을 함께 확인해 안정되면 자동 촬영한다. 사용자는 자동 촬영을 끄거나 언제든 수동 셔터·기본 카메라 폴백을 사용할 수 있다.
 - **저대비 감지 보강**: 빠른 Canny 경로가 명함을 놓치면 적응형 임계값 경로를 제한 주기로 실행해 흰 배경·약한 테두리 인식을 보강한다.
 - **시각 품질 개선**: 브랜드 헤더, 촬영 우선 계층, 차분한 색·타이포·카드 표면, 접근 가능한 포커스와 자동 촬영 진행 피드백을 적용했다.
+- **조사 지시 탭**: owner는 최초 명함 등록과 기존 Person 카드에서 메모와 분리된 조사 지시를 남길 수 있다. GAS는 owner·feature flag·target 일치를 재검증하고 raw/requester/target/time/receipt/policy provenance를 별도 저장한다.
+- **조사 지시 안전 경계**: raw 원문을 system prompt에 합치지 않고 public·lawful source bounded plan으로만 처리한다. private/login 자료, credential, 민감 특성 추론, doxxing, 외부 send/write, paid API, protected write와 human gate 우회는 실행하지 않는다.
 - **회귀 검증**: 자동 촬영의 정상·오발·흔들림·흐림·과노출을 독립 순수 함수와 결정적 테스트로 고정했다.
+- **조사 지시 회귀 검증**: owner/guest, 최초/기존 Person, target mismatch, note 혼입, prompt injection, private·sensitive·doxxing·credential·external·paid effect, source conflict를 합성 fixture로 고정했다.
 
 ## [Unreleased] — watcher v3 (branch `agent/watcher-v3`)
 

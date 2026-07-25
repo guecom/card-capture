@@ -42,7 +42,7 @@ MVP build/testability gate comes before customer proof.
 
 ### Capture experience 후보 (`agent/card-capture-interview-wave`)
 
-Kairen-Ref: `TSK-000178`, `TSK-000217`, `TSK-000219`, `TSK-000220` / `TST-000014`, `TST-000016`~`TST-000018`
+Kairen-Ref: `TSK-000178`, `TSK-000217`~`TSK-000220` / `TST-000014`~`TST-000018`
 
 | # | Acceptance | 자동 검증 | Android Chrome | iOS Safari |
 | --- | --- | --- | --- | --- |
@@ -53,6 +53,19 @@ Kairen-Ref: `TSK-000178`, `TSK-000217`, `TSK-000219`, `TSK-000220` / `TST-000014
 | C5 | 흰 배경·저대비에서 적응형 임계값 폴백이 사각형을 찾음 | 코드 경로·문법 PASS, 실카메라 해당 없음 | ⏳ 흰 명함/흰 배경 10회 | ⏳ 흰 명함/흰 배경 10회 |
 | C6 | 자동 촬영 끄기·수동 셔터·기본 카메라 폴백·재촬영 | DOM·문법 PASS | ⏳ journey 전부 | ⏳ journey 전부 |
 | C7 | 390×844 핵심 화면에 가로 overflow·콘솔 오류·Blocker/Major visual defect 없음 | ✓ overflow 0, console error 0 | ⏳ 실제 기기 시각 승인 | ⏳ 실제 기기 시각 승인 |
+
+### Research instruction 후보 (`DEC-000035`, `TSK-000218`)
+
+| # | Acceptance | 자동 검증 | Owner phone | Guest phone |
+| --- | --- | --- | --- | --- |
+| R1 | 최초 등록에 메모와 분리된 조사 지시 tab, guest에는 미노출 | ✓ 390×844 smoke·DOM·capability gate | ⏳ | ⏳ |
+| R2 | 기존 Person 카드의 조사 지시 action·modal·2,000자 입력 | ✓ synthetic Person card smoke, overflow 0 | ⏳ | － |
+| R3 | owner success, guest direct API `owner_only`, feature off `feature_disabled` | ✓ GAS mock path PASS | ⏳ live receipt | ⏳ direct rejection |
+| R4 | capture/Person target mismatch가 Person write 전 `target_mismatch` | ✓ GAS mock path PASS | ⏳ | － |
+| R5 | raw·requester·target·server time·receipt·fixed policy가 note와 별도 보존 | ✓ initial/existing GAS mock PASS | ⏳ Drive receipt 확인 | － |
+| R6 | prompt injection·private·credential·sensitive·doxxing·external·paid 요구가 경계를 바꾸지 않고 source·confidence·unknown receipt를 남김 | ✓ 9 fixture policy PASS | ⏳ bounded processing receipt | － |
+
+R1~R6의 phone·Drive·processing 열이 통과하기 전에는 [[TST-000015]]을 live PASS나 release-ready로 닫지 않는다. Script Property 변경과 GAS deployment는 사람 gate다.
 
 자동 검증은 합성·로컬 evidence다. C1~C7의 사람 열이 모두 ✓가 되기 전에는 실제 기기 acceptance PASS나 release-ready로 판정하지 않는다.
 

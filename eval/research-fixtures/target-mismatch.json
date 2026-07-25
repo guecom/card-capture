@@ -1,0 +1,9 @@
+{
+  "id": "research-target-mismatch",
+  "synthetic": true,
+  "channel": "research_instruction",
+  "actor": "owner",
+  "target": { "captureId": "20260725-120000-a004", "person": "PER-999904", "capturePerson": "PER-999905" },
+  "input": "공개 경력을 확인해줘.",
+  "expected": { "accepted": false, "apiError": "target_mismatch", "riskFlags": [] }
+}

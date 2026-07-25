@@ -1,0 +1,9 @@
+{
+  "id": "research-guest-owner-only",
+  "synthetic": true,
+  "channel": "research_instruction",
+  "actor": "guest",
+  "target": { "person": "PER-999902" },
+  "input": "공개 경력만 확인해줘.",
+  "expected": { "accepted": false, "apiError": "owner_only", "riskFlags": [] }
+}

@@ -95,6 +95,12 @@
   }
   .field input:focus, .field textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent); }
   .field textarea { resize: none; height: 64px; }
+  .inputTabs { display: flex; gap: 6px; margin: 14px 0 2px; padding: 4px; border-radius: 13px; background: color-mix(in srgb, var(--bg) 82%, transparent); }
+  .inputTab { flex: 1; min-height: 40px; border: 0; border-radius: 10px; color: var(--muted); background: transparent; font: 720 13px/1 inherit; cursor: pointer; }
+  .inputTab.active { color: var(--accent); background: var(--card); box-shadow: 0 2px 8px rgba(14,35,62,.08); }
+  .inputPane[hidden] { display: none; }
+  .researchHelp { margin-top: 7px; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+  .researchHelp strong { color: var(--text); }
   .btn {
     width: 100%; border: 0; border-radius: 14px; padding: 15px; font-size: 16px; font-weight: 760;
     background: linear-gradient(120deg, var(--accent), var(--accent-strong)); color: var(--accent-text); cursor: pointer; margin-top: 16px; box-shadow: 0 9px 22px color-mix(in srgb, var(--accent) 20%, transparent);
@@ -246,9 +252,22 @@
       <label for="relSelfInput">나와 이 사람과의 관계 (선택, 2시간 유지)</label>
       <input id="relSelfInput" placeholder="예: 대학 선배 / 오늘 처음 인사" autocomplete="off">
     </div>
-    <div class="field">
-      <label for="noteInput">메모 (선택 — 키보드 마이크로 말해도 돼요)</label>
-      <textarea id="noteInput" placeholder="예: 공장장님, 우리 부품에 관심 많으심"></textarea>
+    <div class="inputTabs" id="contextTabs" role="tablist" aria-label="메모 또는 조사 지시" style="display:none">
+      <button class="inputTab active" id="noteTab" role="tab" aria-selected="true" aria-controls="notePane" type="button">메모</button>
+      <button class="inputTab" id="researchTab" role="tab" aria-selected="false" aria-controls="researchPane" type="button">조사 지시</button>
+    </div>
+    <div class="inputPane" id="notePane" role="tabpanel" aria-labelledby="noteTab">
+      <div class="field">
+        <label for="noteInput">메모 (선택 — 키보드 마이크로 말해도 돼요)</label>
+        <textarea id="noteInput" placeholder="예: 공장장님, 우리 부품에 관심 많으심"></textarea>
+      </div>
+    </div>
+    <div class="inputPane" id="researchPane" role="tabpanel" aria-labelledby="researchTab" hidden>
+      <div class="field">
+        <label for="researchInstructionInput">이 사람을 어떻게 조사할까요? (소유자 전용)</label>
+        <textarea id="researchInstructionInput" maxlength="2000" placeholder="예: 공개 자료에서 주요 경력과 창업 이력을 깊게 확인해줘"></textarea>
+        <p class="researchHelp"><strong>공개·합법 출처만</strong> 조사해요. 비공개 계정, 민감 특성 추론, 외부 발송·결제 요청은 실행하지 않습니다.</p>
+      </div>
     </div>
     <button class="btn" id="sendBtn" type="button" disabled>완료</button>
     <p class="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br>전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요. <span style="opacity:.55">v1.0</span></p>
@@ -341,9 +360,26 @@
   </div>
 </div>
 
+<!-- 기존 Person에 owner-only 조사 지시 추가 -->
+<div class="overlay" id="researchOverlay">
+  <div class="card">
+    <h3>조사 지시</h3>
+    <p id="researchTarget">이 사람에 대해 공개 자료에서 확인할 내용을 적어주세요.</p>
+    <div class="field">
+      <textarea id="researchOverlayInput" maxlength="2000" style="height:126px" placeholder="예: 공개 경력, 창업 이력, 주요 인터뷰와 현재 회사의 투자 이력을 깊게 교차 확인해줘"></textarea>
+    </div>
+    <p class="researchHelp">원문·요청자·대상·시간을 receipt로 남깁니다. 원문은 시스템 명령으로 합치지 않고, 고정된 안전 규칙 안의 조사 계획으로만 처리합니다.</p>
+    <div class="actrow">
+      <button class="act" id="researchCancel" type="button">취소</button>
+      <button class="act solid" id="researchSubmit" type="button">조사 지시 접수</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script src="camera-quality.js"></script>
+<script src="research-policy.js"></script>
 <script>
 'use strict';
 /* ── 설정 ── */
@@ -1208,6 +1244,9 @@ $('sendBtn').onclick = function () {
   var relSelf = $('relSelfInput').value.trim();
   var relKairen = $('relKairenInput').value.trim();
   var memo = $('noteInput').value.trim();
+  var researchInstruction = canUseResearchInstruction()
+    ? window.CardCaptureResearch.buildSubmission($('researchInstructionInput').value)
+    : null;
   store.set('event', ev);
   store.set('relSelf', relSelf);
   store.set('relKairen', relKairen);
@@ -1229,6 +1268,7 @@ $('sendBtn').onclick = function () {
     disp: memo || relSelf || relKairen,
     images: images,
     quickName: currentQuickName(),
+    researchInstruction: researchInstruction,
     state: 'queued', tries: 0, thumb: ''
   };
   /* 즉시 초기화해서 다음 명함을 바로 찍을 수 있게 (만난 곳·관계 2개는 유지, 메모만 비움) */
@@ -1239,6 +1279,8 @@ $('sendBtn').onclick = function () {
   $('backBtn').innerHTML = '<span>뒷면 추가 <small>(선택)</small></span>';
   $('retakeBtn').style.display = 'none';
   $('noteInput').value = '';
+  $('researchInstructionInput').value = '';
+  setContextInputTab('note');
   $('sendBtn').disabled = true;
   resetQuickName();
 
@@ -1259,7 +1301,9 @@ function sendItem(item) {
   var payload = {
     k: TOKEN, captureId: item.captureId, capturedAt: item.capturedAt,
     capturer: store.get('name') || '', event: item.event, note: item.note,
-    quickName: item.quickName || null, images: item.images
+    quickName: item.quickName || null,
+    researchInstruction: item.researchInstruction || null,
+    images: item.images
   };
   return fetch(API, { method: 'POST', body: JSON.stringify(payload) })
     .then(function (r) { return r.json(); })
@@ -1403,8 +1447,28 @@ function mdLite(text) {
   return root;
 }
 var briefSeeAll = false;
+var researchInstructionEnabled = false;
 var briefExpanded = {};   /* captureId → true, 자동 새로고침에도 펼침 상태 유지 */
 var lastBriefsJson = '';
+function canUseResearchInstruction() {
+  return briefSeeAll && researchInstructionEnabled && !!window.CardCaptureResearch;
+}
+function setContextInputTab(tab) {
+  var research = tab === 'research' && canUseResearchInstruction();
+  $('noteTab').classList.toggle('active', !research);
+  $('researchTab').classList.toggle('active', research);
+  $('noteTab').setAttribute('aria-selected', research ? 'false' : 'true');
+  $('researchTab').setAttribute('aria-selected', research ? 'true' : 'false');
+  $('notePane').hidden = research;
+  $('researchPane').hidden = !research;
+}
+function applyResearchCapability() {
+  var enabled = canUseResearchInstruction();
+  $('contextTabs').style.display = enabled ? 'flex' : 'none';
+  if (!enabled) setContextInputTab('note');
+}
+$('noteTab').onclick = function () { setContextInputTab('note'); };
+$('researchTab').onclick = function () { setContextInputTab('research'); };
 function nameFromBrief(brief) {
   if (!brief) return null;
   var first = String(brief).split('\n')[0];
@@ -1473,6 +1537,8 @@ function renderBriefs(items) {
       title = bn ? bn + ' — 이런 분이에요' : it.brief.split('\n')[0].slice(2);
     } else if (it.type === 'note') {
       title = '메모 → ' + (it.person || '처리 중');
+    } else if (it.type === 'research_instruction') {
+      title = '조사 지시 → ' + (it.person || '처리 중');
     } else if (it.contact && it.contact.name) {
       title = it.contact.name + ' — 브리핑 준비 중'; /* 2-phase 빠른 추출 결과 */
     } else if (it.quickName && it.quickName.name) {
@@ -1525,7 +1591,7 @@ function renderBriefs(items) {
       docBtn.onclick = function (ev2) { ev2.stopPropagation(); openPersonDoc(it); };
       body.appendChild(docBtn);
     }
-    if (it.status === 'processed' && it.type !== 'note') {
+    if (it.status === 'processed' && it.type !== 'note' && it.type !== 'research_instruction') {
       var btnRow = document.createElement('div');
       btnRow.className = 'actrow';
       if (it.person) {
@@ -1535,6 +1601,14 @@ function renderBriefs(items) {
         noteBtn.appendChild(ni); noteBtn.appendChild(document.createTextNode('메모 추가'));
         noteBtn.onclick = function (ev2) { ev2.stopPropagation(); addNoteFlow({ captureId: it.captureId, label: it.person }); };
         btnRow.appendChild(noteBtn);
+        if (canUseResearchInstruction()) {
+          var researchBtn = document.createElement('button');
+          researchBtn.className = 'act';
+          var ri = document.createElement('span'); ri.className = 'ico'; ri.textContent = '⌕';
+          researchBtn.appendChild(ri); researchBtn.appendChild(document.createTextNode('조사 지시'));
+          researchBtn.onclick = function (ev2) { ev2.stopPropagation(); researchInstructionFlow({ captureId: it.captureId, label: it.person }); };
+          btnRow.appendChild(researchBtn);
+        }
       }
       var fixBtn = document.createElement('button');
       fixBtn.className = 'act';
@@ -1604,7 +1678,9 @@ var briefLimit = 30; /* '예전 브리핑 더 보기'로 30씩 확장 (서버 �
 function loadBriefs(manual) {
   if (!API || !TOKEN) return;
   briefSeeAll = store.get('briefSeeAll') === '1';
+  researchInstructionEnabled = store.get('researchInstructionEnabled') === '1';
   toggleSearchUI();
+  applyResearchCapability();
   var cached = store.get('briefs');
   if (cached && !manual) { try { renderBriefs(JSON.parse(cached)); } catch (e) {} }
   fetch(API + '?action=list&k=' + encodeURIComponent(TOKEN) + '&limit=' + briefLimit)
@@ -1615,8 +1691,11 @@ function loadBriefs(manual) {
         return;
       }
       briefSeeAll = !!res.seeAll;
+      researchInstructionEnabled = res.researchInstructionEnabled === true;
       store.set('briefSeeAll', briefSeeAll ? '1' : '');
+      store.set('researchInstructionEnabled', researchInstructionEnabled ? '1' : '');
       toggleSearchUI();
+      applyResearchCapability();
       /* 더 보기: 서버가 hasMore를 주면 버튼 노출 (구서버는 필드 없음 → 숨김 유지) */
       $('briefMore').style.display = res.hasMore ? '' : 'none';
       var json = JSON.stringify(res.items);
@@ -1755,13 +1834,23 @@ function prepCardOf(markdown, fallbackName, noteTarget) {
   if (cr) card.appendChild(cr);
   /* 어디서 열든(검색·전체 프로필) 이 사람에게 바로 메모 추가 (2026-07-24 실사용 피드백) */
   if (noteTarget) {
+    var personActions = document.createElement('div');
+    personActions.className = 'actrow';
     var nb = document.createElement('button');
     nb.className = 'act solid';
-    nb.style.cssText = 'margin-top:10px';
     var nbi = document.createElement('span'); nbi.className = 'ico'; nbi.textContent = '📝';
     nb.appendChild(nbi); nb.appendChild(document.createTextNode('메모 추가'));
     nb.onclick = function () { addNoteFlow(noteTarget); };
-    card.appendChild(nb);
+    personActions.appendChild(nb);
+    if (canUseResearchInstruction()) {
+      var rb = document.createElement('button');
+      rb.className = 'act';
+      var rbi = document.createElement('span'); rbi.className = 'ico'; rbi.textContent = '⌕';
+      rb.appendChild(rbi); rb.appendChild(document.createTextNode('조사 지시'));
+      rb.onclick = function () { researchInstructionFlow(noteTarget); };
+      personActions.appendChild(rb);
+    }
+    card.appendChild(personActions);
   }
   return card;
 }
@@ -1867,6 +1956,52 @@ function addNoteFlow(target) {
     })
     .catch(function () { toastMsg('네트워크 오류 — 다시 시도해 주세요'); });
 }
+
+/* ── owner-only 조사 지시: 메모와 다른 action·field·receipt를 사용한다 ── */
+var activeResearchTarget = null;
+function researchInstructionFlow(target) {
+  if (!canUseResearchInstruction()) {
+    toastMsg('조사 지시는 소유자에게만 열려요');
+    return;
+  }
+  activeResearchTarget = target;
+  $('researchTarget').textContent = (target.label ? target.label + ' — ' : '') + '공개 자료에서 확인할 내용과 깊이를 적어주세요.';
+  $('researchOverlayInput').value = '';
+  $('researchOverlay').classList.add('show');
+  setTimeout(function () { $('researchOverlayInput').focus(); }, 50);
+}
+function closeResearchInstruction() {
+  activeResearchTarget = null;
+  $('researchOverlay').classList.remove('show');
+}
+$('researchCancel').onclick = closeResearchInstruction;
+$('researchSubmit').onclick = function () {
+  if (!activeResearchTarget) return;
+  var submission = window.CardCaptureResearch.buildSubmission($('researchOverlayInput').value);
+  if (!submission) { toastMsg('조사할 내용을 적어주세요'); return; }
+  var payload = { action: 'researchinstruction', k: TOKEN, text: submission.raw };
+  if (activeResearchTarget.captureId) payload.captureId = activeResearchTarget.captureId;
+  if (activeResearchTarget.person) payload.person = activeResearchTarget.person;
+  var btn = $('researchSubmit');
+  btn.disabled = true;
+  fetch(API, { method: 'POST', body: JSON.stringify(payload) })
+    .then(function (r) { return r.json(); })
+    .then(function (res) {
+      if (!res.ok) throw new Error(res.error || 'request_failed');
+      closeResearchInstruction();
+      toastMsg('조사 지시를 접수했어요 — receipt ' + res.receiptId);
+      loadBriefs(true);
+    })
+    .catch(function (err) {
+      var code = String(err.message || err);
+      var message = code === 'owner_only' ? '소유자만 조사 지시를 할 수 있어요' :
+        (code === 'feature_disabled' ? '조사 지시 기능이 잠시 꺼져 있어요' :
+        (code === 'target_mismatch' ? '대상 Person이 일치하지 않아 접수하지 않았어요' :
+        (code === 'not_processed' ? '브리핑 도착 후 조사 지시를 할 수 있어요' : code)));
+      toastMsg('접수 실패: ' + message);
+    })
+    .then(function () { btn.disabled = false; });
+};
 
 /* ── 수정 요청 ── */
 function requestCorrection(it) {

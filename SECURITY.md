@@ -6,7 +6,7 @@ Kairen Ref: `TSK-000141` (credential·access baseline), `TSK-000153` (processing
 
 | 주체 | 자격 | 볼 수 있는 것 | 할 수 있는 것 |
 | --- | --- | --- | --- |
-| Owner (OWNER_NAMES) | 개인 bearer token | 모든 캡처 브리핑, Person `.md` 전문(Private 포함) | 업로드, 전체 조회 |
+| Owner (OWNER_NAMES) | 개인 bearer token | 모든 캡처 브리핑, Person `.md` 전문(Private 포함) | 업로드, 전체 조회, 별도 조사 지시 |
 | Invited capturer | 개인 bearer token | 자신의 캡처·브리핑만 | 업로드, 자기 scope 조회 |
 | 익명 | 없음 | `ping` 상태만 | 없음 (`invalid_token`) |
 | Processing agent | 로컬 인증 세션(Codex/Claude) | vault | vault 내 allowlist 경로 쓰기 (`CardCapture_Processing.md`) |
@@ -21,6 +21,9 @@ Kairen Ref: `TSK-000141` (credential·access baseline), `TSK-000153` (processing
 | 토큰 유출 | 공유 링크 전달·스크린샷·브라우저 이력 | 개인별 토큰 분리, 회수/rotation 절차, DAILY_LIMIT | 절차 문서화됨, rotation은 human gate |
 | Owner 토큰 유출 | 위와 동일 | persondoc·search는 OWNER_NAMES 한정, Private 포함이므로 owner 토큰은 고민감 취급 | 경계 구현됨 |
 | Prompt injection | 명함 인쇄 문구·note·웹 검색 결과 → 처리 agent | 처리 계약의 untrusted-input 규칙 + write allowlist + `eval/` adversarial fixture | 계약·fixture 존재, 회귀로 검증 |
+| 조사 지시 권한 상승 | guest가 숨겨진 UI/API를 직접 호출 | UI capability + `researchInstruction_` server-side OWNER_NAMES 재검증 | owner-only, negative fixture |
+| 조사 지시 prompt injection | owner raw instruction이 system·schema·write gate를 덮어씀 | 별도 field·receipt, fixed policy snapshot, raw/system prompt 분리, bounded-plan fixture | fail-closed 계약·회귀 구현 |
+| 사생활·외부 effect | private login·credential·민감 특성·doxxing·send/write·paid API 요청 | public-lawful-only plan, external effect false, source·confidence·unknown receipt | 금지 계약·adversarial fixture |
 | 경계 밖 write | 처리 agent의 vault 전체 쓰기 권한 | allowlist 계약 + 워처 프롬프트 강제 + eval 회귀 | 계약 수준(OS 강제는 없음 — RELEASE.md known limitation) |
 | Path traversal | captureId·파일명 | `sanitizeId_`(`[A-Za-z0-9_-]{4,64}`), `sanitizeName_` | 구현됨 |
 | 대용량/오염 업로드 | images | 4장 제한, 8MB/장, base64 검증, DAILY_LIMIT(기본 100/일) | 구현됨 |
@@ -38,6 +41,7 @@ canonical 저장소는 GAS Script Properties `TOKENS`(JSON `{token: name}`)이�
 5. **긴급 전체 회수**: `TOKENS`를 `{}`로 교체(모든 접근 즉시 차단) → 새 토큰 재발급.
 6. **Rotation**: (a) 새 토큰들 생성·추가 → (b) replacement 링크를 각 사용자에게 전달·수신 확인 → (c) 구 토큰 삭제 → (d) 구 토큰 `invalid_token`·신 토큰 `whoami` 정상·폰 실동작 확인. **(c)는 기존 링크를 무효화하는 external effect이므로 사람 승인 후 실행한다.**
 7. **감사(audit)**: GAS 편집기 → 실행(Executions) 로그에서 `doGet`/`doPost` 호출 이력·오류를 확인한다. Script Properties 변경 시 변경 일시·사유를 vault `CardCapture_Setup.md`의 변경 이력 표에 기록한다(값은 기록하지 않는다).
+8. **조사 지시 rollback**: 긴급 시 `RESEARCH_INSTRUCTION_ENABLED=false`로 접수 UI/API를 닫는다. 기존 raw receipt는 삭제하지 않고 실행만 중단한다. 재활성화는 원인과 검증 결과를 확인한 뒤 사람이 수행한다.
 
 ## Secret Hygiene
 
