@@ -58,6 +58,13 @@ ion-toolbar {
 .signal-grid strong { color: var(--cc-ink); font-size: 27px; letter-spacing: -0.04em; }
 .signal-grid small { color: var(--cc-muted); font-size: 10px; }
 
+.search-shortcut { display: flex; width: 100%; min-height: 72px; align-items: center; gap: 13px; padding: 14px 16px; border: 1px solid rgba(35,104,216,0.22); border-radius: 19px; background: linear-gradient(145deg, rgba(242,247,255,0.98), rgba(255,255,255,0.96)); color: var(--cc-blue); text-align: left; box-shadow: 0 12px 32px rgba(35,104,216,0.08); }
+.search-shortcut-icon { display: grid; flex: 0 0 auto; width: 42px; height: 42px; place-items: center; border-radius: 14px; background: var(--cc-blue); color: white; box-shadow: 0 8px 18px rgba(35,104,216,0.22); }
+.search-shortcut-copy { display: grid; flex: 1; gap: 3px; }
+.search-shortcut-copy strong { color: var(--cc-ink); font-size: 14px; letter-spacing: -0.025em; }
+.search-shortcut-copy small { color: var(--cc-muted); font-size: 11px; }
+.search-shortcut:focus-visible { outline: 3px solid rgba(35,104,216,0.3); outline-offset: 2px; }
+
 .surface-card { padding: 20px; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .section-heading h2 { margin: 5px 0 0; color: var(--cc-ink); font-size: 20px; letter-spacing: -0.035em; }

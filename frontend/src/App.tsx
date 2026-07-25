@@ -16,7 +16,7 @@ import {
   IonToolbar,
   setupIonicReact,
 } from '@ionic/react';
-import { ArrowUpRight, Camera, ChevronRight, ContactRound, RefreshCw, Search, Settings2, ShieldCheck, Waves } from 'lucide-react';
+import { ArrowUpRight, Camera, ChevronRight, RefreshCw, Search, Settings2, ShieldCheck, Waves } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import type { BriefItem, CaptureQueueItem, QuickName, RuntimeConfig, SearchItem } from './contracts/capture';
@@ -35,7 +35,7 @@ type Tab = 'capture' | 'activity' | 'people' | 'settings';
 const tabs: Array<{ id: Tab; label: string; icon: LucideIcon }> = [
   { id: 'capture', label: '캡처', icon: Camera },
   { id: 'activity', label: '진행', icon: Waves },
-  { id: 'people', label: '사람', icon: ContactRound },
+  { id: 'people', label: '검색', icon: Search },
   { id: 'settings', label: '설정', icon: Settings2 },
 ];
 
@@ -149,6 +149,12 @@ function App() {
           <article><span>로컬 대기</span><strong>{pending}</strong><small>IndexedDB 동일 queue</small></article>
           <article><span>서버 기록</span><strong>{briefs.length}</strong><small>GAS list contract</small></article>
         </section>
+
+        <button className="search-shortcut" type="button" onClick={() => setTab('people')}>
+          <span className="search-shortcut-icon"><Search aria-hidden="true" size={20} /></span>
+          <span className="search-shortcut-copy"><strong>사람 검색</strong><small>이름 또는 회사로 기존 기록 찾기</small></span>
+          <ChevronRight aria-hidden="true" size={19} />
+        </button>
 
         <section className="surface-card">
           <div className="section-heading">

@@ -85,6 +85,25 @@ test('serves the cached candidate shell after the origin server stops', async ({
   }
 });
 
+test('makes person search explicit from the capture home and bottom navigation', async ({ page }) => {
+  const server = await startStaticServer();
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
+
+  try {
+    await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
+
+    await expect(page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '검색' })).toBeVisible();
+    const shortcut = page.getByRole('button', { name: /사람 검색/ });
+    await expect(shortcut).toBeVisible();
+    await shortcut.click();
+    await expect(page.getByRole('heading', { name: '사람 찾기' })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: '이름 또는 회사 검색' })).toBeVisible();
+  } finally {
+    await stopStaticServer(server);
+  }
+});
+
 test('queues a candidate camera frame locally without uploading it', async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(window, '__candidatePostCount', { configurable: true, value: 0, writable: true });
