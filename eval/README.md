@@ -1,6 +1,6 @@
 # Card Capture Regression Eval
 
-Kairen-Ref: `TSK-000143` (extraction·enrichment regression), `TSK-000153` (untrusted 입력 방어), `TSK-000218` (owner 조사 지시)
+Kairen-Ref: `TSK-000143` (extraction·enrichment regression), `TSK-000153` (untrusted 입력 방어), `TSK-000161` (처리 상태 정합성), `TSK-000218` (owner 조사 지시)
 
 MVP build/testability gate comes before customer proof.
 
@@ -38,7 +38,7 @@ node eval\server-syntax.test.js
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\validate.ps1
 ```
 
-`camera-quality.test.js`는 안정 감지, 흔들림 reset, 흐림, 심한 과노출, 한국어·영어 이름 후보, 회사·연락처 오인을 검증한다. `server-syntax.test.js`는 GAS 문법 뒤 `research-policy.test.js`와 `gas-research-policy.test.js`를 실행해 owner/guest, feature flag, target mismatch, initial/existing Person, prompt injection과 금지 effect 9개 fixture를 검증한다. `research-ui-smoke.html`은 390×844 owner 화면에서 최초 등록 tab과 기존 Person action·modal을 확인한다. `ocr-browser-smoke.html`은 로컬 HTTP 서버에서 자체 호스팅 한국어+영어 WASM OCR을 실제로 기동하는 브라우저 smoke다. 실제 명함 감지·자동 촬영·owner/guest live receipt는 `device-acceptance.md`의 Android Chrome/iOS Safari gate를 별도로 통과해야 한다.
+`camera-quality.test.js`는 안정 감지, 흔들림 reset, 흐림, 심한 과노출, 한국어·영어 이름 후보, 회사·연락처 오인을 검증한다. `server-syntax.test.js`는 GAS 문법 뒤 `research-policy.test.js`, `gas-research-policy.test.js`, `status-consistency.test.js`를 실행한다. 마지막 테스트는 목록 cache-busting·`no-store`, POST requeue, 완료·건너뜀 상태 비후퇴, 최신 `receivedAt` 기준 경과 시간을 고정한다. 조사 지시 테스트는 owner/guest, feature flag, target mismatch, initial/existing Person, prompt injection과 금지 effect 9개 fixture를 검증한다. `research-ui-smoke.html`은 390×844 owner 화면에서 최초 등록 tab과 기존 Person action·modal을 확인한다. `ocr-browser-smoke.html`은 로컬 HTTP 서버에서 자체 호스팅 한국어+영어 WASM OCR을 실제로 기동하는 브라우저 smoke다. 실제 명함 감지·자동 촬영·owner/guest live receipt는 `device-acceptance.md`의 Android Chrome/iOS Safari gate를 별도로 통과해야 한다.
 
 ## 조사 지시 Fixture (`research-fixtures/*.json`)
 

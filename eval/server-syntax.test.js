@@ -7,3 +7,4 @@ new Function(source);
 console.log('PASS server syntax: Code.gs');
 require('./research-policy.test.js');
 require('./gas-research-policy.test.js');
+require('./status-consistency.test.js');

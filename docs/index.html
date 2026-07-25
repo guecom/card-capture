@@ -1489,11 +1489,15 @@ function briefNameMap() {
   } catch (e) {}
   return map;
 }
-/* captureId(YYYYMMDD-HHmmss-…, KST)로 경과 분 계산 */
-function elapsedMinOf(captureId) {
-  var m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/.exec(String(captureId || ''));
-  if (!m) return null;
-  var t = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();
+/* 최신 receivedAt을 우선해 재처리 경과 시간을 다시 시작한다. 구서버 응답만 captureId로 폴백. */
+function elapsedMinOf(item) {
+  var t = Date.parse(String((item && item.receivedAt) || ''));
+  if (isNaN(t)) t = Date.parse(String((item && item.capturedAt) || ''));
+  if (isNaN(t)) {
+    var m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/.exec(String((item && item.captureId) || ''));
+    if (!m) return null;
+    t = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();
+  }
   if (isNaN(t)) return null;
   var min = Math.round((Date.now() - t) / 60000);
   return min >= 0 && min < 60 * 24 * 30 ? min : null;
@@ -1515,7 +1519,7 @@ function renderBriefs(items) {
     var pendingLine = '';
     var pendingLate = false;
     if (it.status !== 'processed' && it.status !== 'skipped') {
-      var em = elapsedMinOf(it.captureId);
+      var em = elapsedMinOf(it);
       if (em !== null) {
         /* 단계 표시: 1 이름 인식(OCR) → 2 웹 조사·정리 → 3 브리핑 도착. contact 존재 = 1단계 완료 신호 (2026-07-24 실사용 피드백) */
         var named = !!((it.contact && it.contact.name) || (it.quickName && it.quickName.name));
@@ -1683,7 +1687,8 @@ function loadBriefs(manual) {
   applyResearchCapability();
   var cached = store.get('briefs');
   if (cached && !manual) { try { renderBriefs(JSON.parse(cached)); } catch (e) {} }
-  fetch(API + '?action=list&k=' + encodeURIComponent(TOKEN) + '&limit=' + briefLimit)
+  var listUrl = API + '?action=list&k=' + encodeURIComponent(TOKEN) + '&limit=' + briefLimit + '&_ts=' + Date.now();
+  fetch(listUrl, { cache: 'no-store' })
     .then(function (r) { return r.json(); })
     .then(function (res) {
       if (!res.ok) {
@@ -1930,12 +1935,14 @@ function parseFm(md) {
   }
   return { vals: vals, lists: lists };
 }
-/* 재처리 요청: 처리 지연·이상 시 사용자가 스스로 다시 큐에 넣는다 */
+/* 재처리 요청: POST로 현재 서버 상태를 재검증하고 terminal 상태는 다시 열지 않는다. */
 function requeueCapture(it) {
-  fetch(API + '?action=requeue&k=' + encodeURIComponent(TOKEN) + '&captureId=' + encodeURIComponent(it.captureId))
+  fetch(API, { method: 'POST', body: JSON.stringify({ action: 'requeue', k: TOKEN, captureId: it.captureId }) })
     .then(function (r) { return r.json(); })
     .then(function (res) {
-      if (res.ok) { toastMsg('다시 처리를 요청했어요 — 몇 분 안에 처리돼요'); loadBriefs(true); }
+      if (res.ok && res.alreadyTerminal) { toastMsg(res.status === 'skipped' ? '이미 건너뜀으로 마감됐어요' : '이미 처리가 끝났어요 — 최신 상태로 바꿀게요'); loadBriefs(true); }
+      else if (res.ok && res.deduped) { toastMsg('이미 다시 처리 중이에요'); loadBriefs(true); }
+      else if (res.ok) { toastMsg('다시 처리를 요청했어요 — 몇 분 안에 처리돼요'); loadBriefs(true); }
       else toastMsg('실패: ' + (res.error === 'unknown_action' ? '서버 업데이트(GAS 재배포) 후 가능해요' : res.error));
     })
     .catch(function () { toastMsg('네트워크 오류 — 다시 시도해 주세요'); });

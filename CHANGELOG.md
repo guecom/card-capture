@@ -12,6 +12,7 @@
 - **조사 지시 안전 경계**: raw 원문을 system prompt에 합치지 않고 public·lawful source bounded plan으로만 처리한다. private/login 자료, credential, 민감 특성 추론, doxxing, 외부 send/write, paid API, protected write와 human gate 우회는 실행하지 않는다.
 - **회귀 검증**: 자동 촬영의 정상·오발·흔들림·흐림·과노출을 독립 순수 함수와 결정적 테스트로 고정했다.
 - **조사 지시 회귀 검증**: owner/guest, 최초/기존 Person, target mismatch, note 혼입, prompt injection, private·sensitive·doxxing·credential·external·paid effect, source conflict를 합성 fixture로 고정했다.
+- **처리 상태 정합성**: 브리핑 목록 조회는 cache-busting과 `no-store`로 최신 서버 상태를 읽고, 재처리 요청은 POST에서 terminal 상태를 재검증해 이미 완료·건너뜀인 카드를 `received`로 되돌리지 않는다. 재처리 경과 시간은 최신 `receivedAt`부터 다시 계산한다. (Kairen-Ref: TSK-000161)
 
 ## [Unreleased] — watcher v3 (branch `agent/watcher-v3`)
 
