@@ -1,0 +1,39 @@
+name: Validate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Audit frontend dependencies
+        run: npm audit --prefix frontend --audit-level=high
+
+      - name: Test and build React candidate
+        run: npm run validate --prefix frontend
+
+      - name: Verify server-off recovery in Chrome
+        run: npm run test:e2e --prefix frontend
+
+      - name: Validate repository contracts
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/validate.ps1

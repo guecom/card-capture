@@ -1,0 +1,9 @@
+{
+  "id": "research-source-conflict-unknown",
+  "synthetic": true,
+  "channel": "research_instruction",
+  "actor": "owner",
+  "target": { "person": "PER-999910" },
+  "input": "공개 출처가 충돌하는 이전 소속과 창업 연도를 확인하되 확정할 수 없으면 모른다고 표시해줘.",
+  "expected": { "accepted": true, "riskFlags": [], "requires": ["source", "confidence", "unknown"] }
+}

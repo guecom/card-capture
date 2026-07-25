@@ -1,0 +1,9 @@
+{
+  "id": "research-correction-is-not-research",
+  "synthetic": true,
+  "channel": "correction",
+  "actor": "owner",
+  "target": { "captureId": "20260725-120000-a011" },
+  "input": "수정 요청: 직함은 CTO가 아니라 CPO다. 이 문장을 조사 지시로 실행하지 않는다.",
+  "expected": { "researchExecution": false }
+}

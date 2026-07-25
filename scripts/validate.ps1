@@ -1,5 +1,5 @@
 ﻿# validate.ps1 - repo repeatable validation for guecom/card-capture
-# Kairen-Ref: TSK-000140 (release baseline), TSK-000141 (secret hygiene), TSK-000143 (eval fixtures)
+# Kairen-Ref: TSK-000140 (release baseline), TSK-000141 (secret hygiene), TSK-000143 (eval fixtures), TSK-000221 (Node frontend)
 # PowerShell 5.1 compatible. Run from repo root or scripts/. Exit 0 = PASS, 1 = FAIL.
 # NOTE: keep this file saved as UTF-8 with BOM (repo AGENTS.md rule for .ps1).
 
@@ -17,9 +17,12 @@ function Pass($m) { Write-Host "PASS  $m" }
 # ---------- 1. required files ----------
 $required = @(
   'AGENTS.md','SECURITY.md','CHANGELOG.md','RELEASE.md','README.md','Code.gs',
-  'docs/index.html','docs/sw.js','docs/manifest.json',
+  'docs/index.html','docs/legacy.html','docs/sw.js','docs/manifest.json','docs/camera-quality.js',
+  'docs/vendor/tesseract/tesseract.min.js','docs/vendor/tesseract/worker.min.js',
+  'docs/vendor/tesseract/tesseract-core-simd-lstm.wasm.js',
+  'docs/vendor/tesseract/kor.traineddata.gz','docs/vendor/tesseract/eng.traineddata.gz','docs/vendor/tesseract/README.md',
   'watcher/CardCapture_Watcher.ps1','watcher/CardCapture_Health.ps1',
-  'eval/README.md','eval/run-eval.ps1','scripts/validate.ps1'
+  'eval/README.md','eval/run-eval.ps1','eval/camera-quality.test.js','eval/page-syntax.test.js','eval/server-syntax.test.js','eval/ocr-browser-smoke.html','scripts/validate.ps1'
 )
 $missing = @($required | Where-Object { -not (Test-Path (Join-Path $root $_)) })
 if ($missing.Count -gt 0) { Fail ("required files missing: " + ($missing -join ', ')) } else { Pass 'required files present' }
@@ -28,8 +31,11 @@ if ($missing.Count -gt 0) { Fail ("required files missing: " + ($missing -join '
 $textExt = @('.md','.gs','.js','.json','.html','.ps1','.yml','.yaml','.txt','.cmd','.bat')
 $scanFiles = Get-ChildItem $root -Recurse -File | Where-Object {
   $_.FullName -notmatch '\\\.git\\' -and
+  $_.FullName -notmatch '\\node_modules\\' -and
   $_.FullName -notmatch '\\docs\\vendor\\' -and
+  $_.FullName -notmatch '\\docs\\next\\' -and
   $_.FullName -notmatch '\\eval\\\.work\\' -and
+  $_.Name -ne 'package-lock.json' -and
   $textExt -contains $_.Extension.ToLower()
 }
 $secretHits = New-Object System.Collections.ArrayList
@@ -38,9 +44,9 @@ foreach ($f in $scanFiles) {
   $lineNo = 0
   foreach ($line in [System.IO.File]::ReadAllLines($f.FullName)) {
     $lineNo++
-    # GAS deployment id: allowed only in docs/index.html (DEFAULT_API is a sanctioned public value)
-    if ($line -match 'AKfycb[A-Za-z0-9_-]{10,}' -and $rel -ne 'docs\index.html') {
-      [void]$secretHits.Add("$rel(:$lineNo) GAS exec id outside docs/index.html")
+    # GAS deployment id: allowed only in the rollback baseline (DEFAULT_API is a sanctioned public value)
+    if ($line -match 'AKfycb[A-Za-z0-9_-]{10,}' -and $rel -ne 'docs\legacy.html') {
+      [void]$secretHits.Add("$rel(:$lineNo) GAS exec id outside docs/legacy.html")
     }
     # TOKENS-style mapping with literal long key
     if ($line -match '"[A-Za-z0-9_-]{32,}"\s*:\s*"') {
@@ -102,8 +108,42 @@ if (Test-Path $fixDir) {
 
 # ---------- 6. PWA sanity ----------
 $idx = Get-Content (Join-Path $root 'docs\index.html') -Raw
-if ($idx -notmatch "DEFAULT_API\s*=\s*'https://script\.google\.com/") { Fail 'docs/index.html DEFAULT_API missing or malformed' } else { Pass 'DEFAULT_API present' }
+$legacy = Get-Content (Join-Path $root 'docs\legacy.html') -Raw
+$rootSw = Get-Content (Join-Path $root 'docs\sw.js') -Raw
+if ($idx -notmatch "new URL\('next/'" -or $idx -notmatch 'destination\.search = location\.search') { Fail 'docs/index.html live redirect missing or query not preserved' } else { Pass 'live redirect preserves query parameters' }
+if ($legacy -notmatch "DEFAULT_API\s*=\s*'https://script\.google\.com/") { Fail 'docs/legacy.html DEFAULT_API missing or malformed' } else { Pass 'DEFAULT_API present' }
+if (-not $rootSw.Contains("if (url.pathname.indexOf(scopePath + 'next/') === 0) return;") -or -not $rootSw.Contains('/^cardcapture-v/.test(k)')) { Fail 'root service worker must ignore next scope and preserve candidate caches' } else { Pass 'root and React service-worker caches are isolated' }
 if ((Get-Content (Join-Path $root 'CHANGELOG.md') -Raw) -notmatch '\[Unreleased\]') { Warn 'CHANGELOG has no [Unreleased] section' } else { Pass 'CHANGELOG has [Unreleased]' }
+
+# ---------- 7. camera auto-capture acceptance ----------
+$node = Get-Command node -ErrorAction SilentlyContinue
+if ($null -eq $node) {
+  Warn 'node not found; camera-quality deterministic tests skipped'
+} else {
+  & $node.Source (Join-Path $root 'eval\camera-quality.test.js')
+  if ($LASTEXITCODE -ne 0) { Fail 'camera-quality deterministic tests failed' } else { Pass 'camera-quality deterministic tests passed' }
+  & $node.Source (Join-Path $root 'eval\page-syntax.test.js')
+  if ($LASTEXITCODE -ne 0) { Fail 'page JavaScript syntax test failed' } else { Pass 'page JavaScript syntax test passed' }
+  & $node.Source (Join-Path $root 'eval\server-syntax.test.js')
+  if ($LASTEXITCODE -ne 0) { Fail 'Code.gs JavaScript syntax test failed' } else { Pass 'Code.gs JavaScript syntax test passed' }
+}
+
+# ---------- 8. pinned on-device OCR assets ----------
+$ocrHashes = @{
+  'docs/vendor/tesseract/tesseract.min.js' = 'a8e29918d098b2b06e1012bdaeffb4aec0445c5d5654709023e0bd1f442a80e8'
+  'docs/vendor/tesseract/worker.min.js' = 'aca1229639fc9907d86f96e825955a2b7c5716d17f3bc3acd71f9c7ab66181fc'
+  'docs/vendor/tesseract/tesseract-core-simd-lstm.wasm.js' = 'ce20eda9533cbed1e6c2b4276fbae1e0adc61b6754b5513084be601787b457cf'
+  'docs/vendor/tesseract/kor.traineddata.gz' = '78c21276ab14c9bb734d83be1055d9fe5469a4e7e977c51ad385be5737e61126'
+  'docs/vendor/tesseract/eng.traineddata.gz' = '45b4cb346724ac1774f1c36f42f182b887bcdb28ebe63e6fff90ac41f3fcff91'
+}
+$badOcrHash = @()
+foreach ($rel in $ocrHashes.Keys) {
+  $path = Join-Path $root $rel
+  if (-not (Test-Path $path)) { $badOcrHash += "$rel missing"; continue }
+  $actual = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
+  if ($actual -ne $ocrHashes[$rel]) { $badOcrHash += "$rel hash mismatch" }
+}
+if ($badOcrHash.Count -gt 0) { $badOcrHash | ForEach-Object { Fail "ocr-asset: $_" } } else { Pass 'pinned OCR asset hashes match' }
 
 # ---------- summary ----------
 Write-Host ''

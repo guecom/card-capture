@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>OCR smoke pending</title>
+  <script src="../docs/vendor/tesseract/tesseract.min.js"></script>
+</head>
+<body data-status="pending">
+  <canvas id="fixture" width="1000" height="480"></canvas>
+  <pre id="result">pending</pre>
+  <script>
+    (async function () {
+      var started = performance.now();
+      var canvas = document.getElementById('fixture');
+      var ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#111827'; ctx.font = '700 104px sans-serif'; ctx.fillText('김하늘', 72, 165);
+      ctx.font = '700 84px sans-serif'; ctx.fillText('Daniel Kim', 72, 310);
+      ctx.font = '36px sans-serif'; ctx.fillText('Kairen Robotics · Product Director', 72, 390);
+      try {
+        var worker = await Tesseract.createWorker('kor+eng', 1, {
+          workerPath: '../docs/vendor/tesseract/worker.min.js',
+          langPath: '../docs/vendor/tesseract/',
+          corePath: '../docs/vendor/tesseract/tesseract-core-simd-lstm.wasm.js'
+        });
+        await worker.setParameters({ tessedit_pageseg_mode: '11' });
+        var result = await worker.recognize(canvas);
+        await worker.terminate();
+        var text = String(result.data.text || '').trim();
+        var ok = /김\s*하\s*늘|Daniel\s+Kim/i.test(text);
+        document.body.dataset.status = ok ? 'pass' : 'fail';
+        document.getElementById('result').textContent = JSON.stringify({ ok: ok, elapsedMs: Math.round(performance.now() - started), text: text }, null, 2);
+        document.title = ok ? 'OCR smoke PASS' : 'OCR smoke FAIL';
+      } catch (error) {
+        document.body.dataset.status = 'error';
+        document.getElementById('result').textContent = String(error && error.stack || error);
+        document.title = 'OCR smoke ERROR';
+      }
+    }());
+  </script>
+</body>
+</html>

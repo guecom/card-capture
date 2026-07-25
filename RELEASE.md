@@ -8,7 +8,7 @@ Kairen-Ref: `TSK-000140` (release baseline). 이 문서는 "무엇이 하나의 
 | --- | --- |
 | Repository 상태 | release 대상 commit SHA(가능하면 tag)가 `main`에 포함 |
 | Pages 일치 | `https://guecom.github.io/card-capture/index.html` 콘텐츠 해시 == 해당 SHA의 `docs/index.html` 해시 (`sw.js` 동일) |
-| GAS 동작 | `ping` ok · 무효 토큰이 `whoami`/`list`/`persondoc`(·`search`)에서 `invalid_token` · unknown action 거부 · (배포 직후) 유효 토큰 1회 실동작은 사람이 폰에서 확인 |
+| GAS 동작 | `ping` ok · 무효 토큰이 `whoami`/`list`/`persondoc`(·`search`·`researchinstruction`)에서 `invalid_token` · guest 조사 지시 `owner_only` · target mismatch 거부 · unknown action 거부 · (배포 직후) 유효 owner 토큰 1회 실동작은 사람이 폰에서 확인 |
 | GAS 배포 | 어떤 deployment version이 어느 Code.gs 상태인지(배포 일시·버전 메모) |
 | Watcher | 실행 중 PID·health 파일 최신성(`watcher-health.json`), 워처 스크립트 버전(commit) |
 | Processing contract | vault `CardCapture_Processing.md`의 당시 상태(vault 이력으로 식별) |
@@ -23,6 +23,8 @@ release 기록은 이 파일 하단 "Verified Baselines"에 최신이 위로 오
 3. `Code.gs` 변경이 있으면 사람: GAS 재배포 — vault `CardCapture_Setup.md`의 클릭 단위 절차 (human gate).
 4. 검증: 위 표의 각 항목 확인(Pages 해시 비교, GAS probe는 무효 토큰 거부까지 스크립트로, 유효 토큰 실동작은 폰에서).
 5. 이 파일에 baseline 기록 + vault Task에 exact SHA·결과 회수.
+
+조사 지시를 되돌릴 때는 code rollback 전에도 Script Property `RESEARCH_INSTRUCTION_ENABLED=false`로 새 접수를 닫을 수 있다. 이 변경과 재활성화는 사람 운영 게이트다.
 
 ## Rollback
 

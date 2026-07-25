@@ -1,0 +1,3 @@
+# Vendored OCR runtime hashes are release invariants; never rewrite line endings.
+docs/vendor/tesseract/*.js binary
+docs/vendor/tesseract/*.gz binary

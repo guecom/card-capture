@@ -9,11 +9,13 @@
  *   TOKENS           필수. JSON 문자열: {"긴랜덤토큰1":"강규","긴랜덤토큰2":"홍길동"}
  *   DAILY_LIMIT      선택. 토큰당 하루 업로드 상한 (기본 100)
  *   OWNER_NAMES      선택. 쉼표 구분 이름 목록 (예: "강규") — 이 이름의 토큰은 모든 캡처의 브리핑을 봄. 그 외는 자기 캡처만.
+ *   RESEARCH_INSTRUCTION_ENABLED 선택. "false"면 조사 지시 UI/API를 즉시 비활성화 (기본 true)
  *
  * 클라이언트 계약 (webapp/index.html):
  *   POST body (text/plain, JSON): {
  *     k: 토큰, captureId: "yyyyMMdd-HHmmss-xxxx", capturedAt: ISO문자열,
  *     event: 행사명(선택), note: 한줄메모(선택),
+ *     quickName: {name, source, confidence, confirmed, recognizedAt} | null,
  *     images: [{name:"front.jpg"|"back.jpg", mime:"image/jpeg", dataB64:"..."}]
  *   }
  *   GET ?action=ping           → 상태 확인
@@ -27,6 +29,7 @@
  *   GET ?action=requeue&k=토큰&captureId=ID   → 구버전 앱 호환용 재처리 요청
  *   POST {action:'correction', k, captureId, text} → 수정 요청 저장 + 재처리 대기 전환
  *   POST {action:'addnote', k, text, captureId|person} → 사후 메모 접수(-note 캡처로 파이프라인 재사용)
+ *   POST {action:'researchinstruction', k, text, captureId|person} → owner-only 조사 지시 접수
  */
 
 var CONF = PropertiesService.getScriptProperties();
@@ -38,7 +41,12 @@ function doGet(e) {
   }
   if (action === 'whoami') {
     var name = capturerFor_(e.parameter.k);
-    return json_(name ? { ok: true, name: name } : { ok: false, error: 'invalid_token' });
+    return json_(name ? {
+      ok: true,
+      name: name,
+      owner: isOwner_(name),
+      researchInstructionEnabled: researchInstructionEnabled_()
+    } : { ok: false, error: 'invalid_token' });
   }
   if (action === 'list') {
     return listCaptures_(e.parameter.k, e.parameter.limit, e.parameter.offset);
@@ -105,6 +113,11 @@ function requeue_(token, captureId) {
 function isOwner_(name) {
   var owners = String(CONF.getProperty('OWNER_NAMES') || '').split(',').map(function (s) { return s.trim(); }).filter(String);
   return owners.indexOf(name) >= 0;
+}
+
+/* Rollback switch. 명시적으로 false일 때만 닫아 기존 배포 설정 없이도 승인된 기능이 열린다. */
+function researchInstructionEnabled_() {
+  return String(CONF.getProperty('RESEARCH_INSTRUCTION_ENABLED') || 'true').toLowerCase() !== 'false';
 }
 
 /* vault Person 폴더 탐색: inbox → 00_Inbox → Kairen → 02_Kairen_OS/30_Instance/Person */
@@ -290,13 +303,22 @@ function listCaptures_(token, limitParam, offsetParam) {
       person: meta.person || '',
       personAction: meta.personAction || '',
       type: meta.type || 'capture',
-      contact: meta.contact || null
+      contact: meta.contact || null,
+      quickName: meta.quickName || null
     };
     var brief = readNewestText_(folder, 'brief', '.md');
     if (brief) item.brief = brief.slice(0, 6000);
     items.push(item);
   }
-  return json_({ ok: true, name: name, seeAll: seeAll, items: items, offset: offset, hasMore: hasMore });
+  return json_({
+    ok: true,
+    name: name,
+    seeAll: seeAll,
+    researchInstructionEnabled: researchInstructionEnabled_(),
+    items: items,
+    offset: offset,
+    hasMore: hasMore
+  });
 }
 
 function readTextFile_(folder, fname) {
@@ -331,8 +353,12 @@ function doPost(e) {
     if (req.action === 'requeue') return requeue_(req.k, req.captureId);
     if (req.action === 'correction') return correction_(req);
     if (req.action === 'addnote') return addNote_(req);
+    if (req.action === 'researchinstruction') return researchInstruction_(req);
     var name = capturerFor_(req.k);
     if (!name) return json_({ ok: false, error: 'invalid_token' });
+    var researchRaw = sanitizeResearchRaw_(req.researchInstruction);
+    if (researchRaw && !researchInstructionEnabled_()) return json_({ ok: false, error: 'feature_disabled' });
+    if (researchRaw && !isOwner_(name)) return json_({ ok: false, error: 'owner_only' });
     if (!withinDailyLimit_(req.k)) return json_({ ok: false, error: 'daily_limit' });
 
     var captureId = sanitizeId_(req.captureId) || newId_();
@@ -376,9 +402,15 @@ function doPost(e) {
       receivedAt: new Date().toISOString(),
       event: String(req.event || '').slice(0, 200),
       note: String(req.note || '').slice(0, 2000),
+      quickName: sanitizeQuickName_(req.quickName),
       files: saved,
       status: 'received'
     };
+    if (researchRaw) {
+      meta.researchInstruction = researchEnvelope_(researchRaw, name, {
+        captureId: captureId
+      }, captureId + '-research-1');
+    }
     upsertFile_(folder, 'capture.json',
       Utilities.newBlob(JSON.stringify(meta, null, 2), 'application/json', 'capture.json'));
 
@@ -446,6 +478,70 @@ function addNote_(req) {
   return json_({ ok: true, noteId: noteId, person: person });
 }
 
+/* Owner-only 조사 지시. 원문은 provenance 데이터로만 저장하고 서버 고정 policy snapshot을 붙인다.
+   실제 실행은 CardCapture_Processing의 bounded-plan 규칙이 담당하며 이 action은 그 경계를 바꾸지 않는다. */
+function researchInstruction_(req) {
+  var name = capturerFor_(req.k);
+  if (!name) return json_({ ok: false, error: 'invalid_token' });
+  if (!isOwner_(name)) return json_({ ok: false, error: 'owner_only' });
+  if (!researchInstructionEnabled_()) return json_({ ok: false, error: 'feature_disabled' });
+  if (!withinDailyLimit_(req.k)) return json_({ ok: false, error: 'daily_limit' });
+  var raw = sanitizeResearchRaw_(req.text);
+  if (!raw) return json_({ ok: false, error: 'empty_text' });
+
+  var inboxId = CONF.getProperty('INBOX_FOLDER_ID');
+  if (!inboxId) return json_({ ok: false, error: 'not_configured' });
+  var inbox = DriveApp.getFolderById(inboxId);
+  var person = '';
+  var relatedCaptureId = '';
+
+  if (req.captureId) {
+    var cid = sanitizeId_(req.captureId);
+    if (!cid) return json_({ ok: false, error: 'bad_capture_id' });
+    var captures = inbox.getFoldersByName(cid);
+    if (!captures.hasNext()) return json_({ ok: false, error: 'not_found' });
+    var captureMeta = readJsonFile_(captures.next());
+    if (!captureMeta) return json_({ ok: false, error: 'no_capture_json' });
+    if (!captureMeta.person) return json_({ ok: false, error: 'not_processed' });
+    person = String(captureMeta.person);
+    relatedCaptureId = cid;
+  }
+
+  if (req.person) {
+    var requestedPerson = String(req.person);
+    if (!/^PER-\d{6}$/.test(requestedPerson)) return json_({ ok: false, error: 'bad_person_id' });
+    if (person && person !== requestedPerson) return json_({ ok: false, error: 'target_mismatch' });
+    person = requestedPerson;
+  }
+  if (!person) return json_({ ok: false, error: 'no_target' });
+
+  var researchId = newId_() + '-research';
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  var folder;
+  try {
+    folder = inbox.createFolder(researchId);
+  } finally {
+    lock.releaseLock();
+  }
+  var instruction = researchEnvelope_(raw, name, {
+    person: person,
+    captureId: relatedCaptureId
+  }, researchId);
+  var researchMeta = {
+    captureId: researchId,
+    type: 'research_instruction',
+    capturer: name,
+    person: person,
+    relatedCaptureId: relatedCaptureId,
+    researchInstruction: instruction,
+    receivedAt: instruction.requestedAt,
+    status: 'received'
+  };
+  folder.createFile(Utilities.newBlob(JSON.stringify(researchMeta, null, 2), 'application/json', 'capture.json'));
+  return json_({ ok: true, receiptId: researchId, person: person, status: 'received' });
+}
+
 function capturerFor_(token) {
   if (!token) return null;
   try {
@@ -477,6 +573,59 @@ function sanitizeName_(name) {
   var s = String(name).replace(/[^A-Za-z0-9._-]/g, '');
   if (!s || s.indexOf('.') === 0) return null;
   return s.slice(0, 64);
+}
+
+/* 기기 OCR 결과는 표시·검증용 힌트일 뿐 Person 식별의 권위 있는 값이 아니다. */
+function sanitizeQuickName_(value) {
+  if (!value || typeof value !== 'object') return null;
+  var name = String(value.name || '').replace(/[\r\n\t]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+  if (!name) return null;
+  var allowed = ['device_text_detector', 'device_tesseract', 'user_corrected', 'user_entered'];
+  var source = allowed.indexOf(String(value.source || '')) >= 0 ? String(value.source) : 'device_tesseract';
+  var confidence = Number(value.confidence || 0);
+  if (!isFinite(confidence)) confidence = 0;
+  confidence = Math.max(0, Math.min(100, Math.round(confidence)));
+  return {
+    name: name,
+    source: source,
+    confidence: confidence,
+    confirmed: value.confirmed === true,
+    recognizedAt: String(value.recognizedAt || '').slice(0, 40)
+  };
+}
+
+function sanitizeResearchRaw_(value) {
+  var raw = value && typeof value === 'object' ? value.raw : value;
+  return String(raw || '')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ')
+    .replace(/\r\n?/g, '\n')
+    .trim()
+    .slice(0, 2000);
+}
+
+function researchEnvelope_(raw, requestedBy, target, receiptId) {
+  return {
+    raw: sanitizeResearchRaw_(raw),
+    requestedBy: String(requestedBy || '').slice(0, 120),
+    requestedAt: new Date().toISOString(),
+    target: target,
+    receiptId: String(receiptId || '').slice(0, 80),
+    status: 'received',
+    policy: {
+      version: 'public-research-v1',
+      mode: 'bounded_plan_required',
+      publicLawfulSourcesOnly: true,
+      privateOrLoginSources: false,
+      credentials: false,
+      sensitiveTraitInference: false,
+      doxxing: false,
+      externalSendOrWrite: false,
+      paidApi: false,
+      protectedWriteOverride: false,
+      humanGateOverride: false,
+      reviewCeiling: 'agent_checked'
+    }
+  };
 }
 
 function upsertFile_(folder, fname, blob) {

@@ -2,8 +2,33 @@
 
 사용자에게 보이는 변화 중심으로 기록한다. 형식: 버전 — 날짜 — 커밋. 배포(GAS/Pages) 시점은 `RELEASE.md`의 release evidence가 진실이다.
 
-## [Unreleased] — processing status hotfix (branch `agent/status-consistency-hotfix`, Kairen-Ref: TSK-000161)
+## [Unreleased] — React Ionic migration candidate (branch `agent/tsk-000221-react-ionic-shell`, Kairen-Ref: TSK-000221)
 
+- **운영 승격 준비**: 기본 Pages URL이 token·view query를 보존해 React 앱을 열고, 기존 static 앱은 `legacy.html` 복구 경로로 보존한다. root와 React service worker가 서로의 cache를 지우지 않도록 경계를 분리했다.
+- **검색 진입점**: 하단 내비게이션의 모호한 `사람` 탭을 `검색`으로 바꾸고 캡처 첫 화면에 `사람 검색` 바로가기를 추가해 이름·회사 검색을 즉시 발견할 수 있게 했다.
+- **병렬 app shell**: React·TypeScript·Vite와 Ionic React로 `docs/next/` 후보를 만들고 legacy `docs/index.html`은 rollback baseline으로 유지한다.
+- **style ownership**: Ionic은 mobile shell·safe area·modal·toast를 소유하고, Tailwind는 Preflight 없이 Kairen-owned layout·content에만 사용한다.
+- **contract adapter**: 기존 GAS `list`·`search`·`doc`·`persondoc`·`requeue`·`addnote`·`researchinstruction`·`correction`·upload payload와 IndexedDB `cardcapture/q`를 typed boundary로 고정했다.
+- **설정·offline queue parity**: 기존 `?api`·`?k` 링크와 `cc_*` 저장 key를 그대로 받고, IndexedDB reopen·captureId 순차 전송·local `sent` 비중복·online/visibility 재전송·실패 data/tries·수동 재시도·50건 이후 sent 원본 정리를 복원했다.
+- **candidate offline shell**: 취약한 Workbox dependency를 채택하지 않고 작은 build-time generator로 `/next/` scope 전용 service worker와 web manifest를 생성한다. legacy root service worker는 교체하지 않는다.
+- **server-off recovery gate**: Playwright가 실제 정적 서버를 종료한 뒤 Chrome reload를 수행해 cached shell·navigation이 복구되는지 검증한다.
+- **촬영 parity**: 후면 camera permission·resolution·failure mapping·track cleanup, 앞·뒷면, retake, torch, 기본 카메라 fallback, stable auto-capture, 맥락·메모·owner 조사 지시를 React 후보에 연결했다.
+- **captured-image queue gate**: camera frame을 legacy와 같은 최대 2000px long edge·JPEG 0.85로 만들고 기존 IndexedDB queue에 보관한 뒤 설정된 기존 GAS로 자동 전송한다. 미설정·offline에서는 POST 0을 유지하고 연결 복귀 뒤 같은 captureId로 보낸다.
+- **quick-name OCR boundary**: legacy `nameCandidate`와 parity를 고정하고, 기기 `TextDetector`를 우선한 뒤 pinned self-hosted Tesseract로 fallback해 `quickName`을 같은 queue payload에 보존한다. OCR 실패는 촬영·로컬 보관을 막지 않는다.
+- **OpenCV geometry boundary**: 기존 Otsu/Canny·adaptive threshold·명함 비율 scoring·perspective warp를 typed service로 분리하고, 엔진 지연·검출 실패 때 전체 프레임으로 비차단 fallback한다. 실제 명함 검출 품질 판정은 phone gate에 남긴다.
+- **read/action parity**: 최근 캡처 상세·정보/사진 수정·같은 captureId 재전송, 20초 briefing refresh·지연 재처리·pagination·offline cache, Person profile, 전화·문자·메일·vCard, 사후 메모·조사 지시·수정 요청, 최근 검색과 PWA shortcut을 복원했다.
+- **점진 전환**: 기존 사용자 기능은 React 후보에 직접 연결하되 legacy app은 rollback link로 유지한다. 실제 명함 crop·한영 OCR·자동 촬영 오발과 Android/iOS camera·offline acceptance 뒤에만 merge·release를 판단한다.
+
+## [Unreleased] — capture experience wave (branch `agent/card-capture-interview-wave`, Kairen-Ref: TSK-000178, TSK-000217, TSK-000218, TSK-000219, TSK-000220)
+
+- **이름 먼저 확인**: 촬영 직후 브라우저 내장 OCR을 먼저 시도하고, 미지원 기기에서는 자체 호스팅 Tesseract.js 한국어+영어 모델을 사용한다. 이름은 즉시 확인·수정할 수 있으며 기기 OCR 결과와 provenance를 `quickName`으로 보존한다. 명함 이미지는 제3자 OCR 서비스로 전송하지 않는다.
+- **안정 감지 자동 촬영**: 명함 사각형, 프레임 간 흔들림, 선명도, 심한 과노출을 함께 확인해 안정되면 자동 촬영한다. 사용자는 자동 촬영을 끄거나 언제든 수동 셔터·기본 카메라 폴백을 사용할 수 있다.
+- **저대비 감지 보강**: 빠른 Canny 경로가 명함을 놓치면 적응형 임계값 경로를 제한 주기로 실행해 흰 배경·약한 테두리 인식을 보강한다.
+- **시각 품질 개선**: 브랜드 헤더, 촬영 우선 계층, 차분한 색·타이포·카드 표면, 접근 가능한 포커스와 자동 촬영 진행 피드백을 적용했다.
+- **조사 지시 탭**: owner는 최초 명함 등록과 기존 Person 카드에서 메모와 분리된 조사 지시를 남길 수 있다. GAS는 owner·feature flag·target 일치를 재검증하고 raw/requester/target/time/receipt/policy provenance를 별도 저장한다.
+- **조사 지시 안전 경계**: raw 원문을 system prompt에 합치지 않고 public·lawful source bounded plan으로만 처리한다. private/login 자료, credential, 민감 특성 추론, doxxing, 외부 send/write, paid API, protected write와 human gate 우회는 실행하지 않는다.
+- **회귀 검증**: 자동 촬영의 정상·오발·흔들림·흐림·과노출을 독립 순수 함수와 결정적 테스트로 고정했다.
+- **조사 지시 회귀 검증**: owner/guest, 최초/기존 Person, target mismatch, note 혼입, prompt injection, private·sensitive·doxxing·credential·external·paid effect, source conflict를 합성 fixture로 고정했다.
 - **처리 상태 정합성**: 브리핑 목록 조회는 cache-busting과 `no-store`로 최신 서버 상태를 읽고, 재처리 요청은 POST에서 terminal 상태를 재검증해 이미 완료·건너뜀인 카드를 `received`로 되돌리지 않는다. 재처리 경과 시간은 최신 `receivedAt`부터 다시 계산한다. (Kairen-Ref: TSK-000161)
 
 ## [Unreleased] — watcher v3 (branch `agent/watcher-v3`)
