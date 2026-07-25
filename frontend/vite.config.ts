@@ -5,7 +5,7 @@ import tailwindcss from '@tailwindcss/vite';
 import { readFileSync } from 'node:fs';
 
 function readLegacyDefaultApi(): string {
-  const legacyHtml = readFileSync(new URL('../docs/index.html', import.meta.url), 'utf8');
+  const legacyHtml = readFileSync(new URL('../docs/legacy.html', import.meta.url), 'utf8');
   const match = /var DEFAULT_API = '([^']+)'/.exec(legacyHtml);
   if (!match?.[1]) throw new Error('legacy_default_api_missing');
   return match[1];
@@ -77,9 +77,9 @@ self.addEventListener('fetch', (event) => {
         fileName: 'manifest.webmanifest',
         source: JSON.stringify({
           id: './',
-          name: 'Kairen Card Capture Next',
-          short_name: 'Card Capture Next',
-          description: 'Contract-preserving React Ionic migration candidate for Kairen Card Capture.',
+          name: 'Kairen Card Capture',
+          short_name: 'Card Capture',
+          description: '명함을 촬영해 Kairen 인물 기억과 브리핑으로 연결합니다.',
           theme_color: '#f6f8fb',
           background_color: '#f5f7fb',
           display: 'standalone',

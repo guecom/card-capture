@@ -381,7 +381,7 @@ export function CameraPreviewModal({
         {phase === 'error' && <IonButton expand="block" onClick={() => void startPreview(side)}>다시 시도</IonButton>}
         {(phase === 'streaming' || phase === 'error') && <IonButton expand="block" fill="outline" onClick={() => nativeInputRef.current?.click()}>기본 카메라 앱으로 찍기</IonButton>}
         <input ref={nativeInputRef} className="native-camera-input" type="file" accept="image/*" capture="environment" onChange={(inputEvent) => { void handleNativeFile(inputEvent.target.files?.[0]); inputEvent.target.value = ''; }} />
-        <IonButton expand="block" fill="clear" href="../index.html">Legacy 촬영 화면으로 돌아가기</IonButton>
+        <IonButton expand="block" fill="clear" href="../legacy.html">이전 촬영 화면 열기 · 복구용</IonButton>
       </IonContent>
     </IonModal>
   );

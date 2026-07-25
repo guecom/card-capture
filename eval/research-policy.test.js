@@ -8,7 +8,7 @@ var policy = require('../docs/research-policy.js');
 var root = path.join(__dirname, '..');
 var fixtureDir = path.join(__dirname, 'research-fixtures');
 var server = fs.readFileSync(path.join(root, 'Code.gs'), 'utf8');
-var page = fs.readFileSync(path.join(root, 'docs', 'index.html'), 'utf8');
+var page = fs.readFileSync(path.join(root, 'docs', 'legacy.html'), 'utf8');
 var processing = fs.readFileSync(path.join(root, 'PROCESSING_CONTRACT.md'), 'utf8');
 var fixtures = fs.readdirSync(fixtureDir).filter(function (name) { return /\.json$/.test(name); })
   .map(function (name) { return JSON.parse(fs.readFileSync(path.join(fixtureDir, name), 'utf8')); });

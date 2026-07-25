@@ -4,6 +4,7 @@
 
 ## [Unreleased] — React Ionic migration candidate (branch `agent/tsk-000221-react-ionic-shell`, Kairen-Ref: TSK-000221)
 
+- **운영 승격 준비**: 기본 Pages URL이 token·view query를 보존해 React 앱을 열고, 기존 static 앱은 `legacy.html` 복구 경로로 보존한다. root와 React service worker가 서로의 cache를 지우지 않도록 경계를 분리했다.
 - **검색 진입점**: 하단 내비게이션의 모호한 `사람` 탭을 `검색`으로 바꾸고 캡처 첫 화면에 `사람 검색` 바로가기를 추가해 이름·회사 검색을 즉시 발견할 수 있게 했다.
 - **병렬 app shell**: React·TypeScript·Vite와 Ionic React로 `docs/next/` 후보를 만들고 legacy `docs/index.html`은 rollback baseline으로 유지한다.
 - **style ownership**: Ionic은 mobile shell·safe area·modal·toast를 소유하고, Tailwind는 Preflight 없이 Kairen-owned layout·content에만 사용한다.

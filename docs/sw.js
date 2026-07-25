@@ -1,7 +1,7 @@
 /* CardCapture service worker — 앱 셸 캐시 */
-var CACHE = 'cardcapture-v18';
+var CACHE = 'cardcapture-v19';
 var SHELL = [
-  './', './index.html', './manifest.json', './icon-192.png', './icon-512.png',
+  './', './index.html', './legacy.html', './manifest.json', './icon-192.png', './icon-512.png',
   './camera-quality.js', './research-policy.js', './vendor/tesseract/tesseract.min.js', './vendor/tesseract/worker.min.js'
 ];
 
@@ -12,7 +12,7 @@ self.addEventListener('install', function (e) {
 self.addEventListener('activate', function (e) {
   e.waitUntil(
     caches.keys().then(function (keys) {
-      return Promise.all(keys.filter(function (k) { return k !== CACHE; }).map(function (k) { return caches.delete(k); }));
+      return Promise.all(keys.filter(function (k) { return /^cardcapture-v/.test(k) && k !== CACHE; }).map(function (k) { return caches.delete(k); }));
     }).then(function () { return self.clients.claim(); })
   );
 });
@@ -22,6 +22,8 @@ self.addEventListener('fetch', function (e) {
   if (e.request.method !== 'GET') return;
   var url = new URL(e.request.url);
   if (url.origin !== location.origin) return;
+  var scopePath = new URL(self.registration.scope).pathname;
+  if (url.pathname.indexOf(scopePath + 'next/') === 0) return;
   e.respondWith(
     fetch(e.request).then(function (res) {
       var copy = res.clone();

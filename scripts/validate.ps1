@@ -17,7 +17,7 @@ function Pass($m) { Write-Host "PASS  $m" }
 # ---------- 1. required files ----------
 $required = @(
   'AGENTS.md','SECURITY.md','CHANGELOG.md','RELEASE.md','README.md','Code.gs',
-  'docs/index.html','docs/sw.js','docs/manifest.json','docs/camera-quality.js',
+  'docs/index.html','docs/legacy.html','docs/sw.js','docs/manifest.json','docs/camera-quality.js',
   'docs/vendor/tesseract/tesseract.min.js','docs/vendor/tesseract/worker.min.js',
   'docs/vendor/tesseract/tesseract-core-simd-lstm.wasm.js',
   'docs/vendor/tesseract/kor.traineddata.gz','docs/vendor/tesseract/eng.traineddata.gz','docs/vendor/tesseract/README.md',
@@ -44,9 +44,9 @@ foreach ($f in $scanFiles) {
   $lineNo = 0
   foreach ($line in [System.IO.File]::ReadAllLines($f.FullName)) {
     $lineNo++
-    # GAS deployment id: allowed only in docs/index.html (DEFAULT_API is a sanctioned public value)
-    if ($line -match 'AKfycb[A-Za-z0-9_-]{10,}' -and $rel -ne 'docs\index.html') {
-      [void]$secretHits.Add("$rel(:$lineNo) GAS exec id outside docs/index.html")
+    # GAS deployment id: allowed only in the rollback baseline (DEFAULT_API is a sanctioned public value)
+    if ($line -match 'AKfycb[A-Za-z0-9_-]{10,}' -and $rel -ne 'docs\legacy.html') {
+      [void]$secretHits.Add("$rel(:$lineNo) GAS exec id outside docs/legacy.html")
     }
     # TOKENS-style mapping with literal long key
     if ($line -match '"[A-Za-z0-9_-]{32,}"\s*:\s*"') {
@@ -108,7 +108,11 @@ if (Test-Path $fixDir) {
 
 # ---------- 6. PWA sanity ----------
 $idx = Get-Content (Join-Path $root 'docs\index.html') -Raw
-if ($idx -notmatch "DEFAULT_API\s*=\s*'https://script\.google\.com/") { Fail 'docs/index.html DEFAULT_API missing or malformed' } else { Pass 'DEFAULT_API present' }
+$legacy = Get-Content (Join-Path $root 'docs\legacy.html') -Raw
+$rootSw = Get-Content (Join-Path $root 'docs\sw.js') -Raw
+if ($idx -notmatch "new URL\('next/'" -or $idx -notmatch 'destination\.search = location\.search') { Fail 'docs/index.html live redirect missing or query not preserved' } else { Pass 'live redirect preserves query parameters' }
+if ($legacy -notmatch "DEFAULT_API\s*=\s*'https://script\.google\.com/") { Fail 'docs/legacy.html DEFAULT_API missing or malformed' } else { Pass 'DEFAULT_API present' }
+if (-not $rootSw.Contains("if (url.pathname.indexOf(scopePath + 'next/') === 0) return;") -or -not $rootSw.Contains('/^cardcapture-v/.test(k)')) { Fail 'root service worker must ignore next scope and preserve candidate caches' } else { Pass 'root and React service-worker caches are isolated' }
 if ((Get-Content (Join-Path $root 'CHANGELOG.md') -Raw) -notmatch '\[Unreleased\]') { Warn 'CHANGELOG has no [Unreleased] section' } else { Pass 'CHANGELOG has [Unreleased]' }
 
 # ---------- 7. camera auto-capture acceptance ----------

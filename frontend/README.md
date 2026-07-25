@@ -1,8 +1,8 @@
-# React Ionic migration candidate
+# React Ionic frontend
 
 Kairen-Ref: `TSK-000221`
 
-This directory owns the parallel React + TypeScript + Vite candidate. It does not replace `docs/index.html` until contract parity and the human merge/release gate pass.
+This directory owns the React + TypeScript + Vite production frontend. The root Pages entrypoint preserves query parameters and opens the built app under `docs/next/`; `docs/legacy.html` remains the rollback surface.
 
 ## Ownership
 
@@ -10,9 +10,9 @@ This directory owns the parallel React + TypeScript + Vite candidate. It does no
 - Tailwind is imported without Preflight and is used only inside `#kairen-ui` for Kairen-owned layout/content composition.
 - Ionic internals are themed through CSS variables and component properties, not utility overrides of Shadow DOM.
 - `src/services/` owns typed adapters for the existing GAS and IndexedDB contracts.
-- `src/services/camera.ts` owns the environment-camera request, permission/failure mapping and stream cleanup; the candidate modal is preview-only and never stores or uploads a frame.
-- a small build-time generator emits `docs/next/sw.js` for only the `/next/` scope, so it cannot replace the legacy root service worker or add Workbox dependency risk. `npm run test:e2e` starts the built shell, waits for candidate control, stops the origin server, and verifies that Chrome reloads the cached shell and navigation.
-- Camera, OpenCV, Tesseract, upload writes and service-worker replacement remain on the legacy path until their contract gates exist.
+- `src/services/camera.ts` owns environment-camera request, permission/failure mapping, stream cleanup, front/back capture, torch and native-camera fallback.
+- a small build-time generator emits `docs/next/sw.js` for only the `/next/` scope. The root service worker ignores `/next/` and deletes only its own legacy cache prefix, so the two offline caches cannot erase each other.
+- Camera, OpenCV, Tesseract, upload/retry, brief, profile and post-processing actions retain the legacy payload and authority contracts behind typed services.
 
 ## Build
 
@@ -21,12 +21,12 @@ npm.cmd install
 npm.cmd run validate
 ```
 
-The Vite build writes only `docs/next/`. The public root `docs/index.html` remains the legacy rollback baseline.
+The Vite build writes only `docs/next/`. The public root `docs/index.html` is a query-preserving live entrypoint and `docs/legacy.html` remains the rollback baseline.
 
 ## Migration gates
 
-1. Typed contract and read-only shell.
-2. List/search/detail parity against synthetic and existing server fixtures.
-3. IndexedDB write/retry parity: reopen persistence, oldest-first send, terminal non-duplication and failed retry fixture implemented; browser offline/reconnect remains.
-4. Camera/detector/OCR adapter parity on actual phones.
-5. Exact candidate SHA review, then separate human merge and release decisions.
+1. Typed contract and shell.
+2. List/search/detail and post-processing action parity.
+3. IndexedDB write/retry, server-off reload and reconnect recovery.
+4. Camera/detector/OCR parity with retained `legacy.html` rollback.
+5. Exact SHA CI, human phone acceptance, merge and release evidence.

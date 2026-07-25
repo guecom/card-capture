@@ -66,7 +66,7 @@ test('serves the cached candidate shell after the origin server stops', async ({
     await page.goto(`${origin}next/`, { waitUntil: 'networkidle' });
     await expect(page.locator('html')).toHaveAttribute('data-offline-ready', 'true');
     await expect(page.getByRole('heading', {
-      name: '명함은 지금처럼 찍고, 새 셸은 옆에서 검증합니다.',
+      name: '명함을 찍으면, 바로 기억으로 이어집니다.',
     })).toBeVisible();
 
     const serviceWorkerState = await page.evaluate(async () => ({
@@ -81,11 +81,33 @@ test('serves the cached candidate shell after the origin server stops', async ({
     await page.reload({ waitUntil: 'domcontentloaded' });
 
     await expect(page.getByRole('heading', {
-      name: '명함은 지금처럼 찍고, 새 셸은 옆에서 검증합니다.',
+      name: '명함을 찍으면, 바로 기억으로 이어집니다.',
     })).toBeVisible();
     await expect(page.getByRole('navigation', { name: '주요 화면' })).toBeVisible();
   } finally {
     if (!stopped) await stopStaticServer(server);
+  }
+});
+
+test('promotes the root entrypoint while preserving token links and legacy rollback', async ({ page }) => {
+  const server = await startStaticServer();
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
+  const origin = `http://127.0.0.1:${address.port}/`;
+
+  try {
+    await page.goto(`${origin}?view=search&k=root-token`, { waitUntil: 'networkidle' });
+    await expect(page).toHaveURL(`${origin}next/?view=search&k=root-token`);
+    await expect(page.getByRole('heading', { name: '사람 찾기' })).toBeVisible();
+    expect(await page.evaluate(() => localStorage.getItem('cc_token'))).toBe('root-token');
+    await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '설정' }).click();
+    await expect(page.getByRole('link', { name: /이전 앱 열기/ })).toHaveAttribute('href', '../legacy.html');
+
+    const legacyResponse = await page.request.get(`${origin}legacy.html`);
+    expect(legacyResponse.ok()).toBe(true);
+    expect(await legacyResponse.text()).toContain('<title>명함 캡처 — 이전 앱</title>');
+  } finally {
+    await stopStaticServer(server);
   }
 });
 
@@ -285,7 +307,7 @@ test('captures front and back with context into the legacy queue without uploadi
 
   try {
     await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
-    await page.getByRole('button', { name: '후보 카메라 시험' }).click();
+    await page.getByRole('button', { name: '명함 촬영 시작' }).click();
 
     await expect(page.getByText('명함 앞면', { exact: true })).toBeVisible();
     await expect(page.getByLabel('후면 카메라 미리보기')).toBeVisible();
@@ -303,7 +325,7 @@ test('captures front and back with context into the legacy queue without uploadi
     await expect(page.getByText('명함 뒷면', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: '뒷면 촬영' }).click();
     await expect(page.getByAltText('뒷면 촬영 미리보기')).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Legacy 촬영 화면으로 돌아가기' })).toBeVisible();
+    await expect(page.getByRole('link', { name: '이전 촬영 화면 열기 · 복구용' })).toBeVisible();
     await page.getByRole('button', { name: '완료하고 대기열에 저장' }).click();
     await expect(page.getByText('사진을 로컬 대기열에 보관했습니다. 연결 설정 뒤 자동으로 전송합니다.', { exact: false })).toBeVisible();
     await expect(page.locator('.signal-grid article').first().locator('strong')).toHaveText('1');

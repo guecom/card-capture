@@ -138,7 +138,7 @@ var listedProcessed = listed.items.filter(function (item) { return item.captureI
 assert.strictEqual(listedProcessed.receivedAt, '2026-07-25T07:00:00.000Z');
 assert.strictEqual(listedProcessed.processedAt, '2026-07-25T07:10:00.000Z');
 
-var html = fs.readFileSync(path.join(__dirname, '..', 'docs', 'index.html'), 'utf8');
+var html = fs.readFileSync(path.join(__dirname, '..', 'docs', 'legacy.html'), 'utf8');
 assert.ok(/&_ts=' \+ Date\.now\(\)/.test(html), 'list request needs a cache-busting nonce');
 assert.ok(/fetch\(listUrl, \{ cache: 'no-store' \}\)/.test(html), 'list request needs no-store');
 assert.ok(/method: 'POST'.*action: 'requeue'/s.test(html), 'requeue must use POST');

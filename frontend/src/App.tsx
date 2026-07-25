@@ -371,23 +371,23 @@ function App() {
     return (
       <div className="cc-stack">
         <section className="hero-card">
-          <div className="eyebrow"><ShieldCheck aria-hidden="true" size={14} /> Contract-safe migration</div>
-          <h1>명함은 지금처럼 찍고,<br />새 셸은 옆에서 검증합니다.</h1>
-          <p>검증된 legacy 촬영은 계속 유지합니다. 후보 카메라는 기기 내에서 이름 후보를 먼저 읽고, 선택한 사진을 기존 로컬 대기열에 보관한 뒤 연결되면 같은 처리 경로로 전송합니다.</p>
+          <div className="eyebrow"><ShieldCheck aria-hidden="true" size={14} /> 안전한 명함 캡처</div>
+          <h1>명함을 찍으면,<br />바로 기억으로 이어집니다.</h1>
+          <p>기기에서 이름 후보를 먼저 확인하고, 촬영한 사진은 로컬 대기열에 안전하게 보관한 뒤 연결되면 자동으로 전송합니다.</p>
           <div className="capture-actions">
-            <IonButton className="primary-action" expand="block" href="../index.html">
+            <IonButton className="primary-action" expand="block" onClick={() => setCameraPreviewOpen(true)}>
               <Camera aria-hidden="true" slot="start" size={20} />
-              검증된 카메라 열기
+              명함 촬영 시작
             </IonButton>
-            <IonButton className="secondary-action" fill="outline" expand="block" onClick={() => setCameraPreviewOpen(true)}>
-              후보 카메라 시험
+            <IonButton className="secondary-action" fill="outline" expand="block" href="../legacy.html">
+              이전 앱 열기 · 복구용
             </IonButton>
           </div>
         </section>
 
         <section className="signal-grid" aria-label="현재 상태">
-          <article><span>{sending ? '전송 중' : '로컬 대기'}</span><strong>{pending}</strong><small>IndexedDB 동일 queue</small></article>
-          <article><span>서버 기록</span><strong>{briefs.length}</strong><small>GAS list contract</small></article>
+          <article><span>{sending ? '전송 중' : '로컬 대기'}</span><strong>{pending}</strong><small>기기 안에 안전하게 보관</small></article>
+          <article><span>서버 기록</span><strong>{briefs.length}</strong><small>연결된 명함 브리핑</small></article>
         </section>
 
         <button className="search-shortcut" type="button" onClick={() => setTab('people')}>
@@ -398,13 +398,13 @@ function App() {
 
         <section className="surface-card">
           <div className="section-heading">
-            <div><span className="eyebrow">Migration gate</span><h2>현재 전환 범위</h2></div>
+            <div><span className="eyebrow">처리 기준</span><h2>촬영부터 브리핑까지</h2></div>
           </div>
           <ol className="migration-list">
-            <li className="done"><span>1</span><div><strong>Shell·contract</strong><small>Ionic shell과 typed adapter</small></div></li>
-            <li className="active"><span>2</span><div><strong>Read surfaces</strong><small>진행·검색·설정 병렬 검증</small></div></li>
-            <li className="done"><span>3</span><div><strong>Offline·API</strong><small>queue·server-off 계약 검증</small></div></li>
-            <li className="active"><span>4</span><div><strong>Camera·OCR</strong><small>typed preview 뒤 actual phone gate</small></div></li>
+            <li className="done"><span>1</span><div><strong>촬영·이름 확인</strong><small>앞·뒷면과 기기 내 이름 후보</small></div></li>
+            <li className="done"><span>2</span><div><strong>안전한 로컬 보관</strong><small>연결이 끊겨도 촬영 내용 유지</small></div></li>
+            <li className="done"><span>3</span><div><strong>자동 전송·재시도</strong><small>연결이 돌아오면 순서대로 전송</small></div></li>
+            <li className="done"><span>4</span><div><strong>브리핑·사람 검색</strong><small>처리 결과와 기존 인물 기록 확인</small></div></li>
           </ol>
         </section>
       </div>
@@ -523,9 +523,9 @@ function App() {
         </section>
         <section className="boundary-note">
           <ShieldCheck aria-hidden="true" size={20} />
-          <div><strong>새 credential을 만들지 않습니다.</strong><p>후보는 기존 앱과 같은 origin·local storage·IndexedDB를 사용합니다. token은 repository나 log에 포함하지 않습니다.</p></div>
+          <div><strong>새 credential을 만들지 않습니다.</strong><p>현재 앱은 이전 앱과 같은 origin·local storage·IndexedDB를 사용합니다. token은 repository나 log에 포함하지 않습니다.</p></div>
         </section>
-        <a className="legacy-link" href="../index.html">Legacy 앱으로 돌아가기 <ArrowUpRight aria-hidden="true" size={16} /></a>
+        <a className="legacy-link" href="../legacy.html">이전 앱 열기 · 복구용 <ArrowUpRight aria-hidden="true" size={16} /></a>
       </div>
     );
   }
@@ -535,7 +535,7 @@ function App() {
       <IonPage>
         <IonHeader translucent>
           <IonToolbar>
-            <div className="brand-lockup" slot="start"><span className="brand-mark">K</span><span>Kairen <b>Card Capture</b><small>Migration candidate</small></span></div>
+            <div className="brand-lockup" slot="start"><span className="brand-mark">K</span><span>Kairen <b>Card Capture</b><small>Mobile memory</small></span></div>
             <IonButton slot="end" fill="clear" onClick={() => void refresh()} aria-label="상태 새로고침"><RefreshCw aria-hidden="true" size={18} /></IonButton>
           </IonToolbar>
         </IonHeader>
