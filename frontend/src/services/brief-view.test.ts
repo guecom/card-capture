@@ -45,18 +45,19 @@ describe('briefNameMap', () => {
 });
 
 describe('elapsedMinutesOf', () => {
-  const now = Date.parse('2026-07-26T10:00:00+09:00');
-
   it('prefers receivedAt over capturedAt', () => {
+    const now = Date.parse('2026-07-26T10:00:00+09:00');
     expect(elapsedMinutesOf({ captureId: 'x', receivedAt: '2026-07-26T09:50:00+09:00', capturedAt: '2026-07-26T09:00:00+09:00' }, now)).toBe(10);
   });
 
   it('falls back to parsing captureId as local time', () => {
+    // captureId는 기기 로컬 시각으로 기록된다 — 기준 now도 로컬 성분으로 만들어 타임존 독립으로 검증한다.
+    const now = new Date(2026, 6, 26, 10, 0, 0).getTime();
     expect(elapsedMinutesOf({ captureId: '20260726-094500-ab12' }, now)).toBe(15);
   });
 
   it('returns null for unparseable or absurd values', () => {
-    expect(elapsedMinutesOf({ captureId: 'nope' }, now)).toBeNull();
+    expect(elapsedMinutesOf({ captureId: 'nope' }, Date.parse('2026-07-26T10:00:00+09:00'))).toBeNull();
   });
 });
 
