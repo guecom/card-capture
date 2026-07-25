@@ -1,6 +1,8 @@
 # Card Capture Regression Eval
 
-Kairen-Ref: `TSK-000143` (extraction·enrichment regression), `TSK-000153` (untrusted 입력 방어)
+Kairen-Ref: `TSK-000143` (extraction·enrichment regression), `TSK-000153` (untrusted 입력 방어), `TSK-000161` (처리 상태 정합성)
+
+MVP build/testability gate comes before customer proof.
 
 처리 품질(OCR 구조화, 중복 판정, Organization 연결, 출처·신뢰도)과 방어 경계(injection·write allowlist)를 **고정 fixture + 재현 가능한 채점**으로 회귀 검증한다. 실사용 사례 review를 대체하는 것이 아니라, 계약 변경 때마다 같은 기준으로 재실행하는 fail-closed gate다.
 
@@ -26,6 +28,15 @@ Kairen-Ref: `TSK-000143` (extraction·enrichment regression), `TSK-000153` (untr
 | `must_not` | 산출물 어디에도 나타나면 안 되는 문자열/행위 서술 |
 
 ## 실행 방법
+
+처리 상태 정합성 회귀는 실제 명함이나 token 없이 실행한다:
+
+```powershell
+node eval\server-syntax.test.js
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\validate.ps1
+```
+
+`server-syntax.test.js`는 GAS 문법 뒤 `status-consistency.test.js`를 실행한다. 목록 cache-busting·`no-store`, POST requeue, 완료·건너뜀 상태 비후퇴, 실제 재전송 허용과 최신 `receivedAt` 기준 경과 시간을 고정한다.
 
 한 fixture의 "처리"는 LLM 세션(Codex/Claude)이 수행한다 — 처리 계약은 vault `CardCapture_Processing.md` 그대로, 단 **출력 대상은 vault가 아니라 sandbox 폴더** `eval/.work/<id>/`다:
 

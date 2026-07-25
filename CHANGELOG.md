@@ -2,6 +2,10 @@
 
 사용자에게 보이는 변화 중심으로 기록한다. 형식: 버전 — 날짜 — 커밋. 배포(GAS/Pages) 시점은 `RELEASE.md`의 release evidence가 진실이다.
 
+## [Unreleased] — processing status hotfix (branch `agent/status-consistency-hotfix`, Kairen-Ref: TSK-000161)
+
+- **처리 상태 정합성**: 브리핑 목록 조회는 cache-busting과 `no-store`로 최신 서버 상태를 읽고, 재처리 요청은 POST에서 terminal 상태를 재검증해 이미 완료·건너뜀인 카드를 `received`로 되돌리지 않는다. 재처리 경과 시간은 최신 `receivedAt`부터 다시 계산한다. (Kairen-Ref: TSK-000161)
+
 ## [Unreleased] — watcher v3 (branch `agent/watcher-v3`)
 
 - **워처 v3 카드별 처리**: 대량 연속 캡처를 한 번의 긴 실행이 아니라 가장 이른 캡처부터 **한 건씩** 처리 → 카드마다 폰에 하나씩 도착하고, 사이마다 하트비트·backlog가 갱신됨. 무한 루프 방지 상한(25장/실행)·무진행 가드 포함 (ISS-000065, fixture 31/31 PASS). **라이브 워처 교체는 별도 단계**(로컬 pull+재시작, Setup 참조).
