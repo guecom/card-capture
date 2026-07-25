@@ -7,11 +7,16 @@ import {
   IonTitle,
   IonToolbar,
 } from '@ionic/react';
-import { Camera, ShieldCheck } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CandidateCameraError, openEnvironmentCamera, stopCameraStream } from '../services/camera';
+import { Camera as CameraIcon, Image as ImageIcon, ShieldCheck } from 'lucide-react';
+import {
+  CandidateCameraError,
+  captureCameraFrame,
+  openEnvironmentCamera,
+  stopCameraStream,
+} from '../services/camera';
 
-type PreviewPhase = 'idle' | 'requesting' | 'streaming' | 'error';
+type PreviewPhase = 'idle' | 'requesting' | 'streaming' | 'captured' | 'error';
 
 const failureCopy: Record<string, string> = {
   unsupported: '이 브라우저는 직접 카메라 미리보기를 지원하지 않습니다.',
@@ -26,12 +31,14 @@ export function CameraPreviewModal({ isOpen, onDismiss }: { isOpen: boolean; onD
   const streamRef = useRef<MediaStream | null>(null);
   const [phase, setPhase] = useState<PreviewPhase>('idle');
   const [detail, setDetail] = useState('');
+  const [frame, setFrame] = useState<{ dataUrl: string; width: number; height: number } | null>(null);
 
   const stopPreview = useCallback(() => {
     stopCameraStream(streamRef.current);
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
     setPhase('idle');
+    setFrame(null);
   }, []);
 
   useEffect(() => stopPreview, [stopPreview]);
@@ -59,6 +66,20 @@ export function CameraPreviewModal({ isOpen, onDismiss }: { isOpen: boolean; onD
     }
   }, [stopPreview]);
 
+  const capturePreviewFrame = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    try {
+      const nextFrame = captureCameraFrame(video);
+      setFrame(nextFrame);
+      setPhase('captured');
+      setDetail(`${nextFrame.width}×${nextFrame.height} JPEG를 메모리에만 만들었습니다. 저장·OCR·queue·upload는 하지 않았습니다.`);
+    } catch {
+      setPhase('error');
+      setDetail('카메라 프레임이 아직 준비되지 않았습니다. 다시 시도하거나 검증된 촬영 경로를 사용하세요.');
+    }
+  }, []);
+
   return (
     <IonModal
       className="camera-preview-modal"
@@ -78,17 +99,20 @@ export function CameraPreviewModal({ isOpen, onDismiss }: { isOpen: boolean; onD
       <IonContent className="camera-preview-content ion-padding">
         <div className="camera-preview-stage" data-state={phase}>
           <video ref={videoRef} aria-label="후면 카메라 미리보기" />
-          {phase !== 'streaming' && (
+          {frame && <img src={frame.dataUrl} alt="메모리 안의 후보 카메라 프레임" />}
+          {phase !== 'streaming' && phase !== 'captured' && (
             <div className="camera-preview-state" role="status">
-              {phase === 'requesting' ? <IonSpinner name="crescent" /> : <Camera aria-hidden="true" size={30} />}
+              {phase === 'requesting' ? <IonSpinner name="crescent" /> : <CameraIcon aria-hidden="true" size={30} />}
               <strong>{phase === 'error' ? '검증된 경로로 돌아갈 수 있어요' : '카메라 준비 중'}</strong>
             </div>
           )}
         </div>
         <section className="camera-contract-note">
           <ShieldCheck aria-hidden="true" size={20} />
-          <div><strong>{phase === 'streaming' ? '미리보기 계약 연결됨' : '안전한 병렬 검증'}</strong><p>{detail}</p></div>
+          <div><strong>{phase === 'captured' ? '메모리 프레임 계약 통과' : phase === 'streaming' ? '미리보기 계약 연결됨' : '안전한 병렬 검증'}</strong><p>{detail}</p></div>
         </section>
+        {phase === 'streaming' && <IonButton expand="block" onClick={capturePreviewFrame}><ImageIcon aria-hidden="true" slot="start" size={18} />메모리 프레임 시험</IonButton>}
+        {phase === 'captured' && <IonButton expand="block" onClick={() => void startPreview()}>다시 미리보기</IonButton>}
         {phase === 'error' && <IonButton expand="block" onClick={() => void startPreview()}>다시 시도</IonButton>}
         <IonButton expand="block" fill="outline" href="../index.html">검증된 카메라로 촬영</IonButton>
       </IonContent>

@@ -107,7 +107,8 @@ ion-toolbar {
 ion-modal.camera-preview-modal { --height: 100%; --width: min(100%, 680px); }
 .camera-preview-content { --background: #0f1722; }
 .camera-preview-stage { position: relative; display: grid; width: 100%; max-height: 62vh; aspect-ratio: 3 / 4; place-items: center; overflow: hidden; border: 1px solid rgba(255,255,255,0.12); border-radius: 22px; background: #080d13; }
-.camera-preview-stage video { width: 100%; height: 100%; object-fit: cover; }
+.camera-preview-stage video, .camera-preview-stage img { width: 100%; height: 100%; object-fit: cover; }
+.camera-preview-stage img { position: absolute; inset: 0; }
 .camera-preview-state { position: absolute; inset: 0; display: grid; place-items: center; align-content: center; gap: 12px; padding: 28px; background: radial-gradient(circle, rgba(42,77,116,0.5), rgba(8,13,19,0.96)); color: #eaf2ff; text-align: center; }
 .camera-preview-state strong { font-size: 14px; }
 .camera-contract-note { display: flex; gap: 12px; margin: 14px 0; padding: 15px; border-radius: 18px; background: rgba(230,247,244,0.96); color: #1c7168; }

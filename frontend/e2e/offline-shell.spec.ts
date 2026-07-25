@@ -92,7 +92,11 @@ test('opens the candidate camera preview without saving or uploading an image', 
         getUserMedia: async () => new MediaStream(),
       },
     });
+    Object.defineProperty(HTMLVideoElement.prototype, 'videoWidth', { configurable: true, get: () => 1600 });
+    Object.defineProperty(HTMLVideoElement.prototype, 'videoHeight', { configurable: true, get: () => 900 });
     HTMLMediaElement.prototype.play = async () => undefined;
+    HTMLCanvasElement.prototype.getContext = (() => ({ drawImage: () => undefined })) as typeof HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.toDataURL = () => 'data:image/jpeg;base64,fixture';
   });
 
   const server = await startStaticServer();
@@ -107,6 +111,10 @@ test('opens the candidate camera preview without saving or uploading an image', 
     await expect(page.getByLabel('후면 카메라 미리보기')).toBeVisible();
     await expect(page.getByText('미리보기 계약 연결됨', { exact: true })).toBeVisible();
     await expect(page.getByText('이 화면은 아직 이미지를 저장하거나 전송하지 않습니다.', { exact: false })).toBeVisible();
+    await page.getByRole('button', { name: '메모리 프레임 시험' }).click();
+    await expect(page.getByAltText('메모리 안의 후보 카메라 프레임')).toBeVisible();
+    await expect(page.getByText('메모리 프레임 계약 통과', { exact: true })).toBeVisible();
+    await expect(page.getByText('저장·OCR·queue·upload는 하지 않았습니다.', { exact: false })).toBeVisible();
     await expect(page.getByRole('link', { name: '검증된 카메라로 촬영' })).toBeVisible();
   } finally {
     await stopStaticServer(server);

@@ -3,6 +3,7 @@ export type CandidateCameraErrorCode =
   | 'permission_denied'
   | 'camera_unavailable'
   | 'camera_busy'
+  | 'frame_not_ready'
   | 'camera_failed';
 
 export class CandidateCameraError extends Error {
@@ -48,4 +49,44 @@ export async function openEnvironmentCamera(
 
 export function stopCameraStream(stream: MediaStream | null | undefined): void {
   stream?.getTracks().forEach((track) => track.stop());
+}
+
+export interface CapturedCameraFrame {
+  dataUrl: string;
+  width: number;
+  height: number;
+}
+
+export function fitCameraFrame(width: number, height: number, maxEdge = 2400): { width: number; height: number } {
+  if (width <= 0 || height <= 0) throw new CandidateCameraError('frame_not_ready');
+  const scale = Math.min(1, maxEdge / Math.max(width, height));
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+  };
+}
+
+type CameraVideoSource = Pick<HTMLVideoElement, 'videoWidth' | 'videoHeight'>;
+interface CameraCanvas {
+  width: number;
+  height: number;
+  getContext(contextId: '2d'): Pick<CanvasRenderingContext2D, 'drawImage'> | null;
+  toDataURL(type?: string, quality?: number): string;
+}
+
+export function captureCameraFrame(
+  video: CameraVideoSource,
+  createCanvas: () => CameraCanvas = () => document.createElement('canvas'),
+): CapturedCameraFrame {
+  const size = fitCameraFrame(video.videoWidth, video.videoHeight);
+  const canvas = createCanvas();
+  canvas.width = size.width;
+  canvas.height = size.height;
+  const context = canvas.getContext('2d');
+  if (!context) throw new CandidateCameraError('camera_failed');
+  context.drawImage(video as CanvasImageSource, 0, 0, size.width, size.height);
+  return {
+    dataUrl: canvas.toDataURL('image/jpeg', 0.88),
+    ...size,
+  };
 }
