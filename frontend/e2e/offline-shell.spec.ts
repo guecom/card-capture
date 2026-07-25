@@ -124,7 +124,7 @@ test('makes person search explicit from the capture home and bottom navigation',
     await expect(shortcut).toBeVisible();
     await shortcut.click();
     await expect(page.getByRole('heading', { name: '사람 찾기' })).toBeVisible();
-    await expect(page.getByRole('textbox', { name: '이름 또는 회사 검색' })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: '이름·회사·만난 곳으로 검색' })).toBeVisible();
   } finally {
     await stopStaticServer(server);
   }
@@ -248,11 +248,12 @@ test('restores brief, profile, contact, search, and post-processing actions', as
     await expect(page.getByText('Acme Director')).toBeVisible();
     await page.getByRole('button', { name: '닫기' }).click();
 
+    // 복원된 프로필 프렙 카드에도 메모 추가·조사 지시가 있으므로 브리핑 카드 쪽으로 스코프한다.
     page.once('dialog', (dialog) => void dialog.accept('후속 자료 보내기'));
-    await page.getByRole('button', { name: '메모 추가' }).click();
+    await page.locator('.brief-detail').getByRole('button', { name: '메모 추가' }).click();
     await expect.poll(() => actionBodies.some((body) => body.action === 'addnote')).toBe(true);
     page.once('dialog', (dialog) => void dialog.accept('공개 인터뷰 확인'));
-    await page.getByRole('button', { name: '조사 지시' }).click();
+    await page.locator('.brief-detail').getByRole('button', { name: '조사 지시' }).click();
     await expect.poll(() => actionBodies.some((body) => body.action === 'researchinstruction')).toBe(true);
     page.once('dialog', (dialog) => void dialog.accept('직함 수정'));
     await page.getByRole('button', { name: '수정 요청' }).click();
@@ -261,7 +262,7 @@ test('restores brief, profile, contact, search, and post-processing actions', as
     await expect.poll(() => actionBodies.some((body) => body.action === 'requeue')).toBe(true);
 
     await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '검색' }).click();
-    await page.getByRole('textbox', { name: '이름 또는 회사 검색' }).fill('Alice');
+    await page.getByRole('textbox', { name: '이름·회사·만난 곳으로 검색' }).fill('Alice');
     await page.locator('form.search-shell').getByRole('button', { name: '검색', exact: true }).click();
     await page.getByRole('button', { name: /PER-000001/ }).click();
     await expect(page.getByText('Acme Director')).toBeVisible();
