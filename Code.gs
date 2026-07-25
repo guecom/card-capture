@@ -23,7 +23,8 @@
  *   GET ?action=search&k=토큰&q=검색어        → Person 검색 (OWNER_NAMES 한정)
  *   GET ?action=doc&k=토큰&id=파일ID          → 검색 결과 Person .md 전문 (OWNER_NAMES 한정, Person 폴더 내부만)
  *   GET ?action=notify&k=토큰&captureId=ID    → 처리 완료 알림 메일 발송 (소유자 메일로, 캡처 6시간 dedup)
- *   GET ?action=requeue&k=토큰&captureId=ID   → 재처리 요청 (자기 캡처, received 재전환, 10분 dedup)
+ *   POST {action:'requeue', k, captureId}      → 재처리 요청 (자기 캡처, terminal 상태 비후퇴, 10분 dedup)
+ *   GET ?action=requeue&k=토큰&captureId=ID   → 구버전 앱 호환용 재처리 요청
  *   POST {action:'correction', k, captureId, text} → 수정 요청 저장 + 재처리 대기 전환
  *   POST {action:'addnote', k, text, captureId|person} → 사후 메모 접수(-note 캡처로 파이프라인 재사용)
  */
@@ -61,7 +62,7 @@ function doGet(e) {
 }
 
 /* 재처리 요청 — 처리가 오래 걸리거나 이상할 때 사용자가 스스로 다시 큐에 넣는다.
-   자기 캡처(또는 owner)만. status를 received로 되돌리면 워처가 자연히 집어간다. */
+   자기 캡처(또는 owner)만. 서버의 terminal 상태가 stale UI보다 우선하며 절대 received로 후퇴시키지 않는다. */
 function requeue_(token, captureId) {
   var name = capturerFor_(token);
   if (!name) return json_({ ok: false, error: 'invalid_token' });
@@ -74,16 +75,30 @@ function requeue_(token, captureId) {
   var meta = readJsonFile_(folder);
   if (!meta) return json_({ ok: false, error: 'no_capture_json' });
   if (meta.capturer !== name && !isOwner_(name)) return json_({ ok: false, error: 'not_your_capture' });
+  var receivedMs = Date.parse(String(meta.receivedAt || ''));
+  var processedMs = Date.parse(String(meta.processedAt || ''));
+  var hasNewerReceipt = isFinite(receivedMs) && isFinite(processedMs) && receivedMs > processedMs;
+  var terminal = (isFinite(processedMs) && (!isFinite(receivedMs) || processedMs >= receivedMs)) ||
+    (!hasNewerReceipt && (meta.status === 'processed' || meta.status === 'skipped'));
+  if (terminal) {
+    return json_({
+      ok: true,
+      captureId: cid,
+      status: meta.status === 'skipped' ? 'skipped' : 'processed',
+      alreadyTerminal: true,
+      processedAt: meta.processedAt || ''
+    });
+  }
   var cache = CacheService.getScriptCache();
   var key = 'rq_' + cid;
-  if (cache.get(key)) return json_({ ok: true, deduped: true });
+  if (cache.get(key)) return json_({ ok: true, captureId: cid, status: 'received', deduped: true });
   cache.put(key, '1', 10 * 60); /* 10분 dedup — 연타 방지 */
   meta.status = 'received';
   meta.receivedAt = new Date().toISOString();
   meta.requeueRequested = true;
   upsertFile_(folder, 'capture.json',
     Utilities.newBlob(JSON.stringify(meta, null, 2), 'application/json', 'capture.json'));
-  return json_({ ok: true, captureId: cid });
+  return json_({ ok: true, captureId: cid, status: 'received' });
 }
 
 /* OWNER_NAMES 판정 */
@@ -268,6 +283,8 @@ function listCaptures_(token, limitParam, offsetParam) {
       captureId: meta.captureId || folder.getName(),
       capturer: meta.capturer || '',
       capturedAt: meta.capturedAt || '',
+      receivedAt: meta.receivedAt || '',
+      processedAt: meta.processedAt || '',
       event: meta.event || '',
       status: meta.status || 'received',
       person: meta.person || '',
@@ -311,6 +328,7 @@ function readJsonFile_(folder) {
 function doPost(e) {
   try {
     var req = JSON.parse(e.postData.contents);
+    if (req.action === 'requeue') return requeue_(req.k, req.captureId);
     if (req.action === 'correction') return correction_(req);
     if (req.action === 'addnote') return addNote_(req);
     var name = capturerFor_(req.k);
