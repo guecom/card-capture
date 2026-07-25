@@ -1,3 +1,6 @@
 desktop.ini
 Thumbs.db
 .DS_Store
+node_modules/
+frontend/node_modules/
+*.tsbuildinfo

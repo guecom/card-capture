@@ -10,6 +10,7 @@ Kairen vault의 [PRJ-000005 명함 캡처 Person 파이프라인 구축]이 이 
 | --- | --- | --- |
 | `Code.gs` | 업로드 API (토큰 검증, Drive 저장) | Google Apps Script 웹 앱 |
 | `docs/` | 모바일 캡처 PWA와 기기 내 OCR·조사 지시 policy helper | GitHub Pages (이 저장소) |
+| `frontend/` | React·TypeScript·Vite + Ionic React 병렬 전환 후보 (`TSK-000221`) | build output은 `docs/next/`; 사람 gate 전 legacy root 유지 |
 | `PROCESSING_CONTRACT.md` | owner 조사 지시의 bounded public-source 처리·receipt 계약 | 로컬 processing 계약의 저장소 mirror |
 
 ## 동작 요약

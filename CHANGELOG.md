@@ -2,6 +2,13 @@
 
 사용자에게 보이는 변화 중심으로 기록한다. 형식: 버전 — 날짜 — 커밋. 배포(GAS/Pages) 시점은 `RELEASE.md`의 release evidence가 진실이다.
 
+## [Unreleased] — React Ionic migration candidate (branch `agent/tsk-000221-react-ionic-shell`, Kairen-Ref: TSK-000221)
+
+- **병렬 app shell**: React·TypeScript·Vite와 Ionic React로 `docs/next/` 후보를 만들고 legacy `docs/index.html`은 rollback baseline으로 유지한다.
+- **style ownership**: Ionic은 mobile shell·safe area·modal·toast를 소유하고, Tailwind는 Preflight 없이 Kairen-owned layout·content에만 사용한다.
+- **contract adapter**: 기존 GAS `list`·`search`·upload payload와 IndexedDB `cardcapture/q`를 typed boundary로 고정했다.
+- **점진 전환**: 후보의 촬영 action은 아직 검증된 legacy camera로 연결한다. write queue·camera·OCR·service worker는 각 parity gate 뒤 옮긴다.
+
 ## [Unreleased] — capture experience wave (branch `agent/card-capture-interview-wave`, Kairen-Ref: TSK-000178, TSK-000217, TSK-000218, TSK-000219, TSK-000220)
 
 - **이름 먼저 확인**: 촬영 직후 브라우저 내장 OCR을 먼저 시도하고, 미지원 기기에서는 자체 호스팅 Tesseract.js 한국어+영어 모델을 사용한다. 이름은 즉시 확인·수정할 수 있으며 기기 OCR 결과와 provenance를 `quickName`으로 보존한다. 명함 이미지는 제3자 OCR 서비스로 전송하지 않는다.

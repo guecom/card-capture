@@ -1,0 +1,29 @@
+{
+  "name": "@kairen/card-capture-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "preview": "vite preview",
+    "build": "tsc -b && vite build",
+    "test": "vitest run",
+    "validate": "npm run test && npm run build"
+  },
+  "dependencies": {
+    "@ionic/react": "8.8.15",
+    "lucide-react": "1.26.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.4",
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2",
+    "vite": "8.1.5",
+    "vitest": "4.1.10"
+  }
+}

@@ -1,5 +1,5 @@
 ﻿# validate.ps1 - repo repeatable validation for guecom/card-capture
-# Kairen-Ref: TSK-000140 (release baseline), TSK-000141 (secret hygiene), TSK-000143 (eval fixtures)
+# Kairen-Ref: TSK-000140 (release baseline), TSK-000141 (secret hygiene), TSK-000143 (eval fixtures), TSK-000221 (Node frontend)
 # PowerShell 5.1 compatible. Run from repo root or scripts/. Exit 0 = PASS, 1 = FAIL.
 # NOTE: keep this file saved as UTF-8 with BOM (repo AGENTS.md rule for .ps1).
 
@@ -31,8 +31,11 @@ if ($missing.Count -gt 0) { Fail ("required files missing: " + ($missing -join '
 $textExt = @('.md','.gs','.js','.json','.html','.ps1','.yml','.yaml','.txt','.cmd','.bat')
 $scanFiles = Get-ChildItem $root -Recurse -File | Where-Object {
   $_.FullName -notmatch '\\\.git\\' -and
+  $_.FullName -notmatch '\\node_modules\\' -and
   $_.FullName -notmatch '\\docs\\vendor\\' -and
+  $_.FullName -notmatch '\\docs\\next\\' -and
   $_.FullName -notmatch '\\eval\\\.work\\' -and
+  $_.Name -ne 'package-lock.json' -and
   $textExt -contains $_.Extension.ToLower()
 }
 $secretHits = New-Object System.Collections.ArrayList
