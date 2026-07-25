@@ -19,6 +19,7 @@ import {
 } from '../services/camera';
 import type { QuickName } from '../contracts/capture';
 import { recognizeQuickName } from '../services/vision';
+import { loadOpenCv, type OpenCvRuntime, rectifyCardCanvas } from '../services/opencv';
 
 type PreviewPhase = 'idle' | 'requesting' | 'streaming' | 'captured' | 'error';
 
@@ -42,6 +43,7 @@ export function CameraPreviewModal({
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const ocrSessionRef = useRef(0);
+  const cvRef = useRef<OpenCvRuntime | null>(null);
   const [phase, setPhase] = useState<PreviewPhase>('idle');
   const [detail, setDetail] = useState('');
   const [frame, setFrame] = useState<{ dataUrl: string; width: number; height: number } | null>(null);
@@ -49,6 +51,7 @@ export function CameraPreviewModal({
   const [quickName, setQuickName] = useState<QuickName | null>(null);
   const [nameText, setNameText] = useState('');
   const [ocrState, setOcrState] = useState('이름 인식 대기');
+  const [cvState, setCvState] = useState('명함 감지 엔진 대기');
 
   const stopPreview = useCallback(() => {
     stopCameraStream(streamRef.current);
@@ -80,6 +83,11 @@ export function CameraPreviewModal({
       await video.play();
       setPhase('streaming');
       setDetail('후면 카메라 계약이 연결됐습니다. 이 화면은 아직 이미지를 저장하거나 전송하지 않습니다.');
+      setCvState('명함 감지 엔진 준비 중…');
+      void loadOpenCv().then((runtime) => {
+        cvRef.current = runtime;
+        setCvState(runtime ? '명함 감지 준비됨' : '전체 프레임 fallback 준비됨');
+      });
     } catch (error) {
       stopPreview();
       const code = error instanceof CandidateCameraError ? error.code : 'camera_failed';
@@ -92,9 +100,15 @@ export function CameraPreviewModal({
     const video = videoRef.current;
     if (!video) return;
     try {
-      const nextFrame = captureCameraFrame(video);
+      let rectified = false;
+      const nextFrame = captureCameraFrame(video, undefined, (source) => {
+        const detected = cvRef.current ? rectifyCardCanvas(source, cvRef.current) : null;
+        rectified = Boolean(detected);
+        return detected ?? source;
+      });
       setFrame(nextFrame);
       setPhase('captured');
+      setCvState(rectified ? '명함 경계를 보정했습니다' : '경계를 찾지 못해 전체 프레임을 사용했습니다');
       setDetail(`${nextFrame.width}×${nextFrame.height} JPEG를 만들었습니다. 아직 queue·upload는 하지 않았습니다.`);
       const session = ++ocrSessionRef.current;
       setOcrState('이름 읽는 중…');
@@ -174,6 +188,7 @@ export function CameraPreviewModal({
             <label htmlFor="candidate-quick-name">이름 후보</label>
             <IonInput id="candidate-quick-name" aria-label="이름 후보" value={nameText} placeholder="직접 입력할 수 있어요" onIonInput={(event) => editQuickName(String(event.detail.value ?? ''))} />
             <small role="status">{ocrState}</small>
+            <small>{cvState}</small>
           </section>
         )}
         {phase === 'streaming' && <IonButton expand="block" onClick={capturePreviewFrame}><ImageIcon aria-hidden="true" slot="start" size={18} />메모리 프레임 시험</IonButton>}

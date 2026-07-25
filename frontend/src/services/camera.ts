@@ -67,26 +67,30 @@ export function fitCameraFrame(width: number, height: number, maxEdge = 2000): {
 }
 
 type CameraVideoSource = Pick<HTMLVideoElement, 'videoWidth' | 'videoHeight'>;
-interface CameraCanvas {
-  width: number;
-  height: number;
-  getContext(contextId: '2d'): Pick<CanvasRenderingContext2D, 'drawImage'> | null;
-  toDataURL(type?: string, quality?: number): string;
-}
-
 export function captureCameraFrame(
   video: CameraVideoSource,
-  createCanvas: () => CameraCanvas = () => document.createElement('canvas'),
+  createCanvas: () => HTMLCanvasElement = () => document.createElement('canvas'),
+  transformCanvas: (source: HTMLCanvasElement) => HTMLCanvasElement = (source) => source,
 ): CapturedCameraFrame {
-  const size = fitCameraFrame(video.videoWidth, video.videoHeight);
-  const canvas = createCanvas();
-  canvas.width = size.width;
-  canvas.height = size.height;
-  const context = canvas.getContext('2d');
+  const source = createCanvas();
+  source.width = video.videoWidth;
+  source.height = video.videoHeight;
+  const context = source.getContext('2d');
   if (!context) throw new CandidateCameraError('camera_failed');
-  context.drawImage(video as CanvasImageSource, 0, 0, size.width, size.height);
+  context.drawImage(video as CanvasImageSource, 0, 0, source.width, source.height);
+  const transformed = transformCanvas(source);
+  const size = fitCameraFrame(transformed.width, transformed.height);
+  let output = transformed;
+  if (size.width !== transformed.width || size.height !== transformed.height) {
+    output = createCanvas();
+    output.width = size.width;
+    output.height = size.height;
+    const outputContext = output.getContext('2d');
+    if (!outputContext) throw new CandidateCameraError('camera_failed');
+    outputContext.drawImage(transformed, 0, 0, size.width, size.height);
+  }
   return {
-    dataUrl: canvas.toDataURL('image/jpeg', 0.85),
+    dataUrl: output.toDataURL('image/jpeg', 0.85),
     ...size,
   };
 }

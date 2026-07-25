@@ -110,6 +110,7 @@ test('queues a candidate camera frame locally without uploading it', async ({ pa
         async detect() { return [{ rawValue: '김카이렌\n대표이사\nKairen' }]; }
       },
     });
+    Object.defineProperty(window, 'cv', { configurable: true, value: { Mat: class { delete() {} } } });
     HTMLCanvasElement.prototype.getContext = (() => ({ drawImage: () => undefined })) as typeof HTMLCanvasElement.prototype.getContext;
     HTMLCanvasElement.prototype.toDataURL = () => 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAEf/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABAf/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPxB//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPxB//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxB//9k=';
   });
@@ -132,6 +133,7 @@ test('queues a candidate camera frame locally without uploading it', async ({ pa
     await expect(page.getByText('아직 queue·upload는 하지 않았습니다.', { exact: false })).toBeVisible();
     await expect(page.getByRole('textbox', { name: '이름 후보' })).toHaveValue('김카이렌');
     await expect(page.getByText('인식 완료 · 확인해 주세요', { exact: true })).toBeVisible();
+    await expect(page.getByText('경계를 찾지 못해 전체 프레임을 사용했습니다', { exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: '검증된 카메라로 촬영' })).toBeVisible();
     await page.getByRole('button', { name: '로컬 대기열에 보관' }).click();
     await expect(page.getByText('사진을 기존 로컬 대기열에 보관했습니다.', { exact: false })).toBeVisible();

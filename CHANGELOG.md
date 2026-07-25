@@ -13,6 +13,7 @@
 - **candidate camera boundary**: 이미지 저장·OCR·upload 없이 후면 camera permission·resolution·failure mapping·track cleanup과 legacy fallback을 병렬 미리보기에서 검증한다.
 - **captured-image queue gate**: camera frame을 legacy와 같은 최대 2000px long edge·JPEG 0.85로 메모리에 만들고, 사용자가 선택한 뒤 기존 IndexedDB queue에만 보관하며 자동 upload가 일어나지 않음을 unit·Chrome contract로 고정한다.
 - **quick-name OCR boundary**: legacy `nameCandidate`와 parity를 고정하고, 기기 `TextDetector`를 우선한 뒤 pinned self-hosted Tesseract로 fallback해 `quickName`을 같은 queue payload에 보존한다. OCR 실패는 촬영·로컬 보관을 막지 않는다.
+- **OpenCV geometry boundary**: 기존 Otsu/Canny·adaptive threshold·명함 비율 scoring·perspective warp를 typed service로 분리하고, 엔진 지연·검출 실패 때 전체 프레임으로 비차단 fallback한다. 실제 명함 검출 품질 판정은 phone gate에 남긴다.
 - **점진 전환**: 후보의 촬영 action은 아직 검증된 legacy camera로 연결한다. write queue·camera·OCR·service worker는 각 parity gate 뒤 옮긴다.
 
 ## [Unreleased] — capture experience wave (branch `agent/card-capture-interview-wave`, Kairen-Ref: TSK-000178, TSK-000217, TSK-000218, TSK-000219, TSK-000220)
