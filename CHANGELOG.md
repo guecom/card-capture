@@ -9,6 +9,7 @@
 - **contract adapter**: 기존 GAS `list`·`search`·upload payload와 IndexedDB `cardcapture/q`를 typed boundary로 고정했다.
 - **offline queue fixture**: IndexedDB reopen 보존, captureId 순차 전송, local `sent` 비중복, 실패 data·tries 보존과 후속 retry 성공을 합성 sender로 검증한다.
 - **candidate offline shell**: 취약한 Workbox dependency를 채택하지 않고 작은 build-time generator로 `/next/` scope 전용 service worker와 web manifest를 생성한다. legacy root service worker는 교체하지 않는다.
+- **server-off recovery gate**: Playwright가 실제 정적 서버를 종료한 뒤 Chrome reload를 수행해 cached shell·navigation이 복구되는지 검증한다.
 - **점진 전환**: 후보의 촬영 action은 아직 검증된 legacy camera로 연결한다. write queue·camera·OCR·service worker는 각 parity gate 뒤 옮긴다.
 
 ## [Unreleased] — capture experience wave (branch `agent/card-capture-interview-wave`, Kairen-Ref: TSK-000178, TSK-000217, TSK-000218, TSK-000219, TSK-000220)

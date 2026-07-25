@@ -10,7 +10,7 @@ This directory owns the parallel React + TypeScript + Vite candidate. It does no
 - Tailwind is imported without Preflight and is used only inside `#kairen-ui` for Kairen-owned layout/content composition.
 - Ionic internals are themed through CSS variables and component properties, not utility overrides of Shadow DOM.
 - `src/services/` owns typed adapters for the existing GAS and IndexedDB contracts.
-- a small build-time generator emits `docs/next/sw.js` for only the `/next/` scope, so it cannot replace the legacy root service worker or add Workbox dependency risk. The automated server-off reload gate is still open and must pass before this candidate becomes the production service-worker path.
+- a small build-time generator emits `docs/next/sw.js` for only the `/next/` scope, so it cannot replace the legacy root service worker or add Workbox dependency risk. `npm run test:e2e` starts the built shell, waits for candidate control, stops the origin server, and verifies that Chrome reloads the cached shell and navigation.
 - Camera, OpenCV, Tesseract, upload writes and service-worker replacement remain on the legacy path until their contract gates exist.
 
 ## Build

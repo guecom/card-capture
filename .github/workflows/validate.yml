@@ -31,6 +31,9 @@ jobs:
       - name: Test and build React candidate
         run: npm run validate --prefix frontend
 
+      - name: Verify server-off recovery in Chrome
+        run: npm run test:e2e --prefix frontend
+
       - name: Validate repository contracts
         shell: powershell
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/validate.ps1
