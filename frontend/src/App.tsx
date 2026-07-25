@@ -23,7 +23,9 @@ import type { BriefItem, CaptureQueueItem, RuntimeConfig, SearchItem } from './c
 import { CameraPreviewModal } from './components/CameraPreviewModal';
 import { StatusBadge } from './components/StatusBadge';
 import { listBriefs, searchPeople } from './services/api';
-import { readQueue } from './services/queue';
+import type { CapturedCameraFrame } from './services/camera';
+import { buildQueuedCapture } from './services/capture-item';
+import { putQueueItem, readQueue } from './services/queue';
 import { loadRuntimeConfig, saveRuntimeConfig } from './services/storage';
 
 setupIonicReact({ mode: 'ios' });
@@ -117,13 +119,21 @@ function App() {
     setMessage('기존 Card Capture 설정과 같은 local storage에 저장했어요.');
   }
 
+  const queueCandidateFrame = useCallback(async (frame: CapturedCameraFrame) => {
+    const item = buildQueuedCapture(frame);
+    await putQueueItem(item);
+    setQueue((current) => [item, ...current].sort((a, b) => b.captureId.localeCompare(a.captureId)));
+    setCameraPreviewOpen(false);
+    setMessage('사진을 기존 로컬 대기열에 보관했습니다. 후보에서는 자동 전송하지 않습니다.');
+  }, []);
+
   function renderCapture() {
     return (
       <div className="cc-stack">
         <section className="hero-card">
           <div className="eyebrow"><ShieldCheck aria-hidden="true" size={14} /> Contract-safe migration</div>
           <h1>명함은 지금처럼 찍고,<br />새 셸은 옆에서 검증합니다.</h1>
-          <p>촬영·OCR 저장은 검증된 legacy 경로를 유지합니다. 후보 카메라는 이미지를 저장하지 않는 미리보기로 permission·후면 camera·fallback 계약만 병렬 검증합니다.</p>
+          <p>검증된 legacy 촬영은 계속 유지합니다. 후보 카메라는 프레임 확인 뒤 선택한 사진만 기존 로컬 대기열에 보관하며 자동 OCR·전송은 하지 않습니다.</p>
           <div className="capture-actions">
             <IonButton className="primary-action" expand="block" href="../index.html">
               <Camera aria-hidden="true" slot="start" size={20} />
@@ -261,7 +271,7 @@ function App() {
           </IonContent>
         </IonModal>
         <IonToast isOpen={Boolean(message)} message={message} duration={2600} position="top" onDidDismiss={() => setMessage('')} />
-        <CameraPreviewModal isOpen={cameraPreviewOpen} onDismiss={() => setCameraPreviewOpen(false)} />
+        <CameraPreviewModal isOpen={cameraPreviewOpen} onDismiss={() => setCameraPreviewOpen(false)} onQueueFrame={queueCandidateFrame} />
       </IonPage>
     </IonApp>
   );

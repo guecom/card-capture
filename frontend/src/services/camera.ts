@@ -57,7 +57,7 @@ export interface CapturedCameraFrame {
   height: number;
 }
 
-export function fitCameraFrame(width: number, height: number, maxEdge = 2400): { width: number; height: number } {
+export function fitCameraFrame(width: number, height: number, maxEdge = 2000): { width: number; height: number } {
   if (width <= 0 || height <= 0) throw new CandidateCameraError('frame_not_ready');
   const scale = Math.min(1, maxEdge / Math.max(width, height));
   return {
@@ -86,7 +86,7 @@ export function captureCameraFrame(
   if (!context) throw new CandidateCameraError('camera_failed');
   context.drawImage(video as CanvasImageSource, 0, 0, size.width, size.height);
   return {
-    dataUrl: canvas.toDataURL('image/jpeg', 0.88),
+    dataUrl: canvas.toDataURL('image/jpeg', 0.85),
     ...size,
   };
 }

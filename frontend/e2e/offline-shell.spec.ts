@@ -84,8 +84,16 @@ test('serves the cached candidate shell after the origin server stops', async ({
   }
 });
 
-test('opens the candidate camera preview without saving or uploading an image', async ({ page }) => {
+test('queues a candidate camera frame locally without uploading it', async ({ page }) => {
   await page.addInitScript(() => {
+    Object.defineProperty(window, '__candidatePostCount', { configurable: true, value: 0, writable: true });
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method?.toUpperCase() === 'POST') {
+        (window as typeof window & { __candidatePostCount: number }).__candidatePostCount += 1;
+      }
+      return originalFetch(input, init);
+    }) as typeof window.fetch;
     Object.defineProperty(navigator, 'mediaDevices', {
       configurable: true,
       value: {
@@ -114,8 +122,32 @@ test('opens the candidate camera preview without saving or uploading an image', 
     await page.getByRole('button', { name: '메모리 프레임 시험' }).click();
     await expect(page.getByAltText('메모리 안의 후보 카메라 프레임')).toBeVisible();
     await expect(page.getByText('메모리 프레임 계약 통과', { exact: true })).toBeVisible();
-    await expect(page.getByText('저장·OCR·queue·upload는 하지 않았습니다.', { exact: false })).toBeVisible();
+    await expect(page.getByText('아직 저장·OCR·queue·upload는 하지 않았습니다.', { exact: false })).toBeVisible();
     await expect(page.getByRole('link', { name: '검증된 카메라로 촬영' })).toBeVisible();
+    await page.getByRole('button', { name: '로컬 대기열에 보관' }).click();
+    await expect(page.getByText('사진을 기존 로컬 대기열에 보관했습니다.', { exact: false })).toBeVisible();
+    await expect(page.locator('.signal-grid article').first().locator('strong')).toHaveText('1');
+    const queueReceipt = await page.evaluate(async () => {
+      const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {
+        const request = indexedDB.open('cardcapture', 1);
+        request.onsuccess = () => resolveDatabase(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      const items = await new Promise<unknown[]>((resolveItems, reject) => {
+        const request = database.transaction('q', 'readonly').objectStore('q').getAll();
+        request.onsuccess = () => resolveItems(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      database.close();
+      return {
+        items,
+        postCount: (window as typeof window & { __candidatePostCount: number }).__candidatePostCount,
+      };
+    });
+    expect(queueReceipt).toMatchObject({
+      items: [{ images: [{ name: 'front.jpg', mime: 'image/jpeg', dataB64: 'fixture' }], state: 'queued', tries: 0 }],
+      postCount: 0,
+    });
   } finally {
     await stopStaticServer(server);
   }

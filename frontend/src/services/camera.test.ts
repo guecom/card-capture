@@ -50,7 +50,7 @@ describe('candidate camera boundary', () => {
   });
 
   it('fits a captured frame inside the legacy long-edge envelope', () => {
-    expect(fitCameraFrame(4032, 3024)).toEqual({ width: 2400, height: 1800 });
+    expect(fitCameraFrame(4032, 3024)).toEqual({ width: 2000, height: 1500 });
     expect(fitCameraFrame(1280, 720)).toEqual({ width: 1280, height: 720 });
   });
 
@@ -70,6 +70,6 @@ describe('candidate camera boundary', () => {
       height: 900,
     });
     expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 0, 1600, 900);
-    expect(toDataURL).toHaveBeenCalledWith('image/jpeg', 0.88);
+    expect(toDataURL).toHaveBeenCalledWith('image/jpeg', 0.85);
   });
 });
