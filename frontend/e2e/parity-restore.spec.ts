@@ -226,3 +226,42 @@ test('shows processed names with context in the local queue and offers instant n
     await stopStaticServer(server);
   }
 });
+
+test('restores the legacy one-screen capture surface and link-first onboarding', async ({ page }) => {
+  const server = await startStaticServer();
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
+
+  try {
+    await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
+
+    // 촬영·맥락·완료가 한 화면에: 필드는 촬영 전에도 보이고 완료는 잠겨 있다.
+    await expect(page.getByRole('heading', { name: '사진 한 장이면 이름부터 바로 확인해요' })).toBeVisible();
+    await expect(page.getByLabel('어디서 만났는지 (선택, 2시간 유지)')).toBeVisible();
+    await expect(page.getByLabel('메모 (선택 — 키보드 마이크로 말해도 돼요)')).toBeVisible();
+    await expect(page.getByRole('button', { name: '완료', exact: true })).toBeDisabled();
+    // 토큰이 없으면 legacy처럼 개인 링크 안내 배너가 뜬다.
+    await expect(page.getByText(/받으신 개인 링크\(\?k=토큰 포함\)로 접속해 주세요/)).toBeVisible();
+
+    // 최근 캡처·브리핑 섹션이 같은 스크롤에 있고 접기 상태가 legacy 키로 저장된다.
+    const recentToggle = page.getByRole('button', { name: /최근 캡처/ });
+    await expect(recentToggle).toBeVisible();
+    await expect(page.getByText('아직 캡처가 없어요.')).toBeVisible();
+    await recentToggle.click();
+    await expect(page.getByText('아직 캡처가 없어요.')).toBeHidden();
+    expect(await page.evaluate(() => localStorage.getItem('cc_collapse_recent'))).toBe('1');
+    await recentToggle.click();
+    await expect(page.getByText('아직 캡처가 없어요.')).toBeVisible();
+    await expect(page.getByRole('button', { name: /받은 명함 브리핑/ })).toBeVisible();
+
+    // 설정: 주소·토큰은 고급 항목 뒤에 숨고 토큰 라벨이 개인 링크 안내로 바뀐다.
+    await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '설정' }).click();
+    await page.getByRole('button', { name: '이름·연결 설정 편집' }).click();
+    await expect(page.getByLabel('촬영자 이름')).toBeVisible();
+    await expect(page.getByLabel('개인 링크 토큰 (?k= 값)')).toBeHidden();
+    await page.getByRole('button', { name: /고급 — 직접 연결 설정/ }).click();
+    await expect(page.getByLabel('개인 링크 토큰 (?k= 값)')).toBeVisible();
+  } finally {
+    await stopStaticServer(server);
+  }
+});

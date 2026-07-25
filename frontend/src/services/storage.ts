@@ -82,6 +82,17 @@ export function saveStickyCaptureContext(context: StickyCaptureContext, now = Da
   write('stickyAt', String(now));
 }
 
+// 섹션 접기 상태 — legacy와 같은 키(cc_collapse_recent, cc_collapse_briefs)를 공유한다.
+export type CollapsibleSection = 'recent' | 'briefs';
+
+export function loadSectionCollapsed(section: CollapsibleSection): boolean {
+  return read(`collapse_${section}`) === '1';
+}
+
+export function saveSectionCollapsed(section: CollapsibleSection, collapsed: boolean): void {
+  write(`collapse_${section}`, collapsed ? '1' : '');
+}
+
 export function loadRecentSearches(): string[] {
   try {
     const values = JSON.parse(read('recentSearches')) as unknown;

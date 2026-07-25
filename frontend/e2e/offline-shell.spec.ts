@@ -66,7 +66,7 @@ test('serves the cached candidate shell after the origin server stops', async ({
     await page.goto(`${origin}next/`, { waitUntil: 'networkidle' });
     await expect(page.locator('html')).toHaveAttribute('data-offline-ready', 'true');
     await expect(page.getByRole('heading', {
-      name: '명함을 찍으면, 바로 기억으로 이어집니다.',
+      name: '사진 한 장이면 이름부터 바로 확인해요',
     })).toBeVisible();
 
     const serviceWorkerState = await page.evaluate(async () => ({
@@ -81,7 +81,7 @@ test('serves the cached candidate shell after the origin server stops', async ({
     await page.reload({ waitUntil: 'domcontentloaded' });
 
     await expect(page.getByRole('heading', {
-      name: '명함을 찍으면, 바로 기억으로 이어집니다.',
+      name: '사진 한 장이면 이름부터 바로 확인해요',
     })).toBeVisible();
     await expect(page.getByRole('navigation', { name: '주요 화면' })).toBeVisible();
   } finally {
@@ -308,28 +308,33 @@ test('captures front and back with context into the legacy queue without uploadi
 
   try {
     await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
-    await page.getByRole('button', { name: '명함 촬영 시작' }).click();
+    // legacy 작업 화면: 맥락 필드가 촬영 전에도 보이고 완료는 앞면 전까지 잠긴다.
+    await expect(page.getByLabel('어디서 만났는지 (선택, 2시간 유지)')).toBeVisible();
+    await expect(page.getByRole('button', { name: '완료', exact: true })).toBeDisabled();
+    await page.getByRole('button', { name: '명함 앞면 촬영' }).click();
 
     await expect(page.getByText('명함 앞면', { exact: true })).toBeVisible();
     await expect(page.getByLabel('후면 카메라 미리보기')).toBeVisible();
     await expect(page.getByRole('button', { name: '자동 촬영 켜짐' })).toBeVisible();
-    await page.getByRole('button', { name: '앞면 촬영' }).click();
-    await expect(page.getByAltText('앞면 촬영 미리보기')).toBeVisible();
-    await expect(page.getByText('앞면 준비 완료', { exact: true })).toBeVisible();
-    await expect(page.getByRole('textbox', { name: '이름 후보' })).toHaveValue('김카이렌');
-    await expect(page.getByText('인식 완료 · 확인해 주세요', { exact: true })).toBeVisible();
-    await page.getByLabel('어디서 만났는지 · 2시간 유지').fill('2026 로보월드');
-    await page.getByLabel('나와 이 사람과의 관계 · 2시간 유지').fill('오늘 처음 인사');
-    await page.getByLabel('Kairen과 이 사람과의 관계 · 2시간 유지').fill('잠재 고객');
-    await page.getByLabel('메모').fill('자료 보내기');
+    await expect(page.getByRole('link', { name: '이전 촬영 화면 열기 · 복구용' })).toBeVisible();
+    await page.getByRole('button', { name: '앞면 촬영', exact: true }).click();
+    // 카메라를 벗어나지 않는 선택지 (legacy camChoiceUI).
+    await expect(page.getByText('앞면 저장됨 — 뒷면도 찍을까요? (선택)')).toBeVisible();
     await page.getByRole('button', { name: '뒷면도 찍기' }).click();
     await expect(page.getByText('명함 뒷면', { exact: true })).toBeVisible();
-    await page.getByRole('button', { name: '뒷면 촬영' }).click();
-    await expect(page.getByAltText('뒷면 촬영 미리보기')).toBeVisible();
-    await expect(page.getByRole('link', { name: '이전 촬영 화면 열기 · 복구용' })).toBeVisible();
-    await page.getByRole('button', { name: '완료하고 대기열에 저장' }).click();
+    await page.getByRole('button', { name: '뒷면 촬영', exact: true }).click();
+
+    // 모달이 닫히고 메인 화면에서 이름 확인·맥락 입력·완료 (legacy 흐름).
+    await expect(page.getByAltText('앞면 미리보기')).toBeVisible();
+    await expect(page.getByRole('textbox', { name: '이름 후보' })).toHaveValue('김카이렌');
+    await expect(page.getByText('인식 완료 · 확인해 주세요', { exact: true })).toBeVisible();
+    await page.getByLabel('어디서 만났는지 (선택, 2시간 유지)').fill('2026 로보월드');
+    await page.getByLabel('나와 이 사람과의 관계 (선택, 2시간 유지)').fill('오늘 처음 인사');
+    await page.getByLabel('Kairen과 이 사람과의 관계 (선택, 2시간 유지)').fill('잠재 고객');
+    await page.getByLabel('메모 (선택 — 키보드 마이크로 말해도 돼요)').fill('자료 보내기');
+    await page.getByRole('button', { name: '완료', exact: true }).click();
     await expect(page.getByText('사진을 로컬 대기열에 보관했습니다. 연결 설정 뒤 자동으로 전송합니다.', { exact: false })).toBeVisible();
-    await expect(page.locator('.signal-grid article').first().locator('strong')).toHaveText('1');
+    await expect(page.locator('.queue-row', { hasText: '김카이렌' })).toContainText('전송 대기');
     const queueReceipt = await page.evaluate(async () => {
       const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {
         const request = indexedDB.open('cardcapture', 1);

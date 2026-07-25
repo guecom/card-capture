@@ -2,15 +2,13 @@ import {
   IonButton,
   IonContent,
   IonHeader,
-  IonInput,
   IonModal,
   IonSpinner,
-  IonTextarea,
   IonTitle,
   IonToolbar,
 } from '@ionic/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Camera as CameraIcon, Image as ImageIcon, Lightbulb, ShieldCheck } from 'lucide-react';
+import { Camera as CameraIcon, Image as ImageIcon, Lightbulb } from 'lucide-react';
 import {
   CandidateCameraError,
   cameraHasTorch,
@@ -22,26 +20,18 @@ import {
   setCameraTorch,
   stopCameraStream,
 } from '../services/camera';
-import type { QuickName, ResearchInstruction } from '../contracts/capture';
-import { recognizeQuickName } from '../services/vision';
 import { blurScore, detectCardQuad, loadOpenCv, type OpenCvRuntime, plausibleCard, type Point, rectifyCardCanvas } from '../services/opencv';
 import { blankAutoCaptureState, clippedRatio, nextAutoCaptureState } from '../services/auto-capture';
-import { buildResearchInstruction } from '../services/research';
-import { loadStickyCaptureContext } from '../services/storage';
 import { type CoverMap, coverMap, guideRectDisplay, guideRectInVideo, lerpQuad, rectToQuad, videoPointToDisplay } from '../services/stage-geometry';
 
-type PreviewPhase = 'idle' | 'requesting' | 'streaming' | 'captured' | 'error';
-type CardSide = 'front' | 'back';
+// 촬영 전용 모달 — 맥락 입력·이름 확인·완료는 legacy처럼 메인 화면이 소유한다 (ISS-000091 항목 18).
+type PreviewPhase = 'idle' | 'requesting' | 'streaming' | 'choice' | 'error';
+export type CardSide = 'front' | 'back';
 
-export interface CandidateCaptureDraft {
-  frontFrame: CapturedCameraFrame;
-  backFrame: CapturedCameraFrame | null;
-  event: string;
-  relSelf: string;
-  relKairen: string;
-  memo: string;
-  researchInstruction: ResearchInstruction | null;
-  quickName: QuickName | null;
+export interface CapturedSideMeta {
+  cropState: 'rectified' | 'guide' | 'full' | 'native';
+  blurry: boolean;
+  source: 'manual' | 'auto' | 'native';
 }
 
 const failureCopy: Record<string, string> = {
@@ -112,52 +102,41 @@ function drawProgressRing(context: CanvasRenderingContext2D, width: number, heig
   context.stroke();
 }
 
-export function CameraPreviewModal({
+export function CameraCaptureModal({
   isOpen,
-  researchInstructionEnabled,
+  initialSide,
+  withBackChoice,
   onDismiss,
-  onQueueCapture,
+  onCaptured,
+  onFinished,
 }: {
   isOpen: boolean;
-  researchInstructionEnabled: boolean;
+  initialSide: CardSide;
+  withBackChoice: boolean;
   onDismiss: () => void;
-  onQueueCapture: (draft: CandidateCaptureDraft) => Promise<void>;
+  onCaptured: (side: CardSide, frame: CapturedCameraFrame, meta: CapturedSideMeta) => void;
+  onFinished: () => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const nativeInputRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const ocrSessionRef = useRef(0);
-  const nameEditedRef = useRef(false);
   const cvRef = useRef<OpenCvRuntime | null>(null);
   const autoGateRef = useRef(blankAutoCaptureState());
   const capturingRef = useRef(false);
-  // 라이브 감지 사각형(비디오 좌표)과 화면 표시용 보간 사각형 — 상태 대신 ref로 두고 rAF가 그린다.
   const liveQuadRef = useRef<{ quad: Point[]; at: number } | null>(null);
   const displayQuadRef = useRef<Point[] | null>(null);
   const detectedSinceRef = useRef(0);
   const autoProgressRef = useRef(0);
   const [phase, setPhase] = useState<PreviewPhase>('idle');
-  const [side, setSide] = useState<CardSide>('front');
+  const [side, setSide] = useState<CardSide>(initialSide);
   const [detail, setDetail] = useState('');
-  const [frame, setFrame] = useState<CapturedCameraFrame | null>(null);
-  const [frontFrame, setFrontFrame] = useState<CapturedCameraFrame | null>(null);
-  const [backFrame, setBackFrame] = useState<CapturedCameraFrame | null>(null);
-  const [queueing, setQueueing] = useState(false);
-  const [quickName, setQuickName] = useState<QuickName | null>(null);
-  const [nameText, setNameText] = useState('');
-  const [ocrState, setOcrState] = useState('이름 인식 대기');
   const [cvState, setCvState] = useState('명함 감지 엔진 대기');
+  const [choiceThumb, setChoiceThumb] = useState('');
   const [autoCapture, setAutoCapture] = useState(() => localStorage.getItem('cc_autoCapture') !== 'off');
   const [autoHint, setAutoHint] = useState('명함을 화면 안에 담아 주세요');
   const [torchAvailable, setTorchAvailable] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
-  const sticky = loadStickyCaptureContext();
-  const [event, setEvent] = useState(sticky.event);
-  const [relSelf, setRelSelf] = useState(sticky.relSelf);
-  const [relKairen, setRelKairen] = useState(sticky.relKairen);
-  const [memo, setMemo] = useState('');
-  const [researchText, setResearchText] = useState('');
 
   const stopPreview = useCallback(() => {
     stopCameraStream(streamRef.current);
@@ -175,10 +154,22 @@ export function CameraPreviewModal({
 
   useEffect(() => stopPreview, [stopPreview]);
 
+  const resumeStreaming = useCallback((nextSide: CardSide) => {
+    // 선택지에서 뒷면/앞면 재촬영으로 복귀 — 스트림은 살아 있으므로 즉시 촬영 가능 (legacy camGoBack2).
+    setSide(nextSide);
+    capturingRef.current = false;
+    autoGateRef.current = blankAutoCaptureState();
+    autoProgressRef.current = 0;
+    liveQuadRef.current = null;
+    detectedSinceRef.current = 0;
+    setAutoHint('명함을 화면 안에 담아 주세요');
+    setPhase('streaming');
+  }, []);
+
   const startPreview = useCallback(async (nextSide: CardSide) => {
     stopPreview();
     setSide(nextSide);
-    setFrame(null);
+    setChoiceThumb('');
     setPhase('requesting');
     setDetail(`${nextSide === 'front' ? '앞면' : '뒷면'} 촬영을 위해 후면 카메라 권한을 확인하고 있어요.`);
     setAutoHint('명함을 화면 안에 담아 주세요');
@@ -193,7 +184,7 @@ export function CameraPreviewModal({
       await video.play();
       setTorchAvailable(cameraHasTorch(stream));
       setPhase('streaming');
-      setDetail(`${nextSide === 'front' ? '앞면' : '뒷면'} 미리보기가 연결됐습니다.`);
+      setDetail('');
       setCvState('명함 감지 엔진 준비 중…');
       void loadOpenCv().then((runtime) => {
         cvRef.current = runtime;
@@ -207,52 +198,16 @@ export function CameraPreviewModal({
     }
   }, [stopPreview]);
 
-  const recognizeFrontName = useCallback((nextFrame: CapturedCameraFrame) => {
-    const session = ++ocrSessionRef.current;
-    // 새 앞면 사진 = 새 인식 세션. 이후 사용자가 입력하면 OCR 결과가 덮어쓰지 않는다 (legacy userEdited 가드).
-    nameEditedRef.current = false;
-    setQuickName(null);
-    setNameText('');
-    setOcrState('이름 읽는 중…');
-    void recognizeQuickName(nextFrame.dataUrl, (progress) => {
-      if (session === ocrSessionRef.current && !nameEditedRef.current) setOcrState(`이름 읽는 중 ${progress}%`);
-    }).then((result) => {
-      if (session !== ocrSessionRef.current || nameEditedRef.current) return;
-      setQuickName(result);
-      setNameText(result?.name ?? '');
-      setOcrState(result?.name ? '인식 완료 · 확인해 주세요' : '직접 확인해 주세요');
-    }).catch(() => {
-      if (session === ocrSessionRef.current && !nameEditedRef.current) setOcrState('직접 확인해 주세요');
-    });
-  }, []);
-
-  const acceptFrame = useCallback((nextFrame: CapturedCameraFrame, cropState: 'rectified' | 'guide' | 'full' | 'native', source: 'manual' | 'auto' | 'native', blurry: boolean) => {
-    stopPreview();
-    setFrame(nextFrame);
-    if (side === 'front') {
-      setFrontFrame(nextFrame);
-      recognizeFrontName(nextFrame);
-    } else {
-      setBackFrame(nextFrame);
-    }
-    setPhase('captured');
-    setCvState(cropState === 'rectified' ? '명함 경계를 자동으로 잘라냈습니다'
-      : cropState === 'guide' ? '가이드 영역을 잘라 저장했습니다'
-        : cropState === 'native' ? '기본 카메라 사진을 사용했습니다' : '전체 프레임을 사용했습니다');
-    const sourceCopy = source === 'auto' ? '자동 촬영' : source === 'native' ? '기본 카메라 촬영' : '수동 촬영';
-    setDetail(`${sourceCopy} · ${nextFrame.width}×${nextFrame.height} JPEG 준비 완료${blurry ? ' · 사진이 조금 흐릿해요 — 필요하면 다시 찍어 주세요' : ''}`);
-  }, [recognizeFrontName, side, stopPreview]);
-
   const capturePreviewFrame = useCallback((source: 'manual' | 'auto' = 'manual') => {
     const video = videoRef.current;
     if (!video || capturingRef.current) return;
     capturingRef.current = true;
     try {
-      let cropState: 'rectified' | 'guide' | 'full' = 'full';
+      let cropState: CapturedSideMeta['cropState'] = 'full';
       let blurry = false;
       const cv = cvRef.current;
       const overlay = overlayRef.current;
-      const nextFrame = captureCameraFrame(video, undefined, (sourceCanvas) => {
+      const frame = captureCameraFrame(video, undefined, (sourceCanvas) => {
         const rectified = cv ? rectifyCardCanvas(sourceCanvas, cv) : null;
         let result = rectified;
         if (rectified) {
@@ -284,13 +239,22 @@ export function CameraPreviewModal({
         }
         return finalCanvas;
       });
-      acceptFrame(nextFrame, cropState, source, blurry);
+      onCaptured(side, frame, { cropState, blurry, source });
+      if (side === 'front' && withBackChoice) {
+        // 카메라를 벗어나지 않는 선택지: 뒷면도 찍기 / 뒷면 없이 완료 / 앞면 다시 찍기 (legacy camChoiceUI).
+        setChoiceThumb(frame.dataUrl);
+        setPhase('choice');
+        capturingRef.current = false;
+      } else {
+        stopPreview();
+        onFinished();
+      }
     } catch {
       capturingRef.current = false;
       setPhase('error');
       setDetail('카메라 프레임이 아직 준비되지 않았습니다. 다시 시도하거나 기본 카메라를 사용하세요.');
     }
-  }, [acceptFrame]);
+  }, [onCaptured, onFinished, side, stopPreview, withBackChoice]);
 
   // 명함 감지 루프: 자동 촬영이 꺼져 있어도 오버레이 표시는 계속한다 (legacy camLoop).
   useEffect(() => {
@@ -419,63 +383,20 @@ export function CameraPreviewModal({
     setPhase('requesting');
     setDetail('기본 카메라 사진을 준비하고 있어요.');
     try {
-      acceptFrame(await fileToCameraFrame(file), 'native', 'native', false);
+      const frame = await fileToCameraFrame(file);
+      onCaptured(side, frame, { cropState: 'native', blurry: false, source: 'native' });
+      stopPreview();
+      onFinished();
     } catch {
       setPhase('error');
       setDetail('사진을 읽지 못했습니다. 다시 시도해 주세요.');
     }
-  }, [acceptFrame]);
+  }, [onCaptured, onFinished, side, stopPreview]);
 
-  const queueCapture = useCallback(async () => {
-    if (!frontFrame || queueing) return;
-    setQueueing(true);
-    try {
-      await onQueueCapture({
-        frontFrame,
-        backFrame,
-        event,
-        relSelf,
-        relKairen,
-        memo,
-        researchInstruction: researchInstructionEnabled ? buildResearchInstruction(researchText) : null,
-        quickName,
-      });
-    } catch {
-      setDetail('로컬 대기열에 저장하지 못했습니다. 사진은 전송되지 않았으며 다시 시도할 수 있습니다.');
-      setQueueing(false);
-    }
-  }, [backFrame, event, frontFrame, memo, onQueueCapture, queueing, quickName, relKairen, relSelf, researchInstructionEnabled, researchText]);
-
-  const editQuickName = useCallback((value: string) => {
-    const name = value.trim().slice(0, 80);
-    nameEditedRef.current = true;
-    setNameText(value.slice(0, 80));
-    setQuickName(name ? {
-      name,
-      source: 'user_corrected',
-      confidence: quickName?.confidence ?? 0,
-      confirmed: true,
-      recognizedAt: quickName?.recognizedAt ?? new Date().toISOString(),
-    } : null);
-    setOcrState(name ? '직접 확인됨' : '이름을 입력해 주세요');
-  }, [quickName]);
-
-  const beginDraft = useCallback(() => {
-    const context = loadStickyCaptureContext();
-    setEvent(context.event);
-    setRelSelf(context.relSelf);
-    setRelKairen(context.relKairen);
-    setMemo('');
-    setResearchText('');
-    setFrontFrame(null);
-    setBackFrame(null);
-    setQuickName(null);
-    setNameText('');
-    nameEditedRef.current = false;
-    setOcrState('이름 인식 대기');
-    setQueueing(false);
-    void startPreview('front');
-  }, [startPreview]);
+  const beginSession = useCallback(() => {
+    setChoiceThumb('');
+    void startPreview(initialSide);
+  }, [initialSide, startPreview]);
 
   const toggleAutoCapture = useCallback(() => {
     setAutoCapture((current) => {
@@ -493,7 +414,7 @@ export function CameraPreviewModal({
   }, [torchOn]);
 
   return (
-    <IonModal className="camera-preview-modal" isOpen={isOpen} onDidPresent={beginDraft} onDidDismiss={() => { stopPreview(); onDismiss(); }}>
+    <IonModal className="camera-preview-modal" isOpen={isOpen} onDidPresent={beginSession} onDidDismiss={() => { stopPreview(); onDismiss(); }}>
       <IonHeader>
         <IonToolbar>
           <IonTitle>{side === 'front' ? '명함 앞면' : '명함 뒷면'}</IonTitle>
@@ -504,60 +425,44 @@ export function CameraPreviewModal({
         <div className="camera-preview-stage" data-state={phase}>
           <video ref={videoRef} aria-label="후면 카메라 미리보기" />
           <canvas ref={overlayRef} className="camera-overlay" aria-hidden="true" style={{ display: phase === 'streaming' ? '' : 'none' }} />
-          {frame && <img src={frame.dataUrl} alt={`${side === 'front' ? '앞면' : '뒷면'} 촬영 미리보기`} />}
+          {phase === 'choice' && choiceThumb && <img src={choiceThumb} alt="앞면 미리보기" />}
           {phase === 'streaming' && <div className="camera-hint-pill" role="status"><span>{autoHint}</span></div>}
-          {phase !== 'streaming' && phase !== 'captured' && (
+          {(phase === 'idle' || phase === 'requesting' || phase === 'error') && (
             <div className="camera-preview-state" role="status">
               {phase === 'requesting' ? <IonSpinner name="crescent" /> : <CameraIcon aria-hidden="true" size={30} />}
               <strong>{phase === 'error' ? '기본 카메라로 계속할 수 있어요' : '카메라 준비 중'}</strong>
+              {detail && <p>{detail}</p>}
             </div>
           )}
         </div>
 
-        <section className="camera-contract-note">
-          <ShieldCheck aria-hidden="true" size={20} />
-          <div><strong>{phase === 'captured' ? `${side === 'front' ? '앞면' : '뒷면'} 준비 완료` : phase === 'streaming' ? `${autoCapture ? '자동' : '수동'} 촬영 준비됨` : '안전한 촬영 경계'}</strong><p>{detail}{phase === 'streaming' && cvState ? ` · ${cvState}` : ''}</p></div>
-        </section>
-
         {phase === 'streaming' && (
-          <div className="camera-live-actions">
-            <IonButton fill={autoCapture ? 'solid' : 'outline'} onClick={toggleAutoCapture}>{autoCapture ? '자동 촬영 켜짐' : '자동 촬영 꺼짐'}</IonButton>
-            {torchAvailable && <IonButton fill={torchOn ? 'solid' : 'outline'} onClick={() => void toggleTorch()}><Lightbulb aria-hidden="true" size={17} /> 플래시</IonButton>}
+          <>
+            <p className="camera-engine-note">{cvState}</p>
+            <div className="camera-live-actions">
+              <IonButton fill={autoCapture ? 'solid' : 'outline'} onClick={toggleAutoCapture}>{autoCapture ? '자동 촬영 켜짐' : '자동 촬영 꺼짐'}</IonButton>
+              {torchAvailable && <IonButton fill={torchOn ? 'solid' : 'outline'} onClick={() => void toggleTorch()}><Lightbulb aria-hidden="true" size={17} /> 플래시</IonButton>}
+            </div>
+            <IonButton expand="block" onClick={() => capturePreviewFrame('manual')}><ImageIcon aria-hidden="true" slot="start" size={18} />{side === 'front' ? '앞면' : '뒷면'} 촬영</IonButton>
+            <IonButton expand="block" fill="outline" onClick={() => nativeInputRef.current?.click()}>기본 카메라 앱으로 찍기</IonButton>
+          </>
+        )}
+
+        {phase === 'choice' && (
+          <div className="camera-choice">
+            <p>앞면 저장됨 — 뒷면도 찍을까요? (선택)</p>
+            <IonButton expand="block" onClick={() => resumeStreaming('back')}>뒷면도 찍기</IonButton>
+            <IonButton expand="block" fill="outline" onClick={() => { stopPreview(); onFinished(); }}>뒷면 없이 완료</IonButton>
+            <IonButton expand="block" fill="clear" onClick={() => resumeStreaming('front')}>앞면 다시 찍기</IonButton>
           </div>
         )}
 
-        {frontFrame && (
-          <div className="capture-thumbnails" aria-label="촬영한 명함 면">
-            <button type="button" onClick={() => void startPreview('front')}><img src={frontFrame.dataUrl} alt="촬영한 앞면" /><span>앞면 다시 찍기</span></button>
-            <button type="button" onClick={() => void startPreview('back')} className={backFrame ? '' : 'empty'}>{backFrame ? <img src={backFrame.dataUrl} alt="촬영한 뒷면" /> : <span className="thumbnail-add">+</span>}<span>{backFrame ? '뒷면 다시 찍기' : '뒷면 추가'}</span></button>
-          </div>
+        {phase === 'error' && (
+          <>
+            <IonButton expand="block" onClick={() => void startPreview(side)}>다시 시도</IonButton>
+            <IonButton expand="block" fill="outline" onClick={() => nativeInputRef.current?.click()}>기본 카메라 앱으로 찍기</IonButton>
+          </>
         )}
-
-        {frontFrame && (
-          <section className="quick-name-panel">
-            <label htmlFor="candidate-quick-name">이름 먼저 확인</label>
-            <IonInput id="candidate-quick-name" aria-label="이름 후보" value={nameText} placeholder="직접 입력할 수 있어요" onIonInput={(inputEvent) => editQuickName(String(inputEvent.detail.value ?? ''))} />
-            <small role="status">{ocrState}</small>
-            <small>{cvState}</small>
-          </section>
-        )}
-
-        {frontFrame && (
-          <section className="capture-context-fields">
-            <h3>기억할 맥락 <span>선택 입력</span></h3>
-            <IonInput label="어디서 만났는지 · 2시간 유지" labelPlacement="stacked" value={event} onIonInput={(inputEvent) => setEvent(String(inputEvent.detail.value ?? ''))} />
-            <IonInput label="나와 이 사람과의 관계 · 2시간 유지" labelPlacement="stacked" value={relSelf} onIonInput={(inputEvent) => setRelSelf(String(inputEvent.detail.value ?? ''))} />
-            <IonInput label="Kairen과 이 사람과의 관계 · 2시간 유지" labelPlacement="stacked" value={relKairen} onIonInput={(inputEvent) => setRelKairen(String(inputEvent.detail.value ?? ''))} />
-            <IonTextarea label="메모" labelPlacement="stacked" autoGrow value={memo} onIonInput={(inputEvent) => setMemo(String(inputEvent.detail.value ?? ''))} />
-            {researchInstructionEnabled && <IonTextarea label="조사 지시 · 소유자 전용" labelPlacement="stacked" maxlength={2000} autoGrow value={researchText} onIonInput={(inputEvent) => setResearchText(String(inputEvent.detail.value ?? ''))} />}
-          </section>
-        )}
-
-        {phase === 'streaming' && <IonButton expand="block" onClick={() => capturePreviewFrame('manual')}><ImageIcon aria-hidden="true" slot="start" size={18} />{side === 'front' ? '앞면' : '뒷면'} 촬영</IonButton>}
-        {frontFrame && side === 'front' && phase === 'captured' && !backFrame && <IonButton expand="block" fill="outline" onClick={() => void startPreview('back')}>뒷면도 찍기</IonButton>}
-        {frontFrame && phase === 'captured' && <IonButton expand="block" disabled={queueing} onClick={() => void queueCapture()}>{queueing ? '로컬 저장 중' : '완료하고 대기열에 저장'}</IonButton>}
-        {phase === 'error' && <IonButton expand="block" onClick={() => void startPreview(side)}>다시 시도</IonButton>}
-        {(phase === 'streaming' || phase === 'error') && <IonButton expand="block" fill="outline" onClick={() => nativeInputRef.current?.click()}>기본 카메라 앱으로 찍기</IonButton>}
         <input ref={nativeInputRef} className="native-camera-input" type="file" accept="image/*" capture="environment" onChange={(inputEvent) => { void handleNativeFile(inputEvent.target.files?.[0]); inputEvent.target.value = ''; }} />
         <IonButton expand="block" fill="clear" href="../legacy.html">이전 촬영 화면 열기 · 복구용</IonButton>
       </IonContent>
