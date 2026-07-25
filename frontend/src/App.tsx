@@ -19,20 +19,33 @@ import {
 import { ArrowUpRight, Camera, ChevronRight, FileText, Mail, MessageCircle, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Waves } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { BriefItem, CaptureQueueItem, PersonTarget, RuntimeConfig, SearchItem } from './contracts/capture';
-import { CameraPreviewModal, type CandidateCaptureDraft } from './components/CameraPreviewModal';
+import type { BriefItem, CaptureQueueItem, PersonTarget, QuickName, RuntimeConfig, SearchItem } from './contracts/capture';
+import { CameraCaptureModal, type CapturedSideMeta, type CardSide } from './components/CameraPreviewModal';
 import { StatusBadge } from './components/StatusBadge';
 import { MarkdownLite } from './components/MarkdownLite';
 import { ContactActions, PersonDocument } from './components/PersonDocument';
 import { addPersonNote, listBriefs, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
-import { fileToCameraFrame, thumbnailOf } from './services/camera';
+import { type CapturedCameraFrame, fileToCameraFrame, thumbnailOf } from './services/camera';
 import { buildLegacyNote, buildQueuedCapture, parseLegacyNote } from './services/capture-item';
 import { actionErrorMessage, briefNameMap, briefTitle, elapsedMinutesOf, pendingProgress } from './services/brief-view';
 import { contactCardFromBrief } from './services/contacts';
 import { flushQueue, pruneSentQueue, putQueueItem, readQueue } from './services/queue';
 import { buildResearchInstruction } from './services/research';
-import { preloadQuickNameOcr } from './services/vision';
-import { loadCachedBriefs, loadOwnerFlags, loadRecentSearches, loadRuntimeConfig, saveCachedBriefs, saveOwnerFlags, saveRecentSearch, saveRuntimeConfig, saveStickyCaptureContext } from './services/storage';
+import { preloadQuickNameOcr, recognizeQuickName } from './services/vision';
+import {
+  loadCachedBriefs,
+  loadOwnerFlags,
+  loadRecentSearches,
+  loadRuntimeConfig,
+  loadSectionCollapsed,
+  loadStickyCaptureContext,
+  saveCachedBriefs,
+  saveOwnerFlags,
+  saveRecentSearch,
+  saveRuntimeConfig,
+  saveSectionCollapsed,
+  saveStickyCaptureContext,
+} from './services/storage';
 
 setupIonicReact({ mode: 'ios' });
 
@@ -91,6 +104,17 @@ function queueContextLine(item: CaptureQueueItem): string {
   return parts.join(' · ');
 }
 
+// 촬영 직후 토스트 문구 (legacy camCapture 토스트 규칙).
+function captureToast(side: CardSide, meta: CapturedSideMeta): string {
+  const label = side === 'front' ? '앞면' : '뒷면';
+  let text: string;
+  if (meta.source === 'native') text = `${label} 준비 완료`;
+  else if (meta.cropState === 'rectified') text = meta.source === 'auto' ? `${label} 자동 촬영 · 크롭 완료` : `${label} 저장 — 자동 크롭됨`;
+  else text = `${label} 저장`;
+  if (meta.blurry) text += ' · 사진이 조금 흐릿해요 — 필요하면 다시 찍어주세요';
+  return text;
+}
+
 function App() {
   const [tab, setTab] = useState<Tab>(initialTab);
   const [config, setConfig] = useState<RuntimeConfig>(() => loadRuntimeConfig());
@@ -100,11 +124,13 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [nameOnboardOpen, setNameOnboardOpen] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchItem[]>([]);
   const [recentSearches, setRecentSearches] = useState<string[]>(loadRecentSearches);
-  const [cameraPreviewOpen, setCameraPreviewOpen] = useState(false);
   const [sending, setSending] = useState(false);
   // owner 게이트는 legacy처럼 localStorage 캐시로 시작해 서버 응답으로 갱신한다 — 오프라인에도 유지.
   const [ownerCanSeeAll, setOwnerCanSeeAll] = useState(() => loadOwnerFlags().seeAll);
@@ -116,6 +142,8 @@ function App() {
   const [hasMoreBriefs, setHasMoreBriefs] = useState(false);
   const [recentLimit, setRecentLimit] = useState(30);
   const [expandedBriefs, setExpandedBriefs] = useState<Set<string>>(() => new Set());
+  const [recentCollapsed, setRecentCollapsed] = useState(() => loadSectionCollapsed('recent'));
+  const [briefsCollapsed, setBriefsCollapsed] = useState(() => loadSectionCollapsed('briefs'));
   const [documentOpen, setDocumentOpen] = useState(false);
   const [documentTitle, setDocumentTitle] = useState('프로필');
   const [documentBody, setDocumentBody] = useState('');
@@ -126,6 +154,24 @@ function App() {
   const [queueRetakeSide, setQueueRetakeSide] = useState<'front.jpg' | 'back.jpg'>('front.jpg');
   const queueRetakeInputRef = useRef<HTMLInputElement>(null);
   const flushingRef = useRef(false);
+  const contentRef = useRef<HTMLIonContentElement>(null);
+
+  // ── 촬영 초안: 맥락 필드·빠른 이름은 legacy처럼 메인 화면이 소유한다 ──
+  const sticky = useMemo(() => loadStickyCaptureContext(), []);
+  const [frontFrame, setFrontFrame] = useState<CapturedCameraFrame | null>(null);
+  const [backFrame, setBackFrame] = useState<CapturedCameraFrame | null>(null);
+  const [event, setEvent] = useState(sticky.event);
+  const [relSelf, setRelSelf] = useState(sticky.relSelf);
+  const [relKairen, setRelKairen] = useState(sticky.relKairen);
+  const [memo, setMemo] = useState('');
+  const [researchText, setResearchText] = useState('');
+  const [queueing, setQueueing] = useState(false);
+  const [quickName, setQuickName] = useState<QuickName | null>(null);
+  const [nameText, setNameText] = useState('');
+  const [ocrState, setOcrState] = useState('이름 인식 대기');
+  const ocrSessionRef = useRef(0);
+  const nameEditedRef = useRef(false);
+  const [cameraSession, setCameraSession] = useState<{ side: CardSide; withChoice: boolean } | null>(null);
 
   const configured = Boolean(config.apiUrl && config.token);
 
@@ -181,9 +227,13 @@ function App() {
     const handleOnline = () => void flushPendingQueue(true);
     const handleVisibility = () => {
       if (document.hidden) return;
-      // 앱 복귀 시 legacy처럼 전송 재시도와 브리핑 갱신을 함께 한다.
+      // 앱 복귀 시 legacy처럼 전송 재시도·브리핑 갱신·스티키 복원을 함께 한다.
       void flushPendingQueue();
       void refresh();
+      const restored = loadStickyCaptureContext();
+      setEvent((value) => value || restored.event);
+      setRelSelf((value) => value || restored.relSelf);
+      setRelKairen((value) => value || restored.relKairen);
     };
     const interval = window.setInterval(() => void refresh(), 20_000);
     window.addEventListener('online', handleOnline);
@@ -200,13 +250,19 @@ function App() {
     preloadQuickNameOcr();
   }, []);
 
+  // 첫 실행은 legacy처럼 이름 한 칸만 묻는다 — 주소·토큰은 개인 링크(?k=)가 자동으로 채운다.
   useEffect(() => {
-    if (!config.capturer) setSettingsOpen(true);
+    if (!config.capturer) setNameOnboardOpen(true);
   }, [config.capturer]);
 
-  const pending = useMemo(() => queue.filter((item) => item.state !== 'sent').length, [queue]);
   // 처리 완료 브리핑의 이름을 최근 캡처 목록에 반영한다 (legacy briefNameMap).
   const processedNames = useMemo(() => briefNameMap(briefs), [briefs]);
+
+  const setupBannerMessage = !config.apiUrl
+    ? '연결할 서버 주소가 없어요 — 받으신 개인 링크로 접속하거나 설정의 고급 항목에서 주소를 넣어주세요.'
+    : !config.token
+      ? '받으신 개인 링크(?k=토큰 포함)로 접속해 주세요. 토큰이 없으면 업로드가 거부됩니다.'
+      : '';
 
   const runSearch = useCallback(async (value: string) => {
     const normalized = value.trim();
@@ -227,8 +283,8 @@ function App() {
     }
   }, [config, configured, ownerCanSeeAll]);
 
-  function submitSearch(event: FormEvent) {
-    event.preventDefault();
+  function submitSearch(formEvent: FormEvent) {
+    formEvent.preventDefault();
     void runSearch(query);
   }
 
@@ -243,27 +299,102 @@ function App() {
     setMessage('기존 Card Capture 설정과 같은 local storage에 저장했어요.');
   }
 
-  const queueCandidateCapture = useCallback(async (draft: CandidateCaptureDraft) => {
-    const item = buildQueuedCapture(draft.frontFrame, {
-      backFrame: draft.backFrame,
-      event: draft.event,
-      relSelf: draft.relSelf,
-      relKairen: draft.relKairen,
-      memo: draft.memo,
-      researchInstruction: draft.researchInstruction,
-      quickName: draft.quickName,
+  function commitOnboardName() {
+    const name = nameDraft.trim();
+    if (!name) return;
+    const next = { ...config, capturer: name };
+    saveRuntimeConfig(next);
+    setConfig(next);
+    setNameOnboardOpen(false);
+  }
+
+  // ── 촬영 흐름: 모달은 촬영만, 결과는 메인 화면으로 돌아온다 ──
+  const startQuickNameOcr = useCallback((frame: CapturedCameraFrame) => {
+    const session = ++ocrSessionRef.current;
+    // 새 앞면 사진 = 새 인식 세션. 이후 사용자가 입력하면 OCR 결과가 덮어쓰지 않는다 (legacy userEdited 가드).
+    nameEditedRef.current = false;
+    setQuickName(null);
+    setNameText('');
+    setOcrState('이름 읽는 중…');
+    void recognizeQuickName(frame.dataUrl, (progress) => {
+      if (session === ocrSessionRef.current && !nameEditedRef.current) setOcrState(`이름 읽는 중 ${progress}%`);
+    }).then((result) => {
+      if (session !== ocrSessionRef.current || nameEditedRef.current) return;
+      setQuickName(result);
+      setNameText(result?.name ?? '');
+      setOcrState(result?.name ? '인식 완료 · 확인해 주세요' : '직접 확인해 주세요');
+    }).catch(() => {
+      if (session === ocrSessionRef.current && !nameEditedRef.current) setOcrState('직접 확인해 주세요');
     });
-    // 전송 후 원본이 정리돼도 목록에 남을 104px 썸네일 (legacy thumbOf).
-    item.thumb = await thumbnailOf(draft.frontFrame.dataUrl);
-    await putQueueItem(item);
-    saveStickyCaptureContext({ event: item.event ?? '', relSelf: item.relSelf ?? '', relKairen: item.relKairen ?? '' });
-    setQueue((current) => [item, ...current].sort((a, b) => b.captureId.localeCompare(a.captureId)));
-    setCameraPreviewOpen(false);
-    setMessage(configured
-      ? '업로드 시작! 다음 명함을 이어서 찍을 수 있어요.'
-      : '사진을 로컬 대기열에 보관했습니다. 연결 설정 뒤 자동으로 전송합니다.');
-    if (configured) void flushPendingQueue(true);
-  }, [configured, flushPendingQueue]);
+  }, []);
+
+  const editQuickName = useCallback((value: string) => {
+    const name = value.trim().slice(0, 80);
+    nameEditedRef.current = true;
+    setNameText(value.slice(0, 80));
+    setQuickName(name ? {
+      name,
+      source: 'user_corrected',
+      confidence: quickName?.confidence ?? 0,
+      confirmed: true,
+      recognizedAt: quickName?.recognizedAt ?? new Date().toISOString(),
+    } : null);
+    setOcrState(name ? '직접 확인됨' : '이름을 입력해 주세요');
+  }, [quickName]);
+
+  const resetQuickName = useCallback(() => {
+    ocrSessionRef.current += 1;
+    nameEditedRef.current = false;
+    setQuickName(null);
+    setNameText('');
+    setOcrState('이름 인식 대기');
+  }, []);
+
+  const handleCaptured = useCallback((side: CardSide, frame: CapturedCameraFrame, meta: CapturedSideMeta) => {
+    if (side === 'front') {
+      setFrontFrame(frame);
+      startQuickNameOcr(frame);
+    } else {
+      setBackFrame(frame);
+    }
+    setMessage(captureToast(side, meta));
+  }, [startQuickNameOcr]);
+
+  const completeCapture = useCallback(async () => {
+    if (!frontFrame || queueing) return;
+    setQueueing(true);
+    try {
+      const item = buildQueuedCapture(frontFrame, {
+        backFrame,
+        event,
+        relSelf,
+        relKairen,
+        memo,
+        researchInstruction: researchInstructionEnabled ? buildResearchInstruction(researchText) : null,
+        quickName,
+      });
+      // 전송 후 원본이 정리돼도 목록에 남을 104px 썸네일 (legacy thumbOf).
+      item.thumb = await thumbnailOf(frontFrame.dataUrl);
+      await putQueueItem(item);
+      saveStickyCaptureContext({ event: item.event ?? '', relSelf: item.relSelf ?? '', relKairen: item.relKairen ?? '' });
+      setQueue((current) => [item, ...current].sort((a, b) => b.captureId.localeCompare(a.captureId)));
+      // 즉시 초기화해서 다음 명함을 바로 찍을 수 있게 — 만난 곳·관계 2개는 유지, 메모만 비운다 (legacy).
+      setFrontFrame(null);
+      setBackFrame(null);
+      setMemo('');
+      setResearchText('');
+      resetQuickName();
+      setMessage(configured
+        ? '업로드 시작! 다음 명함을 이어서 찍을 수 있어요'
+        : '사진을 로컬 대기열에 보관했습니다. 연결 설정 뒤 자동으로 전송합니다.');
+      void contentRef.current?.scrollToTop(300);
+      if (configured) void flushPendingQueue();
+    } catch {
+      setMessage('로컬 대기열에 저장하지 못했어요 — 다시 시도해 주세요.');
+    } finally {
+      setQueueing(false);
+    }
+  }, [backFrame, configured, event, flushPendingQueue, frontFrame, memo, queueing, quickName, relKairen, relSelf, researchInstructionEnabled, researchText, resetQuickName]);
 
   const retryQueueItem = useCallback(async (item: CaptureQueueItem) => {
     await putQueueItem({ ...item, state: 'queued', err: undefined });
@@ -294,22 +425,22 @@ function App() {
 
   const saveQueueEdit = useCallback(async () => {
     if (!queueEdit || !queueEdit.images.some((image) => image.dataB64)) return;
-    const relSelf = queueEdit.relSelf?.trim() ?? '';
-    const relKairen = queueEdit.relKairen?.trim() ?? '';
-    const memo = queueEdit.memo?.trim() ?? '';
+    const editRelSelf = queueEdit.relSelf?.trim() ?? '';
+    const editRelKairen = queueEdit.relKairen?.trim() ?? '';
+    const editMemo = queueEdit.memo?.trim() ?? '';
     const next: CaptureQueueItem = {
       ...queueEdit,
       event: queueEdit.event?.trim() ?? '',
-      relSelf,
-      relKairen,
-      memo,
-      note: buildLegacyNote(relSelf, relKairen, memo),
-      disp: memo || relSelf || relKairen,
+      relSelf: editRelSelf,
+      relKairen: editRelKairen,
+      memo: editMemo,
+      note: buildLegacyNote(editRelSelf, editRelKairen, editMemo),
+      disp: editMemo || editRelSelf || editRelKairen,
       state: 'queued',
       err: undefined,
     };
     await putQueueItem(next);
-    saveStickyCaptureContext({ event: next.event ?? '', relSelf, relKairen });
+    saveStickyCaptureContext({ event: next.event ?? '', relSelf: editRelSelf, relKairen: editRelKairen });
     setQueueEdit(null);
     await refresh();
     if (configured) void flushPendingQueue(true);
@@ -323,6 +454,20 @@ function App() {
       else next.add(captureId);
       return next;
     });
+  }, []);
+
+  const toggleSection = useCallback((section: 'recent' | 'briefs') => {
+    if (section === 'recent') {
+      setRecentCollapsed((current) => {
+        saveSectionCollapsed('recent', !current);
+        return !current;
+      });
+    } else {
+      setBriefsCollapsed((current) => {
+        saveSectionCollapsed('briefs', !current);
+        return !current;
+      });
+    }
   }, []);
 
   const openDocument = useCallback(async (title: string, target: { id?: string; captureId?: string }, noteTarget: PersonTarget | null) => {
@@ -386,50 +531,6 @@ function App() {
       setMessage(`재처리 실패: ${actionErrorMessage(error)}`);
     }
   }, [config, refresh]);
-
-  function renderCapture() {
-    return (
-      <div className="cc-stack">
-        <section className="hero-card">
-          <div className="eyebrow"><ShieldCheck aria-hidden="true" size={14} /> 안전한 명함 캡처</div>
-          <h1>명함을 찍으면,<br />바로 기억으로 이어집니다.</h1>
-          <p>기기에서 이름 후보를 먼저 확인하고, 촬영한 사진은 로컬 대기열에 안전하게 보관한 뒤 연결되면 자동으로 전송합니다.</p>
-          <div className="capture-actions">
-            <IonButton className="primary-action" expand="block" onClick={() => setCameraPreviewOpen(true)}>
-              <Camera aria-hidden="true" slot="start" size={20} />
-              명함 촬영 시작
-            </IonButton>
-            <IonButton className="secondary-action" fill="outline" expand="block" href="../legacy.html">
-              이전 앱 열기 · 복구용
-            </IonButton>
-          </div>
-        </section>
-
-        <section className="signal-grid" aria-label="현재 상태">
-          <article><span>{sending ? '전송 중' : '로컬 대기'}</span><strong>{pending}</strong><small>기기 안에 안전하게 보관</small></article>
-          <article><span>서버 기록</span><strong>{briefs.length}</strong><small>연결된 명함 브리핑</small></article>
-        </section>
-
-        <button className="search-shortcut" type="button" onClick={() => setTab('people')}>
-          <span className="search-shortcut-icon"><Search aria-hidden="true" size={20} /></span>
-          <span className="search-shortcut-copy"><strong>사람 검색</strong><small>이름 또는 회사로 기존 기록 찾기</small></span>
-          <ChevronRight aria-hidden="true" size={19} />
-        </button>
-
-        <section className="surface-card">
-          <div className="section-heading">
-            <div><span className="eyebrow">처리 기준</span><h2>촬영부터 브리핑까지</h2></div>
-          </div>
-          <ol className="migration-list">
-            <li className="done"><span>1</span><div><strong>촬영·이름 확인</strong><small>앞·뒷면과 기기 내 이름 후보</small></div></li>
-            <li className="done"><span>2</span><div><strong>안전한 로컬 보관</strong><small>연결이 끊겨도 촬영 내용 유지</small></div></li>
-            <li className="done"><span>3</span><div><strong>자동 전송·재시도</strong><small>연결이 돌아오면 순서대로 전송</small></div></li>
-            <li className="done"><span>4</span><div><strong>브리핑·사람 검색</strong><small>처리 결과와 기존 인물 기록 확인</small></div></li>
-          </ol>
-        </section>
-      </div>
-    );
-  }
 
   function renderQueueRow(item: CaptureQueueItem) {
     const imageSource = queueImageSource(item);
@@ -506,6 +607,118 @@ function App() {
     );
   }
 
+  function renderBriefsSection() {
+    if (!configured) {
+      return <EmptyState title="연결 설정이 필요해요" body="받으신 개인 링크(?k=토큰 포함)로 접속하면 같은 진행 상태를 읽습니다." action="설정 열기" onAction={() => { setDraftConfig(config); setSettingsOpen(true); }} />;
+    }
+    if (loading && briefs.length === 0) {
+      return <div className="center-state"><IonSpinner name="crescent" /><span>최신 상태 확인 중</span></div>;
+    }
+    if (briefs.length === 0) {
+      return <p className="section-empty">아직 도착한 브리핑이 없어요. 명함을 찍으면 시스템이 처리 후 여기로 알려드려요.</p>;
+    }
+    return (
+      <>
+        {briefs.map(renderBriefCard)}
+        {hasMoreBriefs && <button className="load-more" type="button" onClick={() => setListLimit((current) => Math.min(current + 30, 100))}>예전 브리핑 더 보기</button>}
+      </>
+    );
+  }
+
+  // ── 캡처 탭: legacy 작업 화면 구조 — 촬영·맥락·완료·최근 캡처·브리핑이 한 스크롤 (ISS-000091 항목 18) ──
+  function renderCapture() {
+    return (
+      <div className="cc-stack">
+        {setupBannerMessage && (
+          <section className="setup-banner" role="alert">
+            <strong>링크 설정이 필요해요</strong>
+            <p>{setupBannerMessage}</p>
+          </section>
+        )}
+
+        <section className="surface-card capture-card">
+          <div className="capture-kicker">빠른 등록</div>
+          <h1 className="capture-title">사진 한 장이면<br />이름부터 바로 확인해요</h1>
+          <p className="capture-copy">명함은 먼저 선명하게 저장하고, 인물 조사와 정리는 백그라운드에서 이어집니다.</p>
+
+          {frontFrame ? (
+            <button className="shot-main filled" type="button" onClick={() => setCameraSession({ side: 'front', withChoice: true })}>
+              <img src={frontFrame.dataUrl} alt="앞면 미리보기" />
+            </button>
+          ) : (
+            <button className="shot-main" type="button" onClick={() => setCameraSession({ side: 'front', withChoice: true })}>
+              <span className="shot-icon" aria-hidden="true"><Camera size={24} /></span>
+              <span>명함 앞면 촬영</span>
+            </button>
+          )}
+
+          {frontFrame && (
+            <section className="quick-name-panel inline" aria-live="polite">
+              <div className="quick-name-top"><label htmlFor="quick-name-input">이름 먼저 확인</label><span role="status">{ocrState}</span></div>
+              <IonInput id="quick-name-input" aria-label="이름 후보" value={nameText} placeholder="인식된 이름" onIonInput={(inputEvent) => editQuickName(String(inputEvent.detail.value ?? ''))} />
+              <small>기기 안에서 먼저 읽어요. 틀리면 여기서 바로 고치면 이후 정리에 반영됩니다.</small>
+            </section>
+          )}
+
+          {frontFrame && (
+            <div className="row2">
+              <button className="shot-sub" type="button" onClick={() => setCameraSession({ side: 'back', withChoice: false })}>
+                {backFrame ? <img src={backFrame.dataUrl} alt="뒷면 미리보기" /> : <span>뒷면 추가 <small>(선택)</small></span>}
+              </button>
+              <button className="shot-sub" type="button" onClick={() => setCameraSession({ side: 'front', withChoice: true })}><span>앞면 다시 찍기</span></button>
+            </div>
+          )}
+
+          <div className="context-head">기억할 맥락 <span>선택 입력</span></div>
+          <div className="capture-context-fields plain">
+            <IonInput label="어디서 만났는지 (선택, 2시간 유지)" labelPlacement="stacked" placeholder="예: 2026 로보월드 전시회" value={event} onIonInput={(inputEvent) => setEvent(String(inputEvent.detail.value ?? ''))} />
+            <IonInput label="Kairen과 이 사람과의 관계 (선택, 2시간 유지)" labelPlacement="stacked" placeholder="예: 잠재 고객 / 부품 공급사 담당자" value={relKairen} onIonInput={(inputEvent) => setRelKairen(String(inputEvent.detail.value ?? ''))} />
+            <IonInput label="나와 이 사람과의 관계 (선택, 2시간 유지)" labelPlacement="stacked" placeholder="예: 대학 선배 / 오늘 처음 인사" value={relSelf} onIonInput={(inputEvent) => setRelSelf(String(inputEvent.detail.value ?? ''))} />
+            <IonTextarea label="메모 (선택 — 키보드 마이크로 말해도 돼요)" labelPlacement="stacked" placeholder="예: 공장장님, 우리 부품에 관심 많으심" autoGrow value={memo} onIonInput={(inputEvent) => setMemo(String(inputEvent.detail.value ?? ''))} />
+            {researchInstructionEnabled && <IonTextarea label="조사 지시 (소유자 전용 — 공개·합법 출처만)" labelPlacement="stacked" maxlength={2000} autoGrow value={researchText} onIonInput={(inputEvent) => setResearchText(String(inputEvent.detail.value ?? ''))} />}
+          </div>
+
+          <IonButton className="primary-action" expand="block" disabled={!frontFrame || queueing} onClick={() => void completeCapture()}>{queueing ? '저장 중…' : '완료'}</IonButton>
+          <p className="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br />전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요.</p>
+        </section>
+
+        <button className="search-shortcut" type="button" onClick={() => setTab('people')}>
+          <span className="search-shortcut-icon"><Search aria-hidden="true" size={20} /></span>
+          <span className="search-shortcut-copy"><strong>사람 검색</strong><small>미팅 전 10초 회상 — 이름·회사·만난 곳</small></span>
+          <ChevronRight aria-hidden="true" size={19} />
+        </button>
+
+        <div className="section-toggle-row">
+          <button className="section-toggle" type="button" aria-expanded={!recentCollapsed} onClick={() => toggleSection('recent')}>
+            <span className="caret" aria-hidden="true">{recentCollapsed ? '▸' : '▾'}</span> 최근 캡처
+          </button>
+          {sending && <span className="sending-note">전송 중…</span>}
+        </div>
+        {!recentCollapsed && (
+          <section className="surface-card queue-surface">
+            <div className="queue-list">
+              {queue.length === 0 && <p className="section-empty">아직 캡처가 없어요.</p>}
+              {queue.slice(0, recentLimit).map(renderQueueRow)}
+              {queue.length > recentLimit && (
+                <button className="load-more" type="button" onClick={() => setRecentLimit((current) => current + 30)}>
+                  예전 캡처 더 보기 ({queue.length - recentLimit}건)
+                </button>
+              )}
+            </div>
+          </section>
+        )}
+
+        <div className="section-toggle-row">
+          <button className="section-toggle" type="button" aria-expanded={!briefsCollapsed} onClick={() => toggleSection('briefs')}>
+            <span className="caret" aria-hidden="true">{briefsCollapsed ? '▸' : '▾'}</span> 받은 명함 브리핑
+          </button>
+          <button className="refresh-chip" type="button" onClick={() => void refresh(true)}>새로고침</button>
+        </div>
+        {!briefsCollapsed && renderBriefsSection()}
+      </div>
+    );
+  }
+
   function renderActivity() {
     return (
       <div className="cc-stack">
@@ -513,7 +726,7 @@ function App() {
           <div><span className="eyebrow">Live contract</span><h1>처리 진행</h1></div>
           <button className="icon-action" onClick={() => void refresh(true)} aria-label="새로고침"><RefreshCw aria-hidden="true" size={19} /></button>
         </div>
-        {!configured && <EmptyState title="연결 설정이 필요해요" body="기존 앱에서 사용하던 API와 token을 설정하면 같은 진행 상태를 읽습니다." action="설정 열기" onAction={() => setSettingsOpen(true)} />}
+        {!configured && <EmptyState title="연결 설정이 필요해요" body="받으신 개인 링크(?k=토큰 포함)로 접속하면 같은 진행 상태를 읽습니다." action="설정 열기" onAction={() => { setDraftConfig(config); setSettingsOpen(true); }} />}
         {configured && loading && briefs.length === 0 && <div className="center-state"><IonSpinner name="crescent" /><span>최신 상태 확인 중</span></div>}
         {configured && !loading && briefs.length === 0 && <EmptyState title="아직 도착한 브리핑이 없어요" body="명함을 찍으면 접수·처리·완료 상태가 여기에 나타납니다." />}
         {queue.length > 0 && (
@@ -541,7 +754,7 @@ function App() {
         <div className="section-heading top-heading"><div><span className="eyebrow">Owner recall</span><h1>사람 찾기</h1></div></div>
         <form className="search-shell" onSubmit={submitSearch}>
           <Search aria-hidden="true" size={19} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="이름·회사·만난 곳으로 검색" aria-label="이름·회사·만난 곳으로 검색" />
+          <input value={query} onChange={(changeEvent) => setQuery(changeEvent.target.value)} placeholder="이름·회사·만난 곳으로 검색" aria-label="이름·회사·만난 곳으로 검색" />
           <button type="submit" disabled={!configured || !ownerCanSeeAll || searching}>{searching ? '검색 중' : '검색'}</button>
         </form>
         {recentSearches.length > 0 && (
@@ -551,7 +764,7 @@ function App() {
             ))}
           </div>
         )}
-        {(!configured || !ownerCanSeeAll) && <EmptyState title="소유자 연결이 필요해요" body="Person 검색은 기존과 동일하게 owner token에서만 동작합니다." action="설정 열기" onAction={() => setSettingsOpen(true)} />}
+        {(!configured || !ownerCanSeeAll) && <EmptyState title="소유자 연결이 필요해요" body="Person 검색은 기존과 동일하게 owner token에서만 동작합니다." action="설정 열기" onAction={() => { setDraftConfig(config); setSettingsOpen(true); }} />}
         {configured && ownerCanSeeAll && searchResults.length === 0 && !searching && <EmptyState title="찾을 사람을 입력하세요" body="미팅 전 10초 회상 — 이름·회사·만난 곳으로 기존 기록을 찾습니다." />}
         {searchResults.map((item) => {
           const personId = (/PER-\d{6}/.exec(item.title) ?? [null])[0];
@@ -574,9 +787,9 @@ function App() {
         <div className="section-heading top-heading"><div><span className="eyebrow">Same origin</span><h1>연결과 경계</h1></div></div>
         <section className="surface-card settings-summary">
           <div><span>촬영자</span><strong>{config.capturer || '미설정'}</strong></div>
-          <div><span>API</span><strong>{config.apiUrl ? '연결 주소 있음' : '미설정'}</strong></div>
-          <div><span>Token</span><strong>{config.token ? '이 기기에 저장됨' : '미설정'}</strong></div>
-          <IonButton fill="outline" expand="block" onClick={() => { setDraftConfig(config); setSettingsOpen(true); }}>연결 설정 편집</IonButton>
+          <div><span>연결</span><strong>{configured ? '개인 링크로 연결됨' : (config.token ? '주소 확인 필요' : '개인 링크 필요')}</strong></div>
+          <div><span>토큰</span><strong>{config.token ? '이 기기에 저장됨 (개인 링크가 자동 저장)' : '미설정 — 개인 링크(?k=)로 접속'}</strong></div>
+          <IonButton fill="outline" expand="block" onClick={() => { setDraftConfig(config); setAdvancedOpen(false); setSettingsOpen(true); }}>이름·연결 설정 편집</IonButton>
         </section>
         <section className="boundary-note">
           <ShieldCheck aria-hidden="true" size={20} />
@@ -596,7 +809,7 @@ function App() {
             <IonButton slot="end" fill="clear" onClick={() => void refresh(true)} aria-label="상태 새로고침"><RefreshCw aria-hidden="true" size={18} /></IonButton>
           </IonToolbar>
         </IonHeader>
-        <IonContent fullscreen>
+        <IonContent ref={contentRef} fullscreen>
           <main id="kairen-ui" className="candidate-shell">
             {tab === 'capture' && renderCapture()}
             {tab === 'activity' && renderActivity()}
@@ -615,15 +828,32 @@ function App() {
           </IonToolbar>
         </IonFooter>
 
-        <IonModal isOpen={settingsOpen} onDidDismiss={() => setSettingsOpen(false)} initialBreakpoint={0.78} breakpoints={[0, 0.78, 1]}>
-          <IonHeader><IonToolbar><IonTitle>연결 설정</IonTitle><IonButton slot="end" fill="clear" onClick={() => setSettingsOpen(false)}>닫기</IonButton></IonToolbar></IonHeader>
+        {/* 첫 실행 온보딩: legacy처럼 이름만 묻는다 — 토큰은 개인 링크가 자동 저장 (ISS-000091 항목 17) */}
+        <IonModal className="name-onboard-modal" isOpen={nameOnboardOpen} backdropDismiss={false} onDidDismiss={() => setNameOnboardOpen(false)}>
           <IonContent className="ion-padding">
-            <p className="modal-copy">기존 앱과 같은 local storage key를 사용합니다. token은 이 기기 밖으로 보내거나 log에 남기지 않습니다.</p>
+            <div className="name-onboard">
+              <h3>처음 오셨네요 👋</h3>
+              <p>캡처한 명함에 "누가 찍었는지"를 남기기 위해 이름이 필요해요. 한 번만 입력하면 기억합니다.</p>
+              <IonInput aria-label="이름" placeholder="이름" autocomplete="name" value={nameDraft} onIonInput={(inputEvent) => setNameDraft(String(inputEvent.detail.value ?? ''))} />
+              <IonButton expand="block" disabled={!nameDraft.trim()} onClick={commitOnboardName}>시작하기</IonButton>
+            </div>
+          </IonContent>
+        </IonModal>
+
+        <IonModal isOpen={settingsOpen} onDidDismiss={() => setSettingsOpen(false)} initialBreakpoint={0.78} breakpoints={[0, 0.78, 1]}>
+          <IonHeader><IonToolbar><IonTitle>이름·연결 설정</IonTitle><IonButton slot="end" fill="clear" onClick={() => setSettingsOpen(false)}>닫기</IonButton></IonToolbar></IonHeader>
+          <IonContent className="ion-padding">
             <IonList inset>
-              <IonItem><IonInput label="촬영자 이름" labelPlacement="stacked" value={draftConfig.capturer} onIonInput={(event) => setDraftConfig((value) => ({ ...value, capturer: String(event.detail.value ?? '') }))} /></IonItem>
-              <IonItem><IonInput label="GAS API URL" labelPlacement="stacked" type="url" value={draftConfig.apiUrl} onIonInput={(event) => setDraftConfig((value) => ({ ...value, apiUrl: String(event.detail.value ?? '') }))} /></IonItem>
-              <IonItem><IonInput label="Bearer token" labelPlacement="stacked" type="password" value={draftConfig.token} onIonInput={(event) => setDraftConfig((value) => ({ ...value, token: String(event.detail.value ?? '') }))} /></IonItem>
+              <IonItem><IonInput label="촬영자 이름" labelPlacement="stacked" value={draftConfig.capturer} onIonInput={(inputEvent) => setDraftConfig((value) => ({ ...value, capturer: String(inputEvent.detail.value ?? '') }))} /></IonItem>
             </IonList>
+            <p className="modal-copy">주소와 토큰은 받으신 개인 링크(<code>?k=</code>)로 열면 자동 저장됩니다. 링크를 잃어버렸을 때만 아래에서 직접 입력하세요.</p>
+            <button className="advanced-toggle" type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((value) => !value)}>{advancedOpen ? '▾' : '▸'} 고급 — 직접 연결 설정</button>
+            {advancedOpen && (
+              <IonList inset>
+                <IonItem><IonInput label="GAS API 주소" labelPlacement="stacked" type="url" value={draftConfig.apiUrl} onIonInput={(inputEvent) => setDraftConfig((value) => ({ ...value, apiUrl: String(inputEvent.detail.value ?? '') }))} /></IonItem>
+                <IonItem><IonInput label="개인 링크 토큰 (?k= 값)" labelPlacement="stacked" type="password" value={draftConfig.token} onIonInput={(inputEvent) => setDraftConfig((value) => ({ ...value, token: String(inputEvent.detail.value ?? '') }))} /></IonItem>
+              </IonList>
+            )}
             <IonButton expand="block" disabled={!draftConfig.capturer.trim()} onClick={commitSettings}>이 기기에 저장</IonButton>
           </IonContent>
         </IonModal>
@@ -667,11 +897,13 @@ function App() {
           </IonContent>
         </IonModal>
         <IonToast isOpen={Boolean(message)} message={message} duration={2600} position="top" onDidDismiss={() => setMessage('')} />
-        <CameraPreviewModal
-          isOpen={cameraPreviewOpen}
-          researchInstructionEnabled={researchInstructionEnabled}
-          onDismiss={() => setCameraPreviewOpen(false)}
-          onQueueCapture={queueCandidateCapture}
+        <CameraCaptureModal
+          isOpen={Boolean(cameraSession)}
+          initialSide={cameraSession?.side ?? 'front'}
+          withBackChoice={cameraSession?.withChoice ?? false}
+          onDismiss={() => setCameraSession(null)}
+          onCaptured={handleCaptured}
+          onFinished={() => setCameraSession(null)}
         />
       </IonPage>
     </IonApp>
