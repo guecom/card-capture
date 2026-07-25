@@ -169,3 +169,29 @@ export function rectifyCardCanvas(source: HTMLCanvasElement, cv: OpenCvRuntime):
   const scale = source.width / previewWidth;
   return warpCard(source, quad.map((point) => ({ x: point.x * scale, y: point.y * scale })), cv);
 }
+
+export function blurScore(canvas: HTMLCanvasElement, cv: OpenCvRuntime): number | null {
+  if (!cv) return null;
+  let source: OpenCvRuntime;
+  let gray: OpenCvRuntime;
+  let laplacian: OpenCvRuntime;
+  let mean: OpenCvRuntime;
+  let standardDeviation: OpenCvRuntime;
+  try {
+    source = cv.imread(canvas);
+    gray = new cv.Mat();
+    cv.cvtColor(source, gray, cv.COLOR_RGBA2GRAY);
+    laplacian = new cv.Mat();
+    cv.Laplacian(gray, laplacian, cv.CV_64F);
+    mean = new cv.Mat();
+    standardDeviation = new cv.Mat();
+    cv.meanStdDev(laplacian, mean, standardDeviation);
+    return Math.pow(standardDeviation.data64F[0], 2);
+  } catch {
+    return null;
+  } finally {
+    [source, gray, laplacian, mean, standardDeviation].forEach((mat) => {
+      try { mat?.delete(); } catch { /* best-effort OpenCV cleanup */ }
+    });
+  }
+}

@@ -17,7 +17,9 @@ export interface QuickName {
 
 export interface ResearchInstruction {
   raw: string;
+  channel?: 'owner_ui';
   policyVersion?: string;
+  riskFlags?: string[];
 }
 
 export interface CaptureQueueItem {
@@ -54,8 +56,11 @@ export interface ContactSummary {
   name?: string;
   title?: string;
   company?: string;
+  organization?: string;
   email?: string;
   phone?: string;
+  emails?: string[];
+  phones?: string[];
 }
 
 export interface BriefItem {
@@ -64,11 +69,13 @@ export interface BriefItem {
   receivedAt?: string;
   status: ProcessingStatus;
   person?: string;
+  type?: string;
   brief?: string;
   contact?: ContactSummary;
   quickName?: QuickName;
   event?: string;
   note?: string;
+  capturer?: string;
 }
 
 export interface ListResponse {
@@ -96,4 +103,24 @@ export interface RuntimeConfig {
   apiUrl: string;
   token: string;
   capturer: string;
+}
+
+export interface DocumentResponse {
+  ok: boolean;
+  error?: string;
+  markdown?: string;
+}
+
+export interface ActionResponse {
+  ok: boolean;
+  error?: string;
+  receiptId?: string;
+  alreadyTerminal?: boolean;
+  deduped?: boolean;
+  status?: string;
+}
+
+export interface PersonTarget {
+  captureId?: string;
+  person?: string;
 }

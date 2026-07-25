@@ -37,4 +37,27 @@ describe('captured-image queue contract', () => {
       height: 900,
     }, { now })).toThrow('invalid_camera_frame');
   });
+
+  it('preserves back image, sticky context labels, memo, and research instruction', () => {
+    const item = buildQueuedCapture({ dataUrl: 'data:image/jpeg;base64,front', width: 1600, height: 900 }, {
+      backFrame: { dataUrl: 'data:image/jpeg;base64,back', width: 1600, height: 900 },
+      event: ' 2026 로보월드 ',
+      relSelf: ' 오늘 처음 인사 ',
+      relKairen: ' 잠재 고객 ',
+      memo: ' 자료 보내기 ',
+      researchInstruction: { raw: '공개 이력 확인', channel: 'owner_ui', policyVersion: 'public-research-v1', riskFlags: [] },
+      now,
+    });
+
+    expect(item).toMatchObject({
+      event: '2026 로보월드',
+      relSelf: '오늘 처음 인사',
+      relKairen: '잠재 고객',
+      memo: '자료 보내기',
+      note: '나와의 관계: 오늘 처음 인사\nKairen과의 관계: 잠재 고객\n메모: 자료 보내기',
+      disp: '자료 보내기',
+      images: [{ name: 'front.jpg', dataB64: 'front' }, { name: 'back.jpg', dataB64: 'back' }],
+      researchInstruction: { raw: '공개 이력 확인', policyVersion: 'public-research-v1' },
+    });
+  });
 });

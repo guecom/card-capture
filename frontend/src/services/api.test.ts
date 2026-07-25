@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { CaptureQueueItem, RuntimeConfig } from '../contracts/capture';
-import { buildListUrl, buildSearchUrl, isTerminalStatus, toUploadPayload } from './api';
+import { addPersonNote, buildDocumentUrl, buildListUrl, buildSearchUrl, isTerminalStatus, requestCorrection, submitResearchInstruction, toUploadPayload } from './api';
 
 const config: RuntimeConfig = {
   apiUrl: 'https://script.google.com/macros/s/example/exec',
@@ -21,6 +21,24 @@ describe('legacy GAS contract adapter', () => {
     const url = new URL(buildSearchUrl(config, '  홍 길동  '));
     expect(url.searchParams.get('action')).toBe('search');
     expect(url.searchParams.get('q')).toBe('홍 길동');
+  });
+
+  it('builds both legacy Person document routes', () => {
+    expect(new URL(buildDocumentUrl(config, 'doc', 'PER-000001')).searchParams.get('id')).toBe('PER-000001');
+    expect(new URL(buildDocumentUrl(config, 'persondoc', 'CAP-1')).searchParams.get('captureId')).toBe('CAP-1');
+  });
+
+  it('keeps note, research, and correction action payload names and targets', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ json: async () => ({ ok: true, receiptId: 'receipt-1' }) });
+    vi.stubGlobal('fetch', fetchMock);
+    await addPersonNote(config, { person: 'PER-000001' }, ' note ');
+    await submitResearchInstruction(config, { captureId: 'CAP-1' }, ' research ');
+    await requestCorrection(config, 'CAP-1', ' correction ');
+    expect(fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)))).toEqual([
+      { action: 'addnote', person: 'PER-000001', text: 'note', k: 'fixture-token' },
+      { action: 'researchinstruction', captureId: 'CAP-1', text: 'research', k: 'fixture-token' },
+      { action: 'correction', captureId: 'CAP-1', text: 'correction', k: 'fixture-token' },
+    ]);
   });
 
   it('serializes only the existing upload payload contract', () => {

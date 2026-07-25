@@ -7,15 +7,16 @@
 - **검색 진입점**: 하단 내비게이션의 모호한 `사람` 탭을 `검색`으로 바꾸고 캡처 첫 화면에 `사람 검색` 바로가기를 추가해 이름·회사 검색을 즉시 발견할 수 있게 했다.
 - **병렬 app shell**: React·TypeScript·Vite와 Ionic React로 `docs/next/` 후보를 만들고 legacy `docs/index.html`은 rollback baseline으로 유지한다.
 - **style ownership**: Ionic은 mobile shell·safe area·modal·toast를 소유하고, Tailwind는 Preflight 없이 Kairen-owned layout·content에만 사용한다.
-- **contract adapter**: 기존 GAS `list`·`search`·upload payload와 IndexedDB `cardcapture/q`를 typed boundary로 고정했다.
-- **offline queue fixture**: IndexedDB reopen 보존, captureId 순차 전송, local `sent` 비중복, 실패 data·tries 보존과 후속 retry 성공을 합성 sender로 검증한다.
+- **contract adapter**: 기존 GAS `list`·`search`·`doc`·`persondoc`·`requeue`·`addnote`·`researchinstruction`·`correction`·upload payload와 IndexedDB `cardcapture/q`를 typed boundary로 고정했다.
+- **설정·offline queue parity**: 기존 `?api`·`?k` 링크와 `cc_*` 저장 key를 그대로 받고, IndexedDB reopen·captureId 순차 전송·local `sent` 비중복·online/visibility 재전송·실패 data/tries·수동 재시도·50건 이후 sent 원본 정리를 복원했다.
 - **candidate offline shell**: 취약한 Workbox dependency를 채택하지 않고 작은 build-time generator로 `/next/` scope 전용 service worker와 web manifest를 생성한다. legacy root service worker는 교체하지 않는다.
 - **server-off recovery gate**: Playwright가 실제 정적 서버를 종료한 뒤 Chrome reload를 수행해 cached shell·navigation이 복구되는지 검증한다.
-- **candidate camera boundary**: 이미지 저장·OCR·upload 없이 후면 camera permission·resolution·failure mapping·track cleanup과 legacy fallback을 병렬 미리보기에서 검증한다.
-- **captured-image queue gate**: camera frame을 legacy와 같은 최대 2000px long edge·JPEG 0.85로 메모리에 만들고, 사용자가 선택한 뒤 기존 IndexedDB queue에만 보관하며 자동 upload가 일어나지 않음을 unit·Chrome contract로 고정한다.
+- **촬영 parity**: 후면 camera permission·resolution·failure mapping·track cleanup, 앞·뒷면, retake, torch, 기본 카메라 fallback, stable auto-capture, 맥락·메모·owner 조사 지시를 React 후보에 연결했다.
+- **captured-image queue gate**: camera frame을 legacy와 같은 최대 2000px long edge·JPEG 0.85로 만들고 기존 IndexedDB queue에 보관한 뒤 설정된 기존 GAS로 자동 전송한다. 미설정·offline에서는 POST 0을 유지하고 연결 복귀 뒤 같은 captureId로 보낸다.
 - **quick-name OCR boundary**: legacy `nameCandidate`와 parity를 고정하고, 기기 `TextDetector`를 우선한 뒤 pinned self-hosted Tesseract로 fallback해 `quickName`을 같은 queue payload에 보존한다. OCR 실패는 촬영·로컬 보관을 막지 않는다.
 - **OpenCV geometry boundary**: 기존 Otsu/Canny·adaptive threshold·명함 비율 scoring·perspective warp를 typed service로 분리하고, 엔진 지연·검출 실패 때 전체 프레임으로 비차단 fallback한다. 실제 명함 검출 품질 판정은 phone gate에 남긴다.
-- **점진 전환**: 후보의 촬영 action은 아직 검증된 legacy camera로 연결한다. write queue·camera·OCR·service worker는 각 parity gate 뒤 옮긴다.
+- **read/action parity**: 최근 캡처 상세·정보/사진 수정·같은 captureId 재전송, 20초 briefing refresh·지연 재처리·pagination·offline cache, Person profile, 전화·문자·메일·vCard, 사후 메모·조사 지시·수정 요청, 최근 검색과 PWA shortcut을 복원했다.
+- **점진 전환**: 기존 사용자 기능은 React 후보에 직접 연결하되 legacy app은 rollback link로 유지한다. 실제 명함 crop·한영 OCR·자동 촬영 오발과 Android/iOS camera·offline acceptance 뒤에만 merge·release를 판단한다.
 
 ## [Unreleased] — capture experience wave (branch `agent/card-capture-interview-wave`, Kairen-Ref: TSK-000178, TSK-000217, TSK-000218, TSK-000219, TSK-000220)
 

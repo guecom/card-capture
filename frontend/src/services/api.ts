@@ -1,6 +1,9 @@
 import type {
   CaptureQueueItem,
+  ActionResponse,
+  DocumentResponse,
   ListResponse,
+  PersonTarget,
   RuntimeConfig,
   SearchResponse,
   UploadPayload,
@@ -26,6 +29,14 @@ export function buildSearchUrl(config: RuntimeConfig, query: string): string {
   url.searchParams.set('action', 'search');
   url.searchParams.set('k', config.token);
   url.searchParams.set('q', query.trim());
+  return url.toString();
+}
+
+export function buildDocumentUrl(config: RuntimeConfig, action: 'doc' | 'persondoc', value: string): string {
+  const url = new URL(normalizedBase(config.apiUrl));
+  url.searchParams.set('action', action);
+  url.searchParams.set('k', config.token);
+  url.searchParams.set(action === 'doc' ? 'id' : 'captureId', value);
   return url.toString();
 }
 
@@ -56,6 +67,12 @@ export async function searchPeople(config: RuntimeConfig, query: string): Promis
   return getJson<SearchResponse>(buildSearchUrl(config, query));
 }
 
+export async function loadPersonDocument(config: RuntimeConfig, target: { id?: string; captureId?: string }): Promise<DocumentResponse> {
+  if (target.id) return getJson<DocumentResponse>(buildDocumentUrl(config, 'doc', target.id));
+  if (target.captureId) return getJson<DocumentResponse>(buildDocumentUrl(config, 'persondoc', target.captureId));
+  throw new Error('missing_person_target');
+}
+
 export async function uploadCapture(config: RuntimeConfig, item: CaptureQueueItem): Promise<void> {
   const response = await fetch(normalizedBase(config.apiUrl), {
     method: 'POST',
@@ -67,4 +84,28 @@ export async function uploadCapture(config: RuntimeConfig, item: CaptureQueueIte
 
 export function isTerminalStatus(status: string): boolean {
   return status === 'processed' || status === 'skipped';
+}
+
+async function postAction(config: RuntimeConfig, payload: Record<string, unknown>): Promise<ActionResponse> {
+  const response = await fetch(normalizedBase(config.apiUrl), {
+    method: 'POST',
+    body: JSON.stringify({ ...payload, k: config.token }),
+  });
+  return (await response.json()) as ActionResponse;
+}
+
+export function requeueCapture(config: RuntimeConfig, captureId: string): Promise<ActionResponse> {
+  return postAction(config, { action: 'requeue', captureId });
+}
+
+export function addPersonNote(config: RuntimeConfig, target: PersonTarget, text: string): Promise<ActionResponse> {
+  return postAction(config, { action: 'addnote', ...target, text: text.trim().slice(0, 2000) });
+}
+
+export function submitResearchInstruction(config: RuntimeConfig, target: PersonTarget, text: string): Promise<ActionResponse> {
+  return postAction(config, { action: 'researchinstruction', ...target, text: text.trim().slice(0, 2000) });
+}
+
+export function requestCorrection(config: RuntimeConfig, captureId: string, text: string): Promise<ActionResponse> {
+  return postAction(config, { action: 'correction', captureId, text: text.trim().slice(0, 2000) });
 }

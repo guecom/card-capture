@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  cameraHasTorch,
   captureCameraFrame,
   environmentCameraConstraints,
   fitCameraFrame,
   openEnvironmentCamera,
+  setCameraTorch,
   stopCameraStream,
 } from './camera';
 
@@ -71,5 +73,15 @@ describe('candidate camera boundary', () => {
     });
     expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 0, 1600, 900);
     expect(toDataURL).toHaveBeenCalledWith('image/jpeg', 0.85);
+  });
+
+  it('exposes and applies the legacy torch capability without throwing on unsupported devices', async () => {
+    const applyConstraints = vi.fn().mockResolvedValue(undefined);
+    const torchTrack = { getCapabilities: () => ({ torch: true }), applyConstraints } as unknown as MediaStreamTrack;
+    const stream = { getVideoTracks: () => [torchTrack] } as unknown as MediaStream;
+    expect(cameraHasTorch(stream)).toBe(true);
+    expect(await setCameraTorch(stream, true)).toBe(true);
+    expect(applyConstraints).toHaveBeenCalledWith({ advanced: [{ torch: true }] });
+    expect(await setCameraTorch({ getVideoTracks: () => [] } as unknown as MediaStream, true)).toBe(false);
   });
 });

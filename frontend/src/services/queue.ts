@@ -76,3 +76,14 @@ export async function flushQueue(send: QueueSender): Promise<FlushResult> {
 
   return result;
 }
+
+export async function pruneSentQueue(keep = 50): Promise<number> {
+  const items = (await readQueue()).sort((a, b) => b.captureId.localeCompare(a.captureId));
+  let pruned = 0;
+  for (const item of items.slice(keep)) {
+    if (item.state !== 'sent' || !item.images.some((image) => image.dataB64)) continue;
+    await putQueueItem({ ...item, images: item.images.map((image) => ({ name: image.name, mime: image.mime })) });
+    pruned += 1;
+  }
+  return pruned;
+}

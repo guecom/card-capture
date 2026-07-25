@@ -2,6 +2,14 @@ import { defineConfig } from 'vitest/config';
 import type { Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+import { readFileSync } from 'node:fs';
+
+function readLegacyDefaultApi(): string {
+  const legacyHtml = readFileSync(new URL('../docs/index.html', import.meta.url), 'utf8');
+  const match = /var DEFAULT_API = '([^']+)'/.exec(legacyHtml);
+  if (!match?.[1]) throw new Error('legacy_default_api_missing');
+  return match[1];
+}
 
 function stableHash(values: string[]): string {
   let hash = 2166136261;
@@ -77,6 +85,22 @@ self.addEventListener('fetch', (event) => {
           display: 'standalone',
           scope: './',
           start_url: './',
+          shortcuts: [
+            {
+              name: '인맥 검색',
+              short_name: '검색',
+              description: '만나기 전에 이 사람이 누구인지 회상',
+              url: './?view=search',
+              icons: [{ src: '../icon-192.png', sizes: '192x192', type: 'image/png' }],
+            },
+            {
+              name: '받은 브리핑',
+              short_name: '브리핑',
+              description: '처리된 명함 브리핑 확인',
+              url: './?view=briefs',
+              icons: [{ src: '../icon-192.png', sizes: '192x192', type: 'image/png' }],
+            },
+          ],
           icons: [
             { src: '../icon-192.png', sizes: '192x192', type: 'image/png' },
             { src: '../icon-512.png', sizes: '512x512', type: 'image/png' },
@@ -89,6 +113,9 @@ self.addEventListener('fetch', (event) => {
 
 export default defineConfig({
   base: './',
+  define: {
+    __CARD_CAPTURE_DEFAULT_API__: JSON.stringify(readLegacyDefaultApi()),
+  },
   plugins: [
     react(),
     tailwindcss(),
