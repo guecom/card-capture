@@ -6,7 +6,6 @@ import {
   IonHeader,
   IonInput,
   IonItem,
-  IonLabel,
   IonList,
   IonModal,
   IonPage,
@@ -17,18 +16,23 @@ import {
   IonToolbar,
   setupIonicReact,
 } from '@ionic/react';
-import { ArrowUpRight, Camera, ChevronRight, FileText, Mail, MessageCircle, Phone, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, UserPlus, Waves } from 'lucide-react';
+import { ArrowUpRight, Camera, ChevronRight, FileText, Mail, MessageCircle, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Waves } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { BriefItem, CaptureQueueItem, PersonTarget, RuntimeConfig, SearchItem } from './contracts/capture';
 import { CameraPreviewModal, type CandidateCaptureDraft } from './components/CameraPreviewModal';
 import { StatusBadge } from './components/StatusBadge';
+import { MarkdownLite } from './components/MarkdownLite';
+import { ContactActions, PersonDocument } from './components/PersonDocument';
 import { addPersonNote, listBriefs, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
-import { fileToCameraFrame } from './services/camera';
-import { buildLegacyNote, buildQueuedCapture } from './services/capture-item';
+import { fileToCameraFrame, thumbnailOf } from './services/camera';
+import { buildLegacyNote, buildQueuedCapture, parseLegacyNote } from './services/capture-item';
+import { actionErrorMessage, briefNameMap, briefTitle, elapsedMinutesOf, pendingProgress } from './services/brief-view';
+import { contactCardFromBrief } from './services/contacts';
 import { flushQueue, pruneSentQueue, putQueueItem, readQueue } from './services/queue';
 import { buildResearchInstruction } from './services/research';
-import { loadCachedBriefs, loadRecentSearches, loadRuntimeConfig, saveCachedBriefs, saveRecentSearch, saveRuntimeConfig, saveStickyCaptureContext } from './services/storage';
+import { preloadQuickNameOcr } from './services/vision';
+import { loadCachedBriefs, loadOwnerFlags, loadRecentSearches, loadRuntimeConfig, saveCachedBriefs, saveOwnerFlags, saveRecentSearch, saveRuntimeConfig, saveStickyCaptureContext } from './services/storage';
 
 setupIonicReact({ mode: 'ios' });
 
@@ -48,14 +52,6 @@ const tabs: Array<{ id: Tab; label: string; icon: LucideIcon }> = [
   { id: 'settings', label: '설정', icon: Settings2 },
 ];
 
-function titleFromBrief(item: BriefItem): string {
-  const firstLine = item.brief?.split('\n')[0] ?? '';
-  const parsed = firstLine.startsWith('# ')
-    ? firstLine.slice(2).replace(/이런\s*분이에요/g, '').replace(/^[\s—\-–:·]+|[\s—\-–:·]+$/g, '').trim()
-    : '';
-  return parsed || item.contact?.name || item.quickName?.name || item.person || '이름 확인 중';
-}
-
 function formatMoment(value?: string): string {
   if (!value) return '시간 정보 없음';
   const date = new Date(value);
@@ -63,14 +59,14 @@ function formatMoment(value?: string): string {
   return new Intl.DateTimeFormat('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(date);
 }
 
-function queueImageSource(item: CaptureQueueItem): string {
-  if (item.thumb) return item.thumb;
-  return queueNamedImageSource(item, 'front.jpg');
-}
-
 function queueNamedImageSource(item: CaptureQueueItem, name: 'front.jpg' | 'back.jpg'): string {
   const image = item.images.find((candidate) => candidate.name === name && candidate.dataB64);
   return image?.dataB64 ? `data:${image.mime ?? 'image/jpeg'};base64,${image.dataB64}` : '';
+}
+
+function queueImageSource(item: CaptureQueueItem): string {
+  if (item.thumb) return item.thumb;
+  return queueNamedImageSource(item, 'front.jpg');
 }
 
 function queueStateCopy(item: CaptureQueueItem): string {
@@ -79,35 +75,20 @@ function queueStateCopy(item: CaptureQueueItem): string {
   return '전송 대기';
 }
 
-function elapsedMinutes(item: BriefItem): number | null {
-  const timestamp = Date.parse(item.receivedAt || item.capturedAt || '');
-  if (!Number.isFinite(timestamp)) return null;
-  const minutes = Math.round((Date.now() - timestamp) / 60_000);
-  return minutes >= 0 && minutes < 60 * 24 * 30 ? minutes : null;
+// 구버전(legacy가 저장한) 큐 항목은 관계 필드 없이 note만 있다 — 편집 화면에서 되살린다.
+function normalizedQueueItem(item: CaptureQueueItem): CaptureQueueItem {
+  if (item.relSelf !== undefined) return item;
+  const parsed = parseLegacyNote(item.note);
+  return { ...item, relSelf: parsed.relSelf, relKairen: parsed.relKairen, memo: parsed.memo };
 }
 
-function contactValues(item: BriefItem): { phones: string[]; emails: string[] } {
-  const phones = [...(item.contact?.phones ?? []), item.contact?.phone ?? ''].filter(Boolean);
-  const emails = [...(item.contact?.emails ?? []), item.contact?.email ?? ''].filter(Boolean);
-  return { phones: [...new Set(phones)], emails: [...new Set(emails)] };
-}
-
-function downloadVCard(item: BriefItem): void {
-  const name = titleFromBrief(item);
-  const contact = contactValues(item);
-  const organization = item.contact?.company || item.contact?.organization || '';
-  const lines = ['BEGIN:VCARD', 'VERSION:3.0', `FN:${name}`, `N:${name};;;;`];
-  if (organization) lines.push(`ORG:${organization}`);
-  if (item.contact?.title) lines.push(`TITLE:${item.contact.title}`);
-  contact.phones.forEach((phone) => lines.push(`TEL;TYPE=CELL:${phone}`));
-  contact.emails.forEach((email) => lines.push(`EMAIL:${email}`));
-  lines.push('NOTE:Kairen Card Capture', 'END:VCARD');
-  const anchor = document.createElement('a');
-  anchor.href = URL.createObjectURL(new Blob([lines.join('\r\n')], { type: 'text/vcard;charset=utf-8' }));
-  anchor.download = `${name || 'contact'}.vcf`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  window.setTimeout(() => { URL.revokeObjectURL(anchor.href); anchor.remove(); }, 1_500);
+function queueContextLine(item: CaptureQueueItem): string {
+  const relations = item.relSelf === undefined ? parseLegacyNote(item.note) : { relSelf: item.relSelf ?? '', relKairen: item.relKairen ?? '', memo: '' };
+  const parts: string[] = [];
+  if (item.event) parts.push(item.event);
+  if (relations.relKairen) parts.push(`Kairen: ${relations.relKairen}`);
+  if (relations.relSelf) parts.push(`나: ${relations.relSelf}`);
+  return parts.join(' · ');
 }
 
 function App() {
@@ -125,15 +106,22 @@ function App() {
   const [recentSearches, setRecentSearches] = useState<string[]>(loadRecentSearches);
   const [cameraPreviewOpen, setCameraPreviewOpen] = useState(false);
   const [sending, setSending] = useState(false);
-  const [researchInstructionEnabled, setResearchInstructionEnabled] = useState(false);
-  const [ownerCanSeeAll, setOwnerCanSeeAll] = useState(false);
+  // owner 게이트는 legacy처럼 localStorage 캐시로 시작해 서버 응답으로 갱신한다 — 오프라인에도 유지.
+  const [ownerCanSeeAll, setOwnerCanSeeAll] = useState(() => loadOwnerFlags().seeAll);
+  const [researchInstructionEnabled, setResearchInstructionEnabled] = useState(() => {
+    const flags = loadOwnerFlags();
+    return flags.seeAll && flags.researchInstructionEnabled;
+  });
   const [listLimit, setListLimit] = useState(30);
   const [hasMoreBriefs, setHasMoreBriefs] = useState(false);
+  const [recentLimit, setRecentLimit] = useState(30);
   const [expandedBriefs, setExpandedBriefs] = useState<Set<string>>(() => new Set());
   const [documentOpen, setDocumentOpen] = useState(false);
   const [documentTitle, setDocumentTitle] = useState('프로필');
   const [documentBody, setDocumentBody] = useState('');
+  const [documentError, setDocumentError] = useState('');
   const [documentLoading, setDocumentLoading] = useState(false);
+  const [documentNoteTarget, setDocumentNoteTarget] = useState<PersonTarget | null>(null);
   const [queueEdit, setQueueEdit] = useState<CaptureQueueItem | null>(null);
   const [queueRetakeSide, setQueueRetakeSide] = useState<'front.jpg' | 'back.jpg'>('front.jpg');
   const queueRetakeInputRef = useRef<HTMLInputElement>(null);
@@ -141,7 +129,8 @@ function App() {
 
   const configured = Boolean(config.apiUrl && config.token);
 
-  const refresh = useCallback(async () => {
+  // announce=false(배경 20초 주기·앱 복귀)는 실패를 조용히 넘긴다 — 오프라인 토스트 스팸 방지 (legacy 규칙).
+  const refresh = useCallback(async (announce = false) => {
     setLoading(true);
     try {
       await pruneSentQueue();
@@ -153,11 +142,14 @@ function App() {
       const nextBriefs = response.items ?? [];
       setBriefs(nextBriefs);
       saveCachedBriefs(nextBriefs);
-      setOwnerCanSeeAll(response.seeAll === true);
-      setResearchInstructionEnabled(response.seeAll === true && response.researchInstructionEnabled === true);
+      const seeAll = response.seeAll === true;
+      const research = response.researchInstructionEnabled === true;
+      setOwnerCanSeeAll(seeAll);
+      setResearchInstructionEnabled(seeAll && research);
+      saveOwnerFlags({ seeAll, researchInstructionEnabled: research });
       setHasMoreBriefs(response.hasMore === true);
     } catch (error) {
-      setMessage(`새로고침 실패: ${error instanceof Error ? error.message : 'unknown_error'}`);
+      if (announce) setMessage(`새로고침 실패: ${actionErrorMessage(error)}`);
     } finally {
       setLoading(false);
     }
@@ -176,7 +168,7 @@ function App() {
           : `${result.sent}건을 기존 처리 대기열로 보냈습니다.`);
       }
     } catch (error) {
-      if (announce) setMessage(`전송 재시도 실패: ${error instanceof Error ? error.message : 'unknown_error'}`);
+      if (announce) setMessage(`전송 재시도 실패: ${actionErrorMessage(error)}`);
     } finally {
       flushingRef.current = false;
       setSending(false);
@@ -188,7 +180,10 @@ function App() {
     void flushPendingQueue();
     const handleOnline = () => void flushPendingQueue(true);
     const handleVisibility = () => {
-      if (!document.hidden) void flushPendingQueue();
+      if (document.hidden) return;
+      // 앱 복귀 시 legacy처럼 전송 재시도와 브리핑 갱신을 함께 한다.
+      void flushPendingQueue();
+      void refresh();
     };
     const interval = window.setInterval(() => void refresh(), 20_000);
     window.addEventListener('online', handleOnline);
@@ -200,15 +195,21 @@ function App() {
     };
   }, [flushPendingQueue, refresh]);
 
+  // 첫 촬영에서 이름 인식이 모델 다운로드를 기다리지 않게 유휴 프리로드.
+  useEffect(() => {
+    preloadQuickNameOcr();
+  }, []);
+
   useEffect(() => {
     if (!config.capturer) setSettingsOpen(true);
   }, [config.capturer]);
 
   const pending = useMemo(() => queue.filter((item) => item.state !== 'sent').length, [queue]);
+  // 처리 완료 브리핑의 이름을 최근 캡처 목록에 반영한다 (legacy briefNameMap).
+  const processedNames = useMemo(() => briefNameMap(briefs), [briefs]);
 
-  async function submitSearch(event: FormEvent) {
-    event.preventDefault();
-    const normalized = query.trim();
+  const runSearch = useCallback(async (value: string) => {
+    const normalized = value.trim();
     if (!normalized || !configured || !ownerCanSeeAll) return;
     setSearching(true);
     try {
@@ -217,10 +218,18 @@ function App() {
       setSearchResults(response.items ?? []);
       setRecentSearches(saveRecentSearch(normalized));
     } catch (error) {
-      setMessage(`검색 실패: ${error instanceof Error ? error.message : 'unknown_error'}`);
+      const code = error instanceof Error ? error.message : '';
+      setMessage(code === 'owner_only' ? '소유자 토큰만 검색할 수 있어요'
+        : code === 'unknown_action' ? '검색은 서버 업데이트(GAS 재배포) 후 열려요'
+          : `검색 실패: ${actionErrorMessage(error)}`);
     } finally {
       setSearching(false);
     }
+  }, [config, configured, ownerCanSeeAll]);
+
+  function submitSearch(event: FormEvent) {
+    event.preventDefault();
+    void runSearch(query);
   }
 
   function commitSettings() {
@@ -244,12 +253,14 @@ function App() {
       researchInstruction: draft.researchInstruction,
       quickName: draft.quickName,
     });
+    // 전송 후 원본이 정리돼도 목록에 남을 104px 썸네일 (legacy thumbOf).
+    item.thumb = await thumbnailOf(draft.frontFrame.dataUrl);
     await putQueueItem(item);
     saveStickyCaptureContext({ event: item.event ?? '', relSelf: item.relSelf ?? '', relKairen: item.relKairen ?? '' });
     setQueue((current) => [item, ...current].sort((a, b) => b.captureId.localeCompare(a.captureId)));
     setCameraPreviewOpen(false);
     setMessage(configured
-      ? '사진을 로컬 대기열에 보관했고 기존 처리 경로로 전송을 시작합니다.'
+      ? '업로드 시작! 다음 명함을 이어서 찍을 수 있어요.'
       : '사진을 로컬 대기열에 보관했습니다. 연결 설정 뒤 자동으로 전송합니다.');
     if (configured) void flushPendingQueue(true);
   }, [configured, flushPendingQueue]);
@@ -269,8 +280,10 @@ function App() {
       const frame = await fileToCameraFrame(file);
       const dataB64 = frame.dataUrl.slice(frame.dataUrl.indexOf(',') + 1);
       const image = { name: queueRetakeSide, mime: 'image/jpeg' as const, dataB64 };
+      const thumb = queueRetakeSide === 'front.jpg' ? await thumbnailOf(frame.dataUrl) : null;
       setQueueEdit((current) => current ? {
         ...current,
+        ...(thumb !== null ? { thumb } : {}),
         images: [...current.images.filter((candidate) => candidate.name !== queueRetakeSide), image]
           .sort((a, b) => a.name.localeCompare(b.name)),
       } : null);
@@ -312,18 +325,23 @@ function App() {
     });
   }, []);
 
-  const openDocument = useCallback(async (title: string, target: { id?: string; captureId?: string }) => {
+  const openDocument = useCallback(async (title: string, target: { id?: string; captureId?: string }, noteTarget: PersonTarget | null) => {
     if (!configured) return;
     setDocumentTitle(title);
     setDocumentBody('');
+    setDocumentError('');
+    setDocumentNoteTarget(noteTarget);
     setDocumentLoading(true);
     setDocumentOpen(true);
     try {
       const response = await loadPersonDocument(config, target);
       if (!response.ok) throw new Error(response.error ?? 'document_failed');
-      setDocumentBody(response.markdown ?? '프로필 내용이 없습니다.');
+      setDocumentBody(response.markdown ?? '');
     } catch (error) {
-      setDocumentBody(`프로필을 불러오지 못했습니다: ${error instanceof Error ? error.message : 'unknown_error'}`);
+      const code = error instanceof Error ? error.message : '';
+      setDocumentError(code === 'owner_only' ? '소유자 토큰만 볼 수 있어요'
+        : code === 'unknown_action' ? '서버 업데이트(GAS 재배포) 후 열려요'
+          : `프로필을 불러오지 못했어요: ${actionErrorMessage(error)}`);
     } finally {
       setDocumentLoading(false);
     }
@@ -336,34 +354,36 @@ function App() {
       setMessage(response.receiptId ? `${success} · receipt ${response.receiptId}` : success);
       await refresh();
     } catch (error) {
-      setMessage(`요청 실패: ${error instanceof Error ? error.message : 'unknown_error'}`);
+      setMessage(`접수 실패: ${actionErrorMessage(error)}`);
     }
   }, [refresh]);
 
   const promptNote = useCallback((target: PersonTarget) => {
-    const text = window.prompt('이 분에 대한 메모를 남겨주세요. 다음 처리 때 인물 기록에 병합됩니다.', '');
-    if (text?.trim()) void runPersonAction(addPersonNote(config, target, text), '메모를 접수했습니다.');
+    const text = window.prompt('이 분에 대한 메모를 남겨주세요.\n다음 처리 때 인물 기록에 병합돼요.\n예: 회의에서 3분기 협력 논의, 다음주 자료 보내기로 함', '');
+    if (text?.trim()) void runPersonAction(addPersonNote(config, target, text), '메모를 접수했어요 — 잠시 후 인물 기록에 병합돼요');
   }, [config, runPersonAction]);
 
   const promptResearch = useCallback((target: PersonTarget) => {
-    const text = window.prompt('공개 자료에서 확인할 내용과 깊이를 적어주세요.', '');
+    const text = window.prompt('공개 자료에서 확인할 내용과 깊이를 적어주세요.\n공개·합법 출처만 조사하고, 원문·요청자·대상·시간을 receipt로 남깁니다.', '');
     const submission = buildResearchInstruction(text ?? '');
-    if (submission) void runPersonAction(submitResearchInstruction(config, target, submission.raw), '조사 지시를 접수했습니다.');
+    if (submission) void runPersonAction(submitResearchInstruction(config, target, submission.raw), '조사 지시를 접수했어요');
   }, [config, runPersonAction]);
 
   const promptCorrection = useCallback((captureId: string) => {
-    const text = window.prompt('무엇이 틀렸는지 적어주세요.', '');
-    if (text?.trim()) void runPersonAction(requestCorrection(config, captureId, text), '수정 요청을 보냈습니다.');
+    const text = window.prompt('무엇이 틀렸는지 적어주세요.\n예: 직함이 CTO가 아니라 CPO / 이름 표기가 달라요', '');
+    if (text?.trim()) void runPersonAction(requestCorrection(config, captureId, text), '수정 요청을 보냈어요 — 다음 처리 때 반영돼요');
   }, [config, runPersonAction]);
 
   const retryProcessing = useCallback(async (captureId: string) => {
     try {
       const response = await requeueCapture(config, captureId);
       if (!response.ok) throw new Error(response.error ?? 'requeue_failed');
-      setMessage(response.alreadyTerminal ? '이미 처리가 끝난 항목입니다.' : response.deduped ? '이미 다시 처리 중입니다.' : '다시 처리를 요청했습니다.');
+      setMessage(response.alreadyTerminal
+        ? (response.status === 'skipped' ? '이미 건너뜀으로 마감됐어요' : '이미 처리가 끝났어요 — 최신 상태로 바꿀게요')
+        : response.deduped ? '이미 다시 처리 중이에요' : '다시 처리를 요청했어요 — 몇 분 안에 처리돼요');
       await refresh();
     } catch (error) {
-      setMessage(`재처리 실패: ${error instanceof Error ? error.message : 'unknown_error'}`);
+      setMessage(`재처리 실패: ${actionErrorMessage(error)}`);
     }
   }, [config, refresh]);
 
@@ -411,78 +431,105 @@ function App() {
     );
   }
 
+  function renderQueueRow(item: CaptureQueueItem) {
+    const imageSource = queueImageSource(item);
+    const processedName = processedNames[item.captureId];
+    const displayName = processedName || item.quickName?.name || '이름 인식 대기';
+    const contextLine = queueContextLine(item);
+    return (
+      <article className="queue-row" key={item.captureId}>
+        <button className="queue-row-main" type="button" onClick={() => setQueueEdit(normalizedQueueItem(structuredClone(item)))}>
+          {imageSource ? <img src={imageSource} alt="명함 앞면 미리보기" /> : <span className="queue-placeholder"><Camera aria-hidden="true" size={18} /></span>}
+          <div className="row-copy">
+            <strong>{displayName}</strong>
+            <span>{contextLine || formatMoment(item.capturedAt)} · {queueStateCopy(item)}</span>
+            {item.err && <small>{actionErrorMessage(item.err)}</small>}
+          </div>
+          <ChevronRight aria-hidden="true" size={16} />
+        </button>
+        {/* 처리 완료(이름 인식됨)면 목록에서 바로 메모 (legacy 실사용 피드백) */}
+        {processedName && item.state !== 'failed' && (
+          <button className="note-action" type="button" onClick={() => promptNote({ captureId: item.captureId })}><Plus aria-hidden="true" size={13} />메모</button>
+        )}
+        {item.state === 'failed' && <button className="retry-action" type="button" onClick={() => void retryQueueItem(item)}>다시 보내기</button>}
+      </article>
+    );
+  }
+
+  function renderBriefCard(item: BriefItem) {
+    const expanded = expandedBriefs.has(item.captureId);
+    const minutes = elapsedMinutesOf(item);
+    const progress = pendingProgress(item, minutes);
+    const title = briefTitle(item);
+    const contact = contactCardFromBrief(item, title.split(' — ')[0]);
+    const briefBody = item.brief ? item.brief.split('\n').slice(1).join('\n') : '';
+    const actionable = item.status === 'processed' && item.type !== 'note' && item.type !== 'research_instruction';
+    return (
+      <article className="brief-card" key={item.captureId}>
+        <button className="brief-summary" type="button" onClick={() => toggleBrief(item.captureId)} aria-expanded={expanded}>
+          <div className="avatar" aria-hidden="true">{title.slice(0, 1)}</div>
+          <div className="row-copy">
+            <strong>{title}</strong>
+            <span>{formatMoment(item.receivedAt || item.capturedAt)}{item.event ? ` · ${item.event}` : ''}{item.capturer ? ` · 촬영 ${item.capturer}` : ''}</span>
+          </div>
+          <StatusBadge status={item.status} />
+          <ChevronRight className={expanded ? 'expanded' : ''} aria-hidden="true" size={17} />
+        </button>
+        {progress && (
+          <div className={`processing-line ${progress.late ? 'late' : ''}`}>
+            <span>{progress.text}</span>
+            {progress.late && (
+              <div>
+                <button type="button" onClick={() => void retryProcessing(item.captureId)}><RotateCcw aria-hidden="true" size={13} />다시 처리 요청</button>
+                <a href={`mailto:guecom90@gmail.com?subject=${encodeURIComponent(`[명함] 처리 지연 문의 ${item.captureId}`)}`}><Mail aria-hidden="true" size={13} />문의하기</a>
+              </div>
+            )}
+          </div>
+        )}
+        {expanded && (
+          <div className="brief-detail">
+            {briefBody ? <MarkdownLite text={briefBody} /> : <p>아직 브리핑 본문이 도착하지 않았습니다.</p>}
+            <div className="action-grid">
+              {item.person && ownerCanSeeAll && <button type="button" onClick={() => void openDocument(title.split(' — ')[0], { captureId: item.captureId }, { captureId: item.captureId })}><FileText aria-hidden="true" size={15} />전체 프로필</button>}
+              {actionable && (
+                <>
+                  {item.person && <button className="primary" type="button" onClick={() => promptNote({ captureId: item.captureId })}><Plus aria-hidden="true" size={15} />메모 추가</button>}
+                  {item.person && researchInstructionEnabled && <button type="button" onClick={() => promptResearch({ captureId: item.captureId })}><Search aria-hidden="true" size={15} />조사 지시</button>}
+                  <button type="button" onClick={() => promptCorrection(item.captureId)}><MessageCircle aria-hidden="true" size={15} />수정 요청</button>
+                </>
+              )}
+            </div>
+            {actionable && <ContactActions contact={contact} />}
+          </div>
+        )}
+      </article>
+    );
+  }
+
   function renderActivity() {
     return (
       <div className="cc-stack">
         <div className="section-heading top-heading">
           <div><span className="eyebrow">Live contract</span><h1>처리 진행</h1></div>
-          <button className="icon-action" onClick={() => void refresh()} aria-label="새로고침"><RefreshCw aria-hidden="true" size={19} /></button>
+          <button className="icon-action" onClick={() => void refresh(true)} aria-label="새로고침"><RefreshCw aria-hidden="true" size={19} /></button>
         </div>
         {!configured && <EmptyState title="연결 설정이 필요해요" body="기존 앱에서 사용하던 API와 token을 설정하면 같은 진행 상태를 읽습니다." action="설정 열기" onAction={() => setSettingsOpen(true)} />}
-        {configured && loading && <div className="center-state"><IonSpinner name="crescent" /><span>최신 상태 확인 중</span></div>}
+        {configured && loading && briefs.length === 0 && <div className="center-state"><IonSpinner name="crescent" /><span>최신 상태 확인 중</span></div>}
         {configured && !loading && briefs.length === 0 && <EmptyState title="아직 도착한 브리핑이 없어요" body="명함을 찍으면 접수·처리·완료 상태가 여기에 나타납니다." />}
         {queue.length > 0 && (
           <section className="surface-card queue-surface">
             <div className="section-heading"><div><span className="eyebrow">Local queue</span><h2>최근 캡처</h2></div></div>
             <div className="queue-list">
-              {queue.slice(0, 30).map((item) => {
-                const imageSource = queueImageSource(item);
-                return (
-                  <article className="queue-row" key={item.captureId}>
-                    <button className="queue-row-main" type="button" onClick={() => setQueueEdit(structuredClone(item))}>
-                      {imageSource ? <img src={imageSource} alt="명함 앞면 미리보기" /> : <span className="queue-placeholder"><Camera aria-hidden="true" size={18} /></span>}
-                      <div className="row-copy"><strong>{item.quickName?.name || '이름 인식 대기'}</strong><span>{formatMoment(item.capturedAt)} · {queueStateCopy(item)}</span>{item.err && <small>{item.err}</small>}</div>
-                      <ChevronRight aria-hidden="true" size={16} />
-                    </button>
-                    {item.state === 'failed' && <button className="retry-action" type="button" onClick={() => void retryQueueItem(item)}>다시 보내기</button>}
-                  </article>
-                );
-              })}
+              {queue.slice(0, recentLimit).map(renderQueueRow)}
+              {queue.length > recentLimit && (
+                <button className="load-more" type="button" onClick={() => setRecentLimit((current) => current + 30)}>
+                  예전 캡처 더 보기 ({queue.length - recentLimit}건)
+                </button>
+              )}
             </div>
           </section>
         )}
-        {briefs.map((item) => {
-          const expanded = expandedBriefs.has(item.captureId);
-          const minutes = elapsedMinutes(item);
-          const pendingItem = item.status !== 'processed' && item.status !== 'skipped';
-          const named = Boolean(item.contact?.name || item.quickName?.name);
-          const contact = contactValues(item);
-          const title = titleFromBrief(item);
-          return (
-            <article className="brief-card" key={item.captureId}>
-              <button className="brief-summary" type="button" onClick={() => toggleBrief(item.captureId)} aria-expanded={expanded}>
-                <div className="avatar" aria-hidden="true">{title.slice(0, 1)}</div>
-                <div className="row-copy">
-                  <strong>{title}</strong>
-                  <span>{formatMoment(item.receivedAt || item.capturedAt)}{item.event ? ` · ${item.event}` : ''}{item.capturer ? ` · 촬영 ${item.capturer}` : ''}</span>
-                </div>
-                <StatusBadge status={item.status} />
-                <ChevronRight className={expanded ? 'expanded' : ''} aria-hidden="true" size={17} />
-              </button>
-              {pendingItem && minutes !== null && (
-                <div className={`processing-line ${minutes > 30 ? 'late' : ''}`}>
-                  <span>{named ? '2/3단계 웹 조사·정리 중' : '1/3단계 이름 인식 중'} · {minutes}분 경과</span>
-                  {minutes > 30 && <div><button type="button" onClick={() => void retryProcessing(item.captureId)}><RotateCcw aria-hidden="true" size={13} />다시 처리</button><a href={`mailto:guecom90@gmail.com?subject=${encodeURIComponent(`[명함] 처리 지연 문의 ${item.captureId}`)}`}><Mail aria-hidden="true" size={13} />문의</a></div>}
-                </div>
-              )}
-              {expanded && (
-                <div className="brief-detail">
-                  {item.brief ? <pre>{item.brief.replace(/^# .*\n?/, '')}</pre> : <p>아직 브리핑 본문이 도착하지 않았습니다.</p>}
-                  <div className="action-grid">
-                    {item.person && ownerCanSeeAll && <button type="button" onClick={() => void openDocument(title, { captureId: item.captureId })}><FileText aria-hidden="true" size={15} />전체 프로필</button>}
-                    {item.status === 'processed' && item.type !== 'note' && item.type !== 'research_instruction' && <button className="primary" type="button" onClick={() => promptNote({ captureId: item.captureId })}><Plus aria-hidden="true" size={15} />메모 추가</button>}
-                    {item.status === 'processed' && researchInstructionEnabled && item.type !== 'note' && item.type !== 'research_instruction' && <button type="button" onClick={() => promptResearch({ captureId: item.captureId })}><Search aria-hidden="true" size={15} />조사 지시</button>}
-                    {item.status === 'processed' && <button type="button" onClick={() => promptCorrection(item.captureId)}><MessageCircle aria-hidden="true" size={15} />수정 요청</button>}
-                    {contact.phones[0] && <a href={`tel:${contact.phones[0]}`}><Phone aria-hidden="true" size={15} />전화</a>}
-                    {contact.phones[0] && <a href={`sms:${contact.phones[0]}`}><MessageCircle aria-hidden="true" size={15} />문자</a>}
-                    {contact.emails[0] && <a href={`mailto:${contact.emails[0]}`}><Mail aria-hidden="true" size={15} />메일</a>}
-                    {(contact.phones[0] || contact.emails[0]) && <button type="button" onClick={() => downloadVCard(item)}><UserPlus aria-hidden="true" size={15} />연락처 저장</button>}
-                  </div>
-                </div>
-              )}
-            </article>
-          );
-        })}
+        {briefs.map(renderBriefCard)}
         {hasMoreBriefs && <button className="load-more" type="button" onClick={() => setListLimit((current) => Math.min(current + 30, 100))}>예전 브리핑 더 보기</button>}
       </div>
     );
@@ -494,19 +541,29 @@ function App() {
         <div className="section-heading top-heading"><div><span className="eyebrow">Owner recall</span><h1>사람 찾기</h1></div></div>
         <form className="search-shell" onSubmit={submitSearch}>
           <Search aria-hidden="true" size={19} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="이름 또는 회사" aria-label="이름 또는 회사 검색" />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="이름·회사·만난 곳으로 검색" aria-label="이름·회사·만난 곳으로 검색" />
           <button type="submit" disabled={!configured || !ownerCanSeeAll || searching}>{searching ? '검색 중' : '검색'}</button>
         </form>
-        {recentSearches.length > 0 && <div className="recent-searches" aria-label="최근 검색">{recentSearches.map((value) => <button key={value} type="button" onClick={() => { setQuery(value); }}><Search aria-hidden="true" size={12} />{value}</button>)}</div>}
+        {recentSearches.length > 0 && (
+          <div className="recent-searches" aria-label="최근 검색">
+            {recentSearches.map((value) => (
+              <button key={value} type="button" onClick={() => { setQuery(value); void runSearch(value); }}><Search aria-hidden="true" size={12} />{value}</button>
+            ))}
+          </div>
+        )}
         {(!configured || !ownerCanSeeAll) && <EmptyState title="소유자 연결이 필요해요" body="Person 검색은 기존과 동일하게 owner token에서만 동작합니다." action="설정 열기" onAction={() => setSettingsOpen(true)} />}
-        {configured && ownerCanSeeAll && searchResults.length === 0 && !searching && <EmptyState title="찾을 사람을 입력하세요" body="검색 결과는 새 데이터베이스가 아니라 기존 GAS search contract에서 읽습니다." />}
-        {searchResults.map((item) => (
-          <button className="person-row" type="button" key={item.id} onClick={() => void openDocument(item.title.replace(/^PER-\d+\s*/, ''), { id: item.id })}>
-            <div className="avatar" aria-hidden="true">{item.title.replace(/^PER-\d+\s*/, '').slice(0, 1)}</div>
-            <div className="row-copy"><strong>{item.title.replace(/^PER-\d+\s*/, '')}</strong><span>{item.id}{item.via === 'content' ? ' · 본문 일치' : ''}</span></div>
-            <ChevronRight aria-hidden="true" size={18} />
-          </button>
-        ))}
+        {configured && ownerCanSeeAll && searchResults.length === 0 && !searching && <EmptyState title="찾을 사람을 입력하세요" body="미팅 전 10초 회상 — 이름·회사·만난 곳으로 기존 기록을 찾습니다." />}
+        {searchResults.map((item) => {
+          const personId = (/PER-\d{6}/.exec(item.title) ?? [null])[0];
+          const displayName = item.title.replace(/^PER-\d+\s*/, '');
+          return (
+            <button className="person-row" type="button" key={item.id} onClick={() => void openDocument(displayName, { id: item.id }, personId ? { person: personId } : null)}>
+              <div className="avatar" aria-hidden="true">{displayName.slice(0, 1)}</div>
+              <div className="row-copy"><strong>{displayName}</strong><span>{item.title.split(' ')[0]}{item.via === 'content' ? ' · 본문 일치' : ''}</span></div>
+              <ChevronRight aria-hidden="true" size={18} />
+            </button>
+          );
+        })}
       </div>
     );
   }
@@ -536,7 +593,7 @@ function App() {
         <IonHeader translucent>
           <IonToolbar>
             <div className="brand-lockup" slot="start"><span className="brand-mark">K</span><span>Kairen <b>Card Capture</b><small>Mobile memory</small></span></div>
-            <IonButton slot="end" fill="clear" onClick={() => void refresh()} aria-label="상태 새로고침"><RefreshCw aria-hidden="true" size={18} /></IonButton>
+            <IonButton slot="end" fill="clear" onClick={() => void refresh(true)} aria-label="상태 새로고침"><RefreshCw aria-hidden="true" size={18} /></IonButton>
           </IonToolbar>
         </IonHeader>
         <IonContent fullscreen>
@@ -573,7 +630,18 @@ function App() {
         <IonModal isOpen={documentOpen} onDidDismiss={() => setDocumentOpen(false)}>
           <IonHeader><IonToolbar><IonTitle>{documentTitle}</IonTitle><IonButton slot="end" fill="clear" onClick={() => setDocumentOpen(false)}>닫기</IonButton></IonToolbar></IonHeader>
           <IonContent className="ion-padding profile-document">
-            {documentLoading ? <div className="center-state"><IonSpinner name="crescent" /><span>프로필 불러오는 중</span></div> : <pre>{documentBody}</pre>}
+            {documentLoading && <div className="center-state"><IonSpinner name="crescent" /><span>프로필 불러오는 중</span></div>}
+            {!documentLoading && documentError && <p className="document-error">{documentError}</p>}
+            {!documentLoading && !documentError && (
+              <PersonDocument
+                markdown={documentBody}
+                fallbackName={documentTitle}
+                noteTarget={documentNoteTarget}
+                canResearch={researchInstructionEnabled}
+                onNote={promptNote}
+                onResearch={promptResearch}
+              />
+            )}
           </IonContent>
         </IonModal>
         <IonModal isOpen={Boolean(queueEdit)} onDidDismiss={() => setQueueEdit(null)}>

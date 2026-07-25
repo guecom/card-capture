@@ -161,3 +161,38 @@ function imageSourceToCameraFrame(source: CanvasImageSource, width: number, heig
   context.drawImage(source, 0, 0, size.width, size.height);
   return { dataUrl: canvas.toDataURL('image/jpeg', 0.85), ...size };
 }
+
+// 목록 표시에 원본 대신 쓸 104px 썸네일 (legacy thumbOf — 전송 후 원본이 정리돼도 남는다).
+export function thumbnailOf(dataUrl: string): Promise<string> {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => {
+      try {
+        const scale = 104 / Math.max(image.width, image.height);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(image.width * scale));
+        canvas.height = Math.max(1, Math.round(image.height * scale));
+        canvas.getContext('2d')?.drawImage(image, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.6));
+      } catch {
+        resolve('');
+      }
+    };
+    image.onerror = () => resolve('');
+    image.src = dataUrl;
+  });
+}
+
+// 감지 실패 시 가이드 프레임 영역만 잘라내는 폴백 크롭 (legacy camCapture 폴백).
+export function cropCanvasRegion(source: HTMLCanvasElement, region: { x: number; y: number; w: number; h: number }): HTMLCanvasElement | null {
+  const width = Math.round(region.w);
+  const height = Math.round(region.h);
+  if (width < 2 || height < 2) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  if (!context) return null;
+  context.drawImage(source, region.x, region.y, region.w, region.h, 0, 0, width, height);
+  return canvas;
+}

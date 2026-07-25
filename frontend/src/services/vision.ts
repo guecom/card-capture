@@ -136,6 +136,15 @@ async function ensureTesseractWorker(onProgress: (progress: number) => void): Pr
   return tesseractWorker;
 }
 
+// 첫 촬영 때 모델 다운로드를 기다리지 않도록 유휴 시간에 미리 로드한다.
+// 실패해도 촬영·업로드는 그대로 동작한다 (legacy requestIdleCallback 프리로드).
+export function preloadQuickNameOcr(): void {
+  const warm = () => { void ensureTesseractWorker(() => undefined).catch(() => undefined); };
+  const idleScheduler = window as typeof window & { requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number };
+  if (typeof idleScheduler.requestIdleCallback === 'function') idleScheduler.requestIdleCallback(warm, { timeout: 2_500 });
+  else window.setTimeout(warm, 1_200);
+}
+
 export async function recognizeQuickName(
   dataUrl: string,
   onProgress: (progress: number) => void = () => undefined,

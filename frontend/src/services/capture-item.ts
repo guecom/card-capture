@@ -19,6 +19,18 @@ export function buildLegacyNote(relSelf: string, relKairen: string, memo: string
   ].filter(Boolean).join('\n');
 }
 
+// 구버전 큐 항목(라벨 합성 note만 있는 경우)을 관계 필드로 되돌린다 (legacy parseNoteLegacy).
+export function parseLegacyNote(note: string | undefined): { relSelf: string; relKairen: string; memo: string } {
+  const parsed = { relSelf: '', relKairen: '', memo: '' };
+  String(note ?? '').split('\n').forEach((line) => {
+    if (line.startsWith('나와의 관계: ')) parsed.relSelf = line.slice('나와의 관계: '.length);
+    else if (line.startsWith('Kairen과의 관계: ')) parsed.relKairen = line.slice('Kairen과의 관계: '.length);
+    else if (line.startsWith('메모: ')) parsed.memo = line.slice('메모: '.length);
+    else if (line.trim()) parsed.memo = parsed.memo ? `${parsed.memo} ${line.trim()}` : line.trim();
+  });
+  return parsed;
+}
+
 export function buildQueuedCapture(
   frame: CapturedCameraFrame,
   options: {

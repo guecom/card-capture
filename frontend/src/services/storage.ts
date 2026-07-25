@@ -24,6 +24,25 @@ function write(key: string, value: string): void {
   }
 }
 
+export interface OwnerFlags {
+  seeAll: boolean;
+  researchInstructionEnabled: boolean;
+}
+
+// legacy와 같은 키(cc_briefSeeAll, cc_researchInstructionEnabled)에 캐시해
+// 서버 응답 전·오프라인에도 owner 게이트 UI가 유지되게 한다.
+export function loadOwnerFlags(): OwnerFlags {
+  return {
+    seeAll: read('briefSeeAll') === '1',
+    researchInstructionEnabled: read('researchInstructionEnabled') === '1',
+  };
+}
+
+export function saveOwnerFlags(flags: OwnerFlags): void {
+  write('briefSeeAll', flags.seeAll ? '1' : '');
+  write('researchInstructionEnabled', flags.researchInstructionEnabled ? '1' : '');
+}
+
 export function loadRuntimeConfig(search = globalThis.location?.search ?? ''): RuntimeConfig {
   const params = new URLSearchParams(search);
   const linkedApi = params.get('api')?.trim() ?? '';
