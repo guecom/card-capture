@@ -11,7 +11,8 @@
 - **candidate offline shell**: 취약한 Workbox dependency를 채택하지 않고 작은 build-time generator로 `/next/` scope 전용 service worker와 web manifest를 생성한다. legacy root service worker는 교체하지 않는다.
 - **server-off recovery gate**: Playwright가 실제 정적 서버를 종료한 뒤 Chrome reload를 수행해 cached shell·navigation이 복구되는지 검증한다.
 - **candidate camera boundary**: 이미지 저장·OCR·upload 없이 후면 camera permission·resolution·failure mapping·track cleanup과 legacy fallback을 병렬 미리보기에서 검증한다.
-- **captured-image queue gate**: camera frame을 legacy와 같은 최대 2000px long edge·JPEG 0.85로 메모리에 만들고, 사용자가 선택한 뒤 기존 IndexedDB queue에만 보관하며 자동 OCR·upload가 일어나지 않음을 unit·Chrome contract로 고정한다.
+- **captured-image queue gate**: camera frame을 legacy와 같은 최대 2000px long edge·JPEG 0.85로 메모리에 만들고, 사용자가 선택한 뒤 기존 IndexedDB queue에만 보관하며 자동 upload가 일어나지 않음을 unit·Chrome contract로 고정한다.
+- **quick-name OCR boundary**: legacy `nameCandidate`와 parity를 고정하고, 기기 `TextDetector`를 우선한 뒤 pinned self-hosted Tesseract로 fallback해 `quickName`을 같은 queue payload에 보존한다. OCR 실패는 촬영·로컬 보관을 막지 않는다.
 - **점진 전환**: 후보의 촬영 action은 아직 검증된 legacy camera로 연결한다. write queue·camera·OCR·service worker는 각 parity gate 뒤 옮긴다.
 
 ## [Unreleased] — capture experience wave (branch `agent/card-capture-interview-wave`, Kairen-Ref: TSK-000178, TSK-000217, TSK-000218, TSK-000219, TSK-000220)

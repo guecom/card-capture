@@ -112,6 +112,10 @@ ion-modal.camera-preview-modal { --height: 100%; --width: min(100%, 680px); }
 .camera-preview-state { position: absolute; inset: 0; display: grid; place-items: center; align-content: center; gap: 12px; padding: 28px; background: radial-gradient(circle, rgba(42,77,116,0.5), rgba(8,13,19,0.96)); color: #eaf2ff; text-align: center; }
 .camera-preview-state strong { font-size: 14px; }
 .camera-contract-note { display: flex; gap: 12px; margin: 14px 0; padding: 15px; border-radius: 18px; background: rgba(230,247,244,0.96); color: #1c7168; }
+.quick-name-panel { margin: 0 0 14px; padding: 14px; border-radius: 18px; background: #fff; color: #1f2b3a; }
+.quick-name-panel label { display: block; margin-bottom: 4px; color: #5f6f82; font-size: 12px; font-weight: 800; }
+.quick-name-panel ion-input { --padding-start: 0; font-size: 18px; font-weight: 760; }
+.quick-name-panel small { color: #718096; }
 .camera-contract-note strong { font-size: 12px; }
 .camera-contract-note p { margin: 4px 0 0; color: #527a76; font-size: 11px; line-height: 1.55; }
 

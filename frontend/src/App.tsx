@@ -19,7 +19,7 @@ import {
 import { ArrowUpRight, Camera, ChevronRight, ContactRound, RefreshCw, Search, Settings2, ShieldCheck, Waves } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
-import type { BriefItem, CaptureQueueItem, RuntimeConfig, SearchItem } from './contracts/capture';
+import type { BriefItem, CaptureQueueItem, QuickName, RuntimeConfig, SearchItem } from './contracts/capture';
 import { CameraPreviewModal } from './components/CameraPreviewModal';
 import { StatusBadge } from './components/StatusBadge';
 import { listBriefs, searchPeople } from './services/api';
@@ -119,8 +119,8 @@ function App() {
     setMessage('기존 Card Capture 설정과 같은 local storage에 저장했어요.');
   }
 
-  const queueCandidateFrame = useCallback(async (frame: CapturedCameraFrame) => {
-    const item = buildQueuedCapture(frame);
+  const queueCandidateFrame = useCallback(async (frame: CapturedCameraFrame, quickName: QuickName | null) => {
+    const item = buildQueuedCapture(frame, { quickName });
     await putQueueItem(item);
     setQueue((current) => [item, ...current].sort((a, b) => b.captureId.localeCompare(a.captureId)));
     setCameraPreviewOpen(false);
@@ -133,7 +133,7 @@ function App() {
         <section className="hero-card">
           <div className="eyebrow"><ShieldCheck aria-hidden="true" size={14} /> Contract-safe migration</div>
           <h1>명함은 지금처럼 찍고,<br />새 셸은 옆에서 검증합니다.</h1>
-          <p>검증된 legacy 촬영은 계속 유지합니다. 후보 카메라는 프레임 확인 뒤 선택한 사진만 기존 로컬 대기열에 보관하며 자동 OCR·전송은 하지 않습니다.</p>
+          <p>검증된 legacy 촬영은 계속 유지합니다. 후보 카메라는 기기 내에서 이름 후보를 먼저 읽고, 선택한 사진만 기존 로컬 대기열에 보관하며 자동 전송은 하지 않습니다.</p>
           <div className="capture-actions">
             <IonButton className="primary-action" expand="block" href="../index.html">
               <Camera aria-hidden="true" slot="start" size={20} />

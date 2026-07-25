@@ -13,13 +13,15 @@ describe('captured-image queue contract', () => {
       dataUrl: 'data:image/jpeg;base64,fixture-image',
       width: 1600,
       height: 900,
-    }, now, () => 0.5);
+    }, { now, random: () => 0.5, quickName: {
+      name: '김카이렌', source: 'device_text_detector', confidence: 80, confirmed: false, recognizedAt: now.toISOString(),
+    } });
 
     expect(item).toMatchObject({
       captureId: '20260725-224509-i',
       capturedAt: now.toISOString(),
       images: [{ name: 'front.jpg', mime: 'image/jpeg', dataB64: 'fixture-image' }],
-      quickName: null,
+      quickName: { name: '김카이렌', source: 'device_text_detector', confidence: 80, confirmed: false },
       researchInstruction: null,
       state: 'queued',
       tries: 0,
@@ -33,6 +35,6 @@ describe('captured-image queue contract', () => {
       dataUrl: 'data:image/png;base64,fixture-image',
       width: 1600,
       height: 900,
-    }, now)).toThrow('invalid_camera_frame');
+    }, { now })).toThrow('invalid_camera_frame');
   });
 });

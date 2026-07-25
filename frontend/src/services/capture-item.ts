@@ -1,4 +1,4 @@
-import type { CaptureQueueItem } from '../contracts/capture';
+import type { CaptureQueueItem, QuickName } from '../contracts/capture';
 import type { CapturedCameraFrame } from './camera';
 
 function twoDigits(value: number): string {
@@ -13,9 +13,10 @@ export function createCaptureId(now = new Date(), random: () => number = Math.ra
 
 export function buildQueuedCapture(
   frame: CapturedCameraFrame,
-  now = new Date(),
-  random: () => number = Math.random,
+  options: { quickName?: QuickName | null; now?: Date; random?: () => number } = {},
 ): CaptureQueueItem {
+  const now = options.now ?? new Date();
+  const random = options.random ?? Math.random;
   const match = /^data:image\/jpeg;base64,(.+)$/.exec(frame.dataUrl);
   if (!match?.[1]) throw new Error('invalid_camera_frame');
 
@@ -29,7 +30,7 @@ export function buildQueuedCapture(
     note: '',
     disp: '',
     images: [{ name: 'front.jpg', mime: 'image/jpeg', dataB64: match[1] }],
-    quickName: null,
+    quickName: options.quickName ?? null,
     researchInstruction: null,
     state: 'queued',
     tries: 0,

@@ -46,7 +46,12 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) return;
   const scopePath = new URL(self.registration.scope).pathname;
-  if (!url.pathname.startsWith(scopePath)) return;
+  const sharedRuntimePaths = [
+    new URL('../vendor/tesseract/', self.registration.scope).pathname,
+    new URL('../vendor/opencv.js', self.registration.scope).pathname,
+  ];
+  const isSharedRuntime = sharedRuntimePaths.some((path) => url.pathname.startsWith(path));
+  if (!url.pathname.startsWith(scopePath) && !isSharedRuntime) return;
   event.respondWith(
     caches.match(event.request, { ignoreSearch: event.request.mode === 'navigate' }).then((cached) => {
       if (cached) return cached;

@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http';
 import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const buildRoot = resolve(fileURLToPath(new URL('../../docs/next/', import.meta.url)));
+const buildRoot = resolve(fileURLToPath(new URL('../../docs/', import.meta.url)));
 
 const contentTypes: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -19,7 +19,8 @@ function startStaticServer(): Promise<Server> {
   const server = createServer(async (request, response) => {
     try {
       const pathname = new URL(request.url ?? '/', 'http://127.0.0.1').pathname;
-      const relativePath = decodeURIComponent(pathname).replace(/^\/+/, '') || 'index.html';
+      let relativePath = decodeURIComponent(pathname).replace(/^\/+/, '') || 'index.html';
+      if (relativePath.endsWith('/')) relativePath += 'index.html';
       const filePath = resolve(buildRoot, relativePath);
       if (filePath !== buildRoot && !filePath.startsWith(`${buildRoot}${sep}`)) {
         response.writeHead(403).end('Forbidden');
@@ -58,7 +59,7 @@ test('serves the cached candidate shell after the origin server stops', async ({
   let stopped = false;
 
   try {
-    await page.goto(origin, { waitUntil: 'networkidle' });
+    await page.goto(`${origin}next/`, { waitUntil: 'networkidle' });
     await expect(page.locator('html')).toHaveAttribute('data-offline-ready', 'true');
     await expect(page.getByRole('heading', {
       name: '명함은 지금처럼 찍고, 새 셸은 옆에서 검증합니다.',
@@ -103,8 +104,14 @@ test('queues a candidate camera frame locally without uploading it', async ({ pa
     Object.defineProperty(HTMLVideoElement.prototype, 'videoWidth', { configurable: true, get: () => 1600 });
     Object.defineProperty(HTMLVideoElement.prototype, 'videoHeight', { configurable: true, get: () => 900 });
     HTMLMediaElement.prototype.play = async () => undefined;
+    Object.defineProperty(window, 'TextDetector', {
+      configurable: true,
+      value: class {
+        async detect() { return [{ rawValue: '김카이렌\n대표이사\nKairen' }]; }
+      },
+    });
     HTMLCanvasElement.prototype.getContext = (() => ({ drawImage: () => undefined })) as typeof HTMLCanvasElement.prototype.getContext;
-    HTMLCanvasElement.prototype.toDataURL = () => 'data:image/jpeg;base64,fixture';
+    HTMLCanvasElement.prototype.toDataURL = () => 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAEf/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9oADAMBAAIAAwAAABAf/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPxB//8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPxB//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxB//9k=';
   });
 
   const server = await startStaticServer();
@@ -112,7 +119,7 @@ test('queues a candidate camera frame locally without uploading it', async ({ pa
   if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
 
   try {
-    await page.goto(`http://127.0.0.1:${address.port}/`, { waitUntil: 'networkidle' });
+    await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
     await page.getByRole('button', { name: '후보 카메라 시험' }).click();
 
     await expect(page.getByText('후보 카메라 계약', { exact: true })).toBeVisible();
@@ -122,7 +129,9 @@ test('queues a candidate camera frame locally without uploading it', async ({ pa
     await page.getByRole('button', { name: '메모리 프레임 시험' }).click();
     await expect(page.getByAltText('메모리 안의 후보 카메라 프레임')).toBeVisible();
     await expect(page.getByText('메모리 프레임 계약 통과', { exact: true })).toBeVisible();
-    await expect(page.getByText('아직 저장·OCR·queue·upload는 하지 않았습니다.', { exact: false })).toBeVisible();
+    await expect(page.getByText('아직 queue·upload는 하지 않았습니다.', { exact: false })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: '이름 후보' })).toHaveValue('김카이렌');
+    await expect(page.getByText('인식 완료 · 확인해 주세요', { exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: '검증된 카메라로 촬영' })).toBeVisible();
     await page.getByRole('button', { name: '로컬 대기열에 보관' }).click();
     await expect(page.getByText('사진을 기존 로컬 대기열에 보관했습니다.', { exact: false })).toBeVisible();
@@ -145,9 +154,10 @@ test('queues a candidate camera frame locally without uploading it', async ({ pa
       };
     });
     expect(queueReceipt).toMatchObject({
-      items: [{ images: [{ name: 'front.jpg', mime: 'image/jpeg', dataB64: 'fixture' }], state: 'queued', tries: 0 }],
+      items: [{ images: [{ name: 'front.jpg', mime: 'image/jpeg' }], quickName: { name: '김카이렌', source: 'device_text_detector', confidence: 80, confirmed: false }, state: 'queued', tries: 0 }],
       postCount: 0,
     });
+    expect((queueReceipt.items as Array<{ images: Array<{ dataB64: string }> }>)[0].images[0].dataB64).toMatch(/^\/9j\//);
   } finally {
     await stopStaticServer(server);
   }
