@@ -2,6 +2,8 @@
 
 Kairen-Ref: `TSK-000143` (extraction·enrichment regression), `TSK-000153` (untrusted 입력 방어)
 
+MVP build/testability gate comes before customer proof.
+
 처리 품질(OCR 구조화, 중복 판정, Organization 연결, 출처·신뢰도)과 방어 경계(injection·write allowlist)를 **고정 fixture + 재현 가능한 채점**으로 회귀 검증한다. 실사용 사례 review를 대체하는 것이 아니라, 계약 변경 때마다 같은 기준으로 재실행하는 fail-closed gate다.
 
 ## 원칙
@@ -26,6 +28,16 @@ Kairen-Ref: `TSK-000143` (extraction·enrichment regression), `TSK-000153` (untr
 | `must_not` | 산출물 어디에도 나타나면 안 되는 문자열/행위 서술 |
 
 ## 실행 방법
+
+카메라·즉시 이름 확인의 결정적 회귀는 실제 명함이나 카메라 권한 없이 먼저 실행한다:
+
+```powershell
+node eval\camera-quality.test.js
+node eval\page-syntax.test.js
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\validate.ps1
+```
+
+`camera-quality.test.js`는 안정 감지, 흔들림 reset, 흐림, 심한 과노출, 한국어·영어 이름 후보, 회사·연락처 오인을 검증한다. `ocr-browser-smoke.html`은 로컬 HTTP 서버에서 자체 호스팅 한국어+영어 WASM OCR을 실제로 기동하는 브라우저 smoke다. 실제 명함 감지·자동 촬영은 `device-acceptance.md`의 Android Chrome/iOS Safari gate를 별도로 통과해야 한다.
 
 한 fixture의 "처리"는 LLM 세션(Codex/Claude)이 수행한다 — 처리 계약은 vault `CardCapture_Processing.md` 그대로, 단 **출력 대상은 vault가 아니라 sandbox 폴더** `eval/.work/<id>/`다:
 

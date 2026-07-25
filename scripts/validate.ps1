@@ -17,9 +17,12 @@ function Pass($m) { Write-Host "PASS  $m" }
 # ---------- 1. required files ----------
 $required = @(
   'AGENTS.md','SECURITY.md','CHANGELOG.md','RELEASE.md','README.md','Code.gs',
-  'docs/index.html','docs/sw.js','docs/manifest.json',
+  'docs/index.html','docs/sw.js','docs/manifest.json','docs/camera-quality.js',
+  'docs/vendor/tesseract/tesseract.min.js','docs/vendor/tesseract/worker.min.js',
+  'docs/vendor/tesseract/tesseract-core-simd-lstm.wasm.js',
+  'docs/vendor/tesseract/kor.traineddata.gz','docs/vendor/tesseract/eng.traineddata.gz','docs/vendor/tesseract/README.md',
   'watcher/CardCapture_Watcher.ps1','watcher/CardCapture_Health.ps1',
-  'eval/README.md','eval/run-eval.ps1','scripts/validate.ps1'
+  'eval/README.md','eval/run-eval.ps1','eval/camera-quality.test.js','eval/page-syntax.test.js','eval/server-syntax.test.js','eval/ocr-browser-smoke.html','scripts/validate.ps1'
 )
 $missing = @($required | Where-Object { -not (Test-Path (Join-Path $root $_)) })
 if ($missing.Count -gt 0) { Fail ("required files missing: " + ($missing -join ', ')) } else { Pass 'required files present' }
@@ -104,6 +107,36 @@ if (Test-Path $fixDir) {
 $idx = Get-Content (Join-Path $root 'docs\index.html') -Raw
 if ($idx -notmatch "DEFAULT_API\s*=\s*'https://script\.google\.com/") { Fail 'docs/index.html DEFAULT_API missing or malformed' } else { Pass 'DEFAULT_API present' }
 if ((Get-Content (Join-Path $root 'CHANGELOG.md') -Raw) -notmatch '\[Unreleased\]') { Warn 'CHANGELOG has no [Unreleased] section' } else { Pass 'CHANGELOG has [Unreleased]' }
+
+# ---------- 7. camera auto-capture acceptance ----------
+$node = Get-Command node -ErrorAction SilentlyContinue
+if ($null -eq $node) {
+  Warn 'node not found; camera-quality deterministic tests skipped'
+} else {
+  & $node.Source (Join-Path $root 'eval\camera-quality.test.js')
+  if ($LASTEXITCODE -ne 0) { Fail 'camera-quality deterministic tests failed' } else { Pass 'camera-quality deterministic tests passed' }
+  & $node.Source (Join-Path $root 'eval\page-syntax.test.js')
+  if ($LASTEXITCODE -ne 0) { Fail 'page JavaScript syntax test failed' } else { Pass 'page JavaScript syntax test passed' }
+  & $node.Source (Join-Path $root 'eval\server-syntax.test.js')
+  if ($LASTEXITCODE -ne 0) { Fail 'Code.gs JavaScript syntax test failed' } else { Pass 'Code.gs JavaScript syntax test passed' }
+}
+
+# ---------- 8. pinned on-device OCR assets ----------
+$ocrHashes = @{
+  'docs/vendor/tesseract/tesseract.min.js' = 'a8e29918d098b2b06e1012bdaeffb4aec0445c5d5654709023e0bd1f442a80e8'
+  'docs/vendor/tesseract/worker.min.js' = 'aca1229639fc9907d86f96e825955a2b7c5716d17f3bc3acd71f9c7ab66181fc'
+  'docs/vendor/tesseract/tesseract-core-simd-lstm.wasm.js' = 'ce20eda9533cbed1e6c2b4276fbae1e0adc61b6754b5513084be601787b457cf'
+  'docs/vendor/tesseract/kor.traineddata.gz' = '78c21276ab14c9bb734d83be1055d9fe5469a4e7e977c51ad385be5737e61126'
+  'docs/vendor/tesseract/eng.traineddata.gz' = '45b4cb346724ac1774f1c36f42f182b887bcdb28ebe63e6fff90ac41f3fcff91'
+}
+$badOcrHash = @()
+foreach ($rel in $ocrHashes.Keys) {
+  $path = Join-Path $root $rel
+  if (-not (Test-Path $path)) { $badOcrHash += "$rel missing"; continue }
+  $actual = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
+  if ($actual -ne $ocrHashes[$rel]) { $badOcrHash += "$rel hash mismatch" }
+}
+if ($badOcrHash.Count -gt 0) { $badOcrHash | ForEach-Object { Fail "ocr-asset: $_" } } else { Pass 'pinned OCR asset hashes match' }
 
 # ---------- summary ----------
 Write-Host ''

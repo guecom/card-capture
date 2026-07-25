@@ -2,6 +2,8 @@
 
 Kairen-Ref: `TSK-000144` / [[ISS-000035]] — release SHA별로 이 matrix를 채워 core journey acceptance를 닫는다.
 
+MVP build/testability gate comes before customer proof.
+
 ## 지원 경계
 
 | 등급 | 대상 | 기준 |
@@ -37,6 +39,22 @@ Kairen-Ref: `TSK-000144` / [[ISS-000035]] — release SHA별로 이 matrix를 �
 ### v1.1 후보 (merge·재배포 후 채움)
 
 추가 확인 행: 검색→프렙 카드→연락 버튼(전화·문자·메일·vCard) / 메모 추가 왕복 / 예전 브리핑 더 보기 / 다시 처리 요청 / 토스트 상단(#7 재검) / 진행 표시(경과·경고) / 홈화면 shortcuts / sw v12 갱신.
+
+### Capture experience 후보 (`agent/card-capture-interview-wave`)
+
+Kairen-Ref: `TSK-000178`, `TSK-000217`, `TSK-000219`, `TSK-000220` / `TST-000014`, `TST-000016`~`TST-000018`
+
+| # | Acceptance | 자동 검증 | Android Chrome | iOS Safari |
+| --- | --- | --- | --- | --- |
+| C1 | 한국어·영어 자체 호스팅 OCR 기동, 제3자 이미지 전송 없음 | ✓ 브라우저 smoke PASS, 합성 텍스트 522ms | ⏳ 실명함 P50/P95 측정 | ⏳ 실명함 P50/P95 측정 |
+| C2 | 이름 후보가 회사명·직함·연락처를 이름으로 만들지 않음 | ✓ 결정적 3-case PASS | ⏳ 익명화 fixture 20장 | ⏳ 익명화 fixture 20장 |
+| C3 | 안정된 명함만 2초 이내 자동 촬영 | ✓ 결정적 gate PASS | ⏳ 실물 30회 | ⏳ 실물 30회 |
+| C4 | 움직임·흐림·심한 과노출·비명함에서 자동 촬영하지 않음 | ✓ 결정적 negative PASS | ⏳ 조건별 10회 | ⏳ 조건별 10회 |
+| C5 | 흰 배경·저대비에서 적응형 임계값 폴백이 사각형을 찾음 | 코드 경로·문법 PASS, 실카메라 해당 없음 | ⏳ 흰 명함/흰 배경 10회 | ⏳ 흰 명함/흰 배경 10회 |
+| C6 | 자동 촬영 끄기·수동 셔터·기본 카메라 폴백·재촬영 | DOM·문법 PASS | ⏳ journey 전부 | ⏳ journey 전부 |
+| C7 | 390×844 핵심 화면에 가로 overflow·콘솔 오류·Blocker/Major visual defect 없음 | ✓ overflow 0, console error 0 | ⏳ 실제 기기 시각 승인 | ⏳ 실제 기기 시각 승인 |
+
+자동 검증은 합성·로컬 evidence다. C1~C7의 사람 열이 모두 ✓가 되기 전에는 실제 기기 acceptance PASS나 release-ready로 판정하지 않는다.
 
 ## Evidence 기록 형식
 

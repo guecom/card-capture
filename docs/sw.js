@@ -1,6 +1,9 @@
 /* CardCapture service worker — 앱 셸 캐시 */
-var CACHE = 'cardcapture-v15';
-var SHELL = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
+var CACHE = 'cardcapture-v16';
+var SHELL = [
+  './', './index.html', './manifest.json', './icon-192.png', './icon-512.png',
+  './camera-quality.js', './vendor/tesseract/tesseract.min.js', './vendor/tesseract/worker.min.js'
+];
 
 self.addEventListener('install', function (e) {
   e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(SHELL); }).then(function () { return self.skipWaiting(); }));

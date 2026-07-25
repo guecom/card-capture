@@ -3,34 +3,47 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#111827">
+<meta name="theme-color" content="#071a2f">
 <title>명함 캡처</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
 <style>
   :root {
-    --bg: #f6f7f9; --card: #ffffff; --text: #111827; --muted: #6b7280;
-    --line: #e5e7eb; --accent: #4f46e5; --accent-text: #ffffff;
-    --ok: #059669; --warn: #d97706; --err: #dc2626;
+    --bg: #eef3f8; --card: rgba(255,255,255,.94); --text: #10233d; --muted: #607087;
+    --line: #dbe4ee; --accent: #1463ff; --accent-strong: #0647ce; --accent-text: #ffffff;
+    --teal: #00a892; --ok: #008a71; --warn: #b96908; --err: #d13b4c;
+    --shadow: 0 16px 48px rgba(14,35,62,.09), 0 2px 8px rgba(14,35,62,.05);
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #0b0f17; --card: #151b26; --text: #f3f4f6; --muted: #9ca3af;
-      --line: #273042; --accent: #6366f1; --ok: #34d399; --warn: #fbbf24; --err: #f87171;
+      --bg: #07111f; --card: rgba(15,31,51,.94); --text: #f5f8fc; --muted: #9cacbf;
+      --line: #263d58; --accent: #5a8dff; --accent-strong: #84a9ff; --teal: #2bd4bd;
+      --ok: #35d0ac; --warn: #ffbd61; --err: #ff7d8b;
+      --shadow: 0 18px 50px rgba(0,0,0,.28);
     }
   }
   * { box-sizing: border-box; margin: 0; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans KR", sans-serif;
-    background: var(--bg); color: var(--text);
+    background:
+      radial-gradient(circle at 15% -5%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 34rem),
+      radial-gradient(circle at 92% 18%, color-mix(in srgb, var(--teal) 10%, transparent), transparent 30rem),
+      var(--bg);
+    color: var(--text); min-height: 100vh;
     padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
   }
-  .wrap { max-width: 480px; margin: 0 auto; padding: 16px; }
-  header { display: flex; align-items: center; justify-content: space-between; padding: 4px 2px 14px; }
-  header h1 { font-size: 20px; font-weight: 700; }
+  button, input, textarea { -webkit-tap-highlight-color: transparent; }
+  button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 28%, transparent); outline-offset: 2px; }
+  .wrap { max-width: 520px; margin: 0 auto; padding: 18px 16px 42px; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 3px 2px 18px; }
+  .brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+  .brandmark { width: 39px; height: 39px; display: grid; place-items: center; border-radius: 13px; color: #fff; background: linear-gradient(145deg, var(--accent), var(--teal)); box-shadow: 0 8px 20px color-mix(in srgb, var(--accent) 22%, transparent); }
+  .brandmark svg { width: 22px; height: 22px; }
+  .eyebrow { color: var(--accent); font-size: 10px; line-height: 1; font-weight: 800; letter-spacing: .13em; text-transform: uppercase; margin-bottom: 4px; }
+  header h1 { font-size: 19px; line-height: 1.1; font-weight: 780; letter-spacing: -.025em; }
   .chip {
     font-size: 13px; color: var(--muted); background: var(--card); border: 1px solid var(--line);
-    border-radius: 999px; padding: 6px 12px; cursor: pointer;
+    border-radius: 999px; padding: 7px 12px; cursor: pointer; min-height: 36px; font-weight: 650;
   }
   /* 눈에 띄는 액션 버튼 — 전화·문자·메일·연락처 저장·메모 (2026-07-24 실사용 피드백: 가시성) */
   .actrow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
@@ -46,29 +59,45 @@
   .act.sm { min-height: 34px; padding: 7px 11px; font-size: 13px; }
   .act .ico { font-size: 15px; line-height: 1; }
   .card {
-    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
-    padding: 16px; margin-bottom: 14px;
+    background: var(--card); border: 1px solid color-mix(in srgb, var(--line) 78%, transparent); border-radius: 22px;
+    padding: 18px; margin-bottom: 16px; box-shadow: var(--shadow); backdrop-filter: blur(16px);
   }
+  .capture-kicker { display: inline-flex; align-items: center; gap: 7px; color: var(--teal); font-size: 12px; font-weight: 800; letter-spacing: .02em; margin-bottom: 8px; }
+  .capture-kicker::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 5px color-mix(in srgb, var(--teal) 13%, transparent); }
+  .capture-title { font-size: 24px; line-height: 1.22; letter-spacing: -.045em; font-weight: 790; }
+  .capture-copy { color: var(--muted); font-size: 13.5px; line-height: 1.55; margin: 7px 0 15px; }
   .shot {
     display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
-    width: 100%; min-height: 128px; border: 2px dashed var(--line); border-radius: 14px;
-    background: none; color: var(--muted); font-size: 15px; cursor: pointer; padding: 10px;
+    width: 100%; min-height: 128px; border: 1.5px dashed var(--line); border-radius: 17px;
+    background: color-mix(in srgb, var(--bg) 68%, transparent); color: var(--muted); font-size: 15px; cursor: pointer; padding: 12px;
   }
-  .shot.main { min-height: 168px; border-color: var(--accent); color: var(--accent); font-weight: 600; }
-  .shot .big { font-size: 34px; line-height: 1; }
+  .shot.main { position: relative; overflow: hidden; min-height: 170px; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); color: var(--accent); font-weight: 750; background: linear-gradient(145deg, color-mix(in srgb, var(--accent) 10%, var(--card)), color-mix(in srgb, var(--teal) 8%, var(--card))); }
+  .shot.main::after { content: ''; position: absolute; width: 180px; height: 180px; border-radius: 50%; top: -105px; right: -68px; background: color-mix(in srgb, var(--teal) 14%, transparent); }
+  .shot .big { width: 48px; height: 48px; display: grid; place-items: center; border-radius: 16px; color: #fff; background: linear-gradient(145deg, var(--accent), var(--teal)); box-shadow: 0 9px 22px color-mix(in srgb, var(--accent) 22%, transparent); }
+  .shot .big svg { width: 24px; height: 24px; }
   .shot img { max-width: 100%; max-height: 180px; border-radius: 10px; }
   .shot.filled { border-style: solid; min-height: 0; }
+  .quickName { display: none; margin-top: 12px; padding: 13px; border: 1px solid color-mix(in srgb, var(--teal) 28%, var(--line)); border-radius: 15px; background: color-mix(in srgb, var(--teal) 7%, var(--card)); }
+  .quickName.show { display: block; }
+  .quickNameTop { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+  .quickNameTitle { font-size: 12.5px; font-weight: 780; }
+  .quickNameState { color: var(--teal); font-size: 11.5px; font-weight: 720; }
+  .quickName input { width: 100%; padding: 11px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--text); font: 760 18px/1.2 inherit; }
+  .quickNameHelp { color: var(--muted); font-size: 11.5px; line-height: 1.45; margin-top: 7px; }
   .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+  .context-label { display: flex; align-items: center; gap: 8px; margin: 18px 1px 4px; font-size: 13px; font-weight: 760; }
+  .context-label span { color: var(--muted); font-size: 11.5px; font-weight: 500; }
   .field { margin-top: 12px; }
-  .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 5px; }
+  .field label { display: block; font-size: 12.5px; font-weight: 650; color: var(--muted); margin-bottom: 6px; }
   .field input, .field textarea {
-    width: 100%; font-size: 16px; color: var(--text); background: var(--bg);
-    border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-family: inherit;
+    width: 100%; font-size: 16px; color: var(--text); background: color-mix(in srgb, var(--bg) 72%, transparent);
+    border: 1px solid var(--line); border-radius: 13px; padding: 12px 13px; font-family: inherit; transition: border-color .18s, box-shadow .18s;
   }
+  .field input:focus, .field textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 10%, transparent); }
   .field textarea { resize: none; height: 64px; }
   .btn {
-    width: 100%; border: 0; border-radius: 12px; padding: 15px; font-size: 17px; font-weight: 700;
-    background: var(--accent); color: var(--accent-text); cursor: pointer; margin-top: 14px;
+    width: 100%; border: 0; border-radius: 14px; padding: 15px; font-size: 16px; font-weight: 760;
+    background: linear-gradient(120deg, var(--accent), var(--accent-strong)); color: var(--accent-text); cursor: pointer; margin-top: 16px; box-shadow: 0 9px 22px color-mix(in srgb, var(--accent) 20%, transparent);
   }
   .btn:disabled { opacity: .4; }
   .hint { font-size: 12.5px; color: var(--muted); text-align: center; margin-top: 10px; line-height: 1.5; }
@@ -82,7 +111,7 @@
   .st.sent { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
   .st.queued { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
   .st.failed { color: var(--err); background: color-mix(in srgb, var(--err) 12%, transparent); cursor: pointer; }
-  h2 { font-size: 15px; color: var(--muted); font-weight: 600; margin: 4px 2px 8px; }
+  h2 { font-size: 13px; color: var(--muted); font-weight: 750; letter-spacing: .01em; margin: 5px 3px 9px; }
   .toast {
     /* 상단 배치: 하단 배치는 앞면 촬영 직후 '뒷면 추가' 버튼을 가렸음 (2026-07-24 실사용 피드백) */
     position: fixed; left: 50%; top: calc(env(safe-area-inset-top, 0px) + 14px); transform: translateX(-50%);
@@ -127,9 +156,12 @@
     background: linear-gradient(transparent, rgba(0,0,0,.55));
   }
   .cam .shutter {
+    position: relative;
     width: 74px; height: 74px; border-radius: 50%; border: 5px solid #fff;
-    background: rgba(255,255,255,.25); cursor: pointer; vertical-align: middle;
+    background: conic-gradient(#39dfc1 calc(var(--progress, 0) * 1turn), rgba(255,255,255,.24) 0); cursor: pointer; vertical-align: middle;
   }
+  .cam .shutter::after { content: ''; position: absolute; inset: 6px; border-radius: inherit; background: rgba(255,255,255,.26); transition: transform .18s, background .18s; }
+  .cam .shutter.ready::after { transform: scale(.82); background: #fff; }
   .cam .shutter:active { background: #fff; }
   .cam .skip {
     position: absolute; right: 20px; bottom: calc(38px + env(safe-area-inset-bottom));
@@ -137,17 +169,30 @@
   }
   .cam .fb { display: block; margin: 12px auto 0; background: none; border: 0; color: rgba(255,255,255,.75); font-size: 12.5px; cursor: pointer; }
   .cam .guidehint { color: rgba(255,255,255,.85); font-size: 13px; margin-bottom: 12px; }
+  .cam .autoRow { display: flex; justify-content: center; margin: 0 auto 12px; }
+  .cam .autoToggle { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 6px 11px; border: 1px solid rgba(255,255,255,.26); border-radius: 999px; color: rgba(255,255,255,.72); background: rgba(0,0,0,.28); font: 700 12px/1 inherit; cursor: pointer; backdrop-filter: blur(8px); }
+  .cam .autoToggle .dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,.35); }
+  .cam .autoToggle.on { color: #fff; border-color: rgba(57,223,193,.55); background: rgba(0,92,79,.5); }
+  .cam .autoToggle.on .dot { background: #39dfc1; box-shadow: 0 0 0 4px rgba(57,223,193,.14); }
   #camChoiceThumb { width: 110px; border-radius: 8px; display: block; margin: 0 auto 12px; border: 2px solid rgba(255,255,255,.7); }
   .cam .choiceRow { display: flex; gap: 10px; max-width: 340px; margin: 0 auto; }
   .cam .cbtn { flex: 1; border: 0; border-radius: 12px; padding: 14px 10px; font-size: 15px; font-weight: 700; background: rgba(255,255,255,.18); color: #fff; cursor: pointer; }
   .cam .cbtn.primary { background: #4f46e5; }
   .dimg { width: 100%; border-radius: 10px; background: var(--line); min-height: 64px; object-fit: cover; display: block; }
+  @media (min-width: 700px) {
+    .wrap { padding-top: 34px; }
+    .capture-title { font-size: 27px; }
+  }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; } }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <h1>📇 명함 캡처</h1>
+    <div class="brand">
+      <div class="brandmark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><rect x="3" y="5" width="18" height="14" rx="3" stroke="currentColor" stroke-width="1.8"/><circle cx="8" cy="11" r="2" fill="currentColor"/><path d="M5.8 16c.7-1.5 3.7-1.5 4.4 0M13 9h5M13 13h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></div>
+      <div><div class="eyebrow">Kairen</div><h1>명함 캡처</h1></div>
+    </div>
     <button class="chip" id="nameChip" type="button">…</button>
   </header>
 
@@ -168,9 +213,17 @@
   </div>
 
   <div class="card" id="captureCard">
+    <div class="capture-kicker">빠른 등록</div>
+    <div class="capture-title">사진 한 장이면<br>이름부터 바로 확인해요</div>
+    <p class="capture-copy">명함은 먼저 선명하게 저장하고, 인물 조사와 정리는 백그라운드에서 이어집니다.</p>
     <button class="shot main" id="frontBtn" type="button">
-      <span class="big">📷</span><span id="frontLabel">명함 앞면 촬영</span>
+      <span class="big" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M8.5 6.5 10 4.8h4l1.5 1.7H19A2.5 2.5 0 0 1 21.5 9v8A2.5 2.5 0 0 1 19 19.5H5A2.5 2.5 0 0 1 2.5 17V9A2.5 2.5 0 0 1 5 6.5h3.5Z" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="13" r="3.3" stroke="currentColor" stroke-width="1.7"/></svg></span><span id="frontLabel">명함 앞면 촬영</span>
     </button>
+    <div class="quickName" id="quickNamePanel" aria-live="polite">
+      <div class="quickNameTop"><span class="quickNameTitle">이름 먼저 확인</span><span class="quickNameState" id="quickNameState">읽는 중…</span></div>
+      <input id="quickNameInput" placeholder="인식된 이름" autocomplete="off" aria-label="인식된 이름 확인 또는 수정">
+      <p class="quickNameHelp">기기 안에서 먼저 읽어요. 틀리면 여기서 바로 고치면 이후 정리에 반영됩니다.</p>
+    </div>
     <div class="row2">
       <button class="shot" id="backBtn" type="button" style="display:none">
         <span>뒷면 추가 <small>(선택)</small></span>
@@ -180,6 +233,7 @@
     <input type="file" id="frontInput" accept="image/*" capture="environment">
     <input type="file" id="backInput" accept="image/*" capture="environment">
 
+    <div class="context-label">기억할 맥락 <span>선택 입력</span></div>
     <div class="field">
       <label for="eventInput">어디서 만났는지 (선택, 2시간 유지)</label>
       <input id="eventInput" placeholder="예: 2026 로보월드 전시회" autocomplete="off">
@@ -224,6 +278,7 @@
   <div class="bottom">
     <div class="guidehint" id="camHint">명함을 테두리 안에 맞추면 자동으로 잘라져요</div>
     <div id="camShotUI">
+      <div class="autoRow"><button class="autoToggle on" id="camAuto" type="button" aria-pressed="true"><span class="dot"></span><span id="camAutoLabel">자동 촬영 켜짐</span></button></div>
       <button class="shutter" id="camShot" type="button" aria-label="촬영"></button>
       <button class="fb" id="camNative" type="button">기본 카메라 앱으로 찍기</button>
     </div>
@@ -288,6 +343,7 @@
 
 <div class="toast" id="toast"></div>
 
+<script src="camera-quality.js"></script>
 <script>
 'use strict';
 /* ── 설정 ── */
@@ -394,6 +450,129 @@ function fileToResized(file, maxDim, q) {
   });
 }
 function b64of(dataUrl) { return dataUrl.slice(dataUrl.indexOf(',') + 1); }
+
+/* ── 즉시 이름 확인: 브라우저 내장 OCR → 자체 호스팅 Tesseract 폴백 ── */
+var quickNameSession = 0, quickNameMeta = null, ocrWorkerPromise = null;
+function loadScriptOnce(src, globalName) {
+  if (window[globalName]) return Promise.resolve(window[globalName]);
+  return new Promise(function (resolve, reject) {
+    var existing = document.querySelector('script[data-src="' + src + '"]');
+    if (existing) { existing.addEventListener('load', function () { resolve(window[globalName]); }); return; }
+    var script = document.createElement('script');
+    script.src = src; script.async = true; script.dataset.src = src;
+    script.onload = function () { resolve(window[globalName]); };
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+}
+function ocrCanvas(dataUrl) {
+  return new Promise(function (resolve, reject) {
+    var img = new Image();
+    img.onload = function () {
+      var scale = Math.min(1, 1400 / Math.max(img.naturalWidth, img.naturalHeight));
+      var canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas);
+    };
+    img.onerror = reject; img.src = dataUrl;
+  });
+}
+function nameCandidate(text) {
+  return window.CardCaptureVision ? CardCaptureVision.nameCandidate(text) : '';
+}
+function setQuickName(name, source, confidence, session) {
+  if (session !== quickNameSession || $('quickNameInput').dataset.userEdited === 'true') return false;
+  $('quickNameInput').value = name;
+  quickNameMeta = {
+    name: name,
+    source: source,
+    confidence: Math.max(0, Math.min(100, Math.round(confidence || 0))),
+    confirmed: false,
+    recognizedAt: new Date().toISOString()
+  };
+  $('quickNameState').textContent = name ? '인식 완료 · 확인해 주세요' : '이름을 확인해 주세요';
+  return !!name;
+}
+function ensureOcrWorker() {
+  if (ocrWorkerPromise) return ocrWorkerPromise;
+  ocrWorkerPromise = loadScriptOnce('vendor/tesseract/tesseract.min.js', 'Tesseract').then(function () {
+    return Tesseract.createWorker('kor+eng', 1, {
+      workerPath: 'vendor/tesseract/worker.min.js',
+      langPath: 'vendor/tesseract/',
+      corePath: 'vendor/tesseract/tesseract-core-simd-lstm.wasm.js',
+      logger: function (m) {
+        if (m.status === 'recognizing text' && $('quickNamePanel').classList.contains('show')) {
+          $('quickNameState').textContent = '이름 읽는 중 ' + Math.round((m.progress || 0) * 100) + '%';
+        }
+      }
+    });
+  }).then(function (worker) {
+    return worker.setParameters({ tessedit_pageseg_mode: '11', preserve_interword_spaces: '1' }).then(function () { return worker; });
+  }).catch(function (error) {
+    ocrWorkerPromise = null;
+    throw error;
+  });
+  return ocrWorkerPromise;
+}
+function runBuiltInOcr(canvas) {
+  if (!window.TextDetector) return Promise.resolve(null);
+  return new TextDetector().detect(canvas).then(function (rows) {
+    var text = (rows || []).map(function (row) { return row.rawValue || ''; }).join('\n');
+    return { name: nameCandidate(text), confidence: 80, source: 'device_text_detector' };
+  }).catch(function () { return null; });
+}
+function runTesseractOcr(canvas) {
+  return ensureOcrWorker().then(function (worker) { return worker.recognize(canvas); }).then(function (result) {
+    var data = result && result.data ? result.data : {};
+    return { name: nameCandidate(data.text), confidence: data.confidence || 0, source: 'device_tesseract' };
+  });
+}
+function startQuickName(dataUrl) {
+  var session = ++quickNameSession;
+  quickNameMeta = null;
+  $('quickNamePanel').classList.add('show');
+  $('quickNameInput').value = '';
+  $('quickNameInput').dataset.userEdited = 'false';
+  $('quickNameState').textContent = '이름 읽는 중…';
+  ocrCanvas(dataUrl).then(function (canvas) {
+    return runBuiltInOcr(canvas).then(function (fast) {
+      if (fast && fast.name && setQuickName(fast.name, fast.source, fast.confidence, session)) return null;
+      return runTesseractOcr(canvas);
+    });
+  }).then(function (result) {
+    if (result) setQuickName(result.name, result.source, result.confidence, session);
+  }).catch(function () {
+    if (session === quickNameSession && $('quickNameInput').dataset.userEdited !== 'true') $('quickNameState').textContent = '직접 확인해 주세요';
+  });
+}
+function currentQuickName() {
+  var name = $('quickNameInput').value.trim().slice(0, 80);
+  if (!name) return null;
+  var meta = quickNameMeta || {};
+  return {
+    name: name,
+    source: $('quickNameInput').dataset.userEdited === 'true' ? 'user_corrected' : (meta.source || 'user_entered'),
+    confidence: meta.confidence || 0,
+    confirmed: $('quickNameInput').dataset.userEdited === 'true',
+    recognizedAt: meta.recognizedAt || new Date().toISOString()
+  };
+}
+function resetQuickName() {
+  quickNameSession++;
+  quickNameMeta = null;
+  $('quickNamePanel').classList.remove('show');
+  $('quickNameInput').value = '';
+  $('quickNameInput').dataset.userEdited = 'false';
+}
+$('quickNameInput').addEventListener('input', function () {
+  this.dataset.userEdited = 'true';
+  $('quickNameState').textContent = this.value.trim() ? '직접 확인됨' : '이름을 입력해 주세요';
+});
+/* 첫 촬영 때 모델 다운로드를 기다리지 않도록 유휴 시간에 로드한다. 실패해도 촬영·업로드는 그대로 동작한다. */
+if ('requestIdleCallback' in window) requestIdleCallback(function () { ensureOcrWorker().catch(function () {}); }, { timeout: 2500 });
+else setTimeout(function () { ensureOcrWorker().catch(function () {}); }, 1200);
 
 /* ── 명함 사각형 인식 ── */
 function orderQuad(pts) {
@@ -519,8 +698,34 @@ function blurScore(canvas) {
 var cam = {
   stream: null, track: null, side: 'front', raf: 0, lastDet: 0,
   liveQuad: null, liveQuadAt: 0, small: document.createElement('canvas'), on: false, waiting: false,
-  dispQuad: null, detStart: 0
+  dispQuad: null, detStart: 0, lastDeepDet: 0, capturing: false,
+  auto: store.get('autoCapture') !== 'off',
+  autoGate: window.CardCaptureVision ? CardCaptureVision.blankGate() : null,
+  autoProgress: 0
 };
+function resetAutoCapture() {
+  cam.capturing = false;
+  cam.autoProgress = 0;
+  cam.autoGate = window.CardCaptureVision ? CardCaptureVision.blankGate() : null;
+  $('camShot').style.setProperty('--progress', 0);
+  $('camShot').classList.remove('ready');
+}
+function syncAutoToggle() {
+  $('camAuto').classList.toggle('on', cam.auto);
+  $('camAuto').setAttribute('aria-pressed', cam.auto ? 'true' : 'false');
+  $('camAutoLabel').textContent = cam.auto ? '자동 촬영 켜짐' : '자동 촬영 꺼짐';
+  if (!cam.auto) resetAutoCapture();
+}
+function quadImageData(canvas, q) {
+  if (!q || !q.length) return null;
+  var xs = q.map(function (p) { return p.x; }), ys = q.map(function (p) { return p.y; });
+  var x = Math.max(0, Math.floor(Math.min.apply(null, xs)));
+  var y = Math.max(0, Math.floor(Math.min.apply(null, ys)));
+  var right = Math.min(canvas.width, Math.ceil(Math.max.apply(null, xs)));
+  var bottom = Math.min(canvas.height, Math.ceil(Math.max.apply(null, ys)));
+  if (right - x < 2 || bottom - y < 2) return null;
+  try { return canvas.getContext('2d').getImageData(x, y, right - x, bottom - y); } catch (e) { return null; }
+}
 function camChoiceUI(show, thumbUrl) {
   cam.waiting = show;
   $('camShotUI').style.display = show ? 'none' : '';
@@ -553,6 +758,9 @@ function camOpen(side) {
     cam.on = true;
     cam.dispQuad = null;
     cam.detStart = 0;
+    cam.lastDeepDet = 0;
+    resetAutoCapture();
+    syncAutoToggle();
     loadCv();
     cvStatus();
     v.play().catch(function () {});
@@ -568,6 +776,8 @@ function camClose() {
   cam.liveQuad = null;
   cam.dispQuad = null;
   cam.detStart = 0;
+  cam.lastDeepDet = 0;
+  resetAutoCapture();
   camChoiceUI(false);
   if (cam.stream) { cam.stream.getTracks().forEach(function (t) { t.stop(); }); cam.stream = null; cam.track = null; }
   $('cam').classList.remove('show');
@@ -603,11 +813,31 @@ function camLoop() {
     var sw = 320, sh = Math.max(1, Math.round(sw * m.vh / m.vw));
     cam.small.width = sw; cam.small.height = sh;
     cam.small.getContext('2d').drawImage($('camVideo'), 0, 0, sw, sh);
-    var q = detectCardQuad(cam.small, 0.08, true); /* 라이브: 빠른 단일 경로 */
+    var q = detectCardQuad(cam.small, 0.07, true); /* 라이브 기본: 빠른 Canny 경로 */
+    if (!q && now - cam.lastDeepDet > 480) {
+      cam.lastDeepDet = now;
+      q = detectCardQuad(cam.small, 0.07, false); /* 저대비 폴백: 적응형 임계값 경로 */
+    }
     if (q && plausibleCard(q)) {
       var f = m.vw / sw;
       cam.liveQuad = q.map(function (p) { return { x: p.x * f, y: p.y * f }; });
       cam.liveQuadAt = now;
+      if (cam.auto && window.CardCaptureVision) {
+        var pixels = quadImageData(cam.small, q);
+        cam.autoGate = CardCaptureVision.nextAutoGate(cam.autoGate, {
+          detected: true,
+          plausible: true,
+          quad: q,
+          frameWidth: sw,
+          frameHeight: sh,
+          blur: blurScore(cam.small),
+          clippedRatio: pixels ? CardCaptureVision.clippedRatio(pixels, 250) : 0
+        }, now);
+        cam.autoProgress = cam.autoGate.progress;
+      }
+    } else if (cam.auto && window.CardCaptureVision) {
+      cam.autoGate = CardCaptureVision.nextAutoGate(cam.autoGate, { detected: false }, now);
+      cam.autoProgress = 0;
     }
   }
 
@@ -659,8 +889,20 @@ function camLoop() {
     locked ? 'rgba(255,255,255,0.98)' : 'rgba(255,255,255,0.82)',
     locked ? 2.5 : 2);
 
-  $('camHint').textContent = detected ? '인식됨 · 셔터를 누르세요'
+  $('camShot').style.setProperty('--progress', cam.auto ? cam.autoProgress : 0);
+  var gateReason = cam.autoGate && cam.autoGate.reason;
+  if (cam.auto && detected && gateReason === 'blur') $('camHint').textContent = '조금 흐려요 · 휴대폰을 고정해 주세요';
+  else if (cam.auto && detected && gateReason === 'glare') $('camHint').textContent = '빛 반사를 줄여 주세요';
+  else if (cam.auto && detected) $('camHint').textContent = '인식됨 · 잠시 고정하면 자동 촬영해요';
+  else $('camHint').textContent = detected ? '인식됨 · 아래 버튼으로 촬영할 수 있어요'
     : (CV ? '명함을 화면 안에 담아 주세요' : '명함을 화면 안에 담아 찍어 주세요');
+
+  if (cam.auto && cam.autoGate && cam.autoGate.fired && !cam.capturing) {
+    cam.capturing = true;
+    $('camShot').classList.add('ready');
+    $('camHint').textContent = '좋아요 · 자동 촬영 중';
+    setTimeout(function () { if (cam.on && !cam.waiting) camCapture('auto'); }, 80);
+  }
 }
 function quadPath(g, q) {
   g.beginPath();
@@ -684,10 +926,13 @@ function drawCorners(g, q, len, color, width) {
     g.stroke();
   }
 }
-function camCapture() {
+function camCapture(source) {
+  if (cam.waiting) return;
+  if (cam.capturing && source !== 'auto') return;
+  cam.capturing = true;
   var v = $('camVideo');
   var m = videoMap();
-  if (!m.vw) return;
+  if (!m.vw) { cam.capturing = false; return; }
   var full = document.createElement('canvas');
   full.width = m.vw; full.height = m.vh;
   full.getContext('2d').drawImage(v, 0, 0);
@@ -736,26 +981,34 @@ function camCapture() {
 
   applyShot(cam.side, dataUrl);
   toastMsg(cam.side === 'front'
-    ? (detected ? '앞면 저장 — 자동 크롭됨' : '앞면 저장')
-    : (detected ? '뒷면 저장 — 자동 크롭됨' : '뒷면 저장'));
+    ? (detected ? (source === 'auto' ? '앞면 자동 촬영 · 크롭 완료' : '앞면 저장 — 자동 크롭됨') : '앞면 저장')
+    : (detected ? (source === 'auto' ? '뒷면 자동 촬영 · 크롭 완료' : '뒷면 저장 — 자동 크롭됨') : '뒷면 저장'));
 
   if (targetMode === 'edit') { camClose(); return; } /* 수정 모드: 한 장 찍고 상세로 복귀 */
   if (cam.side === 'front') {
     cam.side = 'back';
     cam.liveQuad = null;
+    resetAutoCapture();
     $('camSide').textContent = '명함 뒷면';
     camChoiceUI(true, dataUrl); /* 명확한 선택: 뒷면도 찍기 / 뒷면 없이 완료 */
   } else {
     camClose();
   }
 }
-$('camShot').onclick = camCapture;
+$('camShot').onclick = function () { camCapture('manual'); };
 $('camClose').onclick = camClose;
-$('camGoBack2').onclick = function () { camChoiceUI(false); cam.liveQuad = null; };
+$('camAuto').onclick = function () {
+  cam.auto = !cam.auto;
+  store.set('autoCapture', cam.auto ? 'on' : 'off');
+  syncAutoToggle();
+  toastMsg(cam.auto ? '자동 촬영을 켰어요' : '수동 촬영으로 전환했어요');
+};
+$('camGoBack2').onclick = function () { camChoiceUI(false); cam.liveQuad = null; resetAutoCapture(); };
 /* 앞면 다시 찍기: 카메라 세션 유지한 채 앞면 모드로 복귀 — 다음 촬영이 앞면을 교체 (2026-07-24 실사용 피드백) */
 $('camRetakeFront').onclick = function () {
   cam.side = 'front';
   cam.liveQuad = null;
+  resetAutoCapture();
   $('camSide').textContent = '명함 앞면';
   camChoiceUI(false);
   toastMsg('앞면을 다시 찍어주세요');
@@ -780,6 +1033,7 @@ function setShot(side, dataUrl) {
     $('backBtn').style.display = '';
     $('retakeBtn').style.display = '';
     $('sendBtn').disabled = false;
+    startQuickName(dataUrl);
   } else {
     back = dataUrl;
     $('backBtn').classList.add('filled');
@@ -974,17 +1228,19 @@ $('sendBtn').onclick = function () {
     note: noteLines.join('\n'),
     disp: memo || relSelf || relKairen,
     images: images,
+    quickName: currentQuickName(),
     state: 'queued', tries: 0, thumb: ''
   };
   /* 즉시 초기화해서 다음 명함을 바로 찍을 수 있게 (만난 곳·관계 2개는 유지, 메모만 비움) */
   front = null; back = null;
   $('frontBtn').classList.remove('filled');
-  $('frontBtn').innerHTML = '<span class="big">📷</span><span id="frontLabel">명함 앞면 촬영</span>';
+  $('frontBtn').innerHTML = '<span class="big" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M8.5 6.5 10 4.8h4l1.5 1.7H19A2.5 2.5 0 0 1 21.5 9v8A2.5 2.5 0 0 1 19 19.5H5A2.5 2.5 0 0 1 2.5 17V9A2.5 2.5 0 0 1 5 6.5h3.5Z" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="13" r="3.3" stroke="currentColor" stroke-width="1.7"/></svg></span><span id="frontLabel">명함 앞면 촬영</span>';
   $('backBtn').style.display = 'none'; $('backBtn').classList.remove('filled');
   $('backBtn').innerHTML = '<span>뒷면 추가 <small>(선택)</small></span>';
   $('retakeBtn').style.display = 'none';
   $('noteInput').value = '';
   $('sendBtn').disabled = true;
+  resetQuickName();
 
   thumbOf(frontData).then(function (t) {
     item.thumb = t;
@@ -1002,7 +1258,8 @@ $('sendBtn').onclick = function () {
 function sendItem(item) {
   var payload = {
     k: TOKEN, captureId: item.captureId, capturedAt: item.capturedAt,
-    capturer: store.get('name') || '', event: item.event, note: item.note, images: item.images
+    capturer: store.get('name') || '', event: item.event, note: item.note,
+    quickName: item.quickName || null, images: item.images
   };
   return fetch(API, { method: 'POST', body: JSON.stringify(payload) })
     .then(function (r) { return r.json(); })
@@ -1058,7 +1315,7 @@ function renderRecent() {
       /* 표시: 이름(처리 후 브리핑에서) / 어디서 · Kairen 관계 · 나와의 관계 — 메모는 표시하지 않음 */
       var rel = { relSelf: i.relSelf, relKairen: i.relKairen };
       if (rel.relSelf === undefined) { var p2 = parseNoteLegacy(i.note); rel.relSelf = p2.relSelf; rel.relKairen = p2.relKairen; }
-      div.querySelector('.t1').textContent = names[i.captureId] || '이름 인식 대기';
+      div.querySelector('.t1').textContent = names[i.captureId] || (i.quickName && i.quickName.name) || '이름 인식 대기';
       var parts = [];
       if (i.event) parts.push(i.event);
       if (rel.relKairen) parts.push('Kairen: ' + rel.relKairen);
@@ -1162,7 +1419,7 @@ function briefNameMap() {
   try {
     (JSON.parse(store.get('briefs') || '[]') || []).forEach(function (b) {
       /* 브리핑 제목 우선, 없으면 2-phase 빠른 추출의 contact.name (처리 완료 전에도 이름 표시) */
-      var n = nameFromBrief(b.brief) || (b.contact && b.contact.name) || null;
+      var n = nameFromBrief(b.brief) || (b.contact && b.contact.name) || (b.quickName && b.quickName.name) || null;
       if (n) map[b.captureId] = n;
     });
   } catch (e) {}
@@ -1197,7 +1454,7 @@ function renderBriefs(items) {
       var em = elapsedMinOf(it.captureId);
       if (em !== null) {
         /* 단계 표시: 1 이름 인식(OCR) → 2 웹 조사·정리 → 3 브리핑 도착. contact 존재 = 1단계 완료 신호 (2026-07-24 실사용 피드백) */
-        var named = !!(it.contact && it.contact.name);
+        var named = !!((it.contact && it.contact.name) || (it.quickName && it.quickName.name));
         if (em > 30) {
           pendingLate = true;
           pendingLine = (named ? '2/3단계 웹 조사·정리 중' : '1/3단계 이름 인식 중') + ' · ' + em + '분 경과 — 평소(6~20분)보다 오래 걸리고 있어요.';
@@ -1218,6 +1475,8 @@ function renderBriefs(items) {
       title = '메모 → ' + (it.person || '처리 중');
     } else if (it.contact && it.contact.name) {
       title = it.contact.name + ' — 브리핑 준비 중'; /* 2-phase 빠른 추출 결과 */
+    } else if (it.quickName && it.quickName.name) {
+      title = it.quickName.name + ' — 이름 확인됨 · 조사 준비 중';
     } else {
       title = it.event || it.captureId;
     }

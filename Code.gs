@@ -14,6 +14,7 @@
  *   POST body (text/plain, JSON): {
  *     k: 토큰, captureId: "yyyyMMdd-HHmmss-xxxx", capturedAt: ISO문자열,
  *     event: 행사명(선택), note: 한줄메모(선택),
+ *     quickName: {name, source, confidence, confirmed, recognizedAt} | null,
  *     images: [{name:"front.jpg"|"back.jpg", mime:"image/jpeg", dataB64:"..."}]
  *   }
  *   GET ?action=ping           → 상태 확인
@@ -273,7 +274,8 @@ function listCaptures_(token, limitParam, offsetParam) {
       person: meta.person || '',
       personAction: meta.personAction || '',
       type: meta.type || 'capture',
-      contact: meta.contact || null
+      contact: meta.contact || null,
+      quickName: meta.quickName || null
     };
     var brief = readNewestText_(folder, 'brief', '.md');
     if (brief) item.brief = brief.slice(0, 6000);
@@ -358,6 +360,7 @@ function doPost(e) {
       receivedAt: new Date().toISOString(),
       event: String(req.event || '').slice(0, 200),
       note: String(req.note || '').slice(0, 2000),
+      quickName: sanitizeQuickName_(req.quickName),
       files: saved,
       status: 'received'
     };
@@ -459,6 +462,25 @@ function sanitizeName_(name) {
   var s = String(name).replace(/[^A-Za-z0-9._-]/g, '');
   if (!s || s.indexOf('.') === 0) return null;
   return s.slice(0, 64);
+}
+
+/* 기기 OCR 결과는 표시·검증용 힌트일 뿐 Person 식별의 권위 있는 값이 아니다. */
+function sanitizeQuickName_(value) {
+  if (!value || typeof value !== 'object') return null;
+  var name = String(value.name || '').replace(/[\r\n\t]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+  if (!name) return null;
+  var allowed = ['device_text_detector', 'device_tesseract', 'user_corrected', 'user_entered'];
+  var source = allowed.indexOf(String(value.source || '')) >= 0 ? String(value.source) : 'device_tesseract';
+  var confidence = Number(value.confidence || 0);
+  if (!isFinite(confidence)) confidence = 0;
+  confidence = Math.max(0, Math.min(100, Math.round(confidence)));
+  return {
+    name: name,
+    source: source,
+    confidence: confidence,
+    confirmed: value.confirmed === true,
+    recognizedAt: String(value.recognizedAt || '').slice(0, 40)
+  };
 }
 
 function upsertFile_(folder, fname, blob) {
