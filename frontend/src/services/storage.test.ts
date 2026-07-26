@@ -30,10 +30,10 @@ describe('legacy-compatible runtime config', () => {
     ]));
   });
 
-  it('keeps event and relationship context for two hours, then expires it', () => {
-    saveStickyCaptureContext({ event: 'Expo', relSelf: '첫 만남', relKairen: '잠재 고객' }, 1_000);
-    expect(loadStickyCaptureContext(1_000 + 2 * 60 * 60 * 1000)).toEqual({ event: 'Expo', relSelf: '첫 만남', relKairen: '잠재 고객' });
-    expect(loadStickyCaptureContext(1_001 + 2 * 60 * 60 * 1000)).toEqual({ event: '', relSelf: '', relKairen: '' });
+  it('keeps event, relationship and research context for two hours, then expires it', () => {
+    saveStickyCaptureContext({ event: 'Expo', relSelf: '첫 만남', relKairen: '잠재 고객', research: '최근 경력 위주' }, 1_000);
+    expect(loadStickyCaptureContext(1_000 + 2 * 60 * 60 * 1000)).toEqual({ event: 'Expo', relSelf: '첫 만남', relKairen: '잠재 고객', research: '최근 경력 위주' });
+    expect(loadStickyCaptureContext(1_001 + 2 * 60 * 60 * 1000)).toEqual({ event: '', relSelf: '', relKairen: '', research: '' });
   });
 
   it('preserves the three most recent distinct searches', () => {

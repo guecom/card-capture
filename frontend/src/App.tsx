@@ -16,7 +16,7 @@ import {
   IonToolbar,
   setupIonicReact,
 } from '@ionic/react';
-import { ArrowUpRight, Camera, ChevronRight, FileText, Mail, MessageCircle, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Waves } from 'lucide-react';
+import { ArrowUpRight, Camera, ChevronRight, FileText, Mail, MessageCircle, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Waves } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { BriefItem, CaptureQueueItem, PersonTarget, QuickName, RuntimeConfig, SearchItem } from './contracts/capture';
@@ -29,9 +29,10 @@ import { type CapturedCameraFrame, fileToCameraFrame, thumbnailOf } from './serv
 import { buildLegacyNote, buildQueuedCapture, parseLegacyNote } from './services/capture-item';
 import { actionErrorMessage, briefNameMap, briefTitle, elapsedMinutesOf, pendingProgress } from './services/brief-view';
 import { contactCardFromBrief } from './services/contacts';
+import { prefetchOpenCv } from './services/opencv';
 import { flushQueue, pruneSentQueue, putQueueItem, readQueue } from './services/queue';
 import { buildResearchInstruction } from './services/research';
-import { preloadQuickNameOcr, recognizeQuickName } from './services/vision';
+import { recognizeQuickName } from './services/vision';
 import {
   loadCachedBriefs,
   loadOwnerFlags,
@@ -115,6 +116,13 @@ function captureToast(side: CardSide, meta: CapturedSideMeta): string {
   return text;
 }
 
+// 로컬 캡처와 서버 브리핑을 captureId로 병합한 단일 목록 항목 (2026-07-26 실폰 피드백 2).
+interface FeedEntry {
+  id: string;
+  brief?: BriefItem;
+  local?: CaptureQueueItem;
+}
+
 function App() {
   const [tab, setTab] = useState<Tab>(initialTab);
   const [config, setConfig] = useState<RuntimeConfig>(() => loadRuntimeConfig());
@@ -140,10 +148,9 @@ function App() {
   });
   const [listLimit, setListLimit] = useState(30);
   const [hasMoreBriefs, setHasMoreBriefs] = useState(false);
-  const [recentLimit, setRecentLimit] = useState(30);
+  const [feedLimit, setFeedLimit] = useState(30);
   const [expandedBriefs, setExpandedBriefs] = useState<Set<string>>(() => new Set());
-  const [recentCollapsed, setRecentCollapsed] = useState(() => loadSectionCollapsed('recent'));
-  const [briefsCollapsed, setBriefsCollapsed] = useState(() => loadSectionCollapsed('briefs'));
+  const [recordsCollapsed, setRecordsCollapsed] = useState(() => loadSectionCollapsed('briefs'));
   const [documentOpen, setDocumentOpen] = useState(false);
   const [documentTitle, setDocumentTitle] = useState('프로필');
   const [documentBody, setDocumentBody] = useState('');
@@ -164,7 +171,7 @@ function App() {
   const [relSelf, setRelSelf] = useState(sticky.relSelf);
   const [relKairen, setRelKairen] = useState(sticky.relKairen);
   const [memo, setMemo] = useState('');
-  const [researchText, setResearchText] = useState('');
+  const [researchText, setResearchText] = useState(sticky.research);
   const [queueing, setQueueing] = useState(false);
   const [quickName, setQuickName] = useState<QuickName | null>(null);
   const [nameText, setNameText] = useState('');
@@ -196,10 +203,26 @@ function App() {
       setHasMoreBriefs(response.hasMore === true);
     } catch (error) {
       if (announce) setMessage(`새로고침 실패: ${actionErrorMessage(error)}`);
+      throw error;
     } finally {
       setLoading(false);
     }
   }, [config, configured, listLimit]);
+
+  const silentRefresh = useCallback(() => {
+    void refresh().catch(() => undefined);
+  }, [refresh]);
+
+  // 수동 새로고침은 즉시 진행 토스트 → 완료/실패 토스트로 반응한다 (2026-07-26 실폰 피드백 7).
+  const manualRefresh = useCallback(async () => {
+    setMessage('새로고침 중…');
+    try {
+      await refresh(true);
+      setMessage((current) => current === '' || current === '새로고침 중…' ? '새로고침 완료 — 최신 상태예요' : current);
+    } catch {
+      // 실패 문구는 refresh(true)가 이미 띄웠다.
+    }
+  }, [refresh]);
 
   const flushPendingQueue = useCallback(async (announce = false) => {
     if (!configured || flushingRef.current) return;
@@ -207,7 +230,7 @@ function App() {
     setSending(true);
     try {
       const result = await flushQueue((item) => uploadCapture(config, item));
-      await refresh();
+      await refresh().catch(() => undefined);
       if (announce && result.attempted > 0) {
         setMessage(result.failed > 0
           ? `${result.sent}건 전송, ${result.failed}건은 다음 연결 때 다시 시도합니다.`
@@ -222,20 +245,21 @@ function App() {
   }, [config, configured, refresh]);
 
   useEffect(() => {
-    void refresh();
+    silentRefresh();
     void flushPendingQueue();
     const handleOnline = () => void flushPendingQueue(true);
     const handleVisibility = () => {
       if (document.hidden) return;
       // 앱 복귀 시 legacy처럼 전송 재시도·브리핑 갱신·스티키 복원을 함께 한다.
       void flushPendingQueue();
-      void refresh();
+      silentRefresh();
       const restored = loadStickyCaptureContext();
       setEvent((value) => value || restored.event);
       setRelSelf((value) => value || restored.relSelf);
       setRelKairen((value) => value || restored.relKairen);
+      setResearchText((value) => value || restored.research);
     };
-    const interval = window.setInterval(() => void refresh(), 20_000);
+    const interval = window.setInterval(() => silentRefresh(), 20_000);
     window.addEventListener('online', handleOnline);
     document.addEventListener('visibilitychange', handleVisibility);
     return () => {
@@ -243,20 +267,38 @@ function App() {
       window.removeEventListener('online', handleOnline);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
-  }, [flushPendingQueue, refresh]);
+  }, [flushPendingQueue, silentRefresh]);
 
-  // 첫 촬영에서 이름 인식이 모델 다운로드를 기다리지 않게 유휴 프리로드.
+  // 감지 엔진은 유휴 시점에 "내려받기만" 한다. 실행·컴파일은 카메라 미리보기가 뜬 뒤에 일어나므로
+  // 버튼을 누르는 순간 메인 스레드가 잠기지 않는다 (2026-07-26 실폰 결함 1).
   useEffect(() => {
-    preloadQuickNameOcr();
+    const timer = window.setTimeout(() => prefetchOpenCv(), 2_500);
+    return () => window.clearTimeout(timer);
   }, []);
+
+  // 맥락·조사 지시는 입력 즉시 저장한다 — 완료를 못 눌러도 2시간 유지 성립 (2026-07-26 실폰 결함 8).
+  useEffect(() => {
+    saveStickyCaptureContext({ event, relSelf, relKairen, research: researchText });
+  }, [event, relKairen, relSelf, researchText]);
 
   // 첫 실행은 legacy처럼 이름 한 칸만 묻는다 — 주소·토큰은 개인 링크(?k=)가 자동으로 채운다.
   useEffect(() => {
     if (!config.capturer) setNameOnboardOpen(true);
   }, [config.capturer]);
 
-  // 처리 완료 브리핑의 이름을 최근 캡처 목록에 반영한다 (legacy briefNameMap).
+  // 처리 완료 브리핑의 이름을 로컬 캡처 행에 반영한다 (legacy briefNameMap).
   const processedNames = useMemo(() => briefNameMap(briefs), [briefs]);
+
+  // 로컬 캡처 + 서버 브리핑 통합 목록 (실폰 피드백 2): 같은 captureId는 한 항목으로.
+  const feed = useMemo<FeedEntry[]>(() => {
+    const briefIds = new Set(briefs.map((item) => item.captureId));
+    const localById = new Map(queue.map((item) => [item.captureId, item]));
+    const entries: FeedEntry[] = briefs.map((item) => ({ id: item.captureId, brief: item, local: localById.get(item.captureId) }));
+    queue.forEach((item) => {
+      if (!briefIds.has(item.captureId)) entries.push({ id: item.captureId, local: item });
+    });
+    return entries.sort((a, b) => b.id.localeCompare(a.id));
+  }, [briefs, queue]);
 
   const setupBannerMessage = !config.apiUrl
     ? '연결할 서버 주소가 없어요 — 받으신 개인 링크로 접속하거나 설정의 고급 항목에서 주소를 넣어주세요.'
@@ -360,6 +402,8 @@ function App() {
     setMessage(captureToast(side, meta));
   }, [startQuickNameOcr]);
 
+  const closeCameraSession = useCallback(() => setCameraSession(null), []);
+
   const completeCapture = useCallback(async () => {
     if (!frontFrame || queueing) return;
     setQueueing(true);
@@ -376,13 +420,11 @@ function App() {
       // 전송 후 원본이 정리돼도 목록에 남을 104px 썸네일 (legacy thumbOf).
       item.thumb = await thumbnailOf(frontFrame.dataUrl);
       await putQueueItem(item);
-      saveStickyCaptureContext({ event: item.event ?? '', relSelf: item.relSelf ?? '', relKairen: item.relKairen ?? '' });
       setQueue((current) => [item, ...current].sort((a, b) => b.captureId.localeCompare(a.captureId)));
-      // 즉시 초기화해서 다음 명함을 바로 찍을 수 있게 — 만난 곳·관계 2개는 유지, 메모만 비운다 (legacy).
+      // 즉시 초기화해서 다음 명함을 바로 찍을 수 있게 — 만난 곳·관계·조사 지시는 2시간 유지, 메모만 비운다.
       setFrontFrame(null);
       setBackFrame(null);
       setMemo('');
-      setResearchText('');
       resetQuickName();
       setMessage(configured
         ? '업로드 시작! 다음 명함을 이어서 찍을 수 있어요'
@@ -439,10 +481,10 @@ function App() {
       state: 'queued',
       err: undefined,
     };
+    // 과거 캡처 편집은 현재 스티키 맥락을 건드리지 않는다 (legacy 동작).
     await putQueueItem(next);
-    saveStickyCaptureContext({ event: next.event ?? '', relSelf: editRelSelf, relKairen: editRelKairen });
     setQueueEdit(null);
-    await refresh();
+    await refresh().catch(() => undefined);
     if (configured) void flushPendingQueue(true);
     else setMessage('변경을 같은 captureId에 저장했습니다. 연결되면 다시 전송합니다.');
   }, [configured, flushPendingQueue, queueEdit, refresh]);
@@ -456,18 +498,11 @@ function App() {
     });
   }, []);
 
-  const toggleSection = useCallback((section: 'recent' | 'briefs') => {
-    if (section === 'recent') {
-      setRecentCollapsed((current) => {
-        saveSectionCollapsed('recent', !current);
-        return !current;
-      });
-    } else {
-      setBriefsCollapsed((current) => {
-        saveSectionCollapsed('briefs', !current);
-        return !current;
-      });
-    }
+  const toggleRecords = useCallback(() => {
+    setRecordsCollapsed((current) => {
+      saveSectionCollapsed('briefs', !current);
+      return !current;
+    });
   }, []);
 
   const openDocument = useCallback(async (title: string, target: { id?: string; captureId?: string }, noteTarget: PersonTarget | null) => {
@@ -497,7 +532,7 @@ function App() {
       const response = await request;
       if (!response.ok) throw new Error(response.error ?? 'request_failed');
       setMessage(response.receiptId ? `${success} · receipt ${response.receiptId}` : success);
-      await refresh();
+      await refresh().catch(() => undefined);
     } catch (error) {
       setMessage(`접수 실패: ${actionErrorMessage(error)}`);
     }
@@ -526,7 +561,7 @@ function App() {
       setMessage(response.alreadyTerminal
         ? (response.status === 'skipped' ? '이미 건너뜀으로 마감됐어요' : '이미 처리가 끝났어요 — 최신 상태로 바꿀게요')
         : response.deduped ? '이미 다시 처리 중이에요' : '다시 처리를 요청했어요 — 몇 분 안에 처리돼요');
-      await refresh();
+      await refresh().catch(() => undefined);
     } catch (error) {
       setMessage(`재처리 실패: ${actionErrorMessage(error)}`);
     }
@@ -548,7 +583,6 @@ function App() {
           </div>
           <ChevronRight aria-hidden="true" size={16} />
         </button>
-        {/* 처리 완료(이름 인식됨)면 목록에서 바로 메모 (legacy 실사용 피드백) */}
         {processedName && item.state !== 'failed' && (
           <button className="note-action" type="button" onClick={() => promptNote({ captureId: item.captureId })}><Plus aria-hidden="true" size={13} />메모</button>
         )}
@@ -557,7 +591,7 @@ function App() {
     );
   }
 
-  function renderBriefCard(item: BriefItem) {
+  function renderBriefCard(item: BriefItem, local: CaptureQueueItem | null) {
     const expanded = expandedBriefs.has(item.captureId);
     const minutes = elapsedMinutesOf(item);
     const progress = pendingProgress(item, minutes);
@@ -565,6 +599,7 @@ function App() {
     const contact = contactCardFromBrief(item, title.split(' — ')[0]);
     const briefBody = item.brief ? item.brief.split('\n').slice(1).join('\n') : '';
     const actionable = item.status === 'processed' && item.type !== 'note' && item.type !== 'research_instruction';
+    const localContext = local ? queueContextLine(local) : '';
     return (
       <article className="brief-card" key={item.captureId}>
         <button className="brief-summary" type="button" onClick={() => toggleBrief(item.captureId)} aria-expanded={expanded}>
@@ -589,6 +624,7 @@ function App() {
         )}
         {expanded && (
           <div className="brief-detail">
+            {localContext && <p className="local-context">내 기록: {localContext}</p>}
             {briefBody ? <MarkdownLite text={briefBody} /> : <p>아직 브리핑 본문이 도착하지 않았습니다.</p>}
             <div className="action-grid">
               {item.person && ownerCanSeeAll && <button type="button" onClick={() => void openDocument(title.split(' — ')[0], { captureId: item.captureId }, { captureId: item.captureId })}><FileText aria-hidden="true" size={15} />전체 프로필</button>}
@@ -599,6 +635,7 @@ function App() {
                   <button type="button" onClick={() => promptCorrection(item.captureId)}><MessageCircle aria-hidden="true" size={15} />수정 요청</button>
                 </>
               )}
+              {local && <button type="button" onClick={() => setQueueEdit(normalizedQueueItem(structuredClone(local)))}><PenLine aria-hidden="true" size={15} />캡처 수정</button>}
             </div>
             {actionable && <ContactActions contact={contact} />}
           </div>
@@ -607,25 +644,31 @@ function App() {
     );
   }
 
-  function renderBriefsSection() {
-    if (!configured) {
-      return <EmptyState title="연결 설정이 필요해요" body="받으신 개인 링크(?k=토큰 포함)로 접속하면 같은 진행 상태를 읽습니다." action="설정 열기" onAction={() => { setDraftConfig(config); setSettingsOpen(true); }} />;
-    }
-    if (loading && briefs.length === 0) {
-      return <div className="center-state"><IonSpinner name="crescent" /><span>최신 상태 확인 중</span></div>;
-    }
-    if (briefs.length === 0) {
-      return <p className="section-empty">아직 도착한 브리핑이 없어요. 명함을 찍으면 시스템이 처리 후 여기로 알려드려요.</p>;
-    }
+  function renderFeedEntry(entry: FeedEntry) {
+    // 아직 전송 안 된(대기·실패) 로컬 항목은 대기 행으로 — 서버 브리핑이 있어도 재전송 중이면 로컬 상태가 우선.
+    if (entry.local && entry.local.state !== 'sent') return renderQueueRow(entry.local);
+    if (entry.brief) return renderBriefCard(entry.brief, entry.local ?? null);
+    if (entry.local) return renderQueueRow(entry.local);
+    return null;
+  }
+
+  function renderFeedBody() {
+    const visible = feed.slice(0, feedLimit);
     return (
       <>
-        {briefs.map(renderBriefCard)}
-        {hasMoreBriefs && <button className="load-more" type="button" onClick={() => setListLimit((current) => Math.min(current + 30, 100))}>예전 브리핑 더 보기</button>}
+        {loading && feed.length === 0 && configured && <div className="center-state"><IonSpinner name="crescent" /><span>최신 상태 확인 중</span></div>}
+        {feed.length === 0 && !(loading && configured) && <p className="section-empty">아직 명함 기록이 없어요. 명함을 찍으면 여기에 쌓여요.</p>}
+        {visible.map(renderFeedEntry)}
+        {(feed.length > feedLimit || hasMoreBriefs) && (
+          <button className="load-more" type="button" onClick={() => { setFeedLimit((current) => current + 30); setListLimit((current) => Math.min(current + 30, 100)); }}>
+            예전 기록 더 보기
+          </button>
+        )}
       </>
     );
   }
 
-  // ── 캡처 탭: legacy 작업 화면 구조 — 촬영·맥락·완료·최근 캡처·브리핑이 한 스크롤 (ISS-000091 항목 18) ──
+  // ── 캡처 탭: legacy 작업 화면 — 촬영·맥락·완료·명함 기록(통합)이 한 스크롤 ──
   function renderCapture() {
     return (
       <div className="cc-stack">
@@ -637,9 +680,10 @@ function App() {
         )}
 
         <section className="surface-card capture-card">
-          <div className="capture-kicker">빠른 등록</div>
-          <h1 className="capture-title">사진 한 장이면<br />이름부터 바로 확인해요</h1>
-          <p className="capture-copy">명함은 먼저 선명하게 저장하고, 인물 조사와 정리는 백그라운드에서 이어집니다.</p>
+          <div className="capture-head">
+            <span className="capture-kicker">빠른 등록</span>
+            <span className="capture-sub">사진 한 장이면 끝 — 정리·브리핑은 시스템이 해요</span>
+          </div>
 
           {frontFrame ? (
             <button className="shot-main filled" type="button" onClick={() => setCameraSession({ side: 'front', withChoice: true })}>
@@ -669,52 +713,27 @@ function App() {
             </div>
           )}
 
-          <div className="context-head">기억할 맥락 <span>선택 입력</span></div>
+          <div className="context-head">기억할 맥락 <span>선택 입력 · 2시간 유지</span></div>
           <div className="capture-context-fields plain">
             <IonInput label="어디서 만났는지 (선택, 2시간 유지)" labelPlacement="stacked" placeholder="예: 2026 로보월드 전시회" value={event} onIonInput={(inputEvent) => setEvent(String(inputEvent.detail.value ?? ''))} />
             <IonInput label="Kairen과 이 사람과의 관계 (선택, 2시간 유지)" labelPlacement="stacked" placeholder="예: 잠재 고객 / 부품 공급사 담당자" value={relKairen} onIonInput={(inputEvent) => setRelKairen(String(inputEvent.detail.value ?? ''))} />
             <IonInput label="나와 이 사람과의 관계 (선택, 2시간 유지)" labelPlacement="stacked" placeholder="예: 대학 선배 / 오늘 처음 인사" value={relSelf} onIonInput={(inputEvent) => setRelSelf(String(inputEvent.detail.value ?? ''))} />
             <IonTextarea label="메모 (선택 — 키보드 마이크로 말해도 돼요)" labelPlacement="stacked" placeholder="예: 공장장님, 우리 부품에 관심 많으심" autoGrow value={memo} onIonInput={(inputEvent) => setMemo(String(inputEvent.detail.value ?? ''))} />
-            {researchInstructionEnabled && <IonTextarea label="조사 지시 (소유자 전용 — 공개·합법 출처만)" labelPlacement="stacked" maxlength={2000} autoGrow value={researchText} onIonInput={(inputEvent) => setResearchText(String(inputEvent.detail.value ?? ''))} />}
+            {researchInstructionEnabled && <IonTextarea label="조사 지시 (소유자 전용 · 2시간 유지)" labelPlacement="stacked" maxlength={2000} autoGrow placeholder="예: 최근 경력·이직 이력, 회사 투자·최근 뉴스, 인터뷰·발표, 저와의 공통 접점 위주로 깊게 조사해줘" value={researchText} onIonInput={(inputEvent) => setResearchText(String(inputEvent.detail.value ?? ''))} />}
           </div>
 
           <IonButton className="primary-action" expand="block" disabled={!frontFrame || queueing} onClick={() => void completeCapture()}>{queueing ? '저장 중…' : '완료'}</IonButton>
-          <p className="hint">사진만 찍으면 끝 — 정리와 인물 브리핑은 시스템이 나중에 해드려요.<br />전파가 약해도 대기열에 저장했다가 자동으로 다시 보내요.</p>
+          <p className="hint">전파가 약해도 기기에 저장했다가 자동으로 다시 보내요.</p>
         </section>
 
-        <button className="search-shortcut" type="button" onClick={() => setTab('people')}>
-          <span className="search-shortcut-icon"><Search aria-hidden="true" size={20} /></span>
-          <span className="search-shortcut-copy"><strong>사람 검색</strong><small>미팅 전 10초 회상 — 이름·회사·만난 곳</small></span>
-          <ChevronRight aria-hidden="true" size={19} />
-        </button>
-
         <div className="section-toggle-row">
-          <button className="section-toggle" type="button" aria-expanded={!recentCollapsed} onClick={() => toggleSection('recent')}>
-            <span className="caret" aria-hidden="true">{recentCollapsed ? '▸' : '▾'}</span> 최근 캡처
+          <button className="section-toggle" type="button" aria-expanded={!recordsCollapsed} onClick={toggleRecords}>
+            <span className="caret" aria-hidden="true">{recordsCollapsed ? '▸' : '▾'}</span> 명함 기록
           </button>
           {sending && <span className="sending-note">전송 중…</span>}
+          <button className="refresh-chip" type="button" onClick={() => void manualRefresh()}>새로고침</button>
         </div>
-        {!recentCollapsed && (
-          <section className="surface-card queue-surface">
-            <div className="queue-list">
-              {queue.length === 0 && <p className="section-empty">아직 캡처가 없어요.</p>}
-              {queue.slice(0, recentLimit).map(renderQueueRow)}
-              {queue.length > recentLimit && (
-                <button className="load-more" type="button" onClick={() => setRecentLimit((current) => current + 30)}>
-                  예전 캡처 더 보기 ({queue.length - recentLimit}건)
-                </button>
-              )}
-            </div>
-          </section>
-        )}
-
-        <div className="section-toggle-row">
-          <button className="section-toggle" type="button" aria-expanded={!briefsCollapsed} onClick={() => toggleSection('briefs')}>
-            <span className="caret" aria-hidden="true">{briefsCollapsed ? '▸' : '▾'}</span> 받은 명함 브리핑
-          </button>
-          <button className="refresh-chip" type="button" onClick={() => void refresh(true)}>새로고침</button>
-        </div>
-        {!briefsCollapsed && renderBriefsSection()}
+        {!recordsCollapsed && <div className="records-feed">{renderFeedBody()}</div>}
       </div>
     );
   }
@@ -724,26 +743,10 @@ function App() {
       <div className="cc-stack">
         <div className="section-heading top-heading">
           <div><span className="eyebrow">Live contract</span><h1>처리 진행</h1></div>
-          <button className="icon-action" onClick={() => void refresh(true)} aria-label="새로고침"><RefreshCw aria-hidden="true" size={19} /></button>
+          <button className="icon-action" onClick={() => void manualRefresh()} aria-label="새로고침"><RefreshCw aria-hidden="true" size={19} /></button>
         </div>
         {!configured && <EmptyState title="연결 설정이 필요해요" body="받으신 개인 링크(?k=토큰 포함)로 접속하면 같은 진행 상태를 읽습니다." action="설정 열기" onAction={() => { setDraftConfig(config); setSettingsOpen(true); }} />}
-        {configured && loading && briefs.length === 0 && <div className="center-state"><IonSpinner name="crescent" /><span>최신 상태 확인 중</span></div>}
-        {configured && !loading && briefs.length === 0 && <EmptyState title="아직 도착한 브리핑이 없어요" body="명함을 찍으면 접수·처리·완료 상태가 여기에 나타납니다." />}
-        {queue.length > 0 && (
-          <section className="surface-card queue-surface">
-            <div className="section-heading"><div><span className="eyebrow">Local queue</span><h2>최근 캡처</h2></div></div>
-            <div className="queue-list">
-              {queue.slice(0, recentLimit).map(renderQueueRow)}
-              {queue.length > recentLimit && (
-                <button className="load-more" type="button" onClick={() => setRecentLimit((current) => current + 30)}>
-                  예전 캡처 더 보기 ({queue.length - recentLimit}건)
-                </button>
-              )}
-            </div>
-          </section>
-        )}
-        {briefs.map(renderBriefCard)}
-        {hasMoreBriefs && <button className="load-more" type="button" onClick={() => setListLimit((current) => Math.min(current + 30, 100))}>예전 브리핑 더 보기</button>}
+        <div className="records-feed">{renderFeedBody()}</div>
       </div>
     );
   }
@@ -806,7 +809,7 @@ function App() {
         <IonHeader translucent>
           <IonToolbar>
             <div className="brand-lockup" slot="start"><span className="brand-mark">K</span><span>Kairen <b>Card Capture</b><small>Mobile memory</small></span></div>
-            <IonButton slot="end" fill="clear" onClick={() => void refresh(true)} aria-label="상태 새로고침"><RefreshCw aria-hidden="true" size={18} /></IonButton>
+            <IonButton slot="end" fill="clear" onClick={() => void manualRefresh()} aria-label="상태 새로고침"><RefreshCw aria-hidden="true" size={18} /></IonButton>
           </IonToolbar>
         </IonHeader>
         <IonContent ref={contentRef} fullscreen>
@@ -901,9 +904,9 @@ function App() {
           isOpen={Boolean(cameraSession)}
           initialSide={cameraSession?.side ?? 'front'}
           withBackChoice={cameraSession?.withChoice ?? false}
-          onDismiss={() => setCameraSession(null)}
+          onDismiss={closeCameraSession}
           onCaptured={handleCaptured}
-          onFinished={() => setCameraSession(null)}
+          onFinished={closeCameraSession}
         />
       </IonPage>
     </IonApp>

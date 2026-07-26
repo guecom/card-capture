@@ -8,6 +8,9 @@ const buildRoot = resolve(fileURLToPath(new URL('../../docs/', import.meta.url))
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('cc_name', 'E2E Owner'));
+  // 카메라 외 검증에서는 엔진 자산 프리페치를 차단해 테스트를 가볍게 유지한다.
+  // service worker fetch까지 잡으려면 context 레벨이어야 한다 (page.route는 SW 요청을 못 잡는다).
+  await page.context().route('**/vendor/**', (route) => route.abort());
 });
 
 const contentTypes: Record<string, string> = {
@@ -65,9 +68,7 @@ test('serves the cached candidate shell after the origin server stops', async ({
   try {
     await page.goto(`${origin}next/`, { waitUntil: 'networkidle' });
     await expect(page.locator('html')).toHaveAttribute('data-offline-ready', 'true');
-    await expect(page.getByRole('heading', {
-      name: '사진 한 장이면 이름부터 바로 확인해요',
-    })).toBeVisible();
+    await expect(page.getByRole('button', { name: '명함 앞면 촬영' })).toBeVisible();
 
     const serviceWorkerState = await page.evaluate(async () => ({
       cacheKeys: await caches.keys(),
@@ -80,9 +81,7 @@ test('serves the cached candidate shell after the origin server stops', async ({
     stopped = true;
     await page.reload({ waitUntil: 'domcontentloaded' });
 
-    await expect(page.getByRole('heading', {
-      name: '사진 한 장이면 이름부터 바로 확인해요',
-    })).toBeVisible();
+    await expect(page.getByRole('button', { name: '명함 앞면 촬영' })).toBeVisible();
     await expect(page.getByRole('navigation', { name: '주요 화면' })).toBeVisible();
   } finally {
     if (!stopped) await stopStaticServer(server);
@@ -111,7 +110,7 @@ test('promotes the root entrypoint while preserving token links and legacy rollb
   }
 });
 
-test('makes person search explicit from the capture home and bottom navigation', async ({ page }) => {
+test('keeps person search on the bottom navigation without a capture-home shortcut', async ({ page }) => {
   const server = await startStaticServer();
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
@@ -119,10 +118,11 @@ test('makes person search explicit from the capture home and bottom navigation',
   try {
     await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
 
-    await expect(page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '검색' })).toBeVisible();
-    const shortcut = page.getByRole('button', { name: /사람 검색/ });
-    await expect(shortcut).toBeVisible();
-    await shortcut.click();
+    // 실폰 피드백 3: 캡처 화면의 사람 검색 바로가기는 제거하고 하단 검색 탭만 유지한다.
+    await expect(page.locator('.search-shortcut')).toHaveCount(0);
+    const navSearch = page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '검색' });
+    await expect(navSearch).toBeVisible();
+    await navSearch.click();
     await expect(page.getByRole('heading', { name: '사람 찾기' })).toBeVisible();
     await expect(page.getByRole('textbox', { name: '이름·회사·만난 곳으로 검색' })).toBeVisible();
   } finally {

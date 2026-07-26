@@ -54,6 +54,10 @@ function stopStaticServer(server: Server): Promise<void> {
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('cc_name', 'E2E Owner'));
+  // 카메라 외 검증에서는 앱 유휴 프리로드(OpenCV WASM·Tesseract 모델)를 차단한다 —
+  // 실제 자산 컴파일이 메인 스레드를 점유해 클릭 안정성 판정이 흔들린다.
+  // service worker fetch까지 잡으려면 context 레벨이어야 한다 (page.route는 SW 요청을 못 잡는다).
+  await page.context().route('**/vendor/**', (route) => route.abort());
 });
 
 const processedBrief = [
@@ -164,7 +168,7 @@ test('keeps background refresh silent on network failure and maps errors on manu
   }
 });
 
-test('shows processed names with context in the local queue and offers instant note', async ({ page }) => {
+test('merges local capture context into the brief card with instant note and edit', async ({ page }) => {
   const server = await startStaticServer();
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
@@ -214,12 +218,16 @@ test('shows processed names with context in the local queue and offers instant n
   try {
     const api = encodeURIComponent('https://api.example.test/exec');
     await page.goto(`http://127.0.0.1:${address.port}/next/?api=${api}&k=guest-token&view=briefs`, { waitUntil: 'networkidle' });
-    // 처리 완료 브리핑의 이름이 로컬 캡처 목록에 매핑되고, 맥락(만난 곳·관계)이 함께 보인다.
-    const queueRow = page.locator('.queue-row', { hasText: 'Carol Choi' });
-    await expect(queueRow).toBeVisible();
-    await expect(queueRow).toContainText('Expo · Kairen: 잠재 고객 · 나: 오늘 인사');
+    // 실폰 피드백 2: 같은 captureId의 로컬 캡처와 브리핑이 하나의 카드로 통합된다.
+    await expect(page.locator('.queue-row')).toHaveCount(0);
+    const card = page.locator('.brief-card', { hasText: 'Carol Choi — 이런 분이에요' });
+    await expect(card).toBeVisible();
+    await card.getByRole('button', { name: /Carol Choi/ }).click();
+    // 통합 카드가 내 맥락(만난 곳·관계)과 캡처 수정 진입을 함께 보여준다.
+    await expect(card.getByText('내 기록: Expo · Kairen: 잠재 고객 · 나: 오늘 인사')).toBeVisible();
+    await expect(card.getByRole('button', { name: '캡처 수정' })).toBeVisible();
     page.once('dialog', (dialog) => void dialog.accept('후속 미팅 잡기'));
-    await queueRow.getByRole('button', { name: '메모' }).click();
+    await card.getByRole('button', { name: '메모 추가' }).click();
     await expect.poll(() => noteBodies.length).toBe(1);
     expect(noteBodies[0]).toMatchObject({ action: 'addnote', captureId: '20260726-090000-q1', text: '후속 미팅 잡기' });
   } finally {
@@ -236,7 +244,8 @@ test('restores the legacy one-screen capture surface and link-first onboarding',
     await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
 
     // 촬영·맥락·완료가 한 화면에: 필드는 촬영 전에도 보이고 완료는 잠겨 있다.
-    await expect(page.getByRole('heading', { name: '사진 한 장이면 이름부터 바로 확인해요' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '명함 앞면 촬영' })).toBeVisible();
+    await expect(page.locator('.search-shortcut')).toHaveCount(0);
     await expect(page.getByLabel('어디서 만났는지 (선택, 2시간 유지)')).toBeVisible();
     await expect(page.getByLabel('메모 (선택 — 키보드 마이크로 말해도 돼요)')).toBeVisible();
     await expect(page.getByRole('button', { name: '완료', exact: true })).toBeDisabled();
@@ -244,15 +253,14 @@ test('restores the legacy one-screen capture surface and link-first onboarding',
     await expect(page.getByText(/받으신 개인 링크\(\?k=토큰 포함\)로 접속해 주세요/)).toBeVisible();
 
     // 최근 캡처·브리핑 섹션이 같은 스크롤에 있고 접기 상태가 legacy 키로 저장된다.
-    const recentToggle = page.getByRole('button', { name: /최근 캡처/ });
-    await expect(recentToggle).toBeVisible();
-    await expect(page.getByText('아직 캡처가 없어요.')).toBeVisible();
-    await recentToggle.click();
-    await expect(page.getByText('아직 캡처가 없어요.')).toBeHidden();
-    expect(await page.evaluate(() => localStorage.getItem('cc_collapse_recent'))).toBe('1');
-    await recentToggle.click();
-    await expect(page.getByText('아직 캡처가 없어요.')).toBeVisible();
-    await expect(page.getByRole('button', { name: /받은 명함 브리핑/ })).toBeVisible();
+    const recordsToggle = page.getByRole('button', { name: /명함 기록/ });
+    await expect(recordsToggle).toBeVisible();
+    await expect(page.getByText('아직 명함 기록이 없어요. 명함을 찍으면 여기에 쌓여요.')).toBeVisible();
+    await recordsToggle.click();
+    await expect(page.getByText('아직 명함 기록이 없어요. 명함을 찍으면 여기에 쌓여요.')).toBeHidden();
+    expect(await page.evaluate(() => localStorage.getItem('cc_collapse_briefs'))).toBe('1');
+    await recordsToggle.click();
+    await expect(page.getByText('아직 명함 기록이 없어요. 명함을 찍으면 여기에 쌓여요.')).toBeVisible();
 
     // 설정: 주소·토큰은 고급 항목 뒤에 숨고 토큰 라벨이 개인 링크 안내로 바뀐다.
     await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '설정' }).click();
