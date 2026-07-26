@@ -203,7 +203,8 @@ test('the person profile leads with cited highlights', async ({ page }) => {
   const harness = await boot(page);
   try {
     await page.getByRole('button', { name: '진행', exact: true }).click();
-    await page.getByRole('button', { name: /김민서 — 이런 분이에요/ }).click();
+    // 목록 제목은 '이름 — 한 줄 요약'이다 (TSK-000246).
+    await page.locator('.brief-summary').filter({ hasText: '김민서' }).click();
     await page.getByRole('button', { name: '전체 프로필' }).click();
 
     const now = page.locator('.now-card');
