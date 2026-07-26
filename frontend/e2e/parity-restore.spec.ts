@@ -126,14 +126,15 @@ test('renders brief markdown, extracted contacts, staged progress and legacy tit
     const api = encodeURIComponent('https://api.example.test/exec');
     await page.goto(`http://127.0.0.1:${address.port}/next/?api=${api}&k=owner-token&view=briefs`, { waitUntil: 'networkidle' });
 
-    // 제목은 순서가 뒤집혀 도착해도 "이름 — 이런 분이에요"로 재조립된다 (계약 규칙 9).
-    await expect(page.getByText('Alice Kim — 이런 분이에요')).toBeVisible();
+    // 제목이 뒤집혀 도착해도 이름을 먼저 뽑아 낸다 (계약 규칙 9). 목록 표시는 "이름 — 한 줄 요약"이다.
+    await expect(page.getByRole('button', { name: /^Alice Kim — / })).toBeVisible();
+    await expect(page.getByText('Alice Kim — 이런 분이에요'), '목록은 고정 문구 대신 요약을 보여 준다').toHaveCount(0);
     // note receipt는 legacy처럼 "메모 → 대상"으로 표시된다.
     await expect(page.getByText('메모 → PER-000001 Alice Kim')).toBeVisible();
     // 2단계 진행 문구는 경과와 잔여 추정을 함께 보여준다.
     await expect(page.getByText(/2\/3단계 웹 조사·기록 정리 중 \(이름 인식 ✓\) · 8분 경과 · 완료까지 약 6분 남음/)).toBeVisible();
 
-    await page.getByRole('button', { name: /Alice Kim — 이런 분이에요/ }).click();
+    await page.getByRole('button', { name: /^Alice Kim — / }).click();
     // 마크다운이 원문 덤프가 아니라 실제 표·불릿으로 렌더링된다 (escaped pipe 포함).
     await expect(page.locator('.md-table-wrap table')).toBeVisible();
     await expect(page.getByRole('cell', { name: 'Acme|KR' })).toBeVisible();
@@ -220,7 +221,7 @@ test('merges local capture context into the brief card with instant note and edi
     await page.goto(`http://127.0.0.1:${address.port}/next/?api=${api}&k=guest-token&view=briefs`, { waitUntil: 'networkidle' });
     // 실폰 피드백 2: 같은 captureId의 로컬 캡처와 브리핑이 하나의 카드로 통합된다.
     await expect(page.locator('.queue-row')).toHaveCount(0);
-    const card = page.locator('.brief-card', { hasText: 'Carol Choi — 이런 분이에요' });
+    const card = page.locator('.brief-card', { hasText: 'Carol Choi — 담당자입니다.' });
     await expect(card).toBeVisible();
     await card.getByRole('button', { name: /Carol Choi/ }).click();
     // 통합 카드가 내 맥락(만난 곳·관계)과 캡처 수정 진입을 함께 보여준다.

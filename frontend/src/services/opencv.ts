@@ -41,6 +41,8 @@ export interface OpenCvWorkerClient {
   isReady(): boolean;
   /** 라이브 프레임 분석. 이전 분석이 진행 중이면 프레임을 버리고 null을 반환한다(자연 스로틀). */
   analyze(image: ImageData, options: { minAreaRatio: number; fast: boolean; withGate: boolean; previousQuad?: Point[] | null }): Promise<OpenCvAnalysis | null>;
+  /** 화면에서 이미 잡은 사각형으로 perspective 보정. 실패·타임아웃이면 null. */
+  warp(image: ImageData, quad: Point[], timeoutMs?: number): Promise<ImageData | null>;
   /** 원본 해상도에서 명함 감지·perspective 보정. 실패·미감지·타임아웃이면 null. */
   rectify(image: ImageData, timeoutMs?: number): Promise<ImageData | null>;
   blurScore(image: ImageData, timeoutMs?: number): Promise<number | null>;
@@ -122,6 +124,14 @@ export function getOpenCvWorker(): OpenCvWorkerClient {
         (reply) => ({ quad: reply.quad ?? null, blur: reply.blur ?? null, clippedRatio: reply.clippedRatio ?? 0 }),
         null as OpenCvAnalysis | null,
       ).finally(() => { analyzeInFlight = false; });
+    },
+    warp(image, quad, timeoutMs = 4_000) {
+      if (!readyState) return Promise.resolve(null);
+      return withTimeout(
+        post({ type: 'warp', image, quad }, [image.data.buffer], (reply) => reply.image ?? null, null as ImageData | null),
+        timeoutMs,
+        null,
+      );
     },
     rectify(image, timeoutMs = 4_000) {
       if (!readyState) return Promise.resolve(null);

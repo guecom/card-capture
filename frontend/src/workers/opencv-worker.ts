@@ -420,6 +420,35 @@ function handleAnalyze(image: ImageData, minAreaRatio: number, fast: boolean, wi
   }
 }
 
+// 주어진 사각형(원본 해상도 좌표)으로 perspective 보정한다.
+// 라이브 화면에서 이미 잡아 사용자에게 보여 준 사각형을 그대로 쓰기 위한 경로다 —
+// 촬영 시점에 처음부터 다시 찾으면 화면에서 본 것과 결과가 달라진다(founder 판정 2026-07-26:
+// "기껏 명함 인식해서 크롭도 안 하고 왜 보여주냐").
+function warpToQuad(image: ImageData, quad: WorkerPoint[]): { image: ImageData } | null {
+  const mats: Cv[] = [];
+  const track = (mat: Cv) => { if (mat) mats.push(mat); return mat; };
+  try {
+    if (!quad || quad.length !== 4) return null;
+    const ordered = orderQuad(quad.map((point) => ({ x: point.x, y: point.y })));
+    const source = track(cv.matFromImageData(image));
+    const distance = (a: WorkerPoint, b: WorkerPoint) => Math.hypot(a.x - b.x, a.y - b.y);
+    const width = Math.round(Math.max(distance(ordered[0], ordered[1]), distance(ordered[3], ordered[2])));
+    const height = Math.round(Math.max(distance(ordered[0], ordered[3]), distance(ordered[1], ordered[2])));
+    if (width < 60 || height < 60) return null;
+    if (width > image.width * 1.2 || height > image.height * 1.2) return null;
+    const sourceTriangle = track(cv.matFromArray(4, 1, cv.CV_32FC2, ordered.flatMap((point) => [point.x, point.y])));
+    const destinationTriangle = track(cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, width, 0, width, height, 0, height]));
+    const matrix = track(cv.getPerspectiveTransform(sourceTriangle, destinationTriangle));
+    const destination = track(new cv.Mat());
+    cv.warpPerspective(source, destination, matrix, new cv.Size(width, height), cv.INTER_LINEAR, cv.BORDER_REPLICATE, new cv.Scalar());
+    return { image: new ImageData(new Uint8ClampedArray(destination.data), destination.cols, destination.rows) };
+  } catch {
+    return null;
+  } finally {
+    mats.forEach((mat) => { try { mat?.delete(); } catch { /* best-effort cleanup */ } });
+  }
+}
+
 // 원본 해상도 ImageData에서 명함을 감지해 perspective 보정한 ImageData를 돌려준다.
 function handleRectify(image: ImageData): { image: ImageData } | null {
   const mats: Cv[] = [];
@@ -485,6 +514,12 @@ self.onmessage = (messageEvent: MessageEvent) => {
     if (type === 'analyze') {
       const { image, minAreaRatio, fast, withGate, previousQuad } = messageEvent.data as { image: ImageData; minAreaRatio: number; fast: boolean; withGate: boolean; previousQuad?: WorkerPoint[] | null };
       workerScope.postMessage({ id, ok: true, ...handleAnalyze(image, minAreaRatio, fast, withGate, previousQuad ?? null) });
+      return;
+    }
+    if (type === 'warp') {
+      const { image, quad } = messageEvent.data as { image: ImageData; quad: WorkerPoint[] };
+      const result = warpToQuad(image, quad);
+      workerScope.postMessage({ id, ok: true, image: result?.image ?? null });
       return;
     }
     if (type === 'rectify') {

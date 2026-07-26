@@ -241,7 +241,7 @@ test('restores brief, profile, contact, search, and post-processing actions', as
     await page.goto(`http://127.0.0.1:${address.port}/next/?api=${api}&k=owner-token&view=briefs`, { waitUntil: 'networkidle' });
     await expect(page.getByRole('heading', { name: '처리 진행' })).toBeVisible();
     await page.getByRole('button', { name: /Alice Kim/ }).click();
-    await expect(page.getByText('협력 논의를 진행한 담당자입니다.')).toBeVisible();
+    await expect(page.locator('.brief-detail').getByText('협력 논의를 진행한 담당자입니다.')).toBeVisible();
     await expect(page.getByRole('link', { name: '전화' })).toHaveAttribute('href', 'tel:010-1234-5678');
     await expect(page.getByRole('link', { name: '메일' })).toHaveAttribute('href', 'mailto:alice@example.com');
     await page.getByRole('button', { name: '전체 프로필' }).click();
@@ -323,6 +323,9 @@ test('captures front and back with context into the legacy queue without uploadi
     await page.getByRole('button', { name: '뒷면도 찍기' }).click();
     await expect(page.getByText('명함 뒷면', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: '뒷면 촬영', exact: true }).click();
+    // 뒷면도 "이대로 괜찮나요?" 확인 단계를 거친다 (founder 판정 2026-07-26).
+    await expect(page.getByText('뒷면 저장됨 — 이대로 괜찮나요?')).toBeVisible();
+    await page.locator('.camera-choice').getByRole('button', { name: '완료', exact: true }).click();
 
     // 모달이 닫히고 메인 화면에서 이름 확인·맥락 입력·완료 (legacy 흐름).
     await expect(page.getByAltText('앞면 미리보기')).toBeVisible();
