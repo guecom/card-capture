@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { describeRecallQuery, parseRecallQuery, parseRecallWindow, runRecallSearch, serverFallbackTerm } from './recall-search';
+import { appliedClueChips, describeRecallQuery, groupRecallCandidates, matchesFacet, parseRecallQuery, parseRecallWindow, recallFacets, runRecallSearch, serverFallbackTerm, tierOf } from './recall-search';
 import type { BriefItem } from '../contracts/capture';
 
 // 기준 시각: 2026-07-26(일) 20:00 KST 상당. 주 시작은 월요일이므로 이번 주 = 7/20~, 지난주 = 7/13~7/19.
@@ -126,5 +126,54 @@ describe('serverFallbackTerm / describeRecallQuery', () => {
   it('says back what it searched for', () => {
     expect(describeRecallQuery(parseRecallQuery('지난주에 만난 한화 사람', NOW))).toContain('지난주');
     expect(describeRecallQuery(parseRecallQuery('한화', NOW))).toContain("'한화'");
+  });
+});
+
+// ── 여러 명을 찾는 질의 (INT-000015 Feedback item 004) ──
+// founder: "회사 이름을 입력하면 여러 명이 나온다든가, 지난주 만난 사람들이면 엄청 여러 명이
+// 나올 수도 있잖아. 사람 하나만 제안하는 게 아니었으면 해."
+describe('여러 후보 좁히기', () => {
+  it('한 회사 이름으로 찾으면 그 회사 사람을 전부 후보로 남긴다', () => {
+    const result = runRecallSearch(people, '한화', NOW);
+    expect(result.candidates.map((candidate) => candidate.item.contact?.name).sort())
+      .toEqual(['김민서', '이서연']);
+  });
+
+  it('근거가 둘 이상이면 강하게 일치, 하나뿐이면 가능성 있음으로 나눈다', () => {
+    const result = runRecallSearch(people, '지난주에 만난 한화 사람', NOW);
+    const groups = groupRecallCandidates(result.candidates);
+    expect(groups.map((group) => group.label)).toContain('강하게 일치');
+    // 시점 + 소속이 함께 맞은 이서연은 강하게 일치다.
+    expect(groups[0].candidates[0].item.contact?.name).toBe('이서연');
+  });
+
+  it('시점이 살짝 벗어난 후보는 강하게 일치로 올리지 않는다', () => {
+    const nearMiss = { item: people[0], score: 9, partial: true, evidence: [
+      { kind: 'time' as const, label: '시점' }, { kind: 'org' as const, label: '소속' },
+    ] };
+    expect(tierOf(nearMiss)).toBe('possible');
+  });
+
+  it('좁히기 chip은 후보에 실제로 있는 소속·만난 곳만 만든다', () => {
+    const result = runRecallSearch(people, '한화', NOW);
+    const facets = recallFacets(result.candidates);
+    expect(facets.map((facet) => facet.value)).toContain('한화시스템');
+    expect(facets.map((facet) => facet.value)).not.toContain('넥스트로보');
+  });
+
+  it('chip을 고르면 그 값과 정확히 같은 후보만 남는다', () => {
+    const result = runRecallSearch(people, '한화', NOW);
+    const facet = recallFacets(result.candidates).find((entry) => entry.value === '한화시스템')!;
+    const kept = result.candidates.filter((candidate) => matchesFacet(candidate, facet));
+    expect(kept).toHaveLength(1);
+    expect(kept[0].item.contact?.name).toBe('김민서');
+    // chip이 없으면 전부 남는다.
+    expect(result.candidates.filter((candidate) => matchesFacet(candidate, null))).toHaveLength(2);
+  });
+
+  it('무엇으로 좁혔는지를 chip 문구로 되돌려 준다', () => {
+    const chips = appliedClueChips(parseRecallQuery('지난주에 만난 한화 사람', NOW));
+    expect(chips[0]).toBe('지난주');
+    expect(chips).toContain('한화');
   });
 });

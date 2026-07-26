@@ -24,8 +24,27 @@ import { CameraCaptureModal, type CapturedSideMeta, type CardSide } from './comp
 import { StatusBadge } from './components/StatusBadge';
 import { MarkdownLite } from './components/MarkdownLite';
 import { ActionSection, ContactActions, PersonDocument } from './components/PersonDocument';
+import { AiExampleChips, AiScopeNote, AiStageRail, AiSurface, AiSurfaceHead } from './components/AiTaskSurface';
 import { addPersonNote, listBriefs, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
+import {
+  elapsedLabel,
+  RECALL_SCOPE_NOTE,
+  recallStages,
+  RESEARCH_EXAMPLE_CHIPS,
+  RESEARCH_SCOPE_NOTE,
+  researchStages,
+  type RecallStageKey,
+  type ResearchStageKey,
+} from './services/ai-stages';
 import { type CapturedCameraFrame, thumbnailOf } from './services/camera';
+import {
+  captureContextFilled,
+  captureContextSummary,
+  KAIREN_RELATION_CHIPS,
+  recentEventChips,
+  SELF_RELATION_CHIPS,
+  toggleChipValue,
+} from './services/capture-context';
 import { buildLegacyNote, buildQueuedCapture, parseLegacyNote } from './services/capture-item';
 import { actionErrorMessage, briefListTitle, briefNameMap, briefTitle, elapsedMinutesOf } from './services/brief-view';
 import { captureProgress, refreshHint } from './services/capture-progress';
@@ -33,7 +52,17 @@ import { contactCardFromBrief } from './services/contacts';
 import { getOpenCvWorker, prefetchOpenCv } from './services/opencv';
 import { prefetchQuickOcrAssets } from './services/paddle-quickname';
 import { flushQueue, pruneSentQueue, putQueueItem, readQueue } from './services/queue';
-import { describeRecallQuery, type RecallResult, runRecallSearch, serverFallbackTerm } from './services/recall-search';
+import {
+  appliedClueChips,
+  describeRecallQuery,
+  groupRecallCandidates,
+  matchesFacet,
+  recallFacets,
+  type RecallFacet,
+  type RecallResult,
+  runRecallSearch,
+  serverFallbackTerm,
+} from './services/recall-search';
 import { buildResearchInstruction } from './services/research';
 import { recognizeQuickName } from './services/vision';
 import {
@@ -163,10 +192,10 @@ const personActionCopy = {
   },
   research: {
     eyebrow: '공개 정보 조사',
-    title: '조사 지시',
-    helper: '공개·합법 출처에서 확인할 내용과 범위를 적어주세요. 요청 내용·대상·시각과 처리 결과가 기록됩니다.',
+    title: 'AI 조사 요청',
+    helper: '공개 자료에서 확인할 내용을 AI에게 맡깁니다. 요청 내용·대상·시각과 처리 결과가 기록됩니다.',
     placeholder: '예: 최근 경력과 회사 활동, 인터뷰·발표, Kairen과의 접점을 중심으로 확인',
-    submit: '조사 요청',
+    submit: '조사 요청 접수',
   },
   correction: {
     eyebrow: '정보 바로잡기',
@@ -196,6 +225,14 @@ function App() {
   const [searchMode, setSearchMode] = useState<SearchMode>('quick');
   const [recallResult, setRecallResult] = useState<RecallResult | null>(null);
   const [recallServerItems, setRecallServerItems] = useState<SearchItem[]>([]);
+  // 검색 진행 상태 — "찾고 있는 건지, 그동안 뭘 하는 건지"를 화면에 드러낸다 (INT-000015 항목 003).
+  const [recallStage, setRecallStage] = useState<RecallStageKey>('done');
+  const [recallStartedAt, setRecallStartedAt] = useState<number | null>(null);
+  const [recallFinishedMs, setRecallFinishedMs] = useState<number | null>(null);
+  const [recallSyncing, setRecallSyncing] = useState(false);
+  const [recallFacet, setRecallFacet] = useState<RecallFacet | null>(null);
+  const [recallLimit, setRecallLimit] = useState(15);
+  const recallRunRef = useRef(0);
   const [galleryFree, setGalleryFree] = useState(loadGalleryFree);
   const [sending, setSending] = useState(false);
   // owner 게이트는 legacy처럼 localStorage 캐시로 시작해 서버 응답으로 갱신한다 — 오프라인에도 유지.
@@ -234,6 +271,7 @@ function App() {
   const [relKairen, setRelKairen] = useState(sticky.relKairen);
   const [memo, setMemo] = useState('');
   const [researchText, setResearchText] = useState(sticky.research);
+  const [contextCollapsed, setContextCollapsed] = useState(() => loadSectionCollapsed('context', true));
   const [queueing, setQueueing] = useState(false);
   // 자동 새로고침 안내용: 마지막 갱신 시각과 현재 시각(1초 tick).
   const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
@@ -363,6 +401,12 @@ function App() {
   // 처리 완료 브리핑의 이름을 로컬 캡처 행에 반영한다 (legacy briefNameMap).
   const processedNames = useMemo(() => briefNameMap(briefs), [briefs]);
 
+  // 만남 맥락: 접힌 상태에서 보여 줄 요약과, 최근에 실제로 쓴 만난 곳 chip.
+  const contextValue = useMemo(() => ({ event, relKairen, relSelf, memo }), [event, memo, relKairen, relSelf]);
+  const contextSummary = useMemo(() => captureContextSummary(contextValue), [contextValue]);
+  const contextFilled = useMemo(() => captureContextFilled(contextValue), [contextValue]);
+  const eventChips = useMemo(() => recentEventChips(briefs, event), [briefs, event]);
+
   // 로컬 캡처 + 서버 브리핑 통합 목록 (실폰 피드백 2): 같은 captureId는 한 항목으로.
   const feed = useMemo<FeedEntry[]>(() => {
     const briefIds = new Set(briefs.map((item) => item.captureId));
@@ -418,39 +462,75 @@ function App() {
 
   // 자연어 회상 검색 (ISS-000103). 문장은 기기 밖으로 나가지 않는다 — 여기서 조건으로 바꿔
   // 이 기기가 이미 받아 둔 기록과 대조하고, 그래도 없을 때만 기존 검색 endpoint에 단어 하나를 넘긴다.
+  const cancelRecall = useCallback(() => {
+    recallRunRef.current += 1;
+    setSearching(false);
+    setRecallSyncing(false);
+    setRecallStage('done');
+  }, []);
+
   const runRecall = useCallback(async (value: string) => {
     const text = value.trim();
     if (!text) return;
-    setSearching(true);
+    const run = ++recallRunRef.current;
+    const startedAt = Date.now();
+    const alive = () => run === recallRunRef.current;
+
+    setRecallStartedAt(startedAt);
+    setRecallFinishedMs(null);
     setRecallServerItems([]);
-    try {
-      let corpus = briefs;
-      if (configured) {
-        try {
-          const response = await listBriefs(config, 100);
-          if (response.ok && response.items) {
-            corpus = response.items;
-            setBriefs(corpus);
-            saveCachedBriefs(corpus);
-          }
-        } catch {
-          // 오프라인이면 기기에 캐시된 기록으로 그대로 진행한다.
+    setRecallFacet(null);
+    setRecallLimit(15);
+    setSearching(true);
+    setRecallStage('parse');
+
+    // 1단계: 이 기기가 이미 갖고 있는 기록으로 **즉시** 답한다.
+    // 예전에는 여기서 먼저 서버 목록(최대 100건)을 받아 왔고, 그 왕복이 체감 지연의 전부였다.
+    // founder 판정 2026-07-26: "무지막지하게 빨리 됐으면 좋겠어."
+    setRecallStage('match');
+    const local = runRecallSearch(briefs, text);
+    if (!alive()) return;
+    setRecallStage('rank');
+    setRecallResult(local);
+    setRecallFinishedMs(Date.now() - startedAt);
+    setRecallStage('done');
+    setSearching(false);
+    setRecentSearches(saveRecentSearch(text));
+
+    // 2단계: 첫 결과를 이미 보여 준 뒤에 최신 기록을 받아 다시 대조한다.
+    // 문장은 여전히 나가지 않는다 — 목록을 받아 와 기기 안에서 다시 대조할 뿐이다.
+    let result = local;
+    if (configured) {
+      setRecallSyncing(true);
+      setRecallStage('match');
+      try {
+        const response = await listBriefs(config, 100);
+        if (!alive()) return;
+        if (response.ok && response.items) {
+          setBriefs(response.items);
+          saveCachedBriefs(response.items);
+          result = runRecallSearch(response.items, text);
+          setRecallResult(result);
+        }
+      } catch {
+        // 오프라인이면 기기에 캐시된 기록으로 낸 결과를 그대로 둔다.
+      } finally {
+        if (alive()) {
+          setRecallSyncing(false);
+          setRecallStage('done');
         }
       }
-      const result = runRecallSearch(corpus, text);
-      setRecallResult(result);
-      setRecentSearches(saveRecentSearch(text));
-      const fallback = serverFallbackTerm(result.query);
-      if (result.candidates.length === 0 && fallback && configured && ownerCanSeeAll) {
-        try {
-          const response = await searchPeople(config, fallback);
-          if (response.ok) setRecallServerItems(response.items ?? []);
-        } catch {
-          // 서버 보조 검색 실패는 회상 결과 자체를 막지 않는다.
-        }
+    }
+
+    // 3단계: 그래도 후보가 없을 때만 기존 검색 endpoint에 단어 하나를 넘겨 전체 기록을 본다.
+    const fallback = serverFallbackTerm(result.query);
+    if (result.candidates.length === 0 && fallback && configured && ownerCanSeeAll) {
+      try {
+        const response = await searchPeople(config, fallback);
+        if (alive() && response.ok) setRecallServerItems(response.items ?? []);
+      } catch {
+        // 서버 보조 검색 실패는 회상 결과 자체를 막지 않는다.
       }
-    } finally {
-      setSearching(false);
     }
   }, [briefs, config, configured, ownerCanSeeAll]);
 
@@ -644,6 +724,23 @@ function App() {
     });
   }, []);
 
+  const toggleContext = useCallback(() => {
+    setContextCollapsed((current) => {
+      saveSectionCollapsed('context', !current);
+      return !current;
+    });
+  }, []);
+
+  // 예시 chip은 입력을 지우지 않고 덧붙인다 — 이미 쓴 문장을 날리면 안 된다.
+  const appendResearchExample = useCallback((value: string) => {
+    setResearchText((current) => {
+      const trimmed = current.trim();
+      if (!trimmed) return value;
+      if (trimmed.includes(value)) return current;
+      return `${trimmed}, ${value}`;
+    });
+  }, []);
+
   const openDocument = useCallback(async (title: string, target: { id?: string; captureId?: string }, noteTarget: PersonTarget | null) => {
     if (!configured) return;
     setDocumentTitle(title);
@@ -814,7 +911,7 @@ function App() {
             {actionable && item.person && (
               <ActionSection label="기록" className="record-actions">
                 <button type="button" onClick={() => promptNote({ captureId: item.captureId })}><Plus aria-hidden="true" size={16} />메모 추가</button>
-                {researchInstructionEnabled && <button type="button" onClick={() => promptResearch({ captureId: item.captureId })}><Search aria-hidden="true" size={16} />조사 지시</button>}
+                {researchInstructionEnabled && <button className="ai-action" type="button" onClick={() => promptResearch({ captureId: item.captureId })}><Sparkles aria-hidden="true" size={16} />AI 조사 요청</button>}
               </ActionSection>
             )}
             {(item.person || actionable || local) && (
@@ -899,14 +996,69 @@ function App() {
             </div>
           )}
 
-          <div className="context-head">기억할 맥락 <span>선택 입력 · 2시간 유지</span></div>
-          <div className="capture-context-fields plain">
-            <IonInput label="어디서 만났는지 (선택, 2시간 유지)" labelPlacement="stacked" placeholder="예: 2026 로보월드 전시회" value={event} onIonInput={(inputEvent) => setEvent(String(inputEvent.detail.value ?? ''))} />
-            <IonInput label="Kairen과 이 사람과의 관계 (선택, 2시간 유지)" labelPlacement="stacked" placeholder="예: 잠재 고객 / 부품 공급사 담당자" value={relKairen} onIonInput={(inputEvent) => setRelKairen(String(inputEvent.detail.value ?? ''))} />
-            <IonInput label="나와 이 사람과의 관계 (선택, 2시간 유지)" labelPlacement="stacked" placeholder="예: 대학 선배 / 오늘 처음 인사" value={relSelf} onIonInput={(inputEvent) => setRelSelf(String(inputEvent.detail.value ?? ''))} />
-            <IonTextarea label="메모 (선택 — 키보드 마이크로 말해도 돼요)" labelPlacement="stacked" placeholder="예: 공장장님, 우리 부품에 관심 많으심" autoGrow value={memo} onIonInput={(inputEvent) => setMemo(String(inputEvent.detail.value ?? ''))} />
-            {researchInstructionEnabled && <IonTextarea label="조사 지시 (소유자 전용 · 2시간 유지)" labelPlacement="stacked" maxlength={2000} autoGrow placeholder="예: 최근 경력·이직 이력, 회사 투자·최근 뉴스, 인터뷰·발표, 저와의 공통 접점 위주로 깊게 조사해줘" value={researchText} onIonInput={(inputEvent) => setResearchText(String(inputEvent.detail.value ?? ''))} />}
-          </div>
+          {/* 만남 맥락: 안내는 영역 위에 한 번만, 자주 쓰는 답은 chip으로, 입력이 생기면 한 줄로 접는다
+              (INT-000015 Feedback item 001 — "시인성이 많이 떨어져서 아쉽다"). */}
+          <section className="context-block">
+            <button className="context-toggle" type="button" aria-expanded={!contextCollapsed} onClick={toggleContext}>
+              <span className="context-toggle-copy">
+                <strong>만남 맥락</strong>
+                <small>{contextSummary || '선택 입력 — 나중에 이 사람을 떠올릴 단서예요'}</small>
+              </span>
+              {contextFilled > 0 && <span className="context-count">{contextFilled}개</span>}
+              <ChevronRight className={contextCollapsed ? '' : 'expanded'} aria-hidden="true" size={16} />
+            </button>
+            {!contextCollapsed && (
+              <div className="capture-context-fields plain">
+                <p className="context-note">만난 곳·관계·AI 조사 요청은 2시간 동안 그대로 남아요. 메모는 명함마다 새로 씁니다.</p>
+                <div className="context-field">
+                  <IonInput label="어디서 만났나요?" labelPlacement="stacked" placeholder="예: 2026 로보월드 전시회" value={event} onIonInput={(inputEvent) => setEvent(String(inputEvent.detail.value ?? ''))} />
+                  {eventChips.length > 0 && (
+                    <div className="context-chips" role="group" aria-label="최근 만난 곳">
+                      {eventChips.map((chip) => (
+                        <button key={chip} type="button" className={event === chip ? 'on' : ''} onClick={() => setEvent(toggleChipValue(event, chip))}>{chip}</button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="context-field">
+                  <IonInput label="Kairen과의 관계" labelPlacement="stacked" placeholder="예: 부품 공급사 담당자" value={relKairen} onIonInput={(inputEvent) => setRelKairen(String(inputEvent.detail.value ?? ''))} />
+                  <div className="context-chips" role="group" aria-label="Kairen과의 관계 예시">
+                    {KAIREN_RELATION_CHIPS.map((chip) => (
+                      <button key={chip} type="button" className={relKairen === chip ? 'on' : ''} onClick={() => setRelKairen(toggleChipValue(relKairen, chip))}>{chip}</button>
+                    ))}
+                  </div>
+                </div>
+                <div className="context-field">
+                  <IonInput label="나와의 관계" labelPlacement="stacked" placeholder="예: 대학 선배" value={relSelf} onIonInput={(inputEvent) => setRelSelf(String(inputEvent.detail.value ?? ''))} />
+                  <div className="context-chips" role="group" aria-label="나와의 관계 예시">
+                    {SELF_RELATION_CHIPS.map((chip) => (
+                      <button key={chip} type="button" className={relSelf === chip ? 'on' : ''} onClick={() => setRelSelf(toggleChipValue(relSelf, chip))}>{chip}</button>
+                    ))}
+                  </div>
+                </div>
+                <IonTextarea label="메모" labelPlacement="stacked" placeholder="예: 공장장님, 우리 부품에 관심 많으심 (키보드 마이크로 말해도 돼요)" autoGrow value={memo} onIonInput={(inputEvent) => setMemo(String(inputEvent.detail.value ?? ''))} />
+              </div>
+            )}
+          </section>
+
+          {/* 조사 지시는 메모가 아니라 AI에게 맡기는 일이다 — 표면·표식·단계를 그렇게 보이게 한다
+              (INT-000015 Feedback item 002). 권한은 기존 owner-only public-research-v1 그대로다. */}
+          {researchInstructionEnabled && (
+            <AiSurface className="research-request">
+              <AiSurfaceHead title="AI 조사 요청" badge="소유자 전용" helper="공개 자료에서 확인할 내용을 AI에게 맡깁니다." />
+              <IonTextarea
+                aria-label="AI 조사 요청"
+                maxlength={2000}
+                autoGrow
+                placeholder="예: 최근 경력·이직, 회사 소식, 나와의 접점 위주로 확인해줘"
+                value={researchText}
+                onIonInput={(inputEvent) => setResearchText(String(inputEvent.detail.value ?? ''))}
+              />
+              <AiExampleChips examples={RESEARCH_EXAMPLE_CHIPS} onPick={appendResearchExample} label="조사 요청 예시" />
+              <AiStageRail stages={researchStages('draft')} label="AI 조사 요청 진행 단계" />
+              <AiScopeNote>{RESEARCH_SCOPE_NOTE}</AiScopeNote>
+            </AiSurface>
+          )}
 
           <IonButton className="primary-action" expand="block" disabled={!frontFrame || queueing} onClick={() => void completeCapture()}>{queueing ? '저장 중…' : '완료'}</IonButton>
           <p className="hint">전파가 약해도 기기에 저장했다가 자동으로 다시 보내요.</p>
@@ -945,55 +1097,123 @@ function App() {
     );
   }
 
+  function renderRecallCard(candidate: RecallResult['candidates'][number]) {
+    const name = briefTitle(candidate.item).split(' — ')[0];
+    const met = formatMoment(candidate.item.receivedAt || candidate.item.capturedAt);
+    const belongs = [candidate.item.contact?.title, candidate.item.contact?.organization].filter(Boolean).join(' · ');
+    return (
+      <article className={`recall-card${candidate.partial ? ' partial' : ''}`} key={candidate.item.captureId}>
+        <button type="button" onClick={() => void openDocument(name, { captureId: candidate.item.captureId }, { captureId: candidate.item.captureId })}>
+          <div className="avatar" aria-hidden="true">{name.slice(0, 1)}</div>
+          <div className="row-copy">
+            <strong>{name}</strong>
+            <span>{belongs || met}{belongs ? ` · ${met}` : ''}</span>
+          </div>
+          <ChevronRight aria-hidden="true" size={18} />
+        </button>
+        <ul className="recall-evidence">
+          {candidate.evidence.slice(0, 3).map((entry) => <li key={entry.label} data-kind={entry.kind}>{entry.label}</li>)}
+        </ul>
+      </article>
+    );
+  }
+
   // 회상 검색 결과: 후보마다 "왜 이 사람인지"를 근거로 붙인다. 근거 없는 추측은 만들지 않는다.
+  // 결과는 정답 한 명이 아니라 근거 있는 후보 묶음이다 (INT-000015 Feedback item 004).
   function renderRecall() {
+    const searchingNow = searching || recallSyncing;
+    const progress = searchingNow && (
+      <section className="recall-progress">
+        <AiStageRail stages={recallStages(recallStage, briefs.length)} label="AI 사람 찾기 진행 단계" />
+        <div className="recall-progress-foot">
+          <span>{recallStartedAt === null ? '' : `${elapsedLabel(clockTick - recallStartedAt)} 경과`}</span>
+          {recallSyncing && <span className="recall-sync">최신 기록 확인 중</span>}
+          <button type="button" onClick={cancelRecall}>중단</button>
+        </div>
+      </section>
+    );
+
     if (!recallResult) {
       return (
-        <EmptyState
-          title="기억나는 대로 말해 보세요"
-          body="예: 지난주쯤 만난 한화 다니던 구매팀장 / 로보월드에서 만난 로봇 회사 대표. 문장은 이 기기 안에서만 대조하고 밖으로 보내지 않아요."
-        />
+        <>
+          {progress}
+          {!searchingNow && (
+            <EmptyState
+              title="기억나는 대로 말해 보세요"
+              body="예: 지난주쯤 만난 한화 다니던 구매팀장 / 로보월드에서 만난 로봇 회사 대표. 문장은 이 기기 안에서만 대조하고 밖으로 보내지 않아요."
+            />
+          )}
+        </>
       );
     }
+
     const { query: parsed, candidates, unmatchedTerms, searchedCount } = recallResult;
+    const clues = appliedClueChips(parsed);
+    const facets = candidates.length >= 3 ? recallFacets(candidates) : [];
+    const shown = candidates.filter((candidate) => matchesFacet(candidate, recallFacet));
+    const groups = groupRecallCandidates(shown.slice(0, recallLimit));
     return (
       <>
+        {progress}
         <section className="recall-readback">
+          <div className="recall-count">
+            <strong>{candidates.length > 0 ? `후보 ${candidates.length}명` : '후보 없음'}</strong>
+            <small>
+              기록 {searchedCount}건 대조
+              {recallFinishedMs === null ? '' : ` · ${elapsedLabel(recallFinishedMs)}`}
+              {recallSyncing ? ' · 최신 기록 확인 중' : ''}
+            </small>
+          </div>
+          {clues.length > 0 && (
+            <div className="recall-clues" aria-label="적용된 단서">
+              {clues.map((clue) => <span key={clue}>{clue}</span>)}
+            </div>
+          )}
           <p>{describeRecallQuery(parsed)}</p>
-          <small>이 기기에 있는 기록 {searchedCount}건과 대조했어요.</small>
           {parsed.ignored.length > 0 && (
             <ul className="recall-ignored">
               {parsed.ignored.map((entry) => <li key={entry.text}>{entry.reason}</li>)}
             </ul>
           )}
           {unmatchedTerms.length > 0 && <small>{unmatchedTerms.map((term) => `'${term}'`).join(', ')}은(는) 어느 기록에서도 찾지 못했어요.</small>}
+          <AiScopeNote>{RECALL_SCOPE_NOTE}</AiScopeNote>
         </section>
+        {facets.length > 0 && (
+          <div className="recall-facets" role="group" aria-label="후보 좁히기">
+            <button type="button" className={recallFacet ? '' : 'on'} onClick={() => setRecallFacet(null)}>전체 {candidates.length}</button>
+            {facets.map((facet) => (
+              <button
+                key={`${facet.kind}:${facet.value}`}
+                type="button"
+                className={recallFacet?.kind === facet.kind && recallFacet.value === facet.value ? 'on' : ''}
+                onClick={() => setRecallFacet((current) => (current?.kind === facet.kind && current.value === facet.value ? null : facet))}
+              >
+                {facet.value} {facet.count}
+              </button>
+            ))}
+          </div>
+        )}
         {candidates.length === 0 && (
           <EmptyState
-            title="조건에 맞는 기록이 없어요"
-            body={recallServerItems.length > 0
-              ? '기기 기록에서는 못 찾아 전체 기록도 찾아봤어요. 아래 결과에는 만난 시점 정보가 없어요.'
-              : '기억나는 다른 단서(회사·만난 곳·직함)를 덧붙이거나, 빠른 검색으로 이름을 직접 찾아보세요.'}
+            title={searchedCount === 0 ? '이 기기에 아직 기록이 없어요' : '조건에 맞는 기록이 없어요'}
+            body={searchedCount === 0
+              ? '명함을 처리한 기록이 이 기기에 내려와야 대조할 수 있어요. 위 새로고침으로 기록을 먼저 받아 주세요.'
+              : recallServerItems.length > 0
+                ? '기기 기록에서는 못 찾아 전체 기록도 찾아봤어요. 아래 결과에는 만난 시점 정보가 없어요.'
+                : '기억나는 다른 단서(회사·만난 곳·직함)를 덧붙이거나, 빠른 검색으로 이름을 직접 찾아보세요.'}
           />
         )}
-        {candidates.map((candidate) => {
-          const name = briefTitle(candidate.item).split(' — ')[0];
-          return (
-            <article className={`recall-card${candidate.partial ? ' partial' : ''}`} key={candidate.item.captureId}>
-              <button type="button" onClick={() => void openDocument(name, { captureId: candidate.item.captureId }, { captureId: candidate.item.captureId })}>
-                <div className="avatar" aria-hidden="true">{name.slice(0, 1)}</div>
-                <div className="row-copy">
-                  <strong>{name}</strong>
-                  <span>{[candidate.item.contact?.title, candidate.item.contact?.organization].filter(Boolean).join(' · ') || formatMoment(candidate.item.receivedAt || candidate.item.capturedAt)}</span>
-                </div>
-                <ChevronRight aria-hidden="true" size={18} />
-              </button>
-              <ul className="recall-evidence">
-                {candidate.evidence.map((entry) => <li key={entry.label} data-kind={entry.kind}>{entry.label}</li>)}
-              </ul>
-            </article>
-          );
-        })}
+        {groups.map((group) => (
+          <section className="recall-group" key={group.tier}>
+            <span className="recall-group-label">{group.label} {group.candidates.length}명</span>
+            {group.candidates.map(renderRecallCard)}
+          </section>
+        ))}
+        {shown.length > recallLimit && (
+          <button className="load-more" type="button" onClick={() => setRecallLimit((current) => current + 15)}>
+            후보 더 보기 ({shown.length - recallLimit}명)
+          </button>
+        )}
         {recallServerItems.length > 0 && (
           <section className="recall-fallback">
             <span>전체 기록 검색 결과 · 만난 시점 정보 없음</span>
@@ -1148,9 +1368,22 @@ function App() {
               <IonHeader><IonToolbar><IonTitle>{personActionCopy[personActionComposer.kind].title}</IonTitle><IonButton slot="end" fill="clear" disabled={personActionSubmitting} onClick={closePersonActionComposer}>취소</IonButton></IonToolbar></IonHeader>
               <IonContent className="ion-padding">
                 <div className="person-action-composer">
-                  <span className="eyebrow">{personActionCopy[personActionComposer.kind].eyebrow}</span>
-                  <p>{personActionCopy[personActionComposer.kind].helper}</p>
-                  <IonTextarea aria-label={personActionCopy[personActionComposer.kind].title} autofocus autoGrow maxlength={2000} label={personActionCopy[personActionComposer.kind].title} labelPlacement="stacked" placeholder={personActionCopy[personActionComposer.kind].placeholder} value={personActionText} onIonInput={(inputEvent) => setPersonActionText(String(inputEvent.detail.value ?? ''))} />
+                  {personActionComposer.kind === 'research' ? (
+                    // 같은 AI 표면·표식·단계를 캡처 화면과 인물 카드에서 그대로 쓴다 (INT-000015 항목 002).
+                    <AiSurface className="research-request">
+                      <AiSurfaceHead title="AI 조사 요청" badge="소유자 전용" helper={personActionCopy.research.helper} />
+                      <IonTextarea aria-label="AI 조사 요청" autofocus autoGrow maxlength={2000} placeholder={personActionCopy.research.placeholder} value={personActionText} onIonInput={(inputEvent) => setPersonActionText(String(inputEvent.detail.value ?? ''))} />
+                      <AiExampleChips examples={RESEARCH_EXAMPLE_CHIPS} onPick={(value) => setPersonActionText((current) => (current.trim() ? (current.includes(value) ? current : `${current.trim()}, ${value}`) : value))} label="조사 요청 예시" />
+                      <AiStageRail stages={researchStages(personActionSubmitting ? 'received' : 'draft')} label="AI 조사 요청 진행 단계" />
+                      <AiScopeNote>{RESEARCH_SCOPE_NOTE}</AiScopeNote>
+                    </AiSurface>
+                  ) : (
+                    <>
+                      <span className="eyebrow">{personActionCopy[personActionComposer.kind].eyebrow}</span>
+                      <p>{personActionCopy[personActionComposer.kind].helper}</p>
+                      <IonTextarea aria-label={personActionCopy[personActionComposer.kind].title} autofocus autoGrow maxlength={2000} label={personActionCopy[personActionComposer.kind].title} labelPlacement="stacked" placeholder={personActionCopy[personActionComposer.kind].placeholder} value={personActionText} onIonInput={(inputEvent) => setPersonActionText(String(inputEvent.detail.value ?? ''))} />
+                    </>
+                  )}
                   <small>{personActionText.length.toLocaleString()} / 2,000</small>
                   <IonButton expand="block" disabled={!personActionText.trim() || personActionSubmitting} onClick={() => void submitPersonAction()}>{personActionSubmitting ? '접수 중…' : personActionCopy[personActionComposer.kind].submit}</IonButton>
                 </div>

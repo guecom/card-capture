@@ -54,6 +54,25 @@ export interface RecallResult {
   searchedCount: number;
 }
 
+// 한 명을 맞히는 퀴즈가 아니라 여러 후보를 좁히는 도구다 (INT-000015 Feedback item 004).
+// founder: "회사 이름을 입력하면 여러 명이 나온다든가, 지난주 만난 사람들이면 엄청 여러 명이
+// 나올 수도 있는 거잖아. 사람 하나만 제안하는 게 아니었으면 해."
+export type RecallTier = 'strong' | 'possible';
+
+export interface RecallGroup {
+  tier: RecallTier;
+  label: string;
+  candidates: RecallCandidate[];
+}
+
+export interface RecallFacet {
+  kind: 'org' | 'event';
+  value: string;
+  count: number;
+}
+
+const MAX_CANDIDATES = 60;
+
 const DAY = 24 * 60 * 60 * 1000;
 
 // 기록하지 않는 속성. 이름·사진에서 추정해 검색 근거로 쓰면 안 된다 (ISS-000103 해결 조건).
@@ -305,10 +324,63 @@ export function rankRecallCandidates(items: BriefItem[], query: RecallQuery, now
 
   return {
     query,
-    candidates: candidates.slice(0, 12),
+    candidates: candidates.slice(0, MAX_CANDIDATES),
     unmatchedTerms: query.terms.filter((term) => !matchedTerms.has(term.text)).map((term) => term.text),
     searchedCount: pool.length,
   };
+}
+
+// `강하게 일치`는 근거가 서로 독립적으로 두 개 이상 맞거나, 이름이 직접 맞은 경우다.
+// 나머지는 `가능성 있음`으로 남긴다 — 버리지 않고 사용자가 직접 좁히게 한다.
+export function tierOf(candidate: RecallCandidate): RecallTier {
+  if (candidate.partial) return 'possible';
+  if (candidate.evidence.some((entry) => entry.kind === 'name')) return 'strong';
+  return candidate.evidence.filter((entry) => entry.kind !== 'text').length >= 2 ? 'strong' : 'possible';
+}
+
+export function groupRecallCandidates(candidates: RecallCandidate[]): RecallGroup[] {
+  const strong = candidates.filter((candidate) => tierOf(candidate) === 'strong');
+  const possible = candidates.filter((candidate) => tierOf(candidate) === 'possible');
+  const groups: RecallGroup[] = [];
+  if (strong.length) groups.push({ tier: 'strong', label: '강하게 일치', candidates: strong });
+  if (possible.length) groups.push({ tier: 'possible', label: '가능성 있음', candidates: possible });
+  return groups;
+}
+
+// 후보가 많을 때 즉시 좁힐 수 있는 chip. 후보에 실제로 있는 값만 만든다.
+export function recallFacets(candidates: RecallCandidate[], limit = 6): RecallFacet[] {
+  const counts = new Map<string, RecallFacet>();
+  candidates.forEach((candidate) => {
+    const org = String(candidate.item.contact?.organization || candidate.item.contact?.company || '').trim();
+    const event = String(candidate.item.event ?? '').trim();
+    ([['org', org], ['event', event]] as Array<[RecallFacet['kind'], string]>).forEach(([kind, value]) => {
+      if (!value) return;
+      const key = `${kind}:${value}`;
+      const existing = counts.get(key);
+      if (existing) existing.count += 1;
+      else counts.set(key, { kind, value, count: 1 });
+    });
+  });
+  return [...counts.values()]
+    .filter((facet) => facet.count > 0)
+    .sort((left, right) => right.count - left.count || left.value.localeCompare(right.value))
+    .slice(0, limit);
+}
+
+export function matchesFacet(candidate: RecallCandidate, facet: RecallFacet | null): boolean {
+  if (!facet) return true;
+  if (facet.kind === 'org') {
+    return (candidate.item.contact?.organization || candidate.item.contact?.company || '').trim() === facet.value;
+  }
+  return String(candidate.item.event ?? '').trim() === facet.value;
+}
+
+// 무엇으로 좁혔는지를 chip으로 되돌려 보여 준다 (`지난주`, `한화`).
+export function appliedClueChips(query: RecallQuery): string[] {
+  const chips: string[] = [];
+  if (query.window) chips.push(query.window.label.replace(/\s*\(.*\)$/, ''));
+  query.terms.forEach((term) => { if (!chips.includes(term.text)) chips.push(term.text); });
+  return chips;
 }
 
 export function runRecallSearch(items: BriefItem[], raw: string, now = Date.now()): RecallResult {

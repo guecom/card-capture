@@ -1,5 +1,5 @@
 import { type ReactNode, useMemo } from 'react';
-import { ArrowUpRight, Link2, Mail, MessageCircle, Phone, Plus, Search, Sparkles, UserPlus } from 'lucide-react';
+import { ArrowUpRight, Link2, Mail, MessageCircle, Phone, Plus, Sparkles, UserPlus } from 'lucide-react';
 import type { PersonTarget } from '../contracts/capture';
 import { buildHighlights, highlightLabel } from '../services/highlights';
 import { labelImageEmbeds, type PersonFrontmatter, parsePersonFrontmatter, safeExternalUrl } from '../services/markdown';
@@ -117,7 +117,7 @@ export function PersonDocument({
         {noteTarget && (
           <ActionSection label="기록" className="record-actions">
             <button type="button" onClick={() => onNote(noteTarget)}><Plus aria-hidden="true" size={16} />메모 추가</button>
-            {canResearch && <button type="button" onClick={() => onResearch(noteTarget)}><Search aria-hidden="true" size={16} />조사 지시</button>}
+            {canResearch && <button className="ai-action" type="button" onClick={() => onResearch(noteTarget)}><Sparkles aria-hidden="true" size={16} />AI 조사 요청</button>}
           </ActionSection>
         )}
       </section>
