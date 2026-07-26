@@ -20,6 +20,10 @@ export interface CaptureContextValue {
 export const KAIREN_RELATION_CHIPS = ['잠재 고객', '부품 공급사', '협력사', '투자자', '채용 후보'] as const;
 export const SELF_RELATION_CHIPS = ['오늘 처음', '소개로 만남', '예전 동료', '학교 선후배'] as const;
 
+// 기기에 최근 기록이 없을 때 쓸 만난 자리 예시. 실제 영업·조달·채용 동선 기준이다
+// (founder 지시 2026-07-27: "회사 상황상 실무로 많이 쓸만한 것들을 예시로").
+export const EVENT_FALLBACK_CHIPS = ['전시회 부스', '고객사 방문', '우리 사무실', 'IR·투자 미팅', '세미나·학회', '채용 면접'] as const;
+
 function clean(value: string | undefined): string {
   return String(value ?? '').trim();
 }
@@ -50,6 +54,17 @@ export function recentEventChips(briefs: BriefItem[], current = '', limit = 4): 
     if (seen.length >= limit) break;
   }
   return seen;
+}
+
+// 실제로 쓴 만난 곳을 먼저, 모자라면 실무 예시로 채운다. 빈 화면에서도 무엇을 적는 칸인지 보인다.
+export function eventChips(briefs: BriefItem[], current = '', limit = 6): string[] {
+  const chips = recentEventChips(briefs, current, limit);
+  for (const fallback of EVENT_FALLBACK_CHIPS) {
+    if (chips.length >= limit) break;
+    if (fallback === clean(current) || chips.includes(fallback)) continue;
+    chips.push(fallback);
+  }
+  return chips;
 }
 
 // chip은 켜고 끄는 토글이다 — 이미 그 값이면 비우고, 아니면 그 값으로 바꾼다.

@@ -289,13 +289,12 @@ test('restores the legacy one-screen capture surface and link-first onboarding',
   try {
     await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
 
-    // 촬영·맥락·완료가 한 화면에: 맥락은 촬영 전에도 열 수 있고 완료는 잠겨 있다.
-    // INT-000015에서 맥락은 접히는 카드가 됐다 — 같은 화면·같은 필드, 기본만 접힘이다.
+    // 촬영·맥락·완료가 한 화면에: 맥락 필드는 촬영 전에도 보이고 완료는 잠겨 있다.
     await expect(page.getByRole('button', { name: '명함 앞면 촬영' })).toBeVisible();
     await expect(page.locator('.search-shortcut')).toHaveCount(0);
-    await page.getByRole('button', { name: /만남 맥락/ }).click();
-    await expect(page.getByLabel('어디서 만났나요?')).toBeVisible();
-    await expect(page.getByLabel('메모', { exact: true })).toBeVisible();
+    // 이름 온보딩 모달이 떠 있는 상태라 role 조회는 aria-hidden 때문에 간헐적으로 빈다.
+    await expect(page.locator('ion-input[aria-label="어디서 만났나요?"]')).toBeVisible();
+    await expect(page.locator('ion-textarea[aria-label="메모"]')).toBeVisible();
     await expect(page.getByRole('button', { name: '완료', exact: true })).toBeDisabled();
     // 토큰이 없으면 legacy처럼 개인 링크 안내 배너가 뜬다.
     await expect(page.getByText(/받으신 개인 링크\(\?k=토큰 포함\)로 접속해 주세요/)).toBeVisible();

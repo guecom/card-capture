@@ -43,8 +43,9 @@ export function AiStageRail({ stages, label }: { stages: AiStage[]; label: strin
   );
 }
 
-export function AiScopeNote({ children }: { children: ReactNode }) {
-  return <p className="ai-scope-note">{children}</p>;
+// `limit`은 "하지 않는 일" 줄이다. 할 수 있는 일과 시각적으로 구분해 경계가 눈에 띄게 한다.
+export function AiScopeNote({ children, limit = false }: { children: ReactNode; limit?: boolean }) {
+  return <p className={limit ? 'ai-scope-note is-limit' : 'ai-scope-note'}>{children}</p>;
 }
 
 export function AiExampleChips({ examples, onPick, label }: {
