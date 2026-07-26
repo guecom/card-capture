@@ -128,6 +128,10 @@ export function CameraCaptureModal({
   const displayQuadRef = useRef<Point[] | null>(null);
   const detectedSinceRef = useRef(0);
   const autoProgressRef = useRef(0);
+  // 다음 장을 위해 자동 촬영을 다시 무장할지. 뒷면/재촬영으로 돌아온 직후에는 꺼 둔다 —
+  // 안 그러면 사용자가 명함을 뒤집기도 전에(실측 1.5초) 앞면이 뒷면으로 다시 찍힌다 (founder 판정 2026-07-26).
+  const autoArmedRef = useRef(true);
+  const rearmAtRef = useRef(0);
   // 감지용 다운스케일 캔버스는 한 번만 만들어 재사용한다 (모바일 GC 부담 축소).
   const detectCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [phase, setPhase] = useState<PreviewPhase>('idle');
@@ -168,7 +172,10 @@ export function CameraCaptureModal({
     autoProgressRef.current = 0;
     liveQuadRef.current = null;
     detectedSinceRef.current = 0;
-    setAutoHint('명함을 화면 안에 담아 주세요');
+    // 방금 찍은 장이 그대로 다시 찍히지 않도록, 명함이 한 번 화면에서 벗어난 뒤에만 자동 촬영을 재개한다.
+    autoArmedRef.current = false;
+    rearmAtRef.current = performance.now();
+    setAutoHint(nextSide === 'back' ? '명함을 뒤집어 뒷면을 대주세요' : '앞면을 다시 대주세요');
     setPhase('streaming');
   }, []);
 
@@ -179,6 +186,7 @@ export function CameraCaptureModal({
     setPhase('requesting');
     setDetail(`${nextSide === 'front' ? '앞면' : '뒷면'} 촬영을 위해 후면 카메라 권한을 확인하고 있어요.`);
     setAutoHint('명함을 화면 안에 담아 주세요');
+    autoArmedRef.current = true; // 새 세션은 바로 찍을 준비가 된 상태다.
     try {
       const stream = await openEnvironmentCamera();
       streamRef.current = stream;
@@ -334,12 +342,23 @@ export function CameraCaptureModal({
             autoGateRef.current = nextAutoCaptureState(autoGateRef.current, { detected: false }, now);
             autoProgressRef.current = 0;
           }
+          // 명함이 화면에서 벗어났다 = 사용자가 장을 바꾸는 중. 이제 다음 장을 자동 촬영해도 된다.
+          autoArmedRef.current = true;
           setAutoHint('명함을 화면 안에 담아 주세요');
           return;
         }
         liveQuadRef.current = { quad: analysis.quad.map((point) => ({ x: point.x * videoScale, y: point.y * videoScale })), at: now };
         if (!autoCapture) {
           setAutoHint('인식됨 · 아래 버튼으로 촬영할 수 있어요');
+          return;
+        }
+        if (!autoArmedRef.current) {
+          // 아직 방금 찍은 장이 그대로 보이는 상태 — 자동으로 찍지 않는다. 수동 버튼은 언제나 열려 있다.
+          autoGateRef.current = blankAutoCaptureState();
+          autoProgressRef.current = 0;
+          setAutoHint(now - rearmAtRef.current > 4_000
+            ? '준비되면 아래 버튼으로 촬영하세요'
+            : (sideRef.current === 'back' ? '명함을 뒤집어 뒷면을 대주세요' : '앞면을 다시 대주세요'));
           return;
         }
         autoGateRef.current = nextAutoCaptureState(autoGateRef.current, {

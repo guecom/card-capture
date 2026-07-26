@@ -579,13 +579,15 @@ function App() {
     const processedName = processedNames[item.captureId];
     const displayName = processedName || item.quickName?.name || '이름 인식 대기';
     const contextLine = queueContextLine(item);
+    // 뒷면이 실제로 담겼는지 목록에서 바로 보이게 한다 — 예전에는 편집 화면을 열어야만 확인됐다.
+    const sideLabel = queueNamedImageSource(item, 'back.jpg') ? '앞·뒷면' : '앞면';
     return (
       <article className="queue-row" key={item.captureId}>
         <button className="queue-row-main" type="button" onClick={() => setQueueEdit(normalizedQueueItem(structuredClone(item)))}>
           {imageSource ? <img src={imageSource} alt="명함 앞면 미리보기" /> : <span className="queue-placeholder"><Camera aria-hidden="true" size={18} /></span>}
           <div className="row-copy">
             <strong>{displayName}</strong>
-            <span>{contextLine || formatMoment(item.capturedAt)} · {queueStateCopy(item)}</span>
+            <span>{contextLine || formatMoment(item.capturedAt)} · {sideLabel} · {queueStateCopy(item)}</span>
             {item.err && <small>{actionErrorMessage(item.err)}</small>}
           </div>
           <ChevronRight aria-hidden="true" size={16} />
