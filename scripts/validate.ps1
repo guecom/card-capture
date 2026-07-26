@@ -21,6 +21,8 @@ $required = @(
   'docs/vendor/tesseract/tesseract.min.js','docs/vendor/tesseract/worker.min.js',
   'docs/vendor/tesseract/tesseract-core-simd-lstm.wasm.js',
   'docs/vendor/tesseract/kor.traineddata.gz','docs/vendor/tesseract/eng.traineddata.gz','docs/vendor/tesseract/README.md',
+  'docs/vendor/paddleocr/PP-OCRv5_mobile_det_infer.onnx','docs/vendor/paddleocr/korean_PP-OCRv5_mobile_rec_infer.onnx',
+  'docs/vendor/paddleocr/ppocrv5_korean_dict.txt','docs/vendor/ort/ort-wasm-simd-threaded.wasm','docs/vendor/ort/ort-wasm-simd-threaded.mjs',
   'watcher/CardCapture_Watcher.ps1','watcher/CardCapture_Health.ps1',
   'eval/README.md','eval/run-eval.ps1','eval/camera-quality.test.js','eval/page-syntax.test.js','eval/server-syntax.test.js','eval/ocr-browser-smoke.html','scripts/validate.ps1'
 )
@@ -135,6 +137,12 @@ $ocrHashes = @{
   'docs/vendor/tesseract/tesseract-core-simd-lstm.wasm.js' = 'ce20eda9533cbed1e6c2b4276fbae1e0adc61b6754b5513084be601787b457cf'
   'docs/vendor/tesseract/kor.traineddata.gz' = '78c21276ab14c9bb734d83be1055d9fe5469a4e7e977c51ad385be5737e61126'
   'docs/vendor/tesseract/eng.traineddata.gz' = '45b4cb346724ac1774f1c36f42f182b887bcdb28ebe63e6fff90ac41f3fcff91'
+  # PP-OCRv5 quick-name engine (TSK-000236) - self-hosted, on-device only
+  'docs/vendor/paddleocr/PP-OCRv5_mobile_det_infer.onnx' = 'd7fe3ea74652890722c0f4d02458b7261d9f5ae6c92904d05707c9eb155c7924'
+  'docs/vendor/paddleocr/korean_PP-OCRv5_mobile_rec_infer.onnx' = 'ee0dfde503d787c91fd0455daae2eb85311b4b5bdcddf85a54d8c1e0adc157de'
+  'docs/vendor/paddleocr/ppocrv5_korean_dict.txt' = 'a3792cbb41215a43e555e16ff4a7f7b18db5dd80cd058637098f0d872f2dd9d6'
+  'docs/vendor/ort/ort-wasm-simd-threaded.wasm' = 'd1ab1b94b16a65b29d710d0b587b29e7bed336827577623913479b8afe8113e6'
+  'docs/vendor/ort/ort-wasm-simd-threaded.mjs' = '0a1e718d99c41b22c21f2520ff4f9e883a6b5533856e398d21816ee8eb8185d3'
 }
 $badOcrHash = @()
 foreach ($rel in $ocrHashes.Keys) {

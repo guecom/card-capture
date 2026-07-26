@@ -1,7 +1,7 @@
 /* Generated candidate service worker — Kairen-Ref: TSK-000221 */
-const CACHE = "cardcapture-next-ec184367";
+const CACHE = "cardcapture-next-d7777bb7";
 const CACHE_PREFIX = 'cardcapture-next-';
-const SHELL = ["./","./index.html","./assets/index-BMQA9p-8.css","./assets/index-CpKczeU0.js","./assets/ionic-vendor-BbPQ-9pK.js","./assets/ionic-vendor-CUyx59f3.js","./assets/ionic-vendor-CVTHxLll.css","./assets/ionic-vendor-CiU0rtkT.js","./assets/ionic-vendor-CuW4BYHQ.js","./assets/ionic-vendor-DgmhXxri.js","./assets/ionic-vendor-DhlaSbu9.js","./assets/ionic-vendor-R6P8vIhy.js","./assets/ionic-vendor-eZh_lIPl.js","./assets/ionic-vendor-t8msffeW.js","./assets/opencv-worker-B1-ekZ6f.js","./assets/react-vendor-6WJR2M2w.js","./assets/react-vendor-BSh_wd36.js","./assets/react-vendor-CoIdssN8.js","./assets/react-vendor-q_3Li6vY.js","./assets/rolldown-runtime-BgaNhQyE.js","./assets/vendor-37FgWNbP.js","./assets/vendor-CqJQU50N.js","./assets/vendor-CyBeLrpP.js"];
+const SHELL = ["./","./index.html","./assets/index-BMQA9p-8.css","./assets/index-CcqTDwE_.js","./assets/ionic-vendor-BbPQ-9pK.js","./assets/ionic-vendor-CUyx59f3.js","./assets/ionic-vendor-CVTHxLll.css","./assets/ionic-vendor-CiU0rtkT.js","./assets/ionic-vendor-CuW4BYHQ.js","./assets/ionic-vendor-DgmhXxri.js","./assets/ionic-vendor-DhlaSbu9.js","./assets/ionic-vendor-R6P8vIhy.js","./assets/ionic-vendor-eZh_lIPl.js","./assets/ionic-vendor-t8msffeW.js","./assets/opencv-worker-B1-ekZ6f.js","./assets/ort-wasm-simd-threaded-Cpm-ox6i.wasm","./assets/quickocr-worker-BDyAZ1RR.js","./assets/react-vendor-6WJR2M2w.js","./assets/react-vendor-BSh_wd36.js","./assets/react-vendor-CoIdssN8.js","./assets/react-vendor-q_3Li6vY.js","./assets/rolldown-runtime-BgaNhQyE.js","./assets/vendor-37FgWNbP.js","./assets/vendor-CqJQU50N.js","./assets/vendor-CyBeLrpP.js"];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -27,6 +27,8 @@ self.addEventListener('fetch', (event) => {
   const sharedRuntimePaths = [
     new URL('../vendor/tesseract/', self.registration.scope).pathname,
     new URL('../vendor/opencv.js', self.registration.scope).pathname,
+    new URL('../vendor/paddleocr/', self.registration.scope).pathname,
+    new URL('../vendor/ort/', self.registration.scope).pathname,
   ];
   const isSharedRuntime = sharedRuntimePaths.some((path) => url.pathname.startsWith(path));
   if (!url.pathname.startsWith(scopePath) && !isSharedRuntime) return;

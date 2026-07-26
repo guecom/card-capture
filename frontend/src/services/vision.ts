@@ -1,4 +1,6 @@
 import type { QuickName } from '../contracts/capture';
+import { getQuickOcrWorker } from './paddle-quickname';
+import { nameFromOcrWords, type OcrWord, type PickedName } from './quickname-picker';
 
 export interface OcrTextResult {
   text: string;
@@ -96,7 +98,7 @@ function imageCanvas(dataUrl: string): Promise<HTMLCanvasElement> {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => {
-      const scale = Math.min(1, 1400 / Math.max(image.naturalWidth, image.naturalHeight));
+      const scale = Math.min(1, 1600 / Math.max(image.naturalWidth, image.naturalHeight));
       const canvas = document.createElement('canvas');
       canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
       canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
@@ -136,21 +138,68 @@ async function ensureTesseractWorker(onProgress: (progress: number) => void): Pr
   return tesseractWorker;
 }
 
-// 첫 촬영 때 모델 다운로드를 기다리지 않도록 유휴 시간에 미리 로드한다.
-// 실패해도 촬영·업로드는 그대로 동작한다 (legacy requestIdleCallback 프리로드).
+// 카메라 진입 시 호출: PP-OCR 워커 초기화를 시작한다(별도 스레드 — 메인은 안 막힘).
+// PP-OCR 초기화가 실패한 기기에서만 Tesseract 폴백을 데운다.
 export function preloadQuickNameOcr(): void {
-  const warm = () => { void ensureTesseractWorker(() => undefined).catch(() => undefined); };
-  const idleScheduler = window as typeof window & { requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number };
-  if (typeof idleScheduler.requestIdleCallback === 'function') idleScheduler.requestIdleCallback(warm, { timeout: 2_500 });
-  else window.setTimeout(warm, 1_200);
+  const client = getQuickOcrWorker();
+  void client.ready.then((ok) => {
+    if (!ok) void ensureTesseractWorker(() => undefined).catch(() => undefined);
+  });
+}
+
+function quickNameOf(picked: PickedName | null, source: string, now: () => Date): QuickName | null {
+  if (!picked) return null;
+  return {
+    name: picked.name,
+    source,
+    confidence: picked.confidence,
+    confirmed: false,
+    recognizedAt: now().toISOString(),
+  };
 }
 
 export async function recognizeQuickName(
   dataUrl: string,
   onProgress: (progress: number) => void = () => undefined,
+  now: () => Date = () => new Date(),
 ): Promise<QuickName | null> {
   const canvas = await imageCanvas(dataUrl);
   const runtime = window as typeof window & { TextDetector?: TextDetectorConstructor };
+
+  // 1순위: PP-OCRv5 한국어 (워커, 자체 호스팅) — 글꼴 크기 신호로 이름을 고른다 (ISS-000096).
+  // 준비 대기 상한 7초 — 늦으면 이번 캡처는 폴백으로 넘기고, 다음 캡처부터 PP-OCR을 쓴다.
+  const client = getQuickOcrWorker();
+  const clientReady = await Promise.race([
+    client.ready,
+    new Promise<boolean>((resolve) => window.setTimeout(() => resolve(false), 7_000)),
+  ]);
+  if (clientReady) {
+    onProgress(15);
+    const context = canvas.getContext('2d');
+    if (context) {
+      try {
+        const image = context.getImageData(0, 0, canvas.width, canvas.height);
+        onProgress(35);
+        const output = await client.recognize(image);
+        onProgress(90);
+        if (output && output.results.length) {
+          const words: OcrWord[] = output.results.map((line) => ({
+            text: line.text,
+            confidence: line.confidence,
+            heightRatio: output.height > 0 ? line.box.height / output.height : 0,
+            centerRatio: output.height > 0 ? (line.box.y + line.box.height / 2) / output.height : 0.5,
+          }));
+          const picked = quickNameOf(nameFromOcrWords(words), 'device_ppocr', now);
+          if (picked) return picked;
+        }
+      } catch {
+        // getImageData 실패 등 — 아래 폴백으로.
+      }
+    }
+  }
+
+  // 2순위: 기기 내장 TextDetector (박스 없음 → 텍스트 휴리스틱).
+  // 3순위: Tesseract (pinned, 폴백 전용).
   return recognizeNameFromAttempts([
     async () => {
       if (!runtime.TextDetector) return null;
@@ -166,5 +215,5 @@ export async function recognizeQuickName(
         source: 'device_tesseract',
       };
     },
-  ]);
+  ], now);
 }

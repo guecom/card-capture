@@ -30,6 +30,7 @@ import { buildLegacyNote, buildQueuedCapture, parseLegacyNote } from './services
 import { actionErrorMessage, briefNameMap, briefTitle, elapsedMinutesOf, pendingProgress } from './services/brief-view';
 import { contactCardFromBrief } from './services/contacts';
 import { prefetchOpenCv } from './services/opencv';
+import { prefetchQuickOcrAssets } from './services/paddle-quickname';
 import { flushQueue, pruneSentQueue, putQueueItem, readQueue } from './services/queue';
 import { buildResearchInstruction } from './services/research';
 import { recognizeQuickName } from './services/vision';
@@ -272,7 +273,7 @@ function App() {
   // 감지 엔진은 유휴 시점에 "내려받기만" 한다. 실행·컴파일은 카메라 미리보기가 뜬 뒤에 일어나므로
   // 버튼을 누르는 순간 메인 스레드가 잠기지 않는다 (2026-07-26 실폰 결함 1).
   useEffect(() => {
-    const timer = window.setTimeout(() => prefetchOpenCv(), 2_500);
+    const timer = window.setTimeout(() => { prefetchOpenCv(); prefetchQuickOcrAssets(); }, 2_500);
     return () => window.clearTimeout(timer);
   }, []);
 

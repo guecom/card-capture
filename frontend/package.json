@@ -14,6 +14,8 @@
   "dependencies": {
     "@ionic/react": "8.8.15",
     "lucide-react": "1.26.0",
+    "onnxruntime-web": "^1.27.0",
+    "ppu-paddle-ocr": "^6.2.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },

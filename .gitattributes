@@ -1,3 +1,8 @@
 # Vendored OCR runtime hashes are release invariants; never rewrite line endings.
 docs/vendor/tesseract/*.js binary
 docs/vendor/tesseract/*.gz binary
+
+# OCR vendor assets are hash-pinned - never EOL-convert them
+docs/vendor/paddleocr/** -text
+docs/vendor/ort/** -text
+docs/vendor/tesseract/** -text
