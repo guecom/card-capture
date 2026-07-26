@@ -181,13 +181,23 @@ export function CameraCaptureModal({
       setTorchAvailable(cameraHasTorch(stream));
       setPhase('streaming');
       setDetail('');
-      // 엔진은 워커 스레드에서 로드·컴파일된다 — 이 화면은 준비 전에도 전부 동작한다.
+      // 엔진은 앱 시작 직후 워커에서 미리 기동된다 — 보통 여기 도달하면 이미 준비 완료다.
       const client = getOpenCvWorker();
       workerRef.current = client;
-      setCvState(client.isReady() ? '명함 감지·자동 촬영 준비됨' : '명함 감지 엔진 준비 중… 지금도 촬영할 수 있어요');
-      void client.ready.then((ok) => {
-        setCvState(ok ? '명함 감지·자동 촬영 준비됨' : '전체 프레임 fallback 준비됨');
-      });
+      if (client.isReady()) {
+        setCvState('명함 감지·자동 촬영 준비됨');
+      } else {
+        const startedAt = Date.now();
+        setCvState('명함 감지 엔진 준비 중… 지금도 촬영할 수 있어요');
+        const ticker = window.setInterval(() => {
+          if (client.isReady()) { window.clearInterval(ticker); return; }
+          setCvState(`명함 감지 엔진 준비 중 ${Math.round((Date.now() - startedAt) / 1000)}초… 지금도 촬영할 수 있어요`);
+        }, 1_000);
+        void client.ready.then((ok) => {
+          window.clearInterval(ticker);
+          setCvState(ok ? '명함 감지·자동 촬영 준비됨' : '전체 프레임 fallback 준비됨');
+        });
+      }
       preloadQuickNameOcr();
     } catch (error) {
       stopPreview();
@@ -285,7 +295,7 @@ export function CameraCaptureModal({
       const client = workerRef.current;
       if (!video || !video.videoWidth || capturingRef.current) return;
       if (!client?.isReady()) {
-        setAutoHint('명함을 화면 안에 담아 찍어 주세요');
+        setAutoHint('감지 엔진 준비 중 · 지금 찍어도 저장됩니다');
         return;
       }
       const canvas = detectCanvasRef.current ?? (detectCanvasRef.current = document.createElement('canvas'));
@@ -364,7 +374,8 @@ export function CameraCaptureModal({
 
       const now = performance.now();
       const live = liveQuadRef.current;
-      const detected = Boolean(live && now - live.at < 450);
+      // 느린 기기에서 왕복이 길어져도 박스가 카드에서 떨어지지 않도록 유지 시간을 넉넉히 둔다.
+      const detected = Boolean(live && now - live.at < 1_100);
       if (detected) {
         if (!detectedSinceRef.current) detectedSinceRef.current = now;
       } else {
@@ -394,13 +405,15 @@ export function CameraCaptureModal({
       quadPath(context, quad);
       context.lineJoin = 'round';
       context.lineWidth = 1.5;
+      context.setLineDash(detected ? [] : [10, 8]); // 점선 = 아직 명함을 못 찾은 대기 프레임
       context.strokeStyle = locked ? 'rgba(255,255,255,0.95)' : (detected ? 'rgba(255,255,255,0.68)' : 'rgba(255,255,255,0.36)');
       if (locked) {
         context.fillStyle = 'rgba(255,255,255,0.05)';
         context.fill();
       }
       context.stroke();
-      drawCorners(context, quad, locked ? 26 : 20, locked ? 'rgba(255,255,255,0.98)' : 'rgba(255,255,255,0.82)', locked ? 2.5 : 2);
+      context.setLineDash([]);
+      if (detected) drawCorners(context, quad, locked ? 26 : 20, locked ? 'rgba(255,255,255,0.98)' : 'rgba(255,255,255,0.82)', locked ? 2.5 : 2);
       if (autoCapture && autoProgressRef.current > 0) drawProgressRing(context, width, height, autoProgressRef.current);
     };
     raf = requestAnimationFrame(draw);

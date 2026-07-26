@@ -29,7 +29,7 @@ import { type CapturedCameraFrame, fileToCameraFrame, thumbnailOf } from './serv
 import { buildLegacyNote, buildQueuedCapture, parseLegacyNote } from './services/capture-item';
 import { actionErrorMessage, briefNameMap, briefTitle, elapsedMinutesOf, pendingProgress } from './services/brief-view';
 import { contactCardFromBrief } from './services/contacts';
-import { prefetchOpenCv } from './services/opencv';
+import { getOpenCvWorker, prefetchOpenCv } from './services/opencv';
 import { prefetchQuickOcrAssets } from './services/paddle-quickname';
 import { flushQueue, pruneSentQueue, putQueueItem, readQueue } from './services/queue';
 import { buildResearchInstruction } from './services/research';
@@ -270,10 +270,16 @@ function App() {
     };
   }, [flushPendingQueue, silentRefresh]);
 
-  // 감지 엔진은 유휴 시점에 "내려받기만" 한다. 실행·컴파일은 카메라 미리보기가 뜬 뒤에 일어나므로
-  // 버튼을 누르는 순간 메인 스레드가 잠기지 않는다 (2026-07-26 실폰 결함 1).
+  // 감지 엔진을 유휴 시점에 워커에서 미리 기동한다 — legacy(v1.0)가 페이지 로드 2.5초 뒤
+  // OpenCV를 미리 컴파일해 뒀기 때문에 카메라를 열면 곧바로 명함을 잡았다. 카메라를 열 때
+  // 비로소 10MB 엔진을 컴파일하면 폰에서 수십 초 동안 감지가 죽는다 (2026-07-26 폴드7 재보고).
+  // 워커에서 돌므로 메인 스레드는 잠기지 않는다.
   useEffect(() => {
-    const timer = window.setTimeout(() => { prefetchOpenCv(); prefetchQuickOcrAssets(); }, 2_500);
+    const timer = window.setTimeout(() => {
+      prefetchOpenCv();
+      void getOpenCvWorker().ready;
+      prefetchQuickOcrAssets();
+    }, 2_500);
     return () => window.clearTimeout(timer);
   }, []);
 
