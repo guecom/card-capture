@@ -40,7 +40,7 @@ export interface OpenCvWorkerClient {
   ready: Promise<boolean>;
   isReady(): boolean;
   /** 라이브 프레임 분석. 이전 분석이 진행 중이면 프레임을 버리고 null을 반환한다(자연 스로틀). */
-  analyze(image: ImageData, options: { minAreaRatio: number; fast: boolean; withGate: boolean }): Promise<OpenCvAnalysis | null>;
+  analyze(image: ImageData, options: { minAreaRatio: number; fast: boolean; withGate: boolean; previousQuad?: Point[] | null }): Promise<OpenCvAnalysis | null>;
   /** 원본 해상도에서 명함 감지·perspective 보정. 실패·미감지·타임아웃이면 null. */
   rectify(image: ImageData, timeoutMs?: number): Promise<ImageData | null>;
   blurScore(image: ImageData, timeoutMs?: number): Promise<number | null>;
@@ -117,7 +117,7 @@ export function getOpenCvWorker(): OpenCvWorkerClient {
       if (!readyState || analyzeInFlight) return Promise.resolve(null);
       analyzeInFlight = true;
       return post(
-        { type: 'analyze', image, minAreaRatio: options.minAreaRatio, fast: options.fast, withGate: options.withGate },
+        { type: 'analyze', image, minAreaRatio: options.minAreaRatio, fast: options.fast, withGate: options.withGate, previousQuad: options.previousQuad ?? null },
         [image.data.buffer],
         (reply) => ({ quad: reply.quad ?? null, blur: reply.blur ?? null, clippedRatio: reply.clippedRatio ?? 0 }),
         null as OpenCvAnalysis | null,

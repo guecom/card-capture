@@ -30,68 +30,313 @@ function plausibleCard(quad: WorkerPoint[]): boolean {
   return (ratio >= 1.15 && ratio <= 2.7) || (ratio >= 0.37 && ratio <= 0.87);
 }
 
-// legacy 다중 전략 감지 (equalizeHist + Otsu auto-Canny, 저대비 폴백 adaptiveThreshold) — RGBA Mat 입력.
-function detectOnMat(source: Cv, minAreaRatio: number, fast: boolean): WorkerPoint[] | null {
+// ── 명함 사각형 감지 v2 (TSK-000244) ──────────────────────────────────────────
+//
+// v1은 equalizeHist + Canny → findContours → approxPolyDP → "면적 큰 것" 이었다.
+// 실측 결과 그림자가 없는 수직 촬영·저대비 책상에서 검출률 0.5, IoU 0.17~0.49로 무너졌다.
+// 카드 윤곽선이 한 군데라도 끊기면 닫힌 컨투어가 안 만들어지기 때문이다. 사선 촬영이 잘 되던
+// 이유는 드롭 섀도가 윤곽을 진하게 만들어 주기 때문이고, 수직에서는 그 그림자가 사라진다.
+//
+// v2가 바꾼 것:
+//  1) 조명 평탄화(gray - 큰 블러 + 128)로 균일하지 않은 조명·기울기를 먼저 제거한다.
+//     opencv.js 빌드에 createCLAHE가 없어 고주파 통과로 같은 효과를 낸다.
+//  2) edge map을 Canny·모폴로지 그래디언트·adaptiveThreshold 세 갈래로 만들고 닫아서(close)
+//     끊긴 윤곽을 잇는다.
+//  3) 후보를 컨투어(approxPolyDP 2단계) + minAreaRect + **Hough 직선 교점**에서 모은다.
+//     직선 기반은 윤곽이 끊겨도 사각형을 복원한다(문헌상 approxPolyDP 대비 오차 60% 감소).
+//  4) "면적 최대" 대신 edge support(변이 실제 edge 위에 얹혀 있는 비율)·종횡비·직각도·면적을
+//     합친 점수로 고른다. 배경의 큰 사각형이 이기던 문제가 사라진다.
+const CARD_RATIOS = [1.8, 1.586]; // KR 90x50, ISO 85.6x54
+
+function quadFromPoints(points: WorkerPoint[]): WorkerPoint[] {
+  return orderQuad(points);
+}
+
+function quadArea(quad: WorkerPoint[]): number {
+  let total = 0;
+  for (let index = 0; index < 4; index += 1) {
+    const a = quad[index];
+    const b = quad[(index + 1) % 4];
+    total += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(total) / 2;
+}
+
+function sideLengths(quad: WorkerPoint[]): { width: number; height: number } {
+  const distance = (a: WorkerPoint, b: WorkerPoint) => Math.hypot(a.x - b.x, a.y - b.y);
+  return {
+    width: (distance(quad[0], quad[1]) + distance(quad[3], quad[2])) / 2,
+    height: (distance(quad[0], quad[3]) + distance(quad[1], quad[2])) / 2,
+  };
+}
+
+// 명함 종횡비에 얼마나 가까운가 (0..1). 세로로 세워 찍은 경우도 같은 점수를 준다.
+function aspectScore(quad: WorkerPoint[]): number {
+  const { width, height } = sideLengths(quad);
+  if (width < 8 || height < 8) return 0;
+  const ratio = width > height ? width / height : height / width;
+  const best = CARD_RATIOS.reduce((closest, target) => Math.min(closest, Math.abs(ratio - target) / target), Number.POSITIVE_INFINITY);
+  return Math.max(0, 1 - best * 2.2);
+}
+
+// 네 모서리가 직각에 가까운가 (0..1). 원근 때문에 완전한 직각은 아니므로 느슨하게 본다.
+function rightAngleScore(quad: WorkerPoint[]): number {
+  let total = 0;
+  for (let index = 0; index < 4; index += 1) {
+    const previous = quad[(index + 3) % 4];
+    const current = quad[index];
+    const next = quad[(index + 1) % 4];
+    const ax = previous.x - current.x; const ay = previous.y - current.y;
+    const bx = next.x - current.x; const by = next.y - current.y;
+    const magnitude = Math.hypot(ax, ay) * Math.hypot(bx, by);
+    if (!magnitude) return 0;
+    const cosine = Math.abs((ax * bx + ay * by) / magnitude);
+    total += Math.max(0, 1 - cosine * 2.4);
+  }
+  return total / 4;
+}
+
+// edge support: 사각형의 변이 실제 edge 픽셀 위에 얹혀 있는 비율 (0..1).
+// 배경의 그럴듯한 사각형과 진짜 카드 경계를 가르는 핵심 신호다.
+// 허용 오차(±2px)는 edge map을 미리 한 번 팽창시켜 흡수한다 — 후보마다 5x5를 훑으면
+// 라이브 루프에서 감당이 안 된다(잠금 지연의 주범이었다).
+function edgeSupport(supportMap: Cv, quad: WorkerPoint[]): number {
+  const width = supportMap.cols;
+  const height = supportMap.rows;
+  const data = supportMap.data;
+  let hits = 0;
+  let samples = 0;
+  for (let side = 0; side < 4; side += 1) {
+    const from = quad[side];
+    const to = quad[(side + 1) % 4];
+    const length = Math.hypot(to.x - from.x, to.y - from.y);
+    const steps = Math.max(8, Math.min(48, Math.round(length / 5)));
+    for (let step = 0; step <= steps; step += 1) {
+      const t = step / steps;
+      const x = Math.round(from.x + (to.x - from.x) * t);
+      const y = Math.round(from.y + (to.y - from.y) * t);
+      samples += 1;
+      if (x >= 0 && y >= 0 && x < width && y < height && data[y * width + x]) hits += 1;
+    }
+  }
+  return samples ? hits / samples : 0;
+}
+
+function scoreQuad(quad: WorkerPoint[], edgeMap: Cv, minimumArea: number, maximumArea: number): number {
+  if (quad.length !== 4) return 0;
+  const area = quadArea(quad);
+  if (area <= minimumArea || area >= maximumArea) return 0;
+  const aspect = aspectScore(quad);
+  if (aspect <= 0) return 0;
+  const angles = rightAngleScore(quad);
+  if (angles <= 0) return 0;
+  const support = edgeSupport(edgeMap, quad);
+  const areaScore = Math.min(1, area / (0.45 * maximumArea));
+  return 0.45 * support + 0.25 * aspect + 0.15 * angles + 0.15 * areaScore;
+}
+
+// Hough 직선 → 사각형. 지배 방향으로 두 묶음을 만들고 각 묶음의 양 극단 직선을 교차시킨다.
+function quadFromHough(edgeMap: Cv, minimumLength: number): WorkerPoint[] | null {
+  const lines = new cv.Mat();
+  try {
+    cv.HoughLinesP(edgeMap, lines, 1, Math.PI / 180, Math.max(20, Math.round(minimumLength * 0.5)), minimumLength, minimumLength * 0.6);
+    if (lines.rows < 4) return null;
+    const segments: Array<{ angle: number; length: number; nx: number; ny: number; offset: number }> = [];
+    for (let index = 0; index < lines.rows; index += 1) {
+      const x1 = lines.data32S[index * 4];
+      const y1 = lines.data32S[index * 4 + 1];
+      const x2 = lines.data32S[index * 4 + 2];
+      const y2 = lines.data32S[index * 4 + 3];
+      const length = Math.hypot(x2 - x1, y2 - y1);
+      if (length < minimumLength) continue;
+      let angle = Math.atan2(y2 - y1, x2 - x1);
+      if (angle < 0) angle += Math.PI;              // 0..π (방향 무시)
+      const nx = -Math.sin(angle);
+      const ny = Math.cos(angle);
+      segments.push({ angle, length, nx, ny, offset: nx * x1 + ny * y1 });
+    }
+    if (segments.length < 4) return null;
+    segments.sort((a, b) => b.length - a.length);
+    const base = segments[0].angle;
+    const near = (angle: number, target: number) => {
+      const difference = Math.abs(((angle - target + Math.PI * 1.5) % Math.PI) - Math.PI / 2);
+      return difference < 0.44; // ±25°
+    };
+    const groupA = segments.filter((segment) => near(segment.angle, base));
+    const groupB = segments.filter((segment) => near(segment.angle, base + Math.PI / 2));
+    if (groupA.length < 2 || groupB.length < 2) return null;
+    const extremes = (group: typeof segments) => {
+      const sorted = group.slice().sort((a, b) => a.offset - b.offset);
+      return [sorted[0], sorted[sorted.length - 1]];
+    };
+    const [a1, a2] = extremes(groupA);
+    const [b1, b2] = extremes(groupB);
+    if (Math.abs(a1.offset - a2.offset) < 12 || Math.abs(b1.offset - b2.offset) < 12) return null;
+    const intersect = (p: typeof segments[0], q: typeof segments[0]): WorkerPoint | null => {
+      const determinant = p.nx * q.ny - p.ny * q.nx;
+      if (Math.abs(determinant) < 1e-6) return null;
+      return {
+        x: (p.offset * q.ny - p.ny * q.offset) / determinant,
+        y: (p.nx * q.offset - p.offset * q.nx) / determinant,
+      };
+    };
+    const corners = [intersect(a1, b1), intersect(a1, b2), intersect(a2, b2), intersect(a2, b1)];
+    if (corners.some((corner) => !corner)) return null;
+    return quadFromPoints(corners as WorkerPoint[]);
+  } catch {
+    return null;
+  } finally {
+    lines.delete();
+  }
+}
+
+// 직전 프레임 사각형과의 근접도 (0..1). 후보가 프레임마다 갈아타며 박스가 떠는 것을 막는다.
+function proximityScore(quad: WorkerPoint[], previous: WorkerPoint[] | null, diagonal: number): number {
+  if (!previous || previous.length !== 4) return 0;
+  const drift = quad.reduce((total, point, corner) => total + Math.hypot(point.x - previous[corner].x, point.y - previous[corner].y), 0) / 4;
+  return Math.max(0, 1 - drift / (diagonal * 0.06));
+}
+
+function detectOnMat(source: Cv, minAreaRatio: number, fast: boolean, previous: WorkerPoint[] | null = null): WorkerPoint[] | null {
   const mats: Cv[] = [];
   const track = (mat: Cv) => { if (mat) mats.push(mat); return mat; };
   const width = source.cols;
   const height = source.rows;
   const minimumArea = minAreaRatio * width * height;
   const maximumArea = 0.96 * width * height;
+  const minimumLineLength = Math.min(width, height) * 0.28;
   let best: WorkerPoint[] | null = null;
   let bestScore = 0;
+  const diagonal = Math.hypot(width, height);
+  let previousBest = 0; // 직전 사각형이 이번 프레임에서 받는 점수 (교체 비용 계산용)
+  const consider = (quad: WorkerPoint[] | null, edgeMap: Cv) => {
+    if (!quad) return;
+    const base = scoreQuad(quad, edgeMap, minimumArea, maximumArea);
+    if (base <= 0) return;
+    const score = base + 0.14 * proximityScore(quad, previous, diagonal);
+    if (score > bestScore) {
+      best = quad;
+      bestScore = score;
+    }
+  };
+
   try {
     const gray = track(new cv.Mat());
     cv.cvtColor(source, gray, cv.COLOR_RGBA2GRAY);
-    cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
-    const equalized = track(new cv.Mat());
-    cv.equalizeHist(gray, equalized);
+    cv.medianBlur(gray, gray, 3);
+
+    // 조명 평탄화: 큰 블러(=조명 성분)를 빼서 지역 대비만 남긴다.
+    const illumination = track(new cv.Mat());
+    const sigma = Math.max(4, Math.round(Math.min(width, height) / 12));
+    cv.GaussianBlur(gray, illumination, new cv.Size(0, 0), sigma, sigma, cv.BORDER_REPLICATE);
+    const flat = track(new cv.Mat());
+    cv.addWeighted(gray, 1, illumination, -1, 128, flat);
+
     const kernel = track(cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3)));
+    const closeKernel = track(cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5)));
     const edgeMaps: Cv[] = [];
+
     const otsuMat = track(new cv.Mat());
-    const otsu = cv.threshold(equalized, otsuMat, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+    const otsu = cv.threshold(flat, otsuMat, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
     const canny = track(new cv.Mat());
-    cv.Canny(equalized, canny, Math.max(10, 0.5 * otsu), Math.max(40, otsu));
-    cv.dilate(canny, canny, kernel);
+    cv.Canny(flat, canny, Math.max(8, 0.4 * otsu), Math.max(30, otsu));
+    cv.morphologyEx(canny, canny, cv.MORPH_CLOSE, closeKernel); // 끊긴 윤곽 잇기
     edgeMaps.push(canny);
+
+    // 모폴로지 그래디언트: 대비가 약해도 경계에서 확실히 반응한다.
+    const gradient = track(new cv.Mat());
+    cv.morphologyEx(flat, gradient, cv.MORPH_GRADIENT, kernel);
+    cv.threshold(gradient, gradient, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+    cv.morphologyEx(gradient, gradient, cv.MORPH_CLOSE, closeKernel);
+    edgeMaps.push(gradient);
 
     if (!fast) {
       const adaptive = track(new cv.Mat());
       cv.adaptiveThreshold(gray, adaptive, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 21, 6);
-      cv.morphologyEx(adaptive, adaptive, cv.MORPH_CLOSE, kernel);
+      cv.morphologyEx(adaptive, adaptive, cv.MORPH_CLOSE, closeKernel);
       edgeMaps.push(adaptive);
     }
 
+    const supportKernel = track(cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5)));
     edgeMaps.forEach((edgeMap) => {
+      // edge support 조회용으로 한 번만 팽창시킨 맵 (±2px 허용 오차를 여기서 흡수한다).
+      const supportMap = track(new cv.Mat());
+      cv.dilate(edgeMap, supportMap, supportKernel);
+      if (previous) previousBest = Math.max(previousBest, scoreQuad(previous, supportMap, minimumArea, maximumArea));
+
+      // (1) 직선 기반 — 윤곽이 끊겨도 복원된다.
+      consider(quadFromHough(edgeMap, minimumLineLength), supportMap);
+
+      // (2) 컨투어 기반 — 윤곽이 살아 있으면 가장 정확하다.
       const contours = new cv.MatVector();
       mats.push(contours);
       const hierarchy = track(new cv.Mat());
       cv.findContours(edgeMap, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+      // 면적 상위 컨투어만 본다 — 저대비 프레임에서는 컨투어가 수천 개 나온다.
+      const ranked: Array<{ index: number; area: number }> = [];
       for (let index = 0; index < contours.size(); index += 1) {
         const contour = contours.get(index);
-        const approximation = new cv.Mat();
+        const rawArea = Math.abs(cv.contourArea(contour));
+        contour.delete();
+        if (rawArea > minimumArea) ranked.push({ index, area: rawArea });
+      }
+      ranked.sort((a, b) => b.area - a.area);
+      const shortlist = ranked.slice(0, 8);
+      let largest: { contour: Cv; area: number } | null = null;
+      for (const entry of shortlist) {
+        const contour = contours.get(entry.index);
         try {
+          if (!largest || entry.area > largest.area) {
+            largest?.contour.delete();
+            largest = { contour, area: entry.area };
+          }
           const perimeter = cv.arcLength(contour, true);
-          cv.approxPolyDP(contour, approximation, 0.02 * perimeter, true);
-          if (approximation.rows !== 4 || !cv.isContourConvex(approximation)) continue;
-          const area = cv.contourArea(approximation);
-          if (area <= minimumArea || area >= maximumArea) continue;
-          const quad = orderQuad(Array.from({ length: 4 }, (_, pointIndex) => ({
-            x: approximation.data32S[pointIndex * 2],
-            y: approximation.data32S[pointIndex * 2 + 1],
-          })));
-          const score = area * (plausibleCard(quad) ? 1.6 : 0.35);
-          if (score > bestScore) {
-            best = quad;
-            bestScore = score;
+          if (perimeter < minimumLineLength * 2) continue;
+          for (const epsilon of [0.02, 0.04]) {
+            const approximation = new cv.Mat();
+            try {
+              cv.approxPolyDP(contour, approximation, epsilon * perimeter, true);
+              if (approximation.rows !== 4 || !cv.isContourConvex(approximation)) continue;
+              consider(quadFromPoints(Array.from({ length: 4 }, (_, corner) => ({
+                x: approximation.data32S[corner * 2],
+                y: approximation.data32S[corner * 2 + 1],
+              }))), supportMap);
+            } finally {
+              approximation.delete();
+            }
           }
         } finally {
-          approximation.delete();
-          contour.delete();
+          if (largest?.contour !== contour) contour.delete();
         }
       }
+      // (3) 가장 큰 덩어리의 최소 외접 사각형 — 윤곽이 볼록하지 않아도 후보를 하나 준다.
+      if (largest) {
+        try {
+          const rotated = cv.minAreaRect(largest.contour);
+          const box = new cv.Mat();
+          try {
+            cv.boxPoints(rotated, box);
+            consider(quadFromPoints(Array.from({ length: 4 }, (_, corner) => ({
+              x: box.data32F[corner * 2],
+              y: box.data32F[corner * 2 + 1],
+            }))), supportMap);
+          } finally {
+            box.delete();
+          }
+        } catch { /* boxPoints 미지원 빌드 방어 */ }
+        largest.contour.delete();
+      }
     });
-    return best;
+    // 최소 품질선 — 이보다 낮으면 "못 찾았다"고 말하는 편이 낫다(엉뚱한 박스 금지).
+    if (bestScore < 0.42 || !best) return null;
+    const settled: WorkerPoint[] = best;
+    // 교체 비용: 직전 사각형이 이번 프레임에서도 충분히 좋으면 갈아타지 않는다.
+    // 후보 생성기(Hough·컨투어·minAreaRect)가 프레임마다 번갈아 이기며 박스가 튀는 것을 막는다.
+    // 카드가 실제로 움직이면 직전 사각형의 edge support가 떨어져 자연히 교체된다.
+    if (previous && previousBest >= 0.42 && previousBest >= bestScore * 0.9) return previous;
+    // 데드밴드: 직전과 거의 같으면 직전 값을 그대로 쓴다 (미세 진동 제거).
+    if (previous && proximityScore(settled, previous, diagonal) > 0.965) return previous;
+    return settled;
   } catch {
     return null;
   } finally {
@@ -136,10 +381,10 @@ function clippedRatioInQuad(image: ImageData, quad: WorkerPoint[], threshold = 2
   return total ? clipped / total : 0;
 }
 
-function handleAnalyze(image: ImageData, minAreaRatio: number, fast: boolean, withGate: boolean) {
+function handleAnalyze(image: ImageData, minAreaRatio: number, fast: boolean, withGate: boolean, previous: WorkerPoint[] | null) {
   const source = cv.matFromImageData(image);
   try {
-    const quad = detectOnMat(source, minAreaRatio, fast);
+    const quad = detectOnMat(source, minAreaRatio, fast, previous);
     let blur: number | null = null;
     let clippedRatio = 0;
     if (quad && withGate) {
@@ -215,8 +460,8 @@ self.onmessage = (messageEvent: MessageEvent) => {
       return;
     }
     if (type === 'analyze') {
-      const { image, minAreaRatio, fast, withGate } = messageEvent.data as { image: ImageData; minAreaRatio: number; fast: boolean; withGate: boolean };
-      workerScope.postMessage({ id, ok: true, ...handleAnalyze(image, minAreaRatio, fast, withGate) });
+      const { image, minAreaRatio, fast, withGate, previousQuad } = messageEvent.data as { image: ImageData; minAreaRatio: number; fast: boolean; withGate: boolean; previousQuad?: WorkerPoint[] | null };
+      workerScope.postMessage({ id, ok: true, ...handleAnalyze(image, minAreaRatio, fast, withGate, previousQuad ?? null) });
       return;
     }
     if (type === 'rectify') {
