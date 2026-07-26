@@ -22,6 +22,7 @@ import {
 } from '../services/camera';
 import { blurScore, detectCardQuad, loadOpenCv, type OpenCvRuntime, plausibleCard, type Point, rectifyCardCanvas } from '../services/opencv';
 import { blankAutoCaptureState, clippedRatio, nextAutoCaptureState } from '../services/auto-capture';
+import { preloadQuickNameOcr } from '../services/vision';
 import { type CoverMap, coverMap, guideRectDisplay, guideRectInVideo, lerpQuad, rectToQuad, videoPointToDisplay } from '../services/stage-geometry';
 
 // 촬영 전용 모달 — 맥락 입력·이름 확인·완료는 legacy처럼 메인 화면이 소유한다 (ISS-000091 항목 18).
@@ -128,6 +129,8 @@ export function CameraCaptureModal({
   const displayQuadRef = useRef<Point[] | null>(null);
   const detectedSinceRef = useRef(0);
   const autoProgressRef = useRef(0);
+  // 감지용 다운스케일 캔버스는 한 번만 만들어 재사용한다 (모바일 GC 부담 축소).
+  const detectCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [phase, setPhase] = useState<PreviewPhase>('idle');
   const [side, setSide] = useState<CardSide>(initialSide);
   const [detail, setDetail] = useState('');
@@ -185,11 +188,15 @@ export function CameraCaptureModal({
       setTorchAvailable(cameraHasTorch(stream));
       setPhase('streaming');
       setDetail('');
-      setCvState('명함 감지 엔진 준비 중…');
+      // 엔진은 앱 시작 시 프리로드된다(App) — 여기 호출은 이미 끝난 Promise 재사용이 보통이다.
+      // 미리보기가 뜬 뒤에 엔진을 실행한다 — 사용자가 화면을 겨누는 동안 로드되고,
+      // 준비 전에도 수동 촬영·가이드 크롭은 그대로 동작한다 (2026-07-26 실폰 결함 1).
+      setCvState('명함 감지 엔진 준비 중… 지금도 촬영할 수 있어요');
       void loadOpenCv().then((runtime) => {
         cvRef.current = runtime;
         setCvState(runtime ? '명함 감지·자동 촬영 준비됨' : '전체 프레임 fallback 준비됨');
       });
+      preloadQuickNameOcr();
     } catch (error) {
       stopPreview();
       const code = error instanceof CandidateCameraError ? error.code : 'camera_failed';
@@ -268,9 +275,10 @@ export function CameraCaptureModal({
         setAutoHint('명함을 화면 안에 담아 찍어 주세요');
         return;
       }
-      const canvas = document.createElement('canvas');
-      canvas.width = 320;
-      canvas.height = Math.max(1, Math.round(320 * video.videoHeight / video.videoWidth));
+      const canvas = detectCanvasRef.current ?? (detectCanvasRef.current = document.createElement('canvas'));
+      const targetHeight = Math.max(1, Math.round(320 * video.videoHeight / video.videoWidth));
+      if (canvas.width !== 320) canvas.width = 320;
+      if (canvas.height !== targetHeight) canvas.height = targetHeight;
       const context = canvas.getContext('2d');
       if (!context) return;
       context.drawImage(video, 0, 0, canvas.width, canvas.height);

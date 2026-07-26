@@ -4,6 +4,7 @@ export interface StickyCaptureContext {
   event: string;
   relSelf: string;
   relKairen: string;
+  research: string;
 }
 
 const PREFIX = 'cc_';
@@ -69,16 +70,19 @@ export function loadStickyCaptureContext(now = Date.now()): StickyCaptureContext
     write('event', '');
     write('relSelf', '');
     write('relKairen', '');
+    write('research', '');
     write('stickyAt', '');
-    return { event: '', relSelf: '', relKairen: '' };
+    return { event: '', relSelf: '', relKairen: '', research: '' };
   }
-  return { event: read('event'), relSelf: read('relSelf'), relKairen: read('relKairen') };
+  return { event: read('event'), relSelf: read('relSelf'), relKairen: read('relKairen'), research: read('research') };
 }
 
+// 입력 즉시 호출된다 — 완료를 누르지 못해도(카메라 이탈·앱 종료) 2시간 유지가 성립하도록.
 export function saveStickyCaptureContext(context: StickyCaptureContext, now = Date.now()): void {
   write('event', context.event.trim());
   write('relSelf', context.relSelf.trim());
   write('relKairen', context.relKairen.trim());
+  write('research', context.research.trim());
   write('stickyAt', String(now));
 }
 

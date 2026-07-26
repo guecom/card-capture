@@ -18,6 +18,13 @@ function resolveRuntime(candidate: OpenCvRuntime): Promise<OpenCvRuntime | null>
   });
 }
 
+// 파일만 미리 받아 캐시에 넣는다 — 실행·컴파일은 하지 않으므로 메인 스레드를 막지 않는다.
+// 실제 실행(loadOpenCv)은 카메라 미리보기가 뜬 뒤라, 버튼을 누르는 순간 프리즈가 생기지 않는다.
+export function prefetchOpenCv(): void {
+  if (runtimePromise || typeof fetch !== 'function') return;
+  void fetch(new URL('../vendor/opencv.js', document.baseURI).href, { cache: 'force-cache' }).catch(() => undefined);
+}
+
 export function loadOpenCv(): Promise<OpenCvRuntime | null> {
   if (runtimePromise) return runtimePromise;
   if (!window.WebAssembly) return Promise.resolve(null);

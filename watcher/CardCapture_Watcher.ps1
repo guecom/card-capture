@@ -129,9 +129,9 @@ $Prompt = @'
 3. 캡처 폴더에 correction*.json이 있으면 사용자 수정 요청이다 — 절차 문서 규칙 2-1에 따라 정정을 우선 반영한다. capture.json의 type이 'note'면 사후 메모다 — 규칙 2-2에 따라 이미지 없이 해당 Person에 병합한다. event가 있는 명함 캡처는 규칙 8-2에 따라 Interaction·met_at을 닫는다.
 4. 명함 이미지를 직접 읽어 OCR하고, 기존 Person과 이메일·전화(정규화)·이름으로 중복검사한다. capture.json의 quickName은 기기 OCR 힌트이며 명함보다 우선하는 권위 값이 아니다. 단, quickName.confirmed=true인 사용자 정정은 우선 확인하고 불일치가 있으면 추측하지 말고 provenance에 남긴다. 중복이면 신규 생성 금지, 기존 인스턴스를 프런트매터+본문 전면 재구성으로 갱신한다(과거 소속은 Career 이력으로 내리고 provenance는 보존). 신규면 PER typeID를 쓰기 직전 재스캔(max+1)으로 발급해 Template_Person 스키마로 생성한다.
 5. 이미지를 `90_Vault/Attachment/BusinessCards/PER-ID_YYYYMMDD_front|back.jpg`로 옮기고 source_refs에 기록한다.
-6. 심층 웹 보강: 사람과 회사를 각각 웹 검색(각 4회 이상). LinkedIn 공개 프로필을 이메일 prefix·중간이름·소속으로 교차검증해 동일인 확정 근거를 남기고, 경력·학력·투자·제품·수상까지. 항목별 신뢰도(high/medium)와 출처 URL을 본문 '공개 출처' 섹션에 남긴다. 미특정은 미특정이라 쓴다.
+6. 전방위 웹 보강(절차 문서 규칙 8이 정본): LinkedIn 한 곳에 의존하지 마라. 먼저 한글·영문(로마자 변형)·이니셜과 회사·직함·이전소속·이메일 prefix를 조합해 질의를 설계하고, 사람 6개 소스군(전문 프로필 / 뉴스·인터뷰·인사발표 / 발표·컨퍼런스·팟캐스트 / 논문·특허·GitHub·기술블로그 / 협회·위원회·수상 / 최근 90일 활동) 중 4군 이상, 회사 5개 소스군(공식·채용 / 투자·재무 / 언론·업계 / 기술 신호 / 고객·파트너) 중 3군 이상을 실제로 조회한다(합계 최소 10회 검색). 소스군별 확인/미확인을 구분해 남기고, 동일인은 이메일 도메인·소속·직함·시기 중 2개 이상 일치할 때만 확정하며 근거 문장을 쓴다. 항목별 출처 URL·확인일·신뢰도(high=독립 2출처 교차, medium=신뢰 1출처, low=간접)를 본문 '공개 출처'에 남기고, 충돌은 최신·1차 출처 우선 + 충돌 사실 기록, 미특정은 미특정이라 쓴다. 마지막에 '만나기 전에 알면 좋은 것' 대화 포인트 3~5개(최근 관심사, 공통 접점, Kairen 연결 지점, 조심할 주제)를 뽑는다. 근거 없는 성격·성향 추정 금지.
 7. 조직은 기존 Organization Instance가 있으면 File 링크, 없으면 organization_mentions로 보존한다.
-8. 캡처 폴더에 brief.md를 쓴다 — 첫 줄 제목은 반드시 '# <이름> — 이런 분이에요' 형식(이름이 먼저). capture.json을 status='processed'(명함이 아니면 'skipped'+사유), person, personAction, processedAt, processedBy로 갱신한다.
+8. 캡처 폴더에 brief.md를 쓴다 — 첫 줄 제목은 반드시 '# <이름> — 이런 분이에요' 형식(이름이 먼저). 요약·명함 정보 다음에 대화 포인트 3~5개와 소스군별 확인 결과를 넣는다. capture.json을 status='processed'(명함이 아니면 'skipped'+사유), person, personAction, processedAt, processedBy로 갱신한다.
 9. reviewStatus는 agent_checked까지만. human_validated는 절대 설정하지 않는다.
 10. 완료 전 반드시 vault의 02_Kairen_OS/90_Setting/Validation/Validate-KairenOntology.ps1 을 powershell.exe -NoProfile -ExecutionPolicy Bypass -File 로 실행해 PASS를 확인한다. FAIL이면 고치고 재실행한다.
 
