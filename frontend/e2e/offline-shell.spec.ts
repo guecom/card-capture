@@ -97,7 +97,7 @@ test('promotes the root entrypoint while preserving token links and legacy rollb
   try {
     await page.goto(`${origin}?view=search&k=root-token`, { waitUntil: 'networkidle' });
     await expect(page).toHaveURL(`${origin}next/?view=search&k=root-token`);
-    await expect(page.getByRole('heading', { name: '사람 찾기' })).toBeVisible();
+    await expect(page.locator('ion-header .app-header b')).toHaveText('사람 찾기');
     expect(await page.evaluate(() => localStorage.getItem('cc_token'))).toBe('root-token');
     await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '설정' }).click();
     await expect(page.getByRole('link', { name: /이전 앱 열기/ })).toHaveAttribute('href', '../legacy.html');
@@ -123,7 +123,7 @@ test('keeps person search on the bottom navigation without a capture-home shortc
     const navSearch = page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '검색' });
     await expect(navSearch).toBeVisible();
     await navSearch.click();
-    await expect(page.getByRole('heading', { name: '사람 찾기' })).toBeVisible();
+    await expect(page.locator('ion-header .app-header b')).toHaveText('사람 찾기');
     await expect(page.getByRole('textbox', { name: '이름·회사·만난 곳으로 검색' })).toBeVisible();
   } finally {
     await stopStaticServer(server);
@@ -239,7 +239,7 @@ test('restores brief, profile, contact, search, and post-processing actions', as
   try {
     const api = encodeURIComponent('https://api.example.test/exec');
     await page.goto(`http://127.0.0.1:${address.port}/next/?api=${api}&k=owner-token&view=briefs`, { waitUntil: 'networkidle' });
-    await expect(page.getByRole('heading', { name: '처리 진행' })).toBeVisible();
+    await expect(page.locator('ion-header .app-header b')).toHaveText('처리 진행');
     await page.getByRole('button', { name: /Alice Kim/ }).click();
     await expect(page.locator('.brief-detail').getByText('협력 논의를 진행한 담당자입니다.')).toBeVisible();
     await expect(page.getByRole('link', { name: '전화' })).toHaveAttribute('href', 'tel:010-1234-5678');
@@ -249,21 +249,25 @@ test('restores brief, profile, contact, search, and post-processing actions', as
     await page.getByRole('button', { name: '닫기' }).click();
 
     // 복원된 프로필 프렙 카드에도 메모 추가·조사 지시가 있으므로 브리핑 카드 쪽으로 스코프한다.
-    page.once('dialog', (dialog) => void dialog.accept('후속 자료 보내기'));
+    const composer = page.locator('ion-modal.person-action-modal');
     await page.locator('.brief-detail').getByRole('button', { name: '메모 추가' }).click();
+    await composer.locator('ion-textarea[aria-label="메모 추가"] textarea').fill('후속 자료 보내기');
+    await composer.getByRole('button', { name: '메모 저장' }).click();
     await expect.poll(() => actionBodies.some((body) => body.action === 'addnote')).toBe(true);
-    page.once('dialog', (dialog) => void dialog.accept('공개 인터뷰 확인'));
     await page.locator('.brief-detail').getByRole('button', { name: '조사 지시' }).click();
+    await composer.locator('ion-textarea[aria-label="조사 지시"] textarea').fill('공개 인터뷰 확인');
+    await composer.getByRole('button', { name: '조사 요청' }).click();
     await expect.poll(() => actionBodies.some((body) => body.action === 'researchinstruction')).toBe(true);
-    page.once('dialog', (dialog) => void dialog.accept('직함 수정'));
     await page.getByRole('button', { name: '수정 요청' }).click();
+    await composer.locator('ion-textarea[aria-label="수정 요청"] textarea').fill('직함 수정');
+    await composer.getByRole('button', { name: '수정 요청 보내기' }).click();
     await expect.poll(() => actionBodies.some((body) => body.action === 'correction')).toBe(true);
     await page.getByRole('button', { name: '다시 처리' }).click();
     await expect.poll(() => actionBodies.some((body) => body.action === 'requeue')).toBe(true);
 
     await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '검색' }).click();
     await page.getByRole('textbox', { name: '이름·회사·만난 곳으로 검색' }).fill('Alice');
-    await page.locator('form.search-shell').getByRole('button', { name: '검색', exact: true }).click();
+    await page.locator('form.search-shell').getByRole('button', { name: '찾기', exact: true }).click();
     await page.getByRole('button', { name: /PER-000001/ }).click();
     await expect(page.getByText('Acme Director')).toBeVisible();
     expect(await page.request.get(`http://127.0.0.1:${address.port}/next/manifest.webmanifest`).then((response) => response.json())).toMatchObject({ shortcuts: [{ short_name: '검색' }, { short_name: '브리핑' }] });

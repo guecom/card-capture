@@ -11,6 +11,11 @@ export interface TextBlock {
   text: string;
 }
 
+export interface InlineSegment {
+  text: string;
+  href?: string;
+}
+
 export interface HrBlock {
   kind: 'hr';
 }
@@ -23,11 +28,47 @@ export type MarkdownBlock = TableBlock | TextBlock | HrBlock | BlankBlock;
 
 const ESCAPED_PIPE = '\u0001';
 
-export function inlineMarkdown(value: string): string {
+function normalizedInlineSource(value: string): string {
   return String(value ?? '')
     .replace(/\[\[([^\]|]+)(\|([^\]]+))?\]\]/g, (_match, target: string, _alias, aliasText: string) => aliasText || target)
     .replace(/\*\*/g, '')
     .replace(/`/g, '');
+}
+
+export function safeExternalUrl(value: string): string | null {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
+// Person 문서에는 Markdown 링크와 bare URL이 섞여 있다. 외부 이동은 명시적인 http(s)만 허용한다.
+export function parseInlineMarkdown(value: string): InlineSegment[] {
+  const source = normalizedInlineSource(value);
+  const segments: InlineSegment[] = [];
+  const matcher = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)|(https?:\/\/[^\s<]+)/gi;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  while ((match = matcher.exec(source)) !== null) {
+    if (match.index > cursor) segments.push({ text: source.slice(cursor, match.index) });
+    const markdownLabel = match[1];
+    const matchedUrl = match[2] ?? match[3] ?? '';
+    const trailing = match[3] ? /[.,;!?]+$/.exec(matchedUrl)?.[0] ?? '' : '';
+    const rawUrl = trailing ? matchedUrl.slice(0, -trailing.length) : matchedUrl;
+    const href = safeExternalUrl(rawUrl);
+    if (href) segments.push({ text: markdownLabel || rawUrl, href });
+    else segments.push({ text: match[0] });
+    if (trailing) segments.push({ text: trailing });
+    cursor = matcher.lastIndex;
+  }
+  if (cursor < source.length) segments.push({ text: source.slice(cursor) });
+  return segments.length ? segments : [{ text: source }];
+}
+
+export function inlineMarkdown(value: string): string {
+  return parseInlineMarkdown(value).map((segment) => segment.text).join('');
 }
 
 // escaped pipe(\|)는 셀 구분자가 아니다 — legacy와 동일하게 placeholder로 보호한다.
@@ -36,8 +77,8 @@ function tableRow(line: string): string[] | null {
     .split('\\|').join(ESCAPED_PIPE)
     .replace(/^\s*\||\|\s*$/g, '')
     .split('|')
-    .map((cell) => inlineMarkdown(cell.split(ESCAPED_PIPE).join('|')).trim());
-  if (cells.every((cell) => /^:?-{2,}:?$/.test(cell) || cell === '')) return null;
+    .map((cell) => cell.split(ESCAPED_PIPE).join('|').trim());
+  if (cells.every((cell) => /^:?-{2,}:?$/.test(inlineMarkdown(cell)) || cell === '')) return null;
   return cells;
 }
 
@@ -56,7 +97,7 @@ export function parseMarkdownBlocks(text: string): MarkdownBlock[] {
       if (rows.length) blocks.push({ kind: 'table', rows });
       continue;
     }
-    const line = inlineMarkdown(lines[index]);
+    const line = lines[index];
     if (line.startsWith('### ')) blocks.push({ kind: 'h3', text: line.slice(4) });
     else if (line.startsWith('## ')) blocks.push({ kind: 'h2', text: line.slice(3) });
     else if (line.startsWith('# ')) blocks.push({ kind: 'h1', text: line.slice(2) });

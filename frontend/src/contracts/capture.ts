@@ -38,6 +38,8 @@ export interface CaptureQueueItem {
   tries: number;
   thumb?: string;
   err?: string;
+  /** 서버가 성공 receipt를 준 시각. 이 시각 이후에만 기기에 남은 원본을 정리한다 (ISS-000102). */
+  sentAt?: string;
 }
 
 export interface UploadPayload {

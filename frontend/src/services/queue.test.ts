@@ -75,12 +75,33 @@ describe('offline queue contract', () => {
     expect(sent.err).toBeUndefined();
   });
 
-  it('prunes original image bytes only from sent captures beyond the retention count', async () => {
-    await putQueueItem(item('20260725-000001-old', 'sent'));
-    await putQueueItem(item('20260725-000002-new', 'sent'));
-    expect(await pruneSentQueue(1)).toBe(1);
+  it('stamps the success receipt time so cleanup can only run after a real send', async () => {
+    await putQueueItem(item('20260725-120005-e'));
+    await flushQueue(async () => undefined);
+    const [sent] = await readQueue();
+    expect(Number.isNaN(Date.parse(String(sent.sentAt)))).toBe(false);
+  });
+
+  // ISS-000102: 전송이 끝난 명함 원본이 기기에 무기한 남지 않는다. 대기·실패 항목은 복구를 위해 남긴다.
+  it('clears sent originals once the recovery grace period has passed, and never touches unsent ones', async () => {
+    const sentAt = Date.parse('2026-07-25T12:00:00.000Z');
+    await putQueueItem({ ...item('20260725-000001-old', 'sent'), sentAt: new Date(sentAt).toISOString() });
+    await putQueueItem({ ...item('20260725-000002-fresh', 'sent'), sentAt: new Date(sentAt + 9 * 60_000).toISOString() });
+    await putQueueItem(item('20260725-000003-queued'));
+    await putQueueItem(item('20260725-000004-failed', 'failed'));
+
+    expect(await pruneSentQueue(sentAt + 10 * 60_000)).toBe(1);
     const items = (await readQueue()).sort((a, b) => a.captureId.localeCompare(b.captureId));
     expect(items[0].images[0]).not.toHaveProperty('dataB64');
     expect(items[1].images[0]).toHaveProperty('dataB64');
+    expect(items[2].images[0]).toHaveProperty('dataB64');
+    expect(items[3].images[0]).toHaveProperty('dataB64');
+
+    // 유예가 지나면 남은 전송 완료 원본도 정리되고, 대기·실패 항목은 그대로다.
+    expect(await pruneSentQueue(sentAt + 60 * 60_000)).toBe(1);
+    const later = (await readQueue()).sort((a, b) => a.captureId.localeCompare(b.captureId));
+    expect(later[1].images[0]).not.toHaveProperty('dataB64');
+    expect(later[2].images[0]).toHaveProperty('dataB64');
+    expect(later[3].images[0]).toHaveProperty('dataB64');
   });
 });

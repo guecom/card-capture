@@ -16,32 +16,35 @@ import {
   IonToolbar,
   setupIonicReact,
 } from '@ionic/react';
-import { ArrowUpRight, Camera, ChevronRight, FileText, Mail, MessageCircle, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Waves } from 'lucide-react';
+import { ArrowUpRight, Camera, ChevronRight, FileText, ImageOff, Mail, MessageCircle, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, Waves } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { BriefItem, CaptureQueueItem, PersonTarget, QuickName, RuntimeConfig, SearchItem } from './contracts/capture';
 import { CameraCaptureModal, type CapturedSideMeta, type CardSide } from './components/CameraPreviewModal';
 import { StatusBadge } from './components/StatusBadge';
 import { MarkdownLite } from './components/MarkdownLite';
-import { ContactActions, PersonDocument } from './components/PersonDocument';
+import { ActionSection, ContactActions, PersonDocument } from './components/PersonDocument';
 import { addPersonNote, listBriefs, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
-import { type CapturedCameraFrame, fileToCameraFrame, thumbnailOf } from './services/camera';
+import { type CapturedCameraFrame, thumbnailOf } from './services/camera';
 import { buildLegacyNote, buildQueuedCapture, parseLegacyNote } from './services/capture-item';
 import { actionErrorMessage, briefListTitle, briefNameMap, briefTitle, elapsedMinutesOf, pendingProgress } from './services/brief-view';
 import { contactCardFromBrief } from './services/contacts';
 import { getOpenCvWorker, prefetchOpenCv } from './services/opencv';
 import { prefetchQuickOcrAssets } from './services/paddle-quickname';
 import { flushQueue, pruneSentQueue, putQueueItem, readQueue } from './services/queue';
+import { describeRecallQuery, type RecallResult, runRecallSearch, serverFallbackTerm } from './services/recall-search';
 import { buildResearchInstruction } from './services/research';
 import { recognizeQuickName } from './services/vision';
 import {
   loadCachedBriefs,
+  loadGalleryFree,
   loadOwnerFlags,
   loadRecentSearches,
   loadRuntimeConfig,
   loadSectionCollapsed,
   loadStickyCaptureContext,
   saveCachedBriefs,
+  saveGalleryFree,
   saveOwnerFlags,
   saveRecentSearch,
   saveRuntimeConfig,
@@ -66,6 +69,17 @@ const tabs: Array<{ id: Tab; label: string; icon: LucideIcon }> = [
   { id: 'people', label: '검색', icon: Search },
   { id: 'settings', label: '설정', icon: Settings2 },
 ];
+
+// 상단 바가 화면 이름을 소유한다 — 예전에는 제품 이름만 띄우고 각 화면이 큰 제목을 또 그려
+// 폰 화면 위쪽 160px이 제목 두 줄로 쓰였다 (founder 판정 2026-07-26: "허접해 보인다").
+const screenTitles: Record<Tab, string> = {
+  capture: '명함 캡처',
+  activity: '처리 진행',
+  people: '사람 찾기',
+  settings: '내 앱 설정',
+};
+
+type SearchMode = 'quick' | 'recall';
 
 function formatMoment(value?: string): string {
   if (!value) return '시간 정보 없음';
@@ -110,7 +124,8 @@ function queueContextLine(item: CaptureQueueItem): string {
 function captureToast(side: CardSide, meta: CapturedSideMeta): string {
   const label = side === 'front' ? '앞면' : '뒷면';
   let text: string;
-  if (meta.source === 'native') text = `${label} 준비 완료`;
+  // 기본 카메라 앱으로 찍은 사진은 그 앱이 갤러리에 저장한다 — 우리가 지울 수 없으니 사실대로 알린다.
+  if (meta.source === 'native') text = `${label} 준비 완료 · 기본 카메라로 찍어 갤러리에 사진이 남았어요`;
   else if (meta.cropState === 'rectified') text = meta.source === 'auto' ? `${label} 자동 촬영 · 크롭 완료` : `${label} 저장 — 자동 크롭됨`;
   else text = `${label} 저장`;
   if (meta.blurry) text += ' · 사진이 조금 흐릿해요 — 필요하면 다시 찍어주세요';
@@ -123,6 +138,35 @@ interface FeedEntry {
   brief?: BriefItem;
   local?: CaptureQueueItem;
 }
+
+type PersonActionComposer =
+  | { kind: 'note'; target: PersonTarget }
+  | { kind: 'research'; target: PersonTarget }
+  | { kind: 'correction'; captureId: string };
+
+const personActionCopy = {
+  note: {
+    eyebrow: '내 기록',
+    title: '메모 추가',
+    helper: '다음 만남에 기억하고 싶은 사실이나 약속을 남겨주세요. 접수한 메모는 인물 기록에 병합됩니다.',
+    placeholder: '예: 3분기 협력안을 논의했고, 다음 주에 자료를 보내기로 함',
+    submit: '메모 저장',
+  },
+  research: {
+    eyebrow: '공개 정보 조사',
+    title: '조사 지시',
+    helper: '공개·합법 출처에서 확인할 내용과 범위를 적어주세요. 요청 내용·대상·시각과 처리 결과가 기록됩니다.',
+    placeholder: '예: 최근 경력과 회사 활동, 인터뷰·발표, Kairen과의 접점을 중심으로 확인',
+    submit: '조사 요청',
+  },
+  correction: {
+    eyebrow: '정보 바로잡기',
+    title: '수정 요청',
+    helper: '어떤 정보가 어떻게 달라야 하는지 알려주세요. 다음 처리에서 기존 근거와 함께 다시 확인합니다.',
+    placeholder: '예: 직함은 CTO가 아니라 CPO이고, 영문 이름 표기는 Jiyoon An',
+    submit: '수정 요청 보내기',
+  },
+} as const;
 
 function App() {
   const [tab, setTab] = useState<Tab>(initialTab);
@@ -140,6 +184,10 @@ function App() {
   const [searching, setSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchItem[]>([]);
   const [recentSearches, setRecentSearches] = useState<string[]>(loadRecentSearches);
+  const [searchMode, setSearchMode] = useState<SearchMode>('quick');
+  const [recallResult, setRecallResult] = useState<RecallResult | null>(null);
+  const [recallServerItems, setRecallServerItems] = useState<SearchItem[]>([]);
+  const [galleryFree, setGalleryFree] = useState(loadGalleryFree);
   const [sending, setSending] = useState(false);
   // owner 게이트는 legacy처럼 localStorage 캐시로 시작해 서버 응답으로 갱신한다 — 오프라인에도 유지.
   const [ownerCanSeeAll, setOwnerCanSeeAll] = useState(() => loadOwnerFlags().seeAll);
@@ -158,9 +206,13 @@ function App() {
   const [documentError, setDocumentError] = useState('');
   const [documentLoading, setDocumentLoading] = useState(false);
   const [documentNoteTarget, setDocumentNoteTarget] = useState<PersonTarget | null>(null);
+  const [personActionComposer, setPersonActionComposer] = useState<PersonActionComposer | null>(null);
+  const [personActionText, setPersonActionText] = useState('');
+  const [personActionSubmitting, setPersonActionSubmitting] = useState(false);
   const [queueEdit, setQueueEdit] = useState<CaptureQueueItem | null>(null);
   const [queueRetakeSide, setQueueRetakeSide] = useState<'front.jpg' | 'back.jpg'>('front.jpg');
-  const queueRetakeInputRef = useRef<HTMLInputElement>(null);
+  // 카메라 모달이 "새 캡처"가 아니라 "기존 캡처의 한 면 교체"로 열렸는지.
+  const [retakeMode, setRetakeMode] = useState(false);
   const flushingRef = useRef(false);
   const contentRef = useRef<HTMLIonContentElement>(null);
 
@@ -307,6 +359,16 @@ function App() {
     return entries.sort((a, b) => b.id.localeCompare(a.id));
   }, [briefs, queue]);
 
+  // 상단 바의 한 줄 상태. 제품 이름 대신 "지금 무슨 일이 일어나는지"를 소유한다.
+  const pendingCount = useMemo(() => feed.filter((entry) => (entry.local && entry.local.state !== 'sent')
+    || (entry.brief && entry.brief.status !== 'processed' && entry.brief.status !== 'skipped')).length, [feed]);
+  const headerStatus = !configured ? '연결 필요 — 개인 링크로 열어주세요'
+    : loading ? '최신 상태 확인 중…'
+      : sending ? '사진 전송 중…'
+        : pendingCount > 0 ? `${pendingCount}건 처리 중`
+          : feed.length > 0 ? `기록 ${feed.length}건 · 모두 최신`
+            : '첫 명함을 기다리고 있어요';
+
   const setupBannerMessage = !config.apiUrl
     ? '연결할 서버 주소가 없어요 — 받으신 개인 링크로 접속하거나 설정의 고급 항목에서 주소를 넣어주세요.'
     : !config.token
@@ -332,9 +394,48 @@ function App() {
     }
   }, [config, configured, ownerCanSeeAll]);
 
+  // 자연어 회상 검색 (ISS-000103). 문장은 기기 밖으로 나가지 않는다 — 여기서 조건으로 바꿔
+  // 이 기기가 이미 받아 둔 기록과 대조하고, 그래도 없을 때만 기존 검색 endpoint에 단어 하나를 넘긴다.
+  const runRecall = useCallback(async (value: string) => {
+    const text = value.trim();
+    if (!text) return;
+    setSearching(true);
+    setRecallServerItems([]);
+    try {
+      let corpus = briefs;
+      if (configured) {
+        try {
+          const response = await listBriefs(config, 100);
+          if (response.ok && response.items) {
+            corpus = response.items;
+            setBriefs(corpus);
+            saveCachedBriefs(corpus);
+          }
+        } catch {
+          // 오프라인이면 기기에 캐시된 기록으로 그대로 진행한다.
+        }
+      }
+      const result = runRecallSearch(corpus, text);
+      setRecallResult(result);
+      setRecentSearches(saveRecentSearch(text));
+      const fallback = serverFallbackTerm(result.query);
+      if (result.candidates.length === 0 && fallback && configured && ownerCanSeeAll) {
+        try {
+          const response = await searchPeople(config, fallback);
+          if (response.ok) setRecallServerItems(response.items ?? []);
+        } catch {
+          // 서버 보조 검색 실패는 회상 결과 자체를 막지 않는다.
+        }
+      }
+    } finally {
+      setSearching(false);
+    }
+  }, [briefs, config, configured, ownerCanSeeAll]);
+
   function submitSearch(formEvent: FormEvent) {
     formEvent.preventDefault();
-    void runSearch(query);
+    if (searchMode === 'recall') void runRecall(query);
+    else void runSearch(query);
   }
 
   function commitSettings() {
@@ -399,7 +500,25 @@ function App() {
     setOcrState('이름 인식 대기');
   }, []);
 
+  // 캡처 수정 화면의 재촬영도 앱 카메라를 쓴다 — 예전에는 OS 기본 카메라를 열어 갤러리에 사본이 생겼다.
+  const applyRetakeFrame = useCallback(async (frame: CapturedCameraFrame) => {
+    const dataB64 = frame.dataUrl.slice(frame.dataUrl.indexOf(',') + 1);
+    const image = { name: queueRetakeSide, mime: 'image/jpeg' as const, dataB64 };
+    const thumb = queueRetakeSide === 'front.jpg' ? await thumbnailOf(frame.dataUrl) : null;
+    setQueueEdit((current) => current ? {
+      ...current,
+      ...(thumb !== null ? { thumb } : {}),
+      images: [...current.images.filter((candidate) => candidate.name !== queueRetakeSide), image]
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    } : null);
+  }, [queueRetakeSide]);
+
   const handleCaptured = useCallback((side: CardSide, frame: CapturedCameraFrame, meta: CapturedSideMeta) => {
+    if (retakeMode) {
+      void applyRetakeFrame(frame);
+      setMessage(`${queueRetakeSide === 'front.jpg' ? '앞면' : '뒷면'} 사진을 바꿨어요 — 저장하면 다시 보냅니다`);
+      return;
+    }
     if (side === 'front') {
       setFrontFrame(frame);
       startQuickNameOcr(frame);
@@ -407,9 +526,12 @@ function App() {
       setBackFrame(frame);
     }
     setMessage(captureToast(side, meta));
-  }, [startQuickNameOcr]);
+  }, [applyRetakeFrame, queueRetakeSide, retakeMode, startQuickNameOcr]);
 
-  const closeCameraSession = useCallback(() => setCameraSession(null), []);
+  const closeCameraSession = useCallback(() => {
+    setCameraSession(null);
+    setRetakeMode(false);
+  }, []);
 
   const completeCapture = useCallback(async () => {
     if (!frontFrame || queueing) return;
@@ -454,23 +576,11 @@ function App() {
     else setMessage('연결 설정을 저장하면 이 캡처를 자동으로 다시 보냅니다.');
   }, [configured, flushPendingQueue]);
 
-  const replaceQueueImage = useCallback(async (file: File | undefined) => {
-    if (!file || !queueEdit) return;
-    try {
-      const frame = await fileToCameraFrame(file);
-      const dataB64 = frame.dataUrl.slice(frame.dataUrl.indexOf(',') + 1);
-      const image = { name: queueRetakeSide, mime: 'image/jpeg' as const, dataB64 };
-      const thumb = queueRetakeSide === 'front.jpg' ? await thumbnailOf(frame.dataUrl) : null;
-      setQueueEdit((current) => current ? {
-        ...current,
-        ...(thumb !== null ? { thumb } : {}),
-        images: [...current.images.filter((candidate) => candidate.name !== queueRetakeSide), image]
-          .sort((a, b) => a.name.localeCompare(b.name)),
-      } : null);
-    } catch {
-      setMessage('사진을 읽지 못했습니다. 다시 시도해 주세요.');
-    }
-  }, [queueEdit, queueRetakeSide]);
+  const startRetake = useCallback((side: 'front.jpg' | 'back.jpg') => {
+    setQueueRetakeSide(side);
+    setRetakeMode(true);
+    setCameraSession({ side: side === 'front.jpg' ? 'front' : 'back', withChoice: false });
+  }, []);
 
   const saveQueueEdit = useCallback(async () => {
     if (!queueEdit || !queueEdit.images.some((image) => image.dataB64)) return;
@@ -534,32 +644,62 @@ function App() {
     }
   }, [config, configured]);
 
-  const runPersonAction = useCallback(async (request: Promise<{ ok: boolean; error?: string; receiptId?: string }>, success: string) => {
+  const runPersonAction = useCallback(async (request: Promise<{ ok: boolean; error?: string; receiptId?: string }>, success: string): Promise<boolean> => {
     try {
       const response = await request;
       if (!response.ok) throw new Error(response.error ?? 'request_failed');
       setMessage(response.receiptId ? `${success} · receipt ${response.receiptId}` : success);
       await refresh().catch(() => undefined);
+      return true;
     } catch (error) {
       setMessage(`접수 실패: ${actionErrorMessage(error)}`);
+      return false;
     }
   }, [refresh]);
 
   const promptNote = useCallback((target: PersonTarget) => {
-    const text = window.prompt('이 분에 대한 메모를 남겨주세요.\n다음 처리 때 인물 기록에 병합돼요.\n예: 회의에서 3분기 협력 논의, 다음주 자료 보내기로 함', '');
-    if (text?.trim()) void runPersonAction(addPersonNote(config, target, text), '메모를 접수했어요 — 잠시 후 인물 기록에 병합돼요');
-  }, [config, runPersonAction]);
+    setPersonActionText('');
+    setPersonActionComposer({ kind: 'note', target });
+  }, []);
 
   const promptResearch = useCallback((target: PersonTarget) => {
-    const text = window.prompt('공개 자료에서 확인할 내용과 깊이를 적어주세요.\n공개·합법 출처만 조사하고, 원문·요청자·대상·시간을 receipt로 남깁니다.', '');
-    const submission = buildResearchInstruction(text ?? '');
-    if (submission) void runPersonAction(submitResearchInstruction(config, target, submission.raw), '조사 지시를 접수했어요');
-  }, [config, runPersonAction]);
+    setPersonActionText('');
+    setPersonActionComposer({ kind: 'research', target });
+  }, []);
 
   const promptCorrection = useCallback((captureId: string) => {
-    const text = window.prompt('무엇이 틀렸는지 적어주세요.\n예: 직함이 CTO가 아니라 CPO / 이름 표기가 달라요', '');
-    if (text?.trim()) void runPersonAction(requestCorrection(config, captureId, text), '수정 요청을 보냈어요 — 다음 처리 때 반영돼요');
-  }, [config, runPersonAction]);
+    setPersonActionText('');
+    setPersonActionComposer({ kind: 'correction', captureId });
+  }, []);
+
+  const closePersonActionComposer = useCallback(() => {
+    if (personActionSubmitting) return;
+    setPersonActionComposer(null);
+    setPersonActionText('');
+  }, [personActionSubmitting]);
+
+  const submitPersonAction = useCallback(async () => {
+    if (!personActionComposer || !personActionText.trim() || personActionSubmitting) return;
+    setPersonActionSubmitting(true);
+    let success = false;
+    if (personActionComposer.kind === 'note') {
+      success = await runPersonAction(addPersonNote(config, personActionComposer.target, personActionText.trim()), '메모를 저장했어요 — 잠시 후 인물 기록에 반영됩니다');
+    } else if (personActionComposer.kind === 'research') {
+      const submission = buildResearchInstruction(personActionText);
+      if (!submission) {
+        setMessage('조사할 내용을 조금 더 구체적으로 적어주세요');
+      } else {
+        success = await runPersonAction(submitResearchInstruction(config, personActionComposer.target, submission.raw), '조사 요청을 접수했어요');
+      }
+    } else {
+      success = await runPersonAction(requestCorrection(config, personActionComposer.captureId, personActionText.trim()), '수정 요청을 보냈어요 — 다음 처리에서 확인합니다');
+    }
+    setPersonActionSubmitting(false);
+    if (success) {
+      setPersonActionComposer(null);
+      setPersonActionText('');
+    }
+  }, [config, personActionComposer, personActionSubmitting, personActionText, runPersonAction]);
 
   const retryProcessing = useCallback(async (captureId: string) => {
     try {
@@ -637,18 +777,20 @@ function App() {
           <div className="brief-detail">
             {localContext && <p className="local-context">내 기록: {localContext}</p>}
             {briefBody ? <MarkdownLite text={briefBody} /> : <p>아직 브리핑 본문이 도착하지 않았습니다.</p>}
-            <div className="action-grid">
-              {item.person && ownerCanSeeAll && <button type="button" onClick={() => void openDocument(title.split(' — ')[0], { captureId: item.captureId }, { captureId: item.captureId })}><FileText aria-hidden="true" size={15} />전체 프로필</button>}
-              {actionable && (
-                <>
-                  {item.person && <button className="primary" type="button" onClick={() => promptNote({ captureId: item.captureId })}><Plus aria-hidden="true" size={15} />메모 추가</button>}
-                  {item.person && researchInstructionEnabled && <button type="button" onClick={() => promptResearch({ captureId: item.captureId })}><Search aria-hidden="true" size={15} />조사 지시</button>}
-                  <button type="button" onClick={() => promptCorrection(item.captureId)}><MessageCircle aria-hidden="true" size={15} />수정 요청</button>
-                </>
-              )}
-              {local && <button type="button" onClick={() => setQueueEdit(normalizedQueueItem(structuredClone(local)))}><PenLine aria-hidden="true" size={15} />캡처 수정</button>}
-            </div>
             {actionable && <ContactActions contact={contact} />}
+            {actionable && item.person && (
+              <ActionSection label="기록" className="record-actions">
+                <button type="button" onClick={() => promptNote({ captureId: item.captureId })}><Plus aria-hidden="true" size={16} />메모 추가</button>
+                {researchInstructionEnabled && <button type="button" onClick={() => promptResearch({ captureId: item.captureId })}><Search aria-hidden="true" size={16} />조사 지시</button>}
+              </ActionSection>
+            )}
+            {(item.person || actionable || local) && (
+              <ActionSection label="관리" className="manage-actions">
+                {item.person && ownerCanSeeAll && <button type="button" onClick={() => void openDocument(title.split(' — ')[0], { captureId: item.captureId }, { captureId: item.captureId })}><FileText aria-hidden="true" size={16} />전체 프로필</button>}
+                {actionable && <button type="button" onClick={() => promptCorrection(item.captureId)}><MessageCircle aria-hidden="true" size={16} />수정 요청</button>}
+                {local && <button type="button" onClick={() => setQueueEdit(normalizedQueueItem(structuredClone(local)))}><PenLine aria-hidden="true" size={16} />캡처 수정</button>}
+              </ActionSection>
+            )}
           </div>
         )}
       </article>
@@ -742,7 +884,6 @@ function App() {
             <span className="caret" aria-hidden="true">{recordsCollapsed ? '▸' : '▾'}</span> 명함 기록
           </button>
           {sending && <span className="sending-note">전송 중…</span>}
-          <button className="refresh-chip" type="button" onClick={() => void manualRefresh()}>새로고침</button>
         </div>
         {!recordsCollapsed && <div className="records-feed">{renderFeedBody()}</div>}
       </div>
@@ -752,45 +893,112 @@ function App() {
   function renderActivity() {
     return (
       <div className="cc-stack">
-        <div className="section-heading top-heading">
-          <div><span className="eyebrow">Live contract</span><h1>처리 진행</h1></div>
-          <button className="icon-action" onClick={() => void manualRefresh()} aria-label="새로고침"><RefreshCw aria-hidden="true" size={19} /></button>
-        </div>
         {!configured && <EmptyState title="연결 설정이 필요해요" body="받으신 개인 링크(?k=토큰 포함)로 접속하면 같은 진행 상태를 읽습니다." action="설정 열기" onAction={() => { setDraftConfig(config); setSettingsOpen(true); }} />}
         <div className="records-feed">{renderFeedBody()}</div>
       </div>
     );
   }
 
+  function renderPersonSearchRow(item: SearchItem) {
+    const personId = (/PER-\d{6}/.exec(item.title) ?? [null])[0];
+    const displayName = item.title.replace(/^PER-\d+\s*/, '');
+    return (
+      <button className="person-row" type="button" key={item.id} onClick={() => void openDocument(displayName, { id: item.id }, personId ? { person: personId } : null)}>
+        <div className="avatar" aria-hidden="true">{displayName.slice(0, 1)}</div>
+        <div className="row-copy"><strong>{displayName}</strong><span>{item.title.split(' ')[0]}{item.via === 'content' ? ' · 본문 일치' : ''}</span></div>
+        <ChevronRight aria-hidden="true" size={18} />
+      </button>
+    );
+  }
+
+  // 회상 검색 결과: 후보마다 "왜 이 사람인지"를 근거로 붙인다. 근거 없는 추측은 만들지 않는다.
+  function renderRecall() {
+    if (!recallResult) {
+      return (
+        <EmptyState
+          title="기억나는 대로 말해 보세요"
+          body="예: 지난주쯤 만난 한화 다니던 구매팀장 / 로보월드에서 만난 로봇 회사 대표. 문장은 이 기기 안에서만 대조하고 밖으로 보내지 않아요."
+        />
+      );
+    }
+    const { query: parsed, candidates, unmatchedTerms, searchedCount } = recallResult;
+    return (
+      <>
+        <section className="recall-readback">
+          <p>{describeRecallQuery(parsed)}</p>
+          <small>이 기기에 있는 기록 {searchedCount}건과 대조했어요.</small>
+          {parsed.ignored.length > 0 && (
+            <ul className="recall-ignored">
+              {parsed.ignored.map((entry) => <li key={entry.text}>{entry.reason}</li>)}
+            </ul>
+          )}
+          {unmatchedTerms.length > 0 && <small>{unmatchedTerms.map((term) => `'${term}'`).join(', ')}은(는) 어느 기록에서도 찾지 못했어요.</small>}
+        </section>
+        {candidates.length === 0 && (
+          <EmptyState
+            title="조건에 맞는 기록이 없어요"
+            body={recallServerItems.length > 0
+              ? '기기 기록에서는 못 찾아 전체 기록도 찾아봤어요. 아래 결과에는 만난 시점 정보가 없어요.'
+              : '기억나는 다른 단서(회사·만난 곳·직함)를 덧붙이거나, 빠른 검색으로 이름을 직접 찾아보세요.'}
+          />
+        )}
+        {candidates.map((candidate) => {
+          const name = briefTitle(candidate.item).split(' — ')[0];
+          return (
+            <article className={`recall-card${candidate.partial ? ' partial' : ''}`} key={candidate.item.captureId}>
+              <button type="button" onClick={() => void openDocument(name, { captureId: candidate.item.captureId }, { captureId: candidate.item.captureId })}>
+                <div className="avatar" aria-hidden="true">{name.slice(0, 1)}</div>
+                <div className="row-copy">
+                  <strong>{name}</strong>
+                  <span>{[candidate.item.contact?.title, candidate.item.contact?.organization].filter(Boolean).join(' · ') || formatMoment(candidate.item.receivedAt || candidate.item.capturedAt)}</span>
+                </div>
+                <ChevronRight aria-hidden="true" size={18} />
+              </button>
+              <ul className="recall-evidence">
+                {candidate.evidence.map((entry) => <li key={entry.label} data-kind={entry.kind}>{entry.label}</li>)}
+              </ul>
+            </article>
+          );
+        })}
+        {recallServerItems.length > 0 && (
+          <section className="recall-fallback">
+            <span>전체 기록 검색 결과 · 만난 시점 정보 없음</span>
+            {recallServerItems.map(renderPersonSearchRow)}
+          </section>
+        )}
+      </>
+    );
+  }
+
   function renderPeople() {
+    const recall = searchMode === 'recall';
     return (
       <div className="cc-stack">
-        <div className="section-heading top-heading"><div><span className="eyebrow">Owner recall</span><h1>사람 찾기</h1></div></div>
+        <div className="mode-switch" role="tablist" aria-label="검색 방식">
+          <button type="button" role="tab" aria-selected={!recall} className={recall ? '' : 'active'} onClick={() => setSearchMode('quick')}><Search aria-hidden="true" size={14} />빠른 검색</button>
+          <button type="button" role="tab" aria-selected={recall} className={recall ? 'active' : ''} onClick={() => setSearchMode('recall')}><Sparkles aria-hidden="true" size={14} />AI 사람 찾기</button>
+        </div>
         <form className="search-shell" onSubmit={submitSearch}>
           <Search aria-hidden="true" size={19} />
-          <input value={query} onChange={(changeEvent) => setQuery(changeEvent.target.value)} placeholder="이름·회사·만난 곳으로 검색" aria-label="이름·회사·만난 곳으로 검색" />
-          <button type="submit" disabled={!configured || !ownerCanSeeAll || searching}>{searching ? '검색 중' : '검색'}</button>
+          <input
+            value={query}
+            onChange={(changeEvent) => setQuery(changeEvent.target.value)}
+            placeholder={recall ? '예: 지난주쯤 만난 한화 다니던 사람' : '이름·회사·만난 곳으로 검색'}
+            aria-label={recall ? '기억나는 대로 문장으로 찾기' : '이름·회사·만난 곳으로 검색'}
+          />
+          <button type="submit" disabled={!configured || !ownerCanSeeAll || searching}>{searching ? '찾는 중' : '찾기'}</button>
         </form>
         {recentSearches.length > 0 && (
           <div className="recent-searches" aria-label="최근 검색">
             {recentSearches.map((value) => (
-              <button key={value} type="button" onClick={() => { setQuery(value); void runSearch(value); }}><Search aria-hidden="true" size={12} />{value}</button>
+              <button key={value} type="button" onClick={() => { setQuery(value); void (recall ? runRecall(value) : runSearch(value)); }}><Search aria-hidden="true" size={12} />{value}</button>
             ))}
           </div>
         )}
         {(!configured || !ownerCanSeeAll) && <EmptyState title="소유자 연결이 필요해요" body="Person 검색은 기존과 동일하게 owner token에서만 동작합니다." action="설정 열기" onAction={() => { setDraftConfig(config); setSettingsOpen(true); }} />}
-        {configured && ownerCanSeeAll && searchResults.length === 0 && !searching && <EmptyState title="찾을 사람을 입력하세요" body="미팅 전 10초 회상 — 이름·회사·만난 곳으로 기존 기록을 찾습니다." />}
-        {searchResults.map((item) => {
-          const personId = (/PER-\d{6}/.exec(item.title) ?? [null])[0];
-          const displayName = item.title.replace(/^PER-\d+\s*/, '');
-          return (
-            <button className="person-row" type="button" key={item.id} onClick={() => void openDocument(displayName, { id: item.id }, personId ? { person: personId } : null)}>
-              <div className="avatar" aria-hidden="true">{displayName.slice(0, 1)}</div>
-              <div className="row-copy"><strong>{displayName}</strong><span>{item.title.split(' ')[0]}{item.via === 'content' ? ' · 본문 일치' : ''}</span></div>
-              <ChevronRight aria-hidden="true" size={18} />
-            </button>
-          );
-        })}
+        {configured && ownerCanSeeAll && !recall && searchResults.length === 0 && !searching && <EmptyState title="찾을 사람을 입력하세요" body="미팅 전 10초 회상 — 이름·회사·만난 곳으로 기존 기록을 찾습니다." />}
+        {configured && ownerCanSeeAll && !recall && searchResults.map(renderPersonSearchRow)}
+        {configured && ownerCanSeeAll && recall && renderRecall()}
       </div>
     );
   }
@@ -798,18 +1006,36 @@ function App() {
   function renderSettings() {
     return (
       <div className="cc-stack">
-        <div className="section-heading top-heading"><div><span className="eyebrow">Same origin</span><h1>연결과 경계</h1></div></div>
         <section className="surface-card settings-summary">
-          <div><span>촬영자</span><strong>{config.capturer || '미설정'}</strong></div>
-          <div><span>연결</span><strong>{configured ? '개인 링크로 연결됨' : (config.token ? '주소 확인 필요' : '개인 링크 필요')}</strong></div>
-          <div><span>토큰</span><strong>{config.token ? '이 기기에 저장됨 (개인 링크가 자동 저장)' : '미설정 — 개인 링크(?k=)로 접속'}</strong></div>
-          <IonButton fill="outline" expand="block" onClick={() => { setDraftConfig(config); setAdvancedOpen(false); setSettingsOpen(true); }}>이름·연결 설정 편집</IonButton>
+          <div><span>사용자</span><strong>{config.capturer || '이름을 입력해 주세요'}</strong></div>
+          <div><span>명함 연결</span><strong>{configured ? '연결됨' : (config.token ? '연결 주소 확인 필요' : '개인 링크로 접속해 주세요')}</strong></div>
+          <div><span>개인 링크</span><strong>{config.token ? '이 기기에 저장됨' : '아직 저장되지 않음'}</strong></div>
+          <IonButton fill="outline" expand="block" onClick={() => { setDraftConfig(config); setAdvancedOpen(false); setSettingsOpen(true); }}>사용자·연결 정보 편집</IonButton>
+        </section>
+        {/* ISS-000102: 갤러리 사본은 OS 기본 카메라 앱만 만든다. 지울 수 없는 것을 지운다고 말하지 않는다. */}
+        <section className="surface-card gallery-card">
+          <div className="gallery-head"><ImageOff aria-hidden="true" size={17} /><strong>명함 사진과 갤러리</strong></div>
+          <p>카이렌 카메라로 찍은 명함은 <b>휴대폰 갤러리에 저장되지 않아요.</b> 앱 안에만 두었다가 전송이 확인되면 10분 뒤 원본을 지우고 목록용 작은 썸네일만 남깁니다.</p>
+          <label className="gallery-toggle">
+            <input
+              type="checkbox"
+              checked={galleryFree}
+              onChange={(changeEvent) => { const next = changeEvent.target.checked; setGalleryFree(next); saveGalleryFree(next); }}
+            />
+            <span>
+              <strong>기본 카메라 앱 쓰지 않기</strong>
+              <small>{galleryFree
+                ? '켜짐 — 촬영 화면에서 기본 카메라 앱 버튼을 숨깁니다. 카메라가 열리지 않는 기기에서는 예외로 보여 줘요.'
+                : '꺼짐 — 기본 카메라 앱으로도 찍을 수 있어요. 그 사진은 갤러리에 남고 카이렌이 지울 수 없습니다.'}</small>
+            </span>
+          </label>
+          <small className="gallery-foot">이미 갤러리에 쌓인 사진은 앱이 지울 수 없어요 — 휴대폰 갤러리에서 직접 지워 주세요.</small>
         </section>
         <section className="boundary-note">
           <ShieldCheck aria-hidden="true" size={20} />
-          <div><strong>새 credential을 만들지 않습니다.</strong><p>현재 앱은 이전 앱과 같은 origin·local storage·IndexedDB를 사용합니다. token은 repository나 log에 포함하지 않습니다.</p></div>
+          <div><strong>개인 링크 정보는 이 기기에만 저장돼요.</strong><p>연결 정보는 저장소나 로그에 넣지 않습니다. 연결에 문제가 있을 때만 고급 설정에서 직접 확인하세요.</p></div>
         </section>
-        <a className="legacy-link" href="../legacy.html">이전 앱 열기 · 복구용 <ArrowUpRight aria-hidden="true" size={16} /></a>
+        <a className="legacy-link" href="../legacy.html">문제가 있을 때 이전 앱 열기 <ArrowUpRight aria-hidden="true" size={16} /></a>
         <p className="build-line">빌드 {__CARD_CAPTURE_BUILD_ID__}</p>
       </div>
     );
@@ -820,8 +1046,18 @@ function App() {
       <IonPage>
         <IonHeader translucent>
           <IonToolbar>
-            <div className="brand-lockup" slot="start"><span className="brand-mark">K</span><span>Kairen <b>Card Capture</b><small>Mobile memory</small></span></div>
-            <IonButton slot="end" fill="clear" onClick={() => void manualRefresh()} aria-label="상태 새로고침"><RefreshCw aria-hidden="true" size={18} /></IonButton>
+            <div className="app-header">
+              <span className="brand-mark" aria-hidden="true">K</span>
+              <span className="app-header-copy">
+                <b>{screenTitles[tab]}</b>
+                <small role="status">{headerStatus}</small>
+              </span>
+              {tab !== 'settings' && (
+                <button className="header-refresh" type="button" aria-label="최신 상태 확인" aria-busy={loading} onClick={() => void manualRefresh()}>
+                  <RefreshCw className={loading ? 'spinning' : ''} aria-hidden="true" size={17} />
+                </button>
+              )}
+            </div>
           </IonToolbar>
         </IonHeader>
         <IonContent ref={contentRef} fullscreen>
@@ -856,21 +1092,37 @@ function App() {
         </IonModal>
 
         <IonModal isOpen={settingsOpen} onDidDismiss={() => setSettingsOpen(false)} initialBreakpoint={0.78} breakpoints={[0, 0.78, 1]}>
-          <IonHeader><IonToolbar><IonTitle>이름·연결 설정</IonTitle><IonButton slot="end" fill="clear" onClick={() => setSettingsOpen(false)}>닫기</IonButton></IonToolbar></IonHeader>
+          <IonHeader><IonToolbar><IonTitle>사용자·연결 정보</IonTitle><IonButton slot="end" fill="clear" onClick={() => setSettingsOpen(false)}>닫기</IonButton></IonToolbar></IonHeader>
           <IonContent className="ion-padding">
             <IonList inset>
               <IonItem><IonInput label="촬영자 이름" labelPlacement="stacked" value={draftConfig.capturer} onIonInput={(inputEvent) => setDraftConfig((value) => ({ ...value, capturer: String(inputEvent.detail.value ?? '') }))} /></IonItem>
             </IonList>
-            <p className="modal-copy">주소와 토큰은 받으신 개인 링크(<code>?k=</code>)로 열면 자동 저장됩니다. 링크를 잃어버렸을 때만 아래에서 직접 입력하세요.</p>
-            <button className="advanced-toggle" type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((value) => !value)}>{advancedOpen ? '▾' : '▸'} 고급 — 직접 연결 설정</button>
+            <p className="modal-copy">개인 링크로 접속하면 연결 정보가 자동으로 입력됩니다. 평소에는 사용자 이름만 바꾸면 됩니다.</p>
+            <button className="advanced-toggle" type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((value) => !value)}>{advancedOpen ? '▾' : '▸'} 고급 설정</button>
             {advancedOpen && (
               <IonList inset>
-                <IonItem><IonInput label="GAS API 주소" labelPlacement="stacked" type="url" value={draftConfig.apiUrl} onIonInput={(inputEvent) => setDraftConfig((value) => ({ ...value, apiUrl: String(inputEvent.detail.value ?? '') }))} /></IonItem>
-                <IonItem><IonInput label="개인 링크 토큰 (?k= 값)" labelPlacement="stacked" type="password" value={draftConfig.token} onIonInput={(inputEvent) => setDraftConfig((value) => ({ ...value, token: String(inputEvent.detail.value ?? '') }))} /></IonItem>
+                <IonItem><IonInput label="연결 주소 (GAS API)" labelPlacement="stacked" type="url" value={draftConfig.apiUrl} onIonInput={(inputEvent) => setDraftConfig((value) => ({ ...value, apiUrl: String(inputEvent.detail.value ?? '') }))} /></IonItem>
+                <IonItem><IonInput label="개인 링크 코드 (?k= 값)" labelPlacement="stacked" type="password" value={draftConfig.token} onIonInput={(inputEvent) => setDraftConfig((value) => ({ ...value, token: String(inputEvent.detail.value ?? '') }))} /></IonItem>
               </IonList>
             )}
-            <IonButton expand="block" disabled={!draftConfig.capturer.trim()} onClick={commitSettings}>이 기기에 저장</IonButton>
+            <IonButton expand="block" disabled={!draftConfig.capturer.trim()} onClick={commitSettings}>설정 저장</IonButton>
           </IonContent>
+        </IonModal>
+        <IonModal className="person-action-modal" isOpen={Boolean(personActionComposer)} onDidDismiss={closePersonActionComposer} initialBreakpoint={0.62} breakpoints={[0, 0.62, 0.9]}>
+          {personActionComposer && (
+            <>
+              <IonHeader><IonToolbar><IonTitle>{personActionCopy[personActionComposer.kind].title}</IonTitle><IonButton slot="end" fill="clear" disabled={personActionSubmitting} onClick={closePersonActionComposer}>취소</IonButton></IonToolbar></IonHeader>
+              <IonContent className="ion-padding">
+                <div className="person-action-composer">
+                  <span className="eyebrow">{personActionCopy[personActionComposer.kind].eyebrow}</span>
+                  <p>{personActionCopy[personActionComposer.kind].helper}</p>
+                  <IonTextarea aria-label={personActionCopy[personActionComposer.kind].title} autofocus autoGrow maxlength={2000} label={personActionCopy[personActionComposer.kind].title} labelPlacement="stacked" placeholder={personActionCopy[personActionComposer.kind].placeholder} value={personActionText} onIonInput={(inputEvent) => setPersonActionText(String(inputEvent.detail.value ?? ''))} />
+                  <small>{personActionText.length.toLocaleString()} / 2,000</small>
+                  <IonButton expand="block" disabled={!personActionText.trim() || personActionSubmitting} onClick={() => void submitPersonAction()}>{personActionSubmitting ? '접수 중…' : personActionCopy[personActionComposer.kind].submit}</IonButton>
+                </div>
+              </IonContent>
+            </>
+          )}
         </IonModal>
         <IonModal isOpen={documentOpen} onDidDismiss={() => setDocumentOpen(false)}>
           <IonHeader><IonToolbar><IonTitle>{documentTitle}</IonTitle><IonButton slot="end" fill="clear" onClick={() => setDocumentOpen(false)}>닫기</IonButton></IonToolbar></IonHeader>
@@ -895,8 +1147,8 @@ function App() {
             {queueEdit && (
               <>
                 <div className="queue-edit-images">
-                  <div>{queueNamedImageSource(queueEdit, 'front.jpg') ? <img src={queueNamedImageSource(queueEdit, 'front.jpg')} alt="편집할 명함 앞면" /> : <span>앞면 원본 없음</span>}<button type="button" onClick={() => { setQueueRetakeSide('front.jpg'); queueRetakeInputRef.current?.click(); }}>앞면 다시 찍기</button></div>
-                  <div>{queueNamedImageSource(queueEdit, 'back.jpg') ? <img src={queueNamedImageSource(queueEdit, 'back.jpg')} alt="편집할 명함 뒷면" /> : <span>뒷면 없음</span>}<button type="button" onClick={() => { setQueueRetakeSide('back.jpg'); queueRetakeInputRef.current?.click(); }}>{queueNamedImageSource(queueEdit, 'back.jpg') ? '뒷면 다시 찍기' : '뒷면 추가'}</button></div>
+                  <div>{queueNamedImageSource(queueEdit, 'front.jpg') ? <img src={queueNamedImageSource(queueEdit, 'front.jpg')} alt="편집할 명함 앞면" /> : <span>앞면 원본 없음</span>}<button type="button" onClick={() => startRetake('front.jpg')}>앞면 다시 찍기</button></div>
+                  <div>{queueNamedImageSource(queueEdit, 'back.jpg') ? <img src={queueNamedImageSource(queueEdit, 'back.jpg')} alt="편집할 명함 뒷면" /> : <span>뒷면 없음</span>}<button type="button" onClick={() => startRetake('back.jpg')}>{queueNamedImageSource(queueEdit, 'back.jpg') ? '뒷면 다시 찍기' : '뒷면 추가'}</button></div>
                 </div>
                 <section className="capture-context-fields light">
                   <IonInput label="어디서 만났는지" labelPlacement="stacked" value={queueEdit.event ?? ''} onIonInput={(inputEvent) => setQueueEdit((current) => current ? { ...current, event: String(inputEvent.detail.value ?? '') } : null)} />
@@ -906,7 +1158,6 @@ function App() {
                 </section>
                 {!queueEdit.images.some((image) => image.dataB64) && <p className="modal-copy">오래된 전송 완료 캡처라 원본 사진이 정리됐습니다. 앞면을 다시 찍으면 같은 captureId로 재전송할 수 있습니다.</p>}
                 <IonButton expand="block" disabled={!queueEdit.images.some((image) => image.dataB64)} onClick={() => void saveQueueEdit()}>저장하고 다시 보내기</IonButton>
-                <input ref={queueRetakeInputRef} className="native-camera-input" type="file" accept="image/*" capture="environment" onChange={(inputEvent) => { void replaceQueueImage(inputEvent.target.files?.[0]); inputEvent.target.value = ''; }} />
               </>
             )}
           </IonContent>
@@ -916,6 +1167,7 @@ function App() {
           isOpen={Boolean(cameraSession)}
           initialSide={cameraSession?.side ?? 'front'}
           withBackChoice={cameraSession?.withChoice ?? false}
+          galleryFree={galleryFree}
           onDismiss={closeCameraSession}
           onCaptured={handleCaptured}
           onFinished={closeCameraSession}

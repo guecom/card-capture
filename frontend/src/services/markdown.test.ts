@@ -1,10 +1,24 @@
 import { describe, expect, it } from 'vitest';
-import { inlineMarkdown, labelImageEmbeds, parseMarkdownBlocks, parsePersonFrontmatter } from './markdown';
+import { inlineMarkdown, labelImageEmbeds, parseInlineMarkdown, parseMarkdownBlocks, parsePersonFrontmatter, safeExternalUrl } from './markdown';
 
 describe('inlineMarkdown', () => {
   it('resolves obsidian links, aliases, bold and code markers', () => {
     expect(inlineMarkdown('**[[PER-000001 홍길동|홍길동]]**의 `직함`')).toBe('홍길동의 직함');
     expect(inlineMarkdown('[[ORG-000003 RLWRLD]] 소속')).toBe('ORG-000003 RLWRLD 소속');
+  });
+
+  it('keeps only explicit http(s) links executable', () => {
+    expect(parseInlineMarkdown('[회사 홈페이지](https://example.com/about)').find((segment) => segment.href)).toMatchObject({
+      text: '회사 홈페이지',
+      href: 'https://example.com/about',
+    });
+    expect(parseInlineMarkdown('LinkedIn: https://www.linkedin.com/in/example.')).toEqual([
+      { text: 'LinkedIn: ' },
+      { text: 'https://www.linkedin.com/in/example', href: 'https://www.linkedin.com/in/example' },
+      { text: '.' },
+    ]);
+    expect(safeExternalUrl('javascript:alert(1)')).toBeNull();
+    expect(safeExternalUrl('../private')).toBeNull();
   });
 });
 
@@ -26,7 +40,14 @@ describe('parseMarkdownBlocks', () => {
     const blocks = parseMarkdownBlocks('| 링크 | 값 |\n| [[A\\|가]] | 1\\|2 |');
     const table = blocks[0];
     if (table.kind !== 'table') throw new Error('expected table');
-    expect(table.rows[1]).toEqual(['가', '1|2']);
+    expect(table.rows[1].map(inlineMarkdown)).toEqual(['가', '1|2']);
+  });
+
+  it('preserves links inside table cells for the renderer', () => {
+    const blocks = parseMarkdownBlocks('| 구분 | 링크 |\n| --- | --- |\n| 수상 | [평가 페이지](https://awards.example/profile) |');
+    const table = blocks[0];
+    if (table.kind !== 'table') throw new Error('expected table');
+    expect(parseInlineMarkdown(table.rows[1][1]).find((segment) => segment.href)?.href).toBe('https://awards.example/profile');
   });
 });
 

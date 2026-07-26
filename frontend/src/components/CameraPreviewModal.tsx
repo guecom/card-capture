@@ -106,6 +106,7 @@ export function CameraCaptureModal({
   isOpen,
   initialSide,
   withBackChoice,
+  galleryFree = true,
   onDismiss,
   onCaptured,
   onFinished,
@@ -113,6 +114,8 @@ export function CameraCaptureModal({
   isOpen: boolean;
   initialSide: CardSide;
   withBackChoice: boolean;
+  /** true면 OS 기본 카메라 앱을 평상시 동선에서 빼 둔다 — 그 앱이 만드는 갤러리 사본은 지울 수 없다 (ISS-000102). */
+  galleryFree?: boolean;
   onDismiss: () => void;
   onCaptured: (side: CardSide, frame: CapturedCameraFrame, meta: CapturedSideMeta) => void;
   onFinished: () => void;
@@ -542,7 +545,10 @@ export function CameraCaptureModal({
               {torchAvailable && <IonButton fill={torchOn ? 'solid' : 'outline'} onClick={() => void toggleTorch()}><Lightbulb aria-hidden="true" size={17} /> 플래시</IonButton>}
             </div>
             <IonButton expand="block" onClick={() => void capturePreviewFrame('manual')}><ImageIcon aria-hidden="true" slot="start" size={18} />{side === 'front' ? '앞면' : '뒷면'} 촬영</IonButton>
-            <IonButton expand="block" fill="outline" onClick={() => nativeInputRef.current?.click()}>기본 카메라 앱으로 찍기</IonButton>
+            {/* 여기서 찍은 사진은 갤러리에 저장되지 않는다. 기본 카메라 앱은 반대라서 평상시 동선에서 뺀다. */}
+            {galleryFree
+              ? <p className="camera-privacy-note">여기서 찍은 사진은 휴대폰 갤러리에 저장되지 않아요.</p>
+              : <IonButton expand="block" fill="outline" onClick={() => nativeInputRef.current?.click()}>기본 카메라 앱으로 찍기 · 갤러리에 남아요</IonButton>}
           </>
         )}
 
@@ -563,10 +569,11 @@ export function CameraCaptureModal({
           </div>
         )}
 
+        {/* 카메라가 안 열리는 기기에서는 막다른 길을 만들지 않는다 — 대신 갤러리에 남는다는 사실을 함께 말한다. */}
         {phase === 'error' && (
           <>
             <IonButton expand="block" onClick={() => void startPreview(side)}>다시 시도</IonButton>
-            <IonButton expand="block" fill="outline" onClick={() => nativeInputRef.current?.click()}>기본 카메라 앱으로 찍기</IonButton>
+            <IonButton expand="block" fill="outline" onClick={() => nativeInputRef.current?.click()}>기본 카메라 앱으로 찍기{galleryFree ? ' · 갤러리에 남아요' : ''}</IonButton>
           </>
         )}
         <input ref={nativeInputRef} className="native-camera-input" type="file" accept="image/*" capture="environment" onChange={(inputEvent) => { void handleNativeFile(inputEvent.target.files?.[0]); inputEvent.target.value = ''; }} />
