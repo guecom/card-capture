@@ -28,6 +28,19 @@ function sanitizeLine(text: string): string {
   return String(text).replace(/[|_\\]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+// 두 박스가 같은 시각적 줄에 있는지를 "세로 구간이 실제로 겹치는가"로 본다.
+// 그룹 첫 박스의 중심만 기준으로 삼으면, 잡음이 붙어 박스가 커진 줄("Jane |")에서 어긋난다.
+function sameVisualRow(group: OcrWord[], word: OcrWord): boolean {
+  const top = Math.min(...group.map((entry) => entry.centerRatio - entry.heightRatio / 2));
+  const bottom = Math.max(...group.map((entry) => entry.centerRatio + entry.heightRatio / 2));
+  const wordTop = word.centerRatio - word.heightRatio / 2;
+  const wordBottom = word.centerRatio + word.heightRatio / 2;
+  const smaller = Math.min(bottom - top, wordBottom - wordTop);
+  // 높이 정보가 없는 입력은 중심 거리로만 판단한다.
+  if (smaller <= 0) return Math.abs(word.centerRatio - group[0].centerRatio) <= 0.02;
+  return (Math.min(bottom, wordBottom) - Math.max(top, wordTop)) / smaller >= 0.34;
+}
+
 // 같은 시각적 줄이 여러 박스로 쪼개진 경우를 하나로 되붙인다.
 // 실기기·다른 폰트 환경에서 "Jane Kim"이 "Jane |" + "Kim"으로 나뉘는 일이 실제로 있었다.
 function mergeVisualLines(words: OcrWord[]): OcrWord[] {
@@ -35,9 +48,7 @@ function mergeVisualLines(words: OcrWord[]): OcrWord[] {
   const groups: OcrWord[][] = [];
   for (const word of sorted) {
     const current = groups[groups.length - 1];
-    const reference = current?.[0];
-    const tolerance = reference ? Math.max(0.02, reference.heightRatio * 0.6) : 0;
-    if (reference && Math.abs(word.centerRatio - reference.centerRatio) <= tolerance) current.push(word);
+    if (current && sameVisualRow(current, word)) current.push(word);
     else groups.push([word]);
   }
   return groups.filter((group) => group.length > 1).map((group) => ({
@@ -77,8 +88,36 @@ function hasKoreanSurname(name: string): boolean {
   return KOREAN_SURNAMES.has(name[0]);
 }
 
+// OCR은 `jane.kim@orbital.dev`를 `jane.kim @orbital.dev`처럼 띄워 읽는 일이 잦다 — 공백을 허용한다.
 function emailLocalParts(words: OcrWord[]): string[] {
-  return words.flatMap((word) => Array.from(String(word.text).matchAll(/([A-Za-z0-9._-]+)@/g)).map((match) => match[1].toLowerCase()));
+  return words.flatMap((word) => Array.from(String(word.text).matchAll(/([A-Za-z0-9._-]+)\s*@/g)).map((match) => match[1].toLowerCase()));
+}
+
+// 이메일 아이디가 이름을 그대로 담고 있으면(`jane.kim`), 쪼개져 나온 줄을 그 순서로 되붙인다.
+// 세로 위치가 어긋나 `mergeVisualLines`가 못 붙인 경우에도 근거(이메일)가 있으므로 이름을 복원할 수 있다.
+function namesFromEmailParts(words: OcrWord[], locals: string[]): Array<{ name: string; anchor: OcrWord }> {
+  const singles = new Map<string, OcrWord>();
+  words.forEach((word) => {
+    const line = sanitizeLine(word.text);
+    if (!/^[A-Za-z'.-]{2,20}$/.test(line)) return;
+    const key = line.toLowerCase();
+    const previous = singles.get(key);
+    if (!previous || word.heightRatio > previous.heightRatio) singles.set(key, word);
+  });
+
+  const found: Array<{ name: string; anchor: OcrWord }> = [];
+  locals.forEach((local) => {
+    const parts = local.split(/[._-]+/).filter((part) => part.length >= 2);
+    if (parts.length < 2 || parts.length > 3) return;
+    const matched = parts.map((part) => singles.get(part));
+    if (matched.some((entry) => !entry)) return;
+    const boxes = matched as OcrWord[];
+    found.push({
+      name: boxes.map((box) => sanitizeLine(box.text)).join(' '),
+      anchor: boxes.reduce((tallest, box) => (box.heightRatio > tallest.heightRatio ? box : tallest)),
+    });
+  });
+  return found;
 }
 
 // 바로 위·아래 줄(세로 위치 기준)이 직함이면 이 줄은 이름일 확률이 높다.
@@ -100,13 +139,14 @@ export interface PickedName {
 }
 
 export function nameFromOcrWords(input: OcrWord[]): PickedName | null {
-  // 원래 줄 + 같은 줄을 되붙인 줄을 함께 후보로 본다.
-  const words = [...input, ...mergeVisualLines(input)];
-  const locals = emailLocalParts(words);
+  // 원래 줄 + 같은 줄을 되붙인 줄 + 이메일 아이디로 복원한 줄을 함께 후보로 본다.
+  const merged = [...input, ...mergeVisualLines(input)];
+  const locals = emailLocalParts(merged);
   const emailMentions = (name: string): boolean => {
     const tokens = name.toLowerCase().split(/[^a-z]+/).filter((token) => token.length >= 3);
     return tokens.length > 0 && locals.some((local) => tokens.some((token) => local.includes(token)));
   };
+  const words = [...merged, ...namesFromEmailParts(merged, locals).map(({ name, anchor }) => ({ ...anchor, text: name }))];
 
   let best: { name: string; score: number; confidence: number } | null = null;
   const seen: string[] = [];
@@ -114,9 +154,12 @@ export function nameFromOcrWords(input: OcrWord[]): PickedName | null {
   words.forEach((word, index) => {
     const line = sanitizeLine(word.text);
     if (!line || lineIsNoise(line)) return;
-    if (word.confidence < 0.35) return;
 
     const titleNeighbour = nearTitleLine(words, index);
+    // 신뢰도 바닥은 잡음을 막으려는 것이다. 하지만 직함 줄이 붙어 있거나 이메일이 뒷받침하는 줄은
+    // 근거가 따로 있으므로, 인쇄가 흐려 신뢰도만 낮게 나온 이름을 여기서 버리지 않는다.
+    const supported = titleNeighbour || emailMentions(line);
+    if (word.confidence < (supported ? 0.12 : 0.35)) return;
     const candidates: Array<{ name: string; bonus: number }> = [];
 
     if (HANGUL_NAME.test(line) && !BLOCKED_NAME_PATTERN.test(line) && !COMPANY_WORD_PATTERN.test(line)) {

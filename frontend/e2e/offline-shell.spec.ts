@@ -248,15 +248,15 @@ test('restores brief, profile, contact, search, and post-processing actions', as
     await expect(page.getByText('Acme Director')).toBeVisible();
     await page.getByRole('button', { name: '닫기' }).click();
 
-    // 복원된 프로필 프렙 카드에도 메모 추가·조사 지시가 있으므로 브리핑 카드 쪽으로 스코프한다.
+    // 복원된 프로필 프렙 카드에도 메모 추가·AI 조사 요청이 있으므로 브리핑 카드 쪽으로 스코프한다.
     const composer = page.locator('ion-modal.person-action-modal');
     await page.locator('.brief-detail').getByRole('button', { name: '메모 추가' }).click();
     await composer.locator('ion-textarea[aria-label="메모 추가"] textarea').fill('후속 자료 보내기');
     await composer.getByRole('button', { name: '메모 저장' }).click();
     await expect.poll(() => actionBodies.some((body) => body.action === 'addnote')).toBe(true);
-    await page.locator('.brief-detail').getByRole('button', { name: '조사 지시' }).click();
-    await composer.locator('ion-textarea[aria-label="조사 지시"] textarea').fill('공개 인터뷰 확인');
-    await composer.getByRole('button', { name: '조사 요청' }).click();
+    await page.locator('.brief-detail').getByRole('button', { name: 'AI 조사 요청' }).click();
+    await composer.locator('ion-textarea[aria-label="AI 조사 요청"] textarea').fill('공개 인터뷰 확인');
+    await composer.getByRole('button', { name: '조사 요청 접수' }).click();
     await expect.poll(() => actionBodies.some((body) => body.action === 'researchinstruction')).toBe(true);
     await page.getByRole('button', { name: '수정 요청' }).click();
     await composer.locator('ion-textarea[aria-label="수정 요청"] textarea').fill('직함 수정');
@@ -312,8 +312,10 @@ test('captures front and back with context into the legacy queue without uploadi
 
   try {
     await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
-    // legacy 작업 화면: 맥락 필드가 촬영 전에도 보이고 완료는 앞면 전까지 잠긴다.
-    await expect(page.getByLabel('어디서 만났는지 (선택, 2시간 유지)')).toBeVisible();
+    // legacy 작업 화면: 맥락 필드는 촬영 전에도 열 수 있고 완료는 앞면 전까지 잠긴다.
+    // INT-000015에서 맥락 영역은 접히는 카드가 됐다 — 접근성은 그대로, 기본은 접힘이다.
+    await page.getByRole('button', { name: /만남 맥락/ }).click();
+    await expect(page.getByLabel('어디서 만났나요?')).toBeVisible();
     await expect(page.getByRole('button', { name: '완료', exact: true })).toBeDisabled();
     await page.getByRole('button', { name: '명함 앞면 촬영' }).click();
 
@@ -335,10 +337,10 @@ test('captures front and back with context into the legacy queue without uploadi
     await expect(page.getByAltText('앞면 미리보기')).toBeVisible();
     await expect(page.getByRole('textbox', { name: '이름 후보' })).toHaveValue('김카이렌');
     await expect(page.getByText('인식 완료 · 확인해 주세요', { exact: true })).toBeVisible();
-    await page.getByLabel('어디서 만났는지 (선택, 2시간 유지)').fill('2026 로보월드');
-    await page.getByLabel('나와 이 사람과의 관계 (선택, 2시간 유지)').fill('오늘 처음 인사');
-    await page.getByLabel('Kairen과 이 사람과의 관계 (선택, 2시간 유지)').fill('잠재 고객');
-    await page.getByLabel('메모 (선택 — 키보드 마이크로 말해도 돼요)').fill('자료 보내기');
+    await page.getByRole('textbox', { name: '어디서 만났나요?' }).fill('2026 로보월드');
+    await page.getByRole('textbox', { name: '나와의 관계' }).fill('오늘 처음 인사');
+    await page.getByRole('textbox', { name: 'Kairen과의 관계' }).fill('잠재 고객');
+    await page.getByRole('textbox', { name: '메모', exact: true }).fill('자료 보내기');
     await page.getByRole('button', { name: '완료', exact: true }).click();
     await expect(page.getByText('사진을 로컬 대기열에 보관했습니다. 연결 설정 뒤 자동으로 전송합니다.', { exact: false })).toBeVisible();
     await expect(page.locator('.queue-row', { hasText: '김카이렌' })).toContainText('4단계 중 1단계 · 사진 전송 중');

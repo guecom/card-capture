@@ -124,6 +124,38 @@ describe('OCR 잡음 복원', () => {
     expect(picked?.name).toBe('Jane Kim');
   });
 
+  // CI(windows-latest) 실측: 렌더가 흐려 'ORBITAL'이 'ORBTAL'로 읽히고 이름 줄이 두 박스로 쪼개졌다.
+  // 이메일도 'jane.kim @orbital.dev'처럼 @ 앞이 띄어 읽혔다. 이 입력에서 픽커는 null을 돌려줬다.
+  it('쪼개진 줄의 신뢰도가 낮아도 직함 줄이 붙어 있으면 이름을 살린다', () => {
+    const picked = nameFromOcrWords([
+      { text: 'ORBTAL', confidence: 0.88, heightRatio: 0.14, centerRatio: 0.2, leftRatio: 0.06 },
+      { text: 'Jane |', confidence: 0.24, heightRatio: 0.085, centerRatio: 0.55, leftRatio: 0.06 },
+      { text: 'Kim', confidence: 0.31, heightRatio: 0.085, centerRatio: 0.56, leftRatio: 0.26 },
+      { text: 'Head of Partnerships', confidence: 0.9, heightRatio: 0.055, centerRatio: 0.68, leftRatio: 0.06 },
+      { text: 'jane.kim @orbital.dev', confidence: 0.9, heightRatio: 0.05, centerRatio: 0.86, leftRatio: 0.06 },
+    ]);
+    expect(picked?.name).toBe('Jane Kim');
+  });
+
+  it('쪼개진 두 박스의 세로 중심이 어긋나도 이메일 아이디로 이름을 복원한다', () => {
+    const picked = nameFromOcrWords([
+      { text: 'ORBTAL', confidence: 0.88, heightRatio: 0.14, centerRatio: 0.2, leftRatio: 0.06 },
+      { text: 'Jane |', confidence: 0.9, heightRatio: 0.07, centerRatio: 0.52, leftRatio: 0.06 },
+      { text: 'Kim', confidence: 0.9, heightRatio: 0.11, centerRatio: 0.62, leftRatio: 0.26 },
+      { text: 'jane.kim @orbital.dev', confidence: 0.9, heightRatio: 0.05, centerRatio: 0.86, leftRatio: 0.06 },
+    ]);
+    expect(picked?.name).toBe('Jane Kim');
+  });
+
+  it('이메일 아이디와 겹치지 않는 낱말은 이름으로 되붙이지 않는다', () => {
+    const picked = nameFromOcrWords([
+      { text: 'Smart', confidence: 0.9, heightRatio: 0.1, centerRatio: 0.3, leftRatio: 0.06 },
+      { text: 'Factory', confidence: 0.9, heightRatio: 0.1, centerRatio: 0.62, leftRatio: 0.06 },
+      { text: 'contact @orbital.dev', confidence: 0.9, heightRatio: 0.05, centerRatio: 0.86, leftRatio: 0.06 },
+    ]);
+    expect(picked).toBeNull();
+  });
+
   it('세로획 잡음이 붙어도 한글 이름을 그대로 읽는다', () => {
     const picked = nameFromOcrWords([
       { text: '|이강규', confidence: 0.95, heightRatio: 0.1, centerRatio: 0.5, leftRatio: 0.06 },

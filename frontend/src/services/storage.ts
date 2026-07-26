@@ -98,14 +98,20 @@ export function saveGalleryFree(enabled: boolean): void {
 }
 
 // 섹션 접기 상태 — legacy와 같은 키(cc_collapse_recent, cc_collapse_briefs)를 공유한다.
-export type CollapsibleSection = 'recent' | 'briefs';
+// `context`는 촬영 화면의 만남 맥락 영역이다 (INT-000015).
+export type CollapsibleSection = 'recent' | 'briefs' | 'context';
 
-export function loadSectionCollapsed(section: CollapsibleSection): boolean {
-  return read(`collapse_${section}`) === '1';
+// `fallback`은 사용자가 아직 접거나 편 적이 없을 때의 기본값이다.
+// 만남 맥락은 선택 입력이라 기본은 접힘 — 촬영 버튼이 화면 아래로 밀리지 않는다 (INT-000015).
+export function loadSectionCollapsed(section: CollapsibleSection, fallback = false): boolean {
+  const value = read(`collapse_${section}`);
+  if (value === '1') return true;
+  if (value === '0') return false;
+  return fallback;
 }
 
 export function saveSectionCollapsed(section: CollapsibleSection, collapsed: boolean): void {
-  write(`collapse_${section}`, collapsed ? '1' : '');
+  write(`collapse_${section}`, collapsed ? '1' : '0');
 }
 
 export function loadRecentSearches(): string[] {
