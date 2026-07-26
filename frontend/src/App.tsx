@@ -16,7 +16,7 @@ import {
   IonToolbar,
   setupIonicReact,
 } from '@ionic/react';
-import { ArrowUpRight, Camera, ChevronRight, FileText, Mail, MessageCircle, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Waves } from 'lucide-react';
+import { ArrowUpRight, Camera, ChevronRight, FileText, ImageOff, Mail, MessageCircle, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, Waves } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { BriefItem, CaptureQueueItem, PersonTarget, QuickName, RuntimeConfig, SearchItem } from './contracts/capture';
@@ -25,23 +25,26 @@ import { StatusBadge } from './components/StatusBadge';
 import { MarkdownLite } from './components/MarkdownLite';
 import { ActionSection, ContactActions, PersonDocument } from './components/PersonDocument';
 import { addPersonNote, listBriefs, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
-import { type CapturedCameraFrame, fileToCameraFrame, thumbnailOf } from './services/camera';
+import { type CapturedCameraFrame, thumbnailOf } from './services/camera';
 import { buildLegacyNote, buildQueuedCapture, parseLegacyNote } from './services/capture-item';
 import { actionErrorMessage, briefListTitle, briefNameMap, briefTitle, elapsedMinutesOf, pendingProgress } from './services/brief-view';
 import { contactCardFromBrief } from './services/contacts';
 import { getOpenCvWorker, prefetchOpenCv } from './services/opencv';
 import { prefetchQuickOcrAssets } from './services/paddle-quickname';
 import { flushQueue, pruneSentQueue, putQueueItem, readQueue } from './services/queue';
+import { describeRecallQuery, type RecallResult, runRecallSearch, serverFallbackTerm } from './services/recall-search';
 import { buildResearchInstruction } from './services/research';
 import { recognizeQuickName } from './services/vision';
 import {
   loadCachedBriefs,
+  loadGalleryFree,
   loadOwnerFlags,
   loadRecentSearches,
   loadRuntimeConfig,
   loadSectionCollapsed,
   loadStickyCaptureContext,
   saveCachedBriefs,
+  saveGalleryFree,
   saveOwnerFlags,
   saveRecentSearch,
   saveRuntimeConfig,
@@ -66,6 +69,17 @@ const tabs: Array<{ id: Tab; label: string; icon: LucideIcon }> = [
   { id: 'people', label: '검색', icon: Search },
   { id: 'settings', label: '설정', icon: Settings2 },
 ];
+
+// 상단 바가 화면 이름을 소유한다 — 예전에는 제품 이름만 띄우고 각 화면이 큰 제목을 또 그려
+// 폰 화면 위쪽 160px이 제목 두 줄로 쓰였다 (founder 판정 2026-07-26: "허접해 보인다").
+const screenTitles: Record<Tab, string> = {
+  capture: '명함 캡처',
+  activity: '처리 진행',
+  people: '사람 찾기',
+  settings: '내 앱 설정',
+};
+
+type SearchMode = 'quick' | 'recall';
 
 function formatMoment(value?: string): string {
   if (!value) return '시간 정보 없음';
@@ -110,7 +124,8 @@ function queueContextLine(item: CaptureQueueItem): string {
 function captureToast(side: CardSide, meta: CapturedSideMeta): string {
   const label = side === 'front' ? '앞면' : '뒷면';
   let text: string;
-  if (meta.source === 'native') text = `${label} 준비 완료`;
+  // 기본 카메라 앱으로 찍은 사진은 그 앱이 갤러리에 저장한다 — 우리가 지울 수 없으니 사실대로 알린다.
+  if (meta.source === 'native') text = `${label} 준비 완료 · 기본 카메라로 찍어 갤러리에 사진이 남았어요`;
   else if (meta.cropState === 'rectified') text = meta.source === 'auto' ? `${label} 자동 촬영 · 크롭 완료` : `${label} 저장 — 자동 크롭됨`;
   else text = `${label} 저장`;
   if (meta.blurry) text += ' · 사진이 조금 흐릿해요 — 필요하면 다시 찍어주세요';
@@ -169,6 +184,10 @@ function App() {
   const [searching, setSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchItem[]>([]);
   const [recentSearches, setRecentSearches] = useState<string[]>(loadRecentSearches);
+  const [searchMode, setSearchMode] = useState<SearchMode>('quick');
+  const [recallResult, setRecallResult] = useState<RecallResult | null>(null);
+  const [recallServerItems, setRecallServerItems] = useState<SearchItem[]>([]);
+  const [galleryFree, setGalleryFree] = useState(loadGalleryFree);
   const [sending, setSending] = useState(false);
   // owner 게이트는 legacy처럼 localStorage 캐시로 시작해 서버 응답으로 갱신한다 — 오프라인에도 유지.
   const [ownerCanSeeAll, setOwnerCanSeeAll] = useState(() => loadOwnerFlags().seeAll);
@@ -192,7 +211,8 @@ function App() {
   const [personActionSubmitting, setPersonActionSubmitting] = useState(false);
   const [queueEdit, setQueueEdit] = useState<CaptureQueueItem | null>(null);
   const [queueRetakeSide, setQueueRetakeSide] = useState<'front.jpg' | 'back.jpg'>('front.jpg');
-  const queueRetakeInputRef = useRef<HTMLInputElement>(null);
+  // 카메라 모달이 "새 캡처"가 아니라 "기존 캡처의 한 면 교체"로 열렸는지.
+  const [retakeMode, setRetakeMode] = useState(false);
   const flushingRef = useRef(false);
   const contentRef = useRef<HTMLIonContentElement>(null);
 
@@ -339,6 +359,16 @@ function App() {
     return entries.sort((a, b) => b.id.localeCompare(a.id));
   }, [briefs, queue]);
 
+  // 상단 바의 한 줄 상태. 제품 이름 대신 "지금 무슨 일이 일어나는지"를 소유한다.
+  const pendingCount = useMemo(() => feed.filter((entry) => (entry.local && entry.local.state !== 'sent')
+    || (entry.brief && entry.brief.status !== 'processed' && entry.brief.status !== 'skipped')).length, [feed]);
+  const headerStatus = !configured ? '연결 필요 — 개인 링크로 열어주세요'
+    : loading ? '최신 상태 확인 중…'
+      : sending ? '사진 전송 중…'
+        : pendingCount > 0 ? `${pendingCount}건 처리 중`
+          : feed.length > 0 ? `기록 ${feed.length}건 · 모두 최신`
+            : '첫 명함을 기다리고 있어요';
+
   const setupBannerMessage = !config.apiUrl
     ? '연결할 서버 주소가 없어요 — 받으신 개인 링크로 접속하거나 설정의 고급 항목에서 주소를 넣어주세요.'
     : !config.token
@@ -364,9 +394,48 @@ function App() {
     }
   }, [config, configured, ownerCanSeeAll]);
 
+  // 자연어 회상 검색 (ISS-000103). 문장은 기기 밖으로 나가지 않는다 — 여기서 조건으로 바꿔
+  // 이 기기가 이미 받아 둔 기록과 대조하고, 그래도 없을 때만 기존 검색 endpoint에 단어 하나를 넘긴다.
+  const runRecall = useCallback(async (value: string) => {
+    const text = value.trim();
+    if (!text) return;
+    setSearching(true);
+    setRecallServerItems([]);
+    try {
+      let corpus = briefs;
+      if (configured) {
+        try {
+          const response = await listBriefs(config, 100);
+          if (response.ok && response.items) {
+            corpus = response.items;
+            setBriefs(corpus);
+            saveCachedBriefs(corpus);
+          }
+        } catch {
+          // 오프라인이면 기기에 캐시된 기록으로 그대로 진행한다.
+        }
+      }
+      const result = runRecallSearch(corpus, text);
+      setRecallResult(result);
+      setRecentSearches(saveRecentSearch(text));
+      const fallback = serverFallbackTerm(result.query);
+      if (result.candidates.length === 0 && fallback && configured && ownerCanSeeAll) {
+        try {
+          const response = await searchPeople(config, fallback);
+          if (response.ok) setRecallServerItems(response.items ?? []);
+        } catch {
+          // 서버 보조 검색 실패는 회상 결과 자체를 막지 않는다.
+        }
+      }
+    } finally {
+      setSearching(false);
+    }
+  }, [briefs, config, configured, ownerCanSeeAll]);
+
   function submitSearch(formEvent: FormEvent) {
     formEvent.preventDefault();
-    void runSearch(query);
+    if (searchMode === 'recall') void runRecall(query);
+    else void runSearch(query);
   }
 
   function commitSettings() {
@@ -431,7 +500,25 @@ function App() {
     setOcrState('이름 인식 대기');
   }, []);
 
+  // 캡처 수정 화면의 재촬영도 앱 카메라를 쓴다 — 예전에는 OS 기본 카메라를 열어 갤러리에 사본이 생겼다.
+  const applyRetakeFrame = useCallback(async (frame: CapturedCameraFrame) => {
+    const dataB64 = frame.dataUrl.slice(frame.dataUrl.indexOf(',') + 1);
+    const image = { name: queueRetakeSide, mime: 'image/jpeg' as const, dataB64 };
+    const thumb = queueRetakeSide === 'front.jpg' ? await thumbnailOf(frame.dataUrl) : null;
+    setQueueEdit((current) => current ? {
+      ...current,
+      ...(thumb !== null ? { thumb } : {}),
+      images: [...current.images.filter((candidate) => candidate.name !== queueRetakeSide), image]
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    } : null);
+  }, [queueRetakeSide]);
+
   const handleCaptured = useCallback((side: CardSide, frame: CapturedCameraFrame, meta: CapturedSideMeta) => {
+    if (retakeMode) {
+      void applyRetakeFrame(frame);
+      setMessage(`${queueRetakeSide === 'front.jpg' ? '앞면' : '뒷면'} 사진을 바꿨어요 — 저장하면 다시 보냅니다`);
+      return;
+    }
     if (side === 'front') {
       setFrontFrame(frame);
       startQuickNameOcr(frame);
@@ -439,9 +526,12 @@ function App() {
       setBackFrame(frame);
     }
     setMessage(captureToast(side, meta));
-  }, [startQuickNameOcr]);
+  }, [applyRetakeFrame, queueRetakeSide, retakeMode, startQuickNameOcr]);
 
-  const closeCameraSession = useCallback(() => setCameraSession(null), []);
+  const closeCameraSession = useCallback(() => {
+    setCameraSession(null);
+    setRetakeMode(false);
+  }, []);
 
   const completeCapture = useCallback(async () => {
     if (!frontFrame || queueing) return;
@@ -486,23 +576,11 @@ function App() {
     else setMessage('연결 설정을 저장하면 이 캡처를 자동으로 다시 보냅니다.');
   }, [configured, flushPendingQueue]);
 
-  const replaceQueueImage = useCallback(async (file: File | undefined) => {
-    if (!file || !queueEdit) return;
-    try {
-      const frame = await fileToCameraFrame(file);
-      const dataB64 = frame.dataUrl.slice(frame.dataUrl.indexOf(',') + 1);
-      const image = { name: queueRetakeSide, mime: 'image/jpeg' as const, dataB64 };
-      const thumb = queueRetakeSide === 'front.jpg' ? await thumbnailOf(frame.dataUrl) : null;
-      setQueueEdit((current) => current ? {
-        ...current,
-        ...(thumb !== null ? { thumb } : {}),
-        images: [...current.images.filter((candidate) => candidate.name !== queueRetakeSide), image]
-          .sort((a, b) => a.name.localeCompare(b.name)),
-      } : null);
-    } catch {
-      setMessage('사진을 읽지 못했습니다. 다시 시도해 주세요.');
-    }
-  }, [queueEdit, queueRetakeSide]);
+  const startRetake = useCallback((side: 'front.jpg' | 'back.jpg') => {
+    setQueueRetakeSide(side);
+    setRetakeMode(true);
+    setCameraSession({ side: side === 'front.jpg' ? 'front' : 'back', withChoice: false });
+  }, []);
 
   const saveQueueEdit = useCallback(async () => {
     if (!queueEdit || !queueEdit.images.some((image) => image.dataB64)) return;
@@ -806,7 +884,6 @@ function App() {
             <span className="caret" aria-hidden="true">{recordsCollapsed ? '▸' : '▾'}</span> 명함 기록
           </button>
           {sending && <span className="sending-note">전송 중…</span>}
-          <button className="refresh-chip" type="button" onClick={() => void manualRefresh()}>새로고침</button>
         </div>
         {!recordsCollapsed && <div className="records-feed">{renderFeedBody()}</div>}
       </div>
@@ -816,45 +893,112 @@ function App() {
   function renderActivity() {
     return (
       <div className="cc-stack">
-        <div className="section-heading top-heading">
-          <div><span className="eyebrow">최근 명함</span><h1>처리 진행</h1></div>
-          <button className="activity-refresh" onClick={() => void manualRefresh()}><RefreshCw aria-hidden="true" size={15} />최신 상태 확인</button>
-        </div>
         {!configured && <EmptyState title="연결 설정이 필요해요" body="받으신 개인 링크(?k=토큰 포함)로 접속하면 같은 진행 상태를 읽습니다." action="설정 열기" onAction={() => { setDraftConfig(config); setSettingsOpen(true); }} />}
         <div className="records-feed">{renderFeedBody()}</div>
       </div>
     );
   }
 
+  function renderPersonSearchRow(item: SearchItem) {
+    const personId = (/PER-\d{6}/.exec(item.title) ?? [null])[0];
+    const displayName = item.title.replace(/^PER-\d+\s*/, '');
+    return (
+      <button className="person-row" type="button" key={item.id} onClick={() => void openDocument(displayName, { id: item.id }, personId ? { person: personId } : null)}>
+        <div className="avatar" aria-hidden="true">{displayName.slice(0, 1)}</div>
+        <div className="row-copy"><strong>{displayName}</strong><span>{item.title.split(' ')[0]}{item.via === 'content' ? ' · 본문 일치' : ''}</span></div>
+        <ChevronRight aria-hidden="true" size={18} />
+      </button>
+    );
+  }
+
+  // 회상 검색 결과: 후보마다 "왜 이 사람인지"를 근거로 붙인다. 근거 없는 추측은 만들지 않는다.
+  function renderRecall() {
+    if (!recallResult) {
+      return (
+        <EmptyState
+          title="기억나는 대로 말해 보세요"
+          body="예: 지난주쯤 만난 한화 다니던 구매팀장 / 로보월드에서 만난 로봇 회사 대표. 문장은 이 기기 안에서만 대조하고 밖으로 보내지 않아요."
+        />
+      );
+    }
+    const { query: parsed, candidates, unmatchedTerms, searchedCount } = recallResult;
+    return (
+      <>
+        <section className="recall-readback">
+          <p>{describeRecallQuery(parsed)}</p>
+          <small>이 기기에 있는 기록 {searchedCount}건과 대조했어요.</small>
+          {parsed.ignored.length > 0 && (
+            <ul className="recall-ignored">
+              {parsed.ignored.map((entry) => <li key={entry.text}>{entry.reason}</li>)}
+            </ul>
+          )}
+          {unmatchedTerms.length > 0 && <small>{unmatchedTerms.map((term) => `'${term}'`).join(', ')}은(는) 어느 기록에서도 찾지 못했어요.</small>}
+        </section>
+        {candidates.length === 0 && (
+          <EmptyState
+            title="조건에 맞는 기록이 없어요"
+            body={recallServerItems.length > 0
+              ? '기기 기록에서는 못 찾아 전체 기록도 찾아봤어요. 아래 결과에는 만난 시점 정보가 없어요.'
+              : '기억나는 다른 단서(회사·만난 곳·직함)를 덧붙이거나, 빠른 검색으로 이름을 직접 찾아보세요.'}
+          />
+        )}
+        {candidates.map((candidate) => {
+          const name = briefTitle(candidate.item).split(' — ')[0];
+          return (
+            <article className={`recall-card${candidate.partial ? ' partial' : ''}`} key={candidate.item.captureId}>
+              <button type="button" onClick={() => void openDocument(name, { captureId: candidate.item.captureId }, { captureId: candidate.item.captureId })}>
+                <div className="avatar" aria-hidden="true">{name.slice(0, 1)}</div>
+                <div className="row-copy">
+                  <strong>{name}</strong>
+                  <span>{[candidate.item.contact?.title, candidate.item.contact?.organization].filter(Boolean).join(' · ') || formatMoment(candidate.item.receivedAt || candidate.item.capturedAt)}</span>
+                </div>
+                <ChevronRight aria-hidden="true" size={18} />
+              </button>
+              <ul className="recall-evidence">
+                {candidate.evidence.map((entry) => <li key={entry.label} data-kind={entry.kind}>{entry.label}</li>)}
+              </ul>
+            </article>
+          );
+        })}
+        {recallServerItems.length > 0 && (
+          <section className="recall-fallback">
+            <span>전체 기록 검색 결과 · 만난 시점 정보 없음</span>
+            {recallServerItems.map(renderPersonSearchRow)}
+          </section>
+        )}
+      </>
+    );
+  }
+
   function renderPeople() {
+    const recall = searchMode === 'recall';
     return (
       <div className="cc-stack">
-        <div className="section-heading top-heading"><div><span className="eyebrow">빠른 검색</span><h1>사람 찾기</h1></div></div>
+        <div className="mode-switch" role="tablist" aria-label="검색 방식">
+          <button type="button" role="tab" aria-selected={!recall} className={recall ? '' : 'active'} onClick={() => setSearchMode('quick')}><Search aria-hidden="true" size={14} />빠른 검색</button>
+          <button type="button" role="tab" aria-selected={recall} className={recall ? 'active' : ''} onClick={() => setSearchMode('recall')}><Sparkles aria-hidden="true" size={14} />AI 사람 찾기</button>
+        </div>
         <form className="search-shell" onSubmit={submitSearch}>
           <Search aria-hidden="true" size={19} />
-          <input value={query} onChange={(changeEvent) => setQuery(changeEvent.target.value)} placeholder="이름·회사·만난 곳으로 검색" aria-label="이름·회사·만난 곳으로 검색" />
-          <button type="submit" disabled={!configured || !ownerCanSeeAll || searching}>{searching ? '검색 중' : '검색'}</button>
+          <input
+            value={query}
+            onChange={(changeEvent) => setQuery(changeEvent.target.value)}
+            placeholder={recall ? '예: 지난주쯤 만난 한화 다니던 사람' : '이름·회사·만난 곳으로 검색'}
+            aria-label={recall ? '기억나는 대로 문장으로 찾기' : '이름·회사·만난 곳으로 검색'}
+          />
+          <button type="submit" disabled={!configured || !ownerCanSeeAll || searching}>{searching ? '찾는 중' : '찾기'}</button>
         </form>
         {recentSearches.length > 0 && (
           <div className="recent-searches" aria-label="최근 검색">
             {recentSearches.map((value) => (
-              <button key={value} type="button" onClick={() => { setQuery(value); void runSearch(value); }}><Search aria-hidden="true" size={12} />{value}</button>
+              <button key={value} type="button" onClick={() => { setQuery(value); void (recall ? runRecall(value) : runSearch(value)); }}><Search aria-hidden="true" size={12} />{value}</button>
             ))}
           </div>
         )}
         {(!configured || !ownerCanSeeAll) && <EmptyState title="소유자 연결이 필요해요" body="Person 검색은 기존과 동일하게 owner token에서만 동작합니다." action="설정 열기" onAction={() => { setDraftConfig(config); setSettingsOpen(true); }} />}
-        {configured && ownerCanSeeAll && searchResults.length === 0 && !searching && <EmptyState title="찾을 사람을 입력하세요" body="미팅 전 10초 회상 — 이름·회사·만난 곳으로 기존 기록을 찾습니다." />}
-        {searchResults.map((item) => {
-          const personId = (/PER-\d{6}/.exec(item.title) ?? [null])[0];
-          const displayName = item.title.replace(/^PER-\d+\s*/, '');
-          return (
-            <button className="person-row" type="button" key={item.id} onClick={() => void openDocument(displayName, { id: item.id }, personId ? { person: personId } : null)}>
-              <div className="avatar" aria-hidden="true">{displayName.slice(0, 1)}</div>
-              <div className="row-copy"><strong>{displayName}</strong><span>{item.title.split(' ')[0]}{item.via === 'content' ? ' · 본문 일치' : ''}</span></div>
-              <ChevronRight aria-hidden="true" size={18} />
-            </button>
-          );
-        })}
+        {configured && ownerCanSeeAll && !recall && searchResults.length === 0 && !searching && <EmptyState title="찾을 사람을 입력하세요" body="미팅 전 10초 회상 — 이름·회사·만난 곳으로 기존 기록을 찾습니다." />}
+        {configured && ownerCanSeeAll && !recall && searchResults.map(renderPersonSearchRow)}
+        {configured && ownerCanSeeAll && recall && renderRecall()}
       </div>
     );
   }
@@ -862,12 +1006,30 @@ function App() {
   function renderSettings() {
     return (
       <div className="cc-stack">
-        <div className="section-heading top-heading"><div><span className="eyebrow">이 기기</span><h1>내 앱 설정</h1></div></div>
         <section className="surface-card settings-summary">
           <div><span>사용자</span><strong>{config.capturer || '이름을 입력해 주세요'}</strong></div>
           <div><span>명함 연결</span><strong>{configured ? '연결됨' : (config.token ? '연결 주소 확인 필요' : '개인 링크로 접속해 주세요')}</strong></div>
           <div><span>개인 링크</span><strong>{config.token ? '이 기기에 저장됨' : '아직 저장되지 않음'}</strong></div>
           <IonButton fill="outline" expand="block" onClick={() => { setDraftConfig(config); setAdvancedOpen(false); setSettingsOpen(true); }}>사용자·연결 정보 편집</IonButton>
+        </section>
+        {/* ISS-000102: 갤러리 사본은 OS 기본 카메라 앱만 만든다. 지울 수 없는 것을 지운다고 말하지 않는다. */}
+        <section className="surface-card gallery-card">
+          <div className="gallery-head"><ImageOff aria-hidden="true" size={17} /><strong>명함 사진과 갤러리</strong></div>
+          <p>카이렌 카메라로 찍은 명함은 <b>휴대폰 갤러리에 저장되지 않아요.</b> 앱 안에만 두었다가 전송이 확인되면 10분 뒤 원본을 지우고 목록용 작은 썸네일만 남깁니다.</p>
+          <label className="gallery-toggle">
+            <input
+              type="checkbox"
+              checked={galleryFree}
+              onChange={(changeEvent) => { const next = changeEvent.target.checked; setGalleryFree(next); saveGalleryFree(next); }}
+            />
+            <span>
+              <strong>기본 카메라 앱 쓰지 않기</strong>
+              <small>{galleryFree
+                ? '켜짐 — 촬영 화면에서 기본 카메라 앱 버튼을 숨깁니다. 카메라가 열리지 않는 기기에서는 예외로 보여 줘요.'
+                : '꺼짐 — 기본 카메라 앱으로도 찍을 수 있어요. 그 사진은 갤러리에 남고 카이렌이 지울 수 없습니다.'}</small>
+            </span>
+          </label>
+          <small className="gallery-foot">이미 갤러리에 쌓인 사진은 앱이 지울 수 없어요 — 휴대폰 갤러리에서 직접 지워 주세요.</small>
         </section>
         <section className="boundary-note">
           <ShieldCheck aria-hidden="true" size={20} />
@@ -884,7 +1046,18 @@ function App() {
       <IonPage>
         <IonHeader translucent>
           <IonToolbar>
-            <div className="brand-lockup" slot="start"><span className="brand-mark">K</span><span><b>Card Capture</b><small>Kairen</small></span></div>
+            <div className="app-header">
+              <span className="brand-mark" aria-hidden="true">K</span>
+              <span className="app-header-copy">
+                <b>{screenTitles[tab]}</b>
+                <small role="status">{headerStatus}</small>
+              </span>
+              {tab !== 'settings' && (
+                <button className="header-refresh" type="button" aria-label="최신 상태 확인" aria-busy={loading} onClick={() => void manualRefresh()}>
+                  <RefreshCw className={loading ? 'spinning' : ''} aria-hidden="true" size={17} />
+                </button>
+              )}
+            </div>
           </IonToolbar>
         </IonHeader>
         <IonContent ref={contentRef} fullscreen>
@@ -974,8 +1147,8 @@ function App() {
             {queueEdit && (
               <>
                 <div className="queue-edit-images">
-                  <div>{queueNamedImageSource(queueEdit, 'front.jpg') ? <img src={queueNamedImageSource(queueEdit, 'front.jpg')} alt="편집할 명함 앞면" /> : <span>앞면 원본 없음</span>}<button type="button" onClick={() => { setQueueRetakeSide('front.jpg'); queueRetakeInputRef.current?.click(); }}>앞면 다시 찍기</button></div>
-                  <div>{queueNamedImageSource(queueEdit, 'back.jpg') ? <img src={queueNamedImageSource(queueEdit, 'back.jpg')} alt="편집할 명함 뒷면" /> : <span>뒷면 없음</span>}<button type="button" onClick={() => { setQueueRetakeSide('back.jpg'); queueRetakeInputRef.current?.click(); }}>{queueNamedImageSource(queueEdit, 'back.jpg') ? '뒷면 다시 찍기' : '뒷면 추가'}</button></div>
+                  <div>{queueNamedImageSource(queueEdit, 'front.jpg') ? <img src={queueNamedImageSource(queueEdit, 'front.jpg')} alt="편집할 명함 앞면" /> : <span>앞면 원본 없음</span>}<button type="button" onClick={() => startRetake('front.jpg')}>앞면 다시 찍기</button></div>
+                  <div>{queueNamedImageSource(queueEdit, 'back.jpg') ? <img src={queueNamedImageSource(queueEdit, 'back.jpg')} alt="편집할 명함 뒷면" /> : <span>뒷면 없음</span>}<button type="button" onClick={() => startRetake('back.jpg')}>{queueNamedImageSource(queueEdit, 'back.jpg') ? '뒷면 다시 찍기' : '뒷면 추가'}</button></div>
                 </div>
                 <section className="capture-context-fields light">
                   <IonInput label="어디서 만났는지" labelPlacement="stacked" value={queueEdit.event ?? ''} onIonInput={(inputEvent) => setQueueEdit((current) => current ? { ...current, event: String(inputEvent.detail.value ?? '') } : null)} />
@@ -985,7 +1158,6 @@ function App() {
                 </section>
                 {!queueEdit.images.some((image) => image.dataB64) && <p className="modal-copy">오래된 전송 완료 캡처라 원본 사진이 정리됐습니다. 앞면을 다시 찍으면 같은 captureId로 재전송할 수 있습니다.</p>}
                 <IonButton expand="block" disabled={!queueEdit.images.some((image) => image.dataB64)} onClick={() => void saveQueueEdit()}>저장하고 다시 보내기</IonButton>
-                <input ref={queueRetakeInputRef} className="native-camera-input" type="file" accept="image/*" capture="environment" onChange={(inputEvent) => { void replaceQueueImage(inputEvent.target.files?.[0]); inputEvent.target.value = ''; }} />
               </>
             )}
           </IonContent>
@@ -995,6 +1167,7 @@ function App() {
           isOpen={Boolean(cameraSession)}
           initialSide={cameraSession?.side ?? 'front'}
           withBackChoice={cameraSession?.withChoice ?? false}
+          galleryFree={galleryFree}
           onDismiss={closeCameraSession}
           onCaptured={handleCaptured}
           onFinished={closeCameraSession}

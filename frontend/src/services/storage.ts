@@ -86,6 +86,17 @@ export function saveStickyCaptureContext(context: StickyCaptureContext, now = Da
   write('stickyAt', String(now));
 }
 
+// 기기 갤러리 정책 (ISS-000102).
+// 카이렌 카메라로 찍은 사진은 앱 안에만 있고 갤러리에 저장되지 않는다. 갤러리에 사본을 만드는 것은
+// OS 기본 카메라 앱뿐이고, 그 사본은 웹 앱이 지울 수 없다 — 그래서 기본값은 "기본 카메라 쓰지 않기"다.
+export function loadGalleryFree(): boolean {
+  return read('galleryFree') !== 'off';
+}
+
+export function saveGalleryFree(enabled: boolean): void {
+  write('galleryFree', enabled ? '' : 'off');
+}
+
 // 섹션 접기 상태 — legacy와 같은 키(cc_collapse_recent, cc_collapse_briefs)를 공유한다.
 export type CollapsibleSection = 'recent' | 'briefs';
 

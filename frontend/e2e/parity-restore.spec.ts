@@ -307,7 +307,7 @@ test('restores the legacy one-screen capture surface and link-first onboarding',
 
     // 설정: 주소·토큰은 고급 항목 뒤에 숨고 토큰 라벨이 개인 링크 안내로 바뀐다.
     await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '설정' }).click();
-    await expect(page.getByRole('heading', { name: '내 앱 설정' })).toBeVisible();
+    await expect(page.locator('ion-header .app-header b')).toHaveText('내 앱 설정');
     await expect(page.getByText('개인 링크 정보는 이 기기에만 저장돼요.')).toBeVisible();
     await page.getByRole('button', { name: '사용자·연결 정보 편집' }).click();
     await expect(page.getByLabel('촬영자 이름')).toBeVisible();

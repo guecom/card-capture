@@ -1,6 +1,7 @@
 import { type ReactNode, useMemo } from 'react';
-import { ArrowUpRight, Link2, Mail, MessageCircle, Phone, Plus, Search, UserPlus } from 'lucide-react';
+import { ArrowUpRight, Link2, Mail, MessageCircle, Phone, Plus, Search, Sparkles, UserPlus } from 'lucide-react';
 import type { PersonTarget } from '../contracts/capture';
+import { buildHighlights, highlightLabel } from '../services/highlights';
 import { labelImageEmbeds, type PersonFrontmatter, parsePersonFrontmatter, safeExternalUrl } from '../services/markdown';
 import { type ContactCard, buildVCard, contactCardFromFrontmatter, hasContactActions } from '../services/contacts';
 import { MarkdownLite } from './MarkdownLite';
@@ -83,8 +84,25 @@ export function PersonDocument({
   const contact = useMemo(() => contactCardFromFrontmatter(parsed, fallbackName), [fallbackName, parsed]);
   const body = useMemo(() => labelImageEmbeds(parsed.body), [parsed.body]);
   const profileLinks = useMemo(() => profileLinksFromFrontmatter(parsed), [parsed]);
+  const highlights = useMemo(() => buildHighlights(markdown), [markdown]);
   return (
     <div className="person-document">
+      {/* 전문을 읽기 전에 지금 쓸 만한 사실 1~3줄. 기록에 있는 문장만 인용하고 출처 섹션을 함께 보여 준다. */}
+      {highlights.items.length > 0 && (
+        <section className="now-card" aria-label="지금 알아둘 것">
+          <span className="now-head"><Sparkles aria-hidden="true" size={13} />지금 알아둘 것</span>
+          <ul>
+            {highlights.items.map((highlight) => (
+              <li key={highlight.text}>
+                <strong>{highlightLabel(highlight.kind)}</strong>
+                <p>{highlight.text}</p>
+                <small>기록의 “{highlight.sourceSection}”에서 그대로 가져왔어요</small>
+              </li>
+            ))}
+          </ul>
+          <small className="now-foot">{highlights.checkedAt ? `${highlights.checkedAt} 기준 기록이에요 — 만나기 전에 최신 여부만 확인하세요.` : '확인 시점이 기록에 없어요 — 최신 여부는 직접 확인하세요.'}</small>
+        </section>
+      )}
       <section className="prep-card">
         <strong>{contact.name}{contact.title ? ` · ${contact.title}` : ''}</strong>
         {contact.organization && <span>{contact.organization}</span>}
