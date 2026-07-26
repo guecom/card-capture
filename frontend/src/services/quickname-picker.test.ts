@@ -55,4 +55,59 @@ describe('nameFromOcrWords', () => {
     const picked = nameFromOcrWords([word('김서연', 0.12, { confidence: 0.87 })]);
     expect(picked?.confidence).toBe(87);
   });
+
+  // ── 로고를 크게 넣는 명함: v1은 여기서 회사명을 이름으로 뽑았다 (founder 판정 2026-07-26) ──
+
+  it('does not pick the big all-caps logo over the smaller person name', () => {
+    const picked = nameFromOcrWords([
+      word('NOVARO', 0.16, { centerRatio: 0.18 }),      // 로고 — 카드에서 가장 큰 글자
+      word('강수민', 0.09, { centerRatio: 0.45 }),
+      word('Founder', 0.05, { centerRatio: 0.55 }),
+      word('sumin@novaro.io', 0.04, { centerRatio: 0.72 }),
+    ]);
+    expect(picked?.name).toBe('강수민');
+  });
+
+  it('rejects a hangul company word that is not a person name', () => {
+    // 카이렌·로보틱스는 2~4자 한글이지만 성씨로 시작하지 않거나 회사 어휘다.
+    const picked = nameFromOcrWords([
+      word('카이렌', 0.15, { centerRatio: 0.2 }),
+      word('로보틱스', 0.12, { centerRatio: 0.3 }),
+      word('윤도현', 0.08, { centerRatio: 0.5 }),
+    ]);
+    expect(picked?.name).toBe('윤도현');
+  });
+
+  it('returns null rather than guessing when only company text is present', () => {
+    expect(nameFromOcrWords([
+      word('NOVARO', 0.16),
+      word('로보틱스', 0.12),
+      word('스마트팩토리 솔루션', 0.06),
+    ])).toBeNull();
+  });
+
+  it('uses the title on the neighbouring line to confirm an unusual surname', () => {
+    const picked = nameFromOcrWords([
+      word('두베르', 0.1, { centerRatio: 0.4 }),   // 성씨 목록에 없는 이름
+      word('연구소장', 0.05, { centerRatio: 0.5 }),
+    ]);
+    expect(picked?.name).toBe('두베르');
+  });
+
+  it('accepts an all-caps english name when the email backs it up', () => {
+    const picked = nameFromOcrWords([
+      word('JANE KIM', 0.12, { centerRatio: 0.3 }),
+      word('jane.kim@novaro.io', 0.04, { centerRatio: 0.8 }),
+    ]);
+    expect(picked?.name).toBe('JANE KIM');
+  });
+
+  it('prefers the email-corroborated english name over a larger brand line', () => {
+    const picked = nameFromOcrWords([
+      word('Novaro Systems', 0.14, { centerRatio: 0.2 }),
+      word('Daniel Park', 0.09, { centerRatio: 0.45 }),
+      word('daniel@novaro.io', 0.04, { centerRatio: 0.75 }),
+    ]);
+    expect(picked?.name).toBe('Daniel Park');
+  });
 });

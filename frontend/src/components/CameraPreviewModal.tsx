@@ -132,6 +132,9 @@ export function CameraCaptureModal({
   // 안 그러면 사용자가 명함을 뒤집기도 전에(실측 1.5초) 앞면이 뒷면으로 다시 찍힌다 (founder 판정 2026-07-26).
   const autoArmedRef = useRef(true);
   const rearmAtRef = useRef(0);
+  // 직전 프레임의 감지 사각형(감지용 축소 프레임 좌표). 워커가 후보를 고를 때 기준으로 써서
+  // 프레임마다 다른 후보가 이기며 박스가 떠는 것을 막는다 (TSK-000244).
+  const lastDetectQuadRef = useRef<Point[] | null>(null);
   // 감지용 다운스케일 캔버스는 한 번만 만들어 재사용한다 (모바일 GC 부담 축소).
   const detectCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [phase, setPhase] = useState<PreviewPhase>('idle');
@@ -160,6 +163,7 @@ export function CameraCaptureModal({
     liveQuadRef.current = null;
     displayQuadRef.current = null;
     detectedSinceRef.current = 0;
+    lastDetectQuadRef.current = null;
   }, []);
 
   useEffect(() => stopPreview, [stopPreview]);
@@ -172,6 +176,7 @@ export function CameraCaptureModal({
     autoProgressRef.current = 0;
     liveQuadRef.current = null;
     detectedSinceRef.current = 0;
+    lastDetectQuadRef.current = null;
     // 방금 찍은 장이 그대로 다시 찍히지 않도록, 명함이 한 번 화면에서 벗어난 뒤에만 자동 촬영을 재개한다.
     autoArmedRef.current = false;
     rearmAtRef.current = performance.now();
@@ -333,7 +338,7 @@ export function CameraCaptureModal({
       const frameWidth = canvas.width;
       const frameHeight = canvas.height;
       const videoScale = video.videoWidth / frameWidth;
-      void client.analyze(image, { minAreaRatio: 0.07, fast: deepCounter % 3 !== 0, withGate: autoCapture }).then((analysis) => {
+      void client.analyze(image, { minAreaRatio: 0.07, fast: deepCounter % 3 !== 0, withGate: autoCapture, previousQuad: lastDetectQuadRef.current }).then((analysis) => {
         if (!analysis) return; // 이전 프레임 분석 중 — 이 프레임은 버림(자연 스로틀).
         if (phaseRef.current !== 'streaming' || capturingRef.current) return;
         const now = performance.now();
@@ -344,9 +349,11 @@ export function CameraCaptureModal({
           }
           // 명함이 화면에서 벗어났다 = 사용자가 장을 바꾸는 중. 이제 다음 장을 자동 촬영해도 된다.
           autoArmedRef.current = true;
+          lastDetectQuadRef.current = null;
           setAutoHint('명함을 화면 안에 담아 주세요');
           return;
         }
+        lastDetectQuadRef.current = analysis.quad;
         liveQuadRef.current = { quad: analysis.quad.map((point) => ({ x: point.x * videoScale, y: point.y * videoScale })), at: now };
         if (!autoCapture) {
           setAutoHint('인식됨 · 아래 버튼으로 촬영할 수 있어요');
@@ -419,7 +426,12 @@ export function CameraCaptureModal({
       } else {
         target = rectToQuad(guideRectDisplay(width, height));
       }
-      displayQuadRef.current = lerpQuad(displayQuadRef.current, target, detected ? 0.3 : 0.18);
+      // 적응형 보간: 조금 움직이면 천천히(떨림 제거), 크게 움직이면 빠르게(반응 유지).
+      const drift = displayQuadRef.current
+        ? displayQuadRef.current.reduce((total, point, corner) => total + Math.hypot(point.x - target[corner].x, point.y - target[corner].y), 0) / 4
+        : Number.POSITIVE_INFINITY;
+      const factor = !detected ? 0.18 : (drift < 2 ? 0.08 : drift < 10 ? 0.2 : 0.45);
+      displayQuadRef.current = lerpQuad(displayQuadRef.current, target, factor);
       const quad = displayQuadRef.current;
 
       // 주변만 은은하게 어둡게 — 명함이 화면에서 떠오르도록.
