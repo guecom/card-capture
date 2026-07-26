@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { actionErrorMessage, briefNameMap, briefTitle, elapsedMinutesOf, nameFromBrief, pendingProgress } from './brief-view';
+import { actionErrorMessage, briefListTitle, briefNameMap, briefTitle, elapsedMinutesOf, nameFromBrief, pendingProgress } from './brief-view';
 import type { BriefItem } from '../contracts/capture';
 
 function item(overrides: Partial<BriefItem>): BriefItem {
@@ -97,5 +97,34 @@ describe('actionErrorMessage', () => {
   it('maps network failures generically and passes through unknown codes', () => {
     expect(actionErrorMessage(new TypeError('Failed to fetch'))).toContain('네트워크 오류');
     expect(actionErrorMessage('weird_code')).toBe('요청 실패: weird_code');
+  });
+});
+
+describe('briefListTitle', () => {
+  const brief = (body: string) => ({ captureId: 'c1', status: 'processed', brief: `# 김진우 — 이런 분이에요\n${body}` } as never);
+
+  it('shows 이름 — 한 줄 요약 instead of the fixed phrase', () => {
+    expect(briefListTitle(brief('\n카이렌 로보틱스 대표. 협동로봇 그리퍼를 만든다.\n\n## 대화 포인트'))).toBe('김진우 — 카이렌 로보틱스 대표. 협동로봇 그리퍼를 만든다.');
+  });
+
+  it('skips headings, bullets and blank lines when finding the summary', () => {
+    expect(briefListTitle(brief('\n## 요약\n\n- \n**스마트팩토리 SI를 하는 회사의 영업 총괄이다.**'))).toBe('김진우 — 스마트팩토리 SI를 하는 회사의 영업 총괄이다.');
+  });
+
+  it('truncates a long summary', () => {
+    const long = '가'.repeat(120);
+    const title = briefListTitle(brief(`\n${long}`));
+    expect(title.length).toBeLessThan(80);
+    expect(title.endsWith('…')).toBe(true);
+  });
+
+  it('falls back to progress copy while the brief has no body yet', () => {
+    expect(briefListTitle({ captureId: 'c2', status: 'queued', quickName: { name: '박서연' } } as never)).toBe('박서연 — 이름 확인됨 · 조사 준비 중');
+    expect(briefListTitle({ captureId: 'c3', status: 'queued', contact: { name: '박서연' } } as never)).toBe('박서연 — 브리핑 준비 중');
+  });
+
+  it('uses organization and title when the brief body is only structure', () => {
+    expect(briefListTitle({ captureId: 'c4', status: 'processed', brief: '# 김진우 — 이런 분이에요\n\n## 대화 포인트', contact: { name: '김진우', organization: '카이렌 로보틱스', title: '대표' } } as never))
+      .toBe('김진우 — 카이렌 로보틱스 · 대표');
   });
 });

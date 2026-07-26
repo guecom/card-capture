@@ -247,15 +247,34 @@ export function CameraCaptureModal({
       let cropState: CapturedSideMeta['cropState'] = 'full';
       const client = workerRef.current;
       if (client?.isReady()) {
-        try {
-          const image = fullContext.getImageData(0, 0, full.width, full.height);
-          const rectified = await client.rectify(image);
-          if (rectified) {
-            result = canvasFromImageData(rectified);
-            cropState = 'rectified';
+        // 1순위: 화면에서 방금 보여 준 사각형 그대로 잘라낸다 (WYSIWYG).
+        // 촬영 시점에 처음부터 다시 찾으면 화면에서는 잡혔는데 결과물은 안 잘리는 일이 생긴다.
+        const live = liveQuadRef.current;
+        const fresh = live && performance.now() - live.at < 1_500 ? live.quad : null;
+        if (fresh) {
+          try {
+            const image = fullContext.getImageData(0, 0, full.width, full.height);
+            const warped = await client.warp(image, fresh);
+            if (warped) {
+              result = canvasFromImageData(warped);
+              cropState = 'rectified';
+            }
+          } catch {
+            // getImageData 불가 → 아래 경로로.
           }
-        } catch {
-          // getImageData 불가(제한된 context 등) → 아래 가이드 크롭 폴백.
+        }
+        // 2순위: 촬영 프레임에서 새로 감지해 보정 (라이브 사각형이 없거나 오래됐을 때).
+        if (!result) {
+          try {
+            const image = fullContext.getImageData(0, 0, full.width, full.height);
+            const rectified = await client.rectify(image);
+            if (rectified) {
+              result = canvasFromImageData(rectified);
+              cropState = 'rectified';
+            }
+          } catch {
+            // getImageData 불가(제한된 context 등) → 아래 가이드 크롭 폴백.
+          }
         }
       }
       if (!result) {
@@ -293,15 +312,11 @@ export function CameraCaptureModal({
 
       const frame = finalizeCameraFrame(finalCanvas);
       onCaptured(sideRef.current, frame, { cropState, blurry, source });
-      if (sideRef.current === 'front' && withBackChoice) {
-        // 카메라를 벗어나지 않는 선택지: 뒷면도 찍기 / 뒷면 없이 완료 / 앞면 다시 찍기 (legacy camChoiceUI).
-        setChoiceThumb(frame.dataUrl);
-        setPhase('choice');
-        capturingRef.current = false;
-      } else {
-        stopPreview();
-        onFinished();
-      }
+      // 앞면·뒷면 모두 "이대로 괜찮은지" 확인 단계를 거친다. 뒷면만 확인 없이 닫히던 것을
+      // founder가 지적했다(2026-07-26) — 자동 촬영이면 사용자는 결과를 볼 기회조차 없었다.
+      setChoiceThumb(frame.dataUrl);
+      setPhase('choice');
+      capturingRef.current = false;
     } catch {
       capturingRef.current = false;
       setPhase('error');
@@ -508,7 +523,7 @@ export function CameraCaptureModal({
         <div className="camera-preview-stage" data-state={phase}>
           <video ref={videoRef} aria-label="후면 카메라 미리보기" />
           <canvas ref={overlayRef} className="camera-overlay" aria-hidden="true" style={{ display: phase === 'streaming' ? '' : 'none' }} />
-          {phase === 'choice' && choiceThumb && <img src={choiceThumb} alt="앞면 미리보기" />}
+          {phase === 'choice' && choiceThumb && <img src={choiceThumb} alt={side === 'front' ? '앞면 촬영 결과' : '뒷면 촬영 결과'} />}
           {phase === 'streaming' && <div className="camera-hint-pill" role="status"><span>{autoHint}</span></div>}
           {(phase === 'idle' || phase === 'requesting' || phase === 'error') && (
             <div className="camera-preview-state" role="status">
@@ -531,12 +546,20 @@ export function CameraCaptureModal({
           </>
         )}
 
-        {phase === 'choice' && (
+        {phase === 'choice' && side === 'front' && (
           <div className="camera-choice">
-            <p>앞면 저장됨 — 뒷면도 찍을까요? (선택)</p>
-            <IonButton expand="block" onClick={() => resumeStreaming('back')}>뒷면도 찍기</IonButton>
-            <IonButton expand="block" fill="outline" onClick={() => { stopPreview(); onFinished(); }}>뒷면 없이 완료</IonButton>
+            <p>{withBackChoice ? '앞면 저장됨 — 뒷면도 찍을까요? (선택)' : '앞면 저장됨 — 이대로 괜찮나요?'}</p>
+            {withBackChoice && <IonButton expand="block" onClick={() => resumeStreaming('back')}>뒷면도 찍기</IonButton>}
+            <IonButton expand="block" fill={withBackChoice ? 'outline' : 'solid'} onClick={() => { stopPreview(); onFinished(); }}>{withBackChoice ? '뒷면 없이 완료' : '이대로 완료'}</IonButton>
             <IonButton expand="block" fill="clear" onClick={() => resumeStreaming('front')}>앞면 다시 찍기</IonButton>
+          </div>
+        )}
+
+        {phase === 'choice' && side === 'back' && (
+          <div className="camera-choice">
+            <p>뒷면 저장됨 — 이대로 괜찮나요?</p>
+            <IonButton expand="block" onClick={() => { stopPreview(); onFinished(); }}>완료</IonButton>
+            <IonButton expand="block" fill="outline" onClick={() => resumeStreaming('back')}>뒷면 다시 찍기</IonButton>
           </div>
         )}
 

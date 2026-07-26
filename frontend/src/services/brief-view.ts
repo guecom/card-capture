@@ -30,6 +30,35 @@ export function briefDisplayName(item: BriefItem): string | null {
   return nameFromBrief(item.brief) || item.contact?.name || item.quickName?.name || null;
 }
 
+// 목록 한 줄 요약. 브리핑 본문의 첫 산문 문장을 쓴다 — 처리 계약(규칙 9)이 제목 다음에
+// 요약을 먼저 쓰도록 정해 놓았다. 제목·머리글·목록 표시·빈 줄은 건너뛴다.
+export function briefSummary(item: BriefItem, limit = 64): string | null {
+  const lines = String(item.brief ?? '').split('\n').slice(1);
+  for (const raw of lines) {
+    if (/^\s*#/.test(raw)) continue;                            // 머리글("## 대화 포인트")은 요약이 아니다
+    const line = raw.replace(/^\s*[>*\-•]+\s*/, '').replace(/\*\*/g, '').trim();
+    if (line.length < 6) continue;
+    if (/^[|+\-=]+$/.test(line)) continue;                      // 표 구분선
+    const compact = line.replace(/\s+/g, ' ');
+    return compact.length > limit ? `${compact.slice(0, limit - 1).trimEnd()}…` : compact;
+  }
+  const parts = [item.contact?.organization, item.contact?.title].filter(Boolean);
+  return parts.length ? parts.join(' · ') : null;
+}
+
+// 목록 제목: "이름 — 한 줄 요약". 요약이 아직 없으면 진행 상태를 대신 보여 준다.
+// (브리핑 파일의 제목 형식 `# <이름> — 이런 분이에요`는 처리 계약이라 그대로 두고, 화면 표시만 바꾼다.)
+export function briefListTitle(item: BriefItem): string {
+  const name = briefDisplayName(item);
+  if (!name) return briefTitle(item);
+  const summary = briefSummary(item);
+  if (summary) return `${name} — ${summary}`;
+  if (item.type === 'note') return `${name} — 메모 반영 중`;
+  if (item.type === 'research_instruction') return `${name} — 조사 지시 처리 중`;
+  if (item.brief) return `${name} — 이런 분이에요`;
+  return item.contact?.name ? `${name} — 브리핑 준비 중` : `${name} — 이름 확인됨 · 조사 준비 중`;
+}
+
 // captureId → 표시 이름. 최근 캡처 목록이 처리 결과 이름을 보여주는 데 쓴다.
 export function briefNameMap(items: BriefItem[]): Record<string, string> {
   const map: Record<string, string> = {};

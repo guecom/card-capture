@@ -27,7 +27,7 @@ import { ContactActions, PersonDocument } from './components/PersonDocument';
 import { addPersonNote, listBriefs, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
 import { type CapturedCameraFrame, fileToCameraFrame, thumbnailOf } from './services/camera';
 import { buildLegacyNote, buildQueuedCapture, parseLegacyNote } from './services/capture-item';
-import { actionErrorMessage, briefNameMap, briefTitle, elapsedMinutesOf, pendingProgress } from './services/brief-view';
+import { actionErrorMessage, briefListTitle, briefNameMap, briefTitle, elapsedMinutesOf, pendingProgress } from './services/brief-view';
 import { contactCardFromBrief } from './services/contacts';
 import { getOpenCvWorker, prefetchOpenCv } from './services/opencv';
 import { prefetchQuickOcrAssets } from './services/paddle-quickname';
@@ -605,6 +605,8 @@ function App() {
     const minutes = elapsedMinutesOf(item);
     const progress = pendingProgress(item, minutes);
     const title = briefTitle(item);
+    // 목록에는 "이름 — 한 줄 요약"을 보여 준다 (founder 판정 2026-07-26: 전부 "이런 분이에요"라 구분이 안 됨).
+    const listTitle = briefListTitle(item);
     const contact = contactCardFromBrief(item, title.split(' — ')[0]);
     const briefBody = item.brief ? item.brief.split('\n').slice(1).join('\n') : '';
     const actionable = item.status === 'processed' && item.type !== 'note' && item.type !== 'research_instruction';
@@ -612,9 +614,9 @@ function App() {
     return (
       <article className="brief-card" key={item.captureId}>
         <button className="brief-summary" type="button" onClick={() => toggleBrief(item.captureId)} aria-expanded={expanded}>
-          <div className="avatar" aria-hidden="true">{title.slice(0, 1)}</div>
+          <div className="avatar" aria-hidden="true">{listTitle.slice(0, 1)}</div>
           <div className="row-copy">
-            <strong>{title}</strong>
+            <strong>{listTitle}</strong>
             <span>{formatMoment(item.receivedAt || item.capturedAt)}{item.event ? ` · ${item.event}` : ''}{item.capturer ? ` · 촬영 ${item.capturer}` : ''}</span>
           </div>
           <StatusBadge status={item.status} />

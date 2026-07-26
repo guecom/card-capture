@@ -113,6 +113,10 @@ test('auto capture waits for the card to change before shooting the other side',
     });
     console.log('CHOICE_THUMB', JSON.stringify(thumb));
     expect(thumb?.fit, '촬영 결과 썸네일이 잘리면 안 된다').toBe('contain');
+    // 화면에서 명함을 잡아 놓고 결과물은 프레임 전체를 주면 안 된다 — 본 대로 잘려 나와야 한다.
+    // (프레임은 720x1280 = 0.56, 명함은 1.3~2.2 사이)
+    expect(thumb!.natural, '촬영 결과가 명함으로 크롭되지 않았다').toBeGreaterThan(1.3);
+    expect(thumb!.natural).toBeLessThan(2.2);
 
     // 뒷면으로 전환: 같은 장이 그대로 보이는 동안에는 자동으로 찍히면 안 된다.
     await page.getByRole('button', { name: '뒷면도 찍기' }).click();
@@ -127,6 +131,11 @@ test('auto capture waits for the card to change before shooting the other side',
     await page.evaluate(() => { (window as typeof window & { __scene?: string }).__scene = 'empty'; });
     await page.waitForTimeout(1_200);
     await page.evaluate(() => { (window as typeof window & { __scene?: string }).__scene = 'back'; });
+
+    // 뒷면도 "이대로 괜찮나요?" 확인 단계를 거쳐야 한다 (예전에는 바로 닫혔다).
+    await expect(page.getByText('뒷면 저장됨 — 이대로 괜찮나요?')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole('button', { name: '뒷면 다시 찍기' })).toBeVisible();
+    await page.locator('.camera-choice').getByRole('button', { name: '완료', exact: true }).click();
     await page.waitForFunction(() => !document.querySelector('.camera-preview-stage'), null, { timeout: 30_000 });
 
     // 앞면·뒷면이 모두 화면에 남아 있어야 한다.
