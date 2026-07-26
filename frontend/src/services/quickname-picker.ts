@@ -79,6 +79,7 @@ export function nameFromOcrWords(words: OcrWord[]): PickedName | null {
   };
 
   let best: { name: string; score: number; confidence: number } | null = null;
+  const seen: string[] = [];
 
   words.forEach((word, index) => {
     const line = word.text.replace(/\s+/g, ' ').trim();
@@ -94,8 +95,19 @@ export function nameFromOcrWords(words: OcrWord[]): PickedName | null {
     } else if (ENGLISH_NAME.test(line) && !BLOCKED_NAME_PATTERN.test(line) && !COMPANY_WORD_PATTERN.test(line)) {
       candidates.push({ name: line, bonus: 30 });
     } else {
+      // 자간이 넓은 이름은 OCR이 글자마다 쪼개 놓는다("이 강 윤", "이 강규").
+      // 한글 토큰만으로 이루어져 있고 합쳐서 2~4자면 한 이름으로 되돌린다 — 성을 잃어버리는
+      // 오탐("이강규" → "강규")의 주된 원인이었다 (founder 판정 2026-07-26).
+      const tokens = line.split(' ').filter(Boolean);
+      if (tokens.length > 1 && tokens.every((token) => /^[가-힣]+$/.test(token))) {
+        const joined = tokens.join('');
+        if (HANGUL_NAME.test(joined) && !BLOCKED_NAME_PATTERN.test(joined) && !COMPANY_WORD_PATTERN.test(joined)
+          && (hasKoreanSurname(joined) || titleNeighbour)) {
+          candidates.push({ name: joined, bonus: 36 });
+        }
+      }
       // "홍길동 대표이사"처럼 직함이 같은 줄에 붙는 경우 — 토큰 단위로 이름만 뽑는다.
-      for (const token of line.split(' ').filter(Boolean)) {
+      for (const token of tokens) {
         if (!HANGUL_NAME.test(token)) continue;
         if (BLOCKED_NAME_PATTERN.test(token) || COMPANY_WORD_PATTERN.test(token)) continue;
         if (!hasKoreanSurname(token)) continue;
@@ -123,11 +135,18 @@ export function nameFromOcrWords(words: OcrWord[]): PickedName | null {
         + (corroborated ? 40 : 0)
         + (word.centerRatio < 0.55 ? 6 : 0)
         + (hangul ? 6 : 0);
+      seen.push(candidate.name);
       if (!best || score > best.score) best = { name: candidate.name, score, confidence: word.confidence };
     }
   });
 
   if (!best) return null;
   const picked: { name: string; confidence: number } = best;
-  return { name: picked.name, confidence: Math.max(0, Math.min(100, Math.round(picked.confidence * 100))) };
+  // 성이 떨어져 나간 후보 방어: 다른 후보의 끝부분이면 더 긴 쪽이 진짜 이름이다 ("강규" ← "이강규").
+  const fuller = seen.find((candidate) => candidate !== picked.name
+    && candidate.endsWith(picked.name)
+    && candidate.length <= 4
+    && /^[가-힣]+$/.test(candidate)
+    && hasKoreanSurname(candidate));
+  return { name: fuller ?? picked.name, confidence: Math.max(0, Math.min(100, Math.round(picked.confidence * 100))) };
 }

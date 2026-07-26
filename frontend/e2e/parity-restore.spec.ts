@@ -154,8 +154,11 @@ test('renders brief markdown, extracted contacts, staged progress and legacy tit
     await expect(page.getByText('Alice Kim — 이런 분이에요'), '목록은 고정 문구 대신 요약을 보여 준다').toHaveCount(0);
     // note receipt는 legacy처럼 "메모 → 대상"으로 표시된다.
     await expect(page.getByText('메모 → PER-000001 Alice Kim')).toBeVisible();
-    // 2단계 진행 문구는 경과와 잔여 추정을 함께 보여준다.
-    await expect(page.getByText(/2\/3단계 웹 조사·기록 정리 중 \(이름 인식 ✓\) · 8분 경과 · 완료까지 약 6분 남음/)).toBeVisible();
+    // 진행 표시는 "몇 단계 중 몇 단계 · 경과 · 남은 시간 · 보통 얼마"를 함께 보여준다 (TSK-000249).
+    // 기기에서 미리 채운 quickName만 있고 서버 contact는 아직 없으므로 "이름·정보 인식" 단계다.
+    await expect(page.getByText('4단계 중 3단계 · 이름·정보 인식 중')).toBeVisible();
+    await expect(page.getByText(/8분 경과 · 약 \d+분 남음 · 보통 6~20분/)).toBeVisible();
+    await expect(page.locator('.stage-dots li.stage-active').first()).toHaveText(/이름·정보 인식/);
 
     await page.getByRole('button', { name: /^Alice Kim — / }).click();
     // 마크다운이 원문 덤프가 아니라 실제 표·불릿으로 렌더링된다 (escaped pipe 포함).

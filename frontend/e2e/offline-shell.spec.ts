@@ -185,7 +185,7 @@ test('boots from legacy link parameters and retries a failed local capture when 
     await expect.poll(() => postCount).toBe(1);
     await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '진행' }).click();
     await expect(page.getByText('Queue Fixture', { exact: true })).toBeVisible();
-    await expect(page.getByText(/전송됨/)).toBeVisible();
+    await expect(page.getByText(/4단계 중 2단계 · 서버 접수 중/)).toBeVisible();
     await page.getByRole('button', { name: /Queue Fixture/ }).click();
     await page.getByLabel('어디서 만났는지', { exact: true }).fill('Edited Expo');
     await page.getByLabel('메모', { exact: true }).fill('Edited memo');
@@ -341,7 +341,7 @@ test('captures front and back with context into the legacy queue without uploadi
     await page.getByLabel('메모 (선택 — 키보드 마이크로 말해도 돼요)').fill('자료 보내기');
     await page.getByRole('button', { name: '완료', exact: true }).click();
     await expect(page.getByText('사진을 로컬 대기열에 보관했습니다. 연결 설정 뒤 자동으로 전송합니다.', { exact: false })).toBeVisible();
-    await expect(page.locator('.queue-row', { hasText: '김카이렌' })).toContainText('전송 대기');
+    await expect(page.locator('.queue-row', { hasText: '김카이렌' })).toContainText('4단계 중 1단계 · 사진 전송 중');
     const queueReceipt = await page.evaluate(async () => {
       const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {
         const request = indexedDB.open('cardcapture', 1);

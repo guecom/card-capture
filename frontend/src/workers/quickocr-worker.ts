@@ -65,7 +65,11 @@ self.onmessage = async (messageEvent: MessageEvent<InitMessage | RecognizeMessag
       }
       const canvas = new OffscreenCanvas(message.image.width, message.image.height);
       canvas.getContext('2d')?.putImageData(message.image, 0, 0);
-      const result = await service.recognize(canvas, { flatten: true });
+      // noCache 필수 (TSK-000249): 라이브러리의 globalImageCache는 키를 "앞 1024바이트 해시 + 길이"로
+      // 만든다. 즉 같은 크기이고 좌상단 256픽셀이 비슷한 명함이면 **직전 사람의 인식 결과**가
+      // 그대로 돌아온다. 명함은 대개 같은 크기로 크롭되고 좌상단이 여백이라 정확히 그 조건이다.
+      // 캡처당 한 번만 호출하므로 캐시로 얻을 이득도 없다.
+      const result = await service.recognize(canvas, { flatten: true, noCache: true });
       self.postMessage({
         id: message.id,
         ok: true,
