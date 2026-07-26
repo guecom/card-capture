@@ -61,11 +61,14 @@ test('loads the card-detection engine in a worker and keeps the main thread resp
       const workerPath = /\.\/assets\/opencv-worker-[^"]+\.js/.exec(shell)?.[0];
       if (!workerPath) return { error: 'worker asset not in service-worker shell' };
 
+      // 앱 부팅 long task는 이 게이트의 관심사가 아니다 — 부팅이 가라앉은 뒤,
+      // 워커 생성 직전부터만 관찰한다 (buffered 사용 금지: 느린 CI 러너의 부팅 태스크가 소급 수집됨).
+      await new Promise((settle) => setTimeout(settle, 500));
       let maxLongTask = 0;
       const observer = new PerformanceObserver((list) => {
         list.getEntries().forEach((entry) => { maxLongTask = Math.max(maxLongTask, entry.duration); });
       });
-      observer.observe({ type: 'longtask', buffered: true });
+      observer.observe({ type: 'longtask' });
 
       const worker = new Worker(workerPath);
       const request = (message: Record<string, unknown>, transfer: Transferable[] = []) => new Promise<Record<string, unknown>>((resolveReply) => {
