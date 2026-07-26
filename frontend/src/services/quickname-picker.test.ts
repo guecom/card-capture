@@ -111,3 +111,24 @@ describe('nameFromOcrWords', () => {
     expect(picked?.name).toBe('Daniel Park');
   });
 });
+
+describe('OCR 잡음 복원', () => {
+  it('같은 줄이 여러 박스로 쪼개져도 영문 이름을 되붙인다', () => {
+    // 실기기·CI 폰트 차이로 "Jane Kim"이 "Jane |" + "Kim"으로 나뉘는 일이 실제로 있었다.
+    const picked = nameFromOcrWords([
+      { text: 'ORBTAL', confidence: 0.9, heightRatio: 0.14, centerRatio: 0.2, leftRatio: 0.06 },
+      { text: 'Jane |', confidence: 0.9, heightRatio: 0.085, centerRatio: 0.55, leftRatio: 0.06 },
+      { text: 'Kim', confidence: 0.9, heightRatio: 0.085, centerRatio: 0.56, leftRatio: 0.26 },
+      { text: 'jane.kim@orbital.dev', confidence: 0.9, heightRatio: 0.05, centerRatio: 0.86, leftRatio: 0.06 },
+    ]);
+    expect(picked?.name).toBe('Jane Kim');
+  });
+
+  it('세로획 잡음이 붙어도 한글 이름을 그대로 읽는다', () => {
+    const picked = nameFromOcrWords([
+      { text: '|이강규', confidence: 0.95, heightRatio: 0.1, centerRatio: 0.5, leftRatio: 0.06 },
+      { text: 'Founder', confidence: 0.9, heightRatio: 0.05, centerRatio: 0.62, leftRatio: 0.06 },
+    ]);
+    expect(picked?.name).toBe('이강규');
+  });
+});

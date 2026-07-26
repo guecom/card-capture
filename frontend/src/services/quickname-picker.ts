@@ -19,6 +19,34 @@ export interface OcrWord {
   heightRatio: number;
   /** 박스 중심 Y / 이미지 높이 (0..1) */
   centerRatio: number;
+  /** 박스 왼쪽 X / 이미지 너비 (0..1). 같은 줄을 다시 붙일 때 순서를 정한다. */
+  leftRatio?: number;
+}
+
+// OCR이 테두리·세로획을 글자로 잘못 붙이는 것을 떼어낸다 ("Jane |" → "Jane").
+function sanitizeLine(text: string): string {
+  return String(text).replace(/[|_\\]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+// 같은 시각적 줄이 여러 박스로 쪼개진 경우를 하나로 되붙인다.
+// 실기기·다른 폰트 환경에서 "Jane Kim"이 "Jane |" + "Kim"으로 나뉘는 일이 실제로 있었다.
+function mergeVisualLines(words: OcrWord[]): OcrWord[] {
+  const sorted = words.slice().sort((a, b) => a.centerRatio - b.centerRatio || (a.leftRatio ?? 0) - (b.leftRatio ?? 0));
+  const groups: OcrWord[][] = [];
+  for (const word of sorted) {
+    const current = groups[groups.length - 1];
+    const reference = current?.[0];
+    const tolerance = reference ? Math.max(0.02, reference.heightRatio * 0.6) : 0;
+    if (reference && Math.abs(word.centerRatio - reference.centerRatio) <= tolerance) current.push(word);
+    else groups.push([word]);
+  }
+  return groups.filter((group) => group.length > 1).map((group) => ({
+    text: group.slice().sort((a, b) => (a.leftRatio ?? 0) - (b.leftRatio ?? 0)).map((word) => word.text).join(' '),
+    confidence: Math.min(...group.map((word) => word.confidence)),
+    heightRatio: Math.max(...group.map((word) => word.heightRatio)),
+    centerRatio: group.reduce((total, word) => total + word.centerRatio, 0) / group.length,
+    leftRatio: Math.min(...group.map((word) => word.leftRatio ?? 0)),
+  }));
 }
 
 export const BLOCKED_NAME_PATTERN = /주식회사|유한회사|\(주\)|회사|그룹|센터|연구소|대학교|대학|병원|협회|재단|본부|사업부|팀\b|대표이사|대표|이사|부사장|사장|전무|상무|부장|차장|과장|팀장|매니저|책임|선임|수석|주임|사원|프로|파트너|director|manager|president|ceo|cto|coo|cfo|lead|head|company|corporation|corp\.?|inc\.?|ltd\.?|co\.,|team|group|office|tel|fax|mobile|email|kakao/i;
@@ -71,7 +99,9 @@ export interface PickedName {
   confidence: number;
 }
 
-export function nameFromOcrWords(words: OcrWord[]): PickedName | null {
+export function nameFromOcrWords(input: OcrWord[]): PickedName | null {
+  // 원래 줄 + 같은 줄을 되붙인 줄을 함께 후보로 본다.
+  const words = [...input, ...mergeVisualLines(input)];
   const locals = emailLocalParts(words);
   const emailMentions = (name: string): boolean => {
     const tokens = name.toLowerCase().split(/[^a-z]+/).filter((token) => token.length >= 3);
@@ -82,7 +112,7 @@ export function nameFromOcrWords(words: OcrWord[]): PickedName | null {
   const seen: string[] = [];
 
   words.forEach((word, index) => {
-    const line = word.text.replace(/\s+/g, ' ').trim();
+    const line = sanitizeLine(word.text);
     if (!line || lineIsNoise(line)) return;
     if (word.confidence < 0.35) return;
 
