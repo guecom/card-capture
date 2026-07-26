@@ -52,6 +52,23 @@ function quadFromPoints(points: WorkerPoint[]): WorkerPoint[] {
   return orderQuad(points);
 }
 
+// RotatedRect → 네 꼭짓점. 이 vendor 빌드에는 cv.boxPoints가 없어서 직접 계산한다
+// (없는 줄 모르고 호출하면 minAreaRect 후보가 조용히 사라진다 — e2e/opencv-api.spec.ts가 이를 막는다).
+function rotatedRectCorners(rect: { center: { x: number; y: number }; size: { width: number; height: number }; angle: number }): WorkerPoint[] {
+  const radians = (rect.angle * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const halfWidth = rect.size.width / 2;
+  const halfHeight = rect.size.height / 2;
+  return quadFromPoints([
+    { x: -halfWidth, y: -halfHeight }, { x: halfWidth, y: -halfHeight },
+    { x: halfWidth, y: halfHeight }, { x: -halfWidth, y: halfHeight },
+  ].map((corner) => ({
+    x: rect.center.x + corner.x * cos - corner.y * sin,
+    y: rect.center.y + corner.x * sin + corner.y * cos,
+  })));
+}
+
 function quadArea(quad: WorkerPoint[]): number {
   let total = 0;
   for (let index = 0; index < 4; index += 1) {
@@ -328,18 +345,8 @@ function detectOnMat(source: Cv, minAreaRatio: number, fast: boolean, previous: 
       // (3) 가장 큰 덩어리의 최소 외접 사각형 — 윤곽이 볼록하지 않아도 후보를 하나 준다.
       if (largest) {
         try {
-          const rotated = cv.minAreaRect(largest.contour);
-          const box = new cv.Mat();
-          try {
-            cv.boxPoints(rotated, box);
-            consider(quadFromPoints(Array.from({ length: 4 }, (_, corner) => ({
-              x: box.data32F[corner * 2],
-              y: box.data32F[corner * 2 + 1],
-            }))), supportMap);
-          } finally {
-            box.delete();
-          }
-        } catch { /* boxPoints 미지원 빌드 방어 */ }
+          consider(rotatedRectCorners(cv.minAreaRect(largest.contour)), supportMap);
+        } catch { /* minAreaRect 실패는 후보 하나를 잃을 뿐이다 */ }
         largest.contour.delete();
       }
     });
