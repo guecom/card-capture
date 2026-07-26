@@ -2,6 +2,10 @@
 // 메인 스레드는 어떤 시점에도 엔진 때문에 멈추지 않는다 (2026-07-26 실폰 프리즈 근본 수정, TSK-000230).
 // 주의: importScripts를 쓰므로 classic worker여야 한다 (Vite build는 iife로 번들링).
 
+// import가 없는 파일이라 모듈로 명시하지 않으면 전역 스코프로 취급돼
+// (@techstark/opencv-js 타입의 전역 cv 선언과) 충돌한다.
+export {};
+
 interface WorkerPoint { x: number; y: number }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

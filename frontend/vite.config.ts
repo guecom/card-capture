@@ -57,6 +57,8 @@ self.addEventListener('fetch', (event) => {
   const sharedRuntimePaths = [
     new URL('../vendor/tesseract/', self.registration.scope).pathname,
     new URL('../vendor/opencv.js', self.registration.scope).pathname,
+    new URL('../vendor/paddleocr/', self.registration.scope).pathname,
+    new URL('../vendor/ort/', self.registration.scope).pathname,
   ];
   const isSharedRuntime = sharedRuntimePaths.some((path) => url.pathname.startsWith(path));
   if (!url.pathname.startsWith(scopePath) && !isSharedRuntime) return;
@@ -113,6 +115,13 @@ self.addEventListener('fetch', (event) => {
 
 export default defineConfig({
   base: './',
+  resolve: {
+    alias: [
+      // WASM 전용 ORT 번들로 고정 — 기본 번들은 WebGPU(jsep) 로더를 동적 임포트해
+      // 27MB jsep 자산까지 요구한다. 우리는 vendor/ort/에 wasm 파일만 자체 호스팅한다.
+      { find: /^onnxruntime-web$/, replacement: 'onnxruntime-web/wasm' },
+    ],
+  },
   define: {
     __CARD_CAPTURE_DEFAULT_API__: JSON.stringify(readLegacyDefaultApi()),
     // 설정 화면에 노출되는 빌드 식별자 — "지금 무슨 버전을 보고 있나"를 원격으로 확인하는 용도.
