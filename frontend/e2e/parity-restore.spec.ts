@@ -63,13 +63,32 @@ test.beforeEach(async ({ page }) => {
 const processedBrief = [
   '# 이런 분이에요 — Alice Kim',
   '협력 논의를 진행한 담당자입니다.',
+  '[회사 홈페이지](https://acme.example/about)',
   '',
   '## 핵심 이력',
-  '| 기간 | 소속 |',
-  '| --- | --- |',
-  '| 2019–현재 | Acme\\|KR |',
+  '| 기간 | 소속 | 근거 |',
+  '| --- | --- | --- |',
+  '| 2019–현재 | Acme\\|KR | [수상 평가](https://awards.example/alice) |',
   '',
-  '- 관심사: 부품 국산화',
+  '- 관심사: 부품 국산화 · LinkedIn: https://www.linkedin.com/in/alice-kim',
+].join('\n');
+
+const personDocumentFixture = [
+  '---',
+  'name: Alice Kim',
+  'title: VP',
+  'organization: Acme',
+  'emails:',
+  '  - alice@example.com',
+  'phones:',
+  '  - 010-1234-5678',
+  'urls:',
+  '  - "LinkedIn: https://www.linkedin.com/in/alice-kim"',
+  'source_refs:',
+  '  - "회사: https://acme.example/about"',
+  '---',
+  '# Alice Kim',
+  '- 공식 소개: [Acme 리더십](https://acme.example/leadership)',
 ].join('\n');
 
 function listFixture(receivedAtLate: string, receivedAtStage2: string) {
@@ -119,6 +138,10 @@ test('renders brief markdown, extracted contacts, staged progress and legacy tit
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(listFixture(receivedAtLate, receivedAtStage2)) });
       return;
     }
+    if (action === 'doc' || action === 'persondoc') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, markdown: personDocumentFixture }) });
+      return;
+    }
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, items: [] }) });
   });
 
@@ -138,11 +161,27 @@ test('renders brief markdown, extracted contacts, staged progress and legacy tit
     // 마크다운이 원문 덤프가 아니라 실제 표·불릿으로 렌더링된다 (escaped pipe 포함).
     await expect(page.locator('.md-table-wrap table')).toBeVisible();
     await expect(page.getByRole('cell', { name: 'Acme|KR' })).toBeVisible();
-    await expect(page.getByText('• 관심사: 부품 국산화')).toBeVisible();
+    await expect(page.getByText(/관심사: 부품 국산화/)).toBeVisible();
     expect(await page.locator('.brief-detail pre').count()).toBe(0);
+    // 홈페이지·LinkedIn·표 안 근거 링크는 안전한 새 탭 링크로 열린다.
+    await expect(page.getByRole('link', { name: /회사 홈페이지/ })).toHaveAttribute('href', 'https://acme.example/about');
+    await expect(page.getByRole('link', { name: /수상 평가/ })).toHaveAttribute('href', 'https://awards.example/alice');
+    await expect(page.getByRole('link', { name: /https:\/\/www\.linkedin\.com\/in\/alice-kim/ })).toHaveAttribute('target', '_blank');
+    await expect(page.getByRole('link', { name: /회사 홈페이지/ })).toHaveAttribute('rel', /noopener/);
     // 서버 contact 요약이 없어도 본문에서 연락처를 추출한다.
     await expect(page.getByRole('link', { name: '전화' })).toHaveAttribute('href', 'tel:010-1234-5678');
     await expect(page.getByRole('link', { name: '메일' })).toHaveAttribute('href', 'mailto:alice@example.com');
+    // 액션은 임의의 단일 primary 없이 연락·기록·관리로 구분된다.
+    await expect(page.getByText('연락', { exact: true })).toBeVisible();
+    await expect(page.getByText('기록', { exact: true })).toBeVisible();
+    await expect(page.getByText('관리', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '메모 추가' })).not.toHaveClass(/primary/);
+
+    await page.getByRole('button', { name: '전체 프로필' }).click();
+    const profile = page.locator('ion-modal').filter({ hasText: 'Alice Kim' });
+    await expect(profile.getByText('바로가기', { exact: true })).toBeVisible();
+    await expect(profile.getByRole('link', { name: /LinkedIn/ })).toHaveAttribute('href', 'https://www.linkedin.com/in/alice-kim');
+    await expect(profile.getByRole('link', { name: /Acme 리더십/ })).toHaveAttribute('target', '_blank');
   } finally {
     await stopStaticServer(server);
   }
@@ -162,7 +201,7 @@ test('keeps background refresh silent on network failure and maps errors on manu
     await page.waitForTimeout(1_200);
     expect(await page.evaluate(() => document.querySelector('ion-toast')?.getAttribute('is-open'))).not.toBe('true');
     // 수동 새로고침은 한글로 안내한다.
-    await page.getByRole('button', { name: '상태 새로고침' }).click();
+    await page.getByRole('button', { name: '최신 상태 확인', exact: true }).click();
     await expect(page.getByText(/새로고침 실패: 네트워크 오류/)).toBeVisible();
   } finally {
     await stopStaticServer(server);
@@ -227,8 +266,11 @@ test('merges local capture context into the brief card with instant note and edi
     // 통합 카드가 내 맥락(만난 곳·관계)과 캡처 수정 진입을 함께 보여준다.
     await expect(card.getByText('내 기록: Expo · Kairen: 잠재 고객 · 나: 오늘 인사')).toBeVisible();
     await expect(card.getByRole('button', { name: '캡처 수정' })).toBeVisible();
-    page.once('dialog', (dialog) => void dialog.accept('후속 미팅 잡기'));
     await card.getByRole('button', { name: '메모 추가' }).click();
+    const composer = page.locator('ion-modal.person-action-modal');
+    await expect(composer.getByText('다음 만남에 기억하고 싶은 사실이나 약속을 남겨주세요.')).toBeVisible();
+    await composer.locator('ion-textarea[aria-label="메모 추가"] textarea').fill('후속 미팅 잡기');
+    await composer.getByRole('button', { name: '메모 저장' }).click();
     await expect.poll(() => noteBodies.length).toBe(1);
     expect(noteBodies[0]).toMatchObject({ action: 'addnote', captureId: '20260726-090000-q1', text: '후속 미팅 잡기' });
   } finally {
@@ -265,11 +307,13 @@ test('restores the legacy one-screen capture surface and link-first onboarding',
 
     // 설정: 주소·토큰은 고급 항목 뒤에 숨고 토큰 라벨이 개인 링크 안내로 바뀐다.
     await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '설정' }).click();
-    await page.getByRole('button', { name: '이름·연결 설정 편집' }).click();
+    await expect(page.getByRole('heading', { name: '내 앱 설정' })).toBeVisible();
+    await expect(page.getByText('개인 링크 정보는 이 기기에만 저장돼요.')).toBeVisible();
+    await page.getByRole('button', { name: '사용자·연결 정보 편집' }).click();
     await expect(page.getByLabel('촬영자 이름')).toBeVisible();
-    await expect(page.getByLabel('개인 링크 토큰 (?k= 값)')).toBeHidden();
-    await page.getByRole('button', { name: /고급 — 직접 연결 설정/ }).click();
-    await expect(page.getByLabel('개인 링크 토큰 (?k= 값)')).toBeVisible();
+    await expect(page.getByLabel('개인 링크 코드 (?k= 값)')).toBeHidden();
+    await page.getByRole('button', { name: /고급 설정/ }).click();
+    await expect(page.getByLabel('개인 링크 코드 (?k= 값)')).toBeVisible();
   } finally {
     await stopStaticServer(server);
   }

@@ -23,7 +23,7 @@ import type { BriefItem, CaptureQueueItem, PersonTarget, QuickName, RuntimeConfi
 import { CameraCaptureModal, type CapturedSideMeta, type CardSide } from './components/CameraPreviewModal';
 import { StatusBadge } from './components/StatusBadge';
 import { MarkdownLite } from './components/MarkdownLite';
-import { ContactActions, PersonDocument } from './components/PersonDocument';
+import { ActionSection, ContactActions, PersonDocument } from './components/PersonDocument';
 import { addPersonNote, listBriefs, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
 import { type CapturedCameraFrame, fileToCameraFrame, thumbnailOf } from './services/camera';
 import { buildLegacyNote, buildQueuedCapture, parseLegacyNote } from './services/capture-item';
@@ -124,6 +124,35 @@ interface FeedEntry {
   local?: CaptureQueueItem;
 }
 
+type PersonActionComposer =
+  | { kind: 'note'; target: PersonTarget }
+  | { kind: 'research'; target: PersonTarget }
+  | { kind: 'correction'; captureId: string };
+
+const personActionCopy = {
+  note: {
+    eyebrow: '내 기록',
+    title: '메모 추가',
+    helper: '다음 만남에 기억하고 싶은 사실이나 약속을 남겨주세요. 접수한 메모는 인물 기록에 병합됩니다.',
+    placeholder: '예: 3분기 협력안을 논의했고, 다음 주에 자료를 보내기로 함',
+    submit: '메모 저장',
+  },
+  research: {
+    eyebrow: '공개 정보 조사',
+    title: '조사 지시',
+    helper: '공개·합법 출처에서 확인할 내용과 범위를 적어주세요. 요청 내용·대상·시각과 처리 결과가 기록됩니다.',
+    placeholder: '예: 최근 경력과 회사 활동, 인터뷰·발표, Kairen과의 접점을 중심으로 확인',
+    submit: '조사 요청',
+  },
+  correction: {
+    eyebrow: '정보 바로잡기',
+    title: '수정 요청',
+    helper: '어떤 정보가 어떻게 달라야 하는지 알려주세요. 다음 처리에서 기존 근거와 함께 다시 확인합니다.',
+    placeholder: '예: 직함은 CTO가 아니라 CPO이고, 영문 이름 표기는 Jiyoon An',
+    submit: '수정 요청 보내기',
+  },
+} as const;
+
 function App() {
   const [tab, setTab] = useState<Tab>(initialTab);
   const [config, setConfig] = useState<RuntimeConfig>(() => loadRuntimeConfig());
@@ -158,6 +187,9 @@ function App() {
   const [documentError, setDocumentError] = useState('');
   const [documentLoading, setDocumentLoading] = useState(false);
   const [documentNoteTarget, setDocumentNoteTarget] = useState<PersonTarget | null>(null);
+  const [personActionComposer, setPersonActionComposer] = useState<PersonActionComposer | null>(null);
+  const [personActionText, setPersonActionText] = useState('');
+  const [personActionSubmitting, setPersonActionSubmitting] = useState(false);
   const [queueEdit, setQueueEdit] = useState<CaptureQueueItem | null>(null);
   const [queueRetakeSide, setQueueRetakeSide] = useState<'front.jpg' | 'back.jpg'>('front.jpg');
   const queueRetakeInputRef = useRef<HTMLInputElement>(null);
@@ -534,32 +566,62 @@ function App() {
     }
   }, [config, configured]);
 
-  const runPersonAction = useCallback(async (request: Promise<{ ok: boolean; error?: string; receiptId?: string }>, success: string) => {
+  const runPersonAction = useCallback(async (request: Promise<{ ok: boolean; error?: string; receiptId?: string }>, success: string): Promise<boolean> => {
     try {
       const response = await request;
       if (!response.ok) throw new Error(response.error ?? 'request_failed');
       setMessage(response.receiptId ? `${success} · receipt ${response.receiptId}` : success);
       await refresh().catch(() => undefined);
+      return true;
     } catch (error) {
       setMessage(`접수 실패: ${actionErrorMessage(error)}`);
+      return false;
     }
   }, [refresh]);
 
   const promptNote = useCallback((target: PersonTarget) => {
-    const text = window.prompt('이 분에 대한 메모를 남겨주세요.\n다음 처리 때 인물 기록에 병합돼요.\n예: 회의에서 3분기 협력 논의, 다음주 자료 보내기로 함', '');
-    if (text?.trim()) void runPersonAction(addPersonNote(config, target, text), '메모를 접수했어요 — 잠시 후 인물 기록에 병합돼요');
-  }, [config, runPersonAction]);
+    setPersonActionText('');
+    setPersonActionComposer({ kind: 'note', target });
+  }, []);
 
   const promptResearch = useCallback((target: PersonTarget) => {
-    const text = window.prompt('공개 자료에서 확인할 내용과 깊이를 적어주세요.\n공개·합법 출처만 조사하고, 원문·요청자·대상·시간을 receipt로 남깁니다.', '');
-    const submission = buildResearchInstruction(text ?? '');
-    if (submission) void runPersonAction(submitResearchInstruction(config, target, submission.raw), '조사 지시를 접수했어요');
-  }, [config, runPersonAction]);
+    setPersonActionText('');
+    setPersonActionComposer({ kind: 'research', target });
+  }, []);
 
   const promptCorrection = useCallback((captureId: string) => {
-    const text = window.prompt('무엇이 틀렸는지 적어주세요.\n예: 직함이 CTO가 아니라 CPO / 이름 표기가 달라요', '');
-    if (text?.trim()) void runPersonAction(requestCorrection(config, captureId, text), '수정 요청을 보냈어요 — 다음 처리 때 반영돼요');
-  }, [config, runPersonAction]);
+    setPersonActionText('');
+    setPersonActionComposer({ kind: 'correction', captureId });
+  }, []);
+
+  const closePersonActionComposer = useCallback(() => {
+    if (personActionSubmitting) return;
+    setPersonActionComposer(null);
+    setPersonActionText('');
+  }, [personActionSubmitting]);
+
+  const submitPersonAction = useCallback(async () => {
+    if (!personActionComposer || !personActionText.trim() || personActionSubmitting) return;
+    setPersonActionSubmitting(true);
+    let success = false;
+    if (personActionComposer.kind === 'note') {
+      success = await runPersonAction(addPersonNote(config, personActionComposer.target, personActionText.trim()), '메모를 저장했어요 — 잠시 후 인물 기록에 반영됩니다');
+    } else if (personActionComposer.kind === 'research') {
+      const submission = buildResearchInstruction(personActionText);
+      if (!submission) {
+        setMessage('조사할 내용을 조금 더 구체적으로 적어주세요');
+      } else {
+        success = await runPersonAction(submitResearchInstruction(config, personActionComposer.target, submission.raw), '조사 요청을 접수했어요');
+      }
+    } else {
+      success = await runPersonAction(requestCorrection(config, personActionComposer.captureId, personActionText.trim()), '수정 요청을 보냈어요 — 다음 처리에서 확인합니다');
+    }
+    setPersonActionSubmitting(false);
+    if (success) {
+      setPersonActionComposer(null);
+      setPersonActionText('');
+    }
+  }, [config, personActionComposer, personActionSubmitting, personActionText, runPersonAction]);
 
   const retryProcessing = useCallback(async (captureId: string) => {
     try {
@@ -637,18 +699,20 @@ function App() {
           <div className="brief-detail">
             {localContext && <p className="local-context">내 기록: {localContext}</p>}
             {briefBody ? <MarkdownLite text={briefBody} /> : <p>아직 브리핑 본문이 도착하지 않았습니다.</p>}
-            <div className="action-grid">
-              {item.person && ownerCanSeeAll && <button type="button" onClick={() => void openDocument(title.split(' — ')[0], { captureId: item.captureId }, { captureId: item.captureId })}><FileText aria-hidden="true" size={15} />전체 프로필</button>}
-              {actionable && (
-                <>
-                  {item.person && <button className="primary" type="button" onClick={() => promptNote({ captureId: item.captureId })}><Plus aria-hidden="true" size={15} />메모 추가</button>}
-                  {item.person && researchInstructionEnabled && <button type="button" onClick={() => promptResearch({ captureId: item.captureId })}><Search aria-hidden="true" size={15} />조사 지시</button>}
-                  <button type="button" onClick={() => promptCorrection(item.captureId)}><MessageCircle aria-hidden="true" size={15} />수정 요청</button>
-                </>
-              )}
-              {local && <button type="button" onClick={() => setQueueEdit(normalizedQueueItem(structuredClone(local)))}><PenLine aria-hidden="true" size={15} />캡처 수정</button>}
-            </div>
             {actionable && <ContactActions contact={contact} />}
+            {actionable && item.person && (
+              <ActionSection label="기록" className="record-actions">
+                <button type="button" onClick={() => promptNote({ captureId: item.captureId })}><Plus aria-hidden="true" size={16} />메모 추가</button>
+                {researchInstructionEnabled && <button type="button" onClick={() => promptResearch({ captureId: item.captureId })}><Search aria-hidden="true" size={16} />조사 지시</button>}
+              </ActionSection>
+            )}
+            {(item.person || actionable || local) && (
+              <ActionSection label="관리" className="manage-actions">
+                {item.person && ownerCanSeeAll && <button type="button" onClick={() => void openDocument(title.split(' — ')[0], { captureId: item.captureId }, { captureId: item.captureId })}><FileText aria-hidden="true" size={16} />전체 프로필</button>}
+                {actionable && <button type="button" onClick={() => promptCorrection(item.captureId)}><MessageCircle aria-hidden="true" size={16} />수정 요청</button>}
+                {local && <button type="button" onClick={() => setQueueEdit(normalizedQueueItem(structuredClone(local)))}><PenLine aria-hidden="true" size={16} />캡처 수정</button>}
+              </ActionSection>
+            )}
           </div>
         )}
       </article>
@@ -753,8 +817,8 @@ function App() {
     return (
       <div className="cc-stack">
         <div className="section-heading top-heading">
-          <div><span className="eyebrow">Live contract</span><h1>처리 진행</h1></div>
-          <button className="icon-action" onClick={() => void manualRefresh()} aria-label="새로고침"><RefreshCw aria-hidden="true" size={19} /></button>
+          <div><span className="eyebrow">최근 명함</span><h1>처리 진행</h1></div>
+          <button className="activity-refresh" onClick={() => void manualRefresh()}><RefreshCw aria-hidden="true" size={15} />최신 상태 확인</button>
         </div>
         {!configured && <EmptyState title="연결 설정이 필요해요" body="받으신 개인 링크(?k=토큰 포함)로 접속하면 같은 진행 상태를 읽습니다." action="설정 열기" onAction={() => { setDraftConfig(config); setSettingsOpen(true); }} />}
         <div className="records-feed">{renderFeedBody()}</div>
@@ -765,7 +829,7 @@ function App() {
   function renderPeople() {
     return (
       <div className="cc-stack">
-        <div className="section-heading top-heading"><div><span className="eyebrow">Owner recall</span><h1>사람 찾기</h1></div></div>
+        <div className="section-heading top-heading"><div><span className="eyebrow">빠른 검색</span><h1>사람 찾기</h1></div></div>
         <form className="search-shell" onSubmit={submitSearch}>
           <Search aria-hidden="true" size={19} />
           <input value={query} onChange={(changeEvent) => setQuery(changeEvent.target.value)} placeholder="이름·회사·만난 곳으로 검색" aria-label="이름·회사·만난 곳으로 검색" />
@@ -798,18 +862,18 @@ function App() {
   function renderSettings() {
     return (
       <div className="cc-stack">
-        <div className="section-heading top-heading"><div><span className="eyebrow">Same origin</span><h1>연결과 경계</h1></div></div>
+        <div className="section-heading top-heading"><div><span className="eyebrow">이 기기</span><h1>내 앱 설정</h1></div></div>
         <section className="surface-card settings-summary">
-          <div><span>촬영자</span><strong>{config.capturer || '미설정'}</strong></div>
-          <div><span>연결</span><strong>{configured ? '개인 링크로 연결됨' : (config.token ? '주소 확인 필요' : '개인 링크 필요')}</strong></div>
-          <div><span>토큰</span><strong>{config.token ? '이 기기에 저장됨 (개인 링크가 자동 저장)' : '미설정 — 개인 링크(?k=)로 접속'}</strong></div>
-          <IonButton fill="outline" expand="block" onClick={() => { setDraftConfig(config); setAdvancedOpen(false); setSettingsOpen(true); }}>이름·연결 설정 편집</IonButton>
+          <div><span>사용자</span><strong>{config.capturer || '이름을 입력해 주세요'}</strong></div>
+          <div><span>명함 연결</span><strong>{configured ? '연결됨' : (config.token ? '연결 주소 확인 필요' : '개인 링크로 접속해 주세요')}</strong></div>
+          <div><span>개인 링크</span><strong>{config.token ? '이 기기에 저장됨' : '아직 저장되지 않음'}</strong></div>
+          <IonButton fill="outline" expand="block" onClick={() => { setDraftConfig(config); setAdvancedOpen(false); setSettingsOpen(true); }}>사용자·연결 정보 편집</IonButton>
         </section>
         <section className="boundary-note">
           <ShieldCheck aria-hidden="true" size={20} />
-          <div><strong>새 credential을 만들지 않습니다.</strong><p>현재 앱은 이전 앱과 같은 origin·local storage·IndexedDB를 사용합니다. token은 repository나 log에 포함하지 않습니다.</p></div>
+          <div><strong>개인 링크 정보는 이 기기에만 저장돼요.</strong><p>연결 정보는 저장소나 로그에 넣지 않습니다. 연결에 문제가 있을 때만 고급 설정에서 직접 확인하세요.</p></div>
         </section>
-        <a className="legacy-link" href="../legacy.html">이전 앱 열기 · 복구용 <ArrowUpRight aria-hidden="true" size={16} /></a>
+        <a className="legacy-link" href="../legacy.html">문제가 있을 때 이전 앱 열기 <ArrowUpRight aria-hidden="true" size={16} /></a>
         <p className="build-line">빌드 {__CARD_CAPTURE_BUILD_ID__}</p>
       </div>
     );
@@ -820,8 +884,7 @@ function App() {
       <IonPage>
         <IonHeader translucent>
           <IonToolbar>
-            <div className="brand-lockup" slot="start"><span className="brand-mark">K</span><span>Kairen <b>Card Capture</b><small>Mobile memory</small></span></div>
-            <IonButton slot="end" fill="clear" onClick={() => void manualRefresh()} aria-label="상태 새로고침"><RefreshCw aria-hidden="true" size={18} /></IonButton>
+            <div className="brand-lockup" slot="start"><span className="brand-mark">K</span><span><b>Card Capture</b><small>Kairen</small></span></div>
           </IonToolbar>
         </IonHeader>
         <IonContent ref={contentRef} fullscreen>
@@ -856,21 +919,37 @@ function App() {
         </IonModal>
 
         <IonModal isOpen={settingsOpen} onDidDismiss={() => setSettingsOpen(false)} initialBreakpoint={0.78} breakpoints={[0, 0.78, 1]}>
-          <IonHeader><IonToolbar><IonTitle>이름·연결 설정</IonTitle><IonButton slot="end" fill="clear" onClick={() => setSettingsOpen(false)}>닫기</IonButton></IonToolbar></IonHeader>
+          <IonHeader><IonToolbar><IonTitle>사용자·연결 정보</IonTitle><IonButton slot="end" fill="clear" onClick={() => setSettingsOpen(false)}>닫기</IonButton></IonToolbar></IonHeader>
           <IonContent className="ion-padding">
             <IonList inset>
               <IonItem><IonInput label="촬영자 이름" labelPlacement="stacked" value={draftConfig.capturer} onIonInput={(inputEvent) => setDraftConfig((value) => ({ ...value, capturer: String(inputEvent.detail.value ?? '') }))} /></IonItem>
             </IonList>
-            <p className="modal-copy">주소와 토큰은 받으신 개인 링크(<code>?k=</code>)로 열면 자동 저장됩니다. 링크를 잃어버렸을 때만 아래에서 직접 입력하세요.</p>
-            <button className="advanced-toggle" type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((value) => !value)}>{advancedOpen ? '▾' : '▸'} 고급 — 직접 연결 설정</button>
+            <p className="modal-copy">개인 링크로 접속하면 연결 정보가 자동으로 입력됩니다. 평소에는 사용자 이름만 바꾸면 됩니다.</p>
+            <button className="advanced-toggle" type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((value) => !value)}>{advancedOpen ? '▾' : '▸'} 고급 설정</button>
             {advancedOpen && (
               <IonList inset>
-                <IonItem><IonInput label="GAS API 주소" labelPlacement="stacked" type="url" value={draftConfig.apiUrl} onIonInput={(inputEvent) => setDraftConfig((value) => ({ ...value, apiUrl: String(inputEvent.detail.value ?? '') }))} /></IonItem>
-                <IonItem><IonInput label="개인 링크 토큰 (?k= 값)" labelPlacement="stacked" type="password" value={draftConfig.token} onIonInput={(inputEvent) => setDraftConfig((value) => ({ ...value, token: String(inputEvent.detail.value ?? '') }))} /></IonItem>
+                <IonItem><IonInput label="연결 주소 (GAS API)" labelPlacement="stacked" type="url" value={draftConfig.apiUrl} onIonInput={(inputEvent) => setDraftConfig((value) => ({ ...value, apiUrl: String(inputEvent.detail.value ?? '') }))} /></IonItem>
+                <IonItem><IonInput label="개인 링크 코드 (?k= 값)" labelPlacement="stacked" type="password" value={draftConfig.token} onIonInput={(inputEvent) => setDraftConfig((value) => ({ ...value, token: String(inputEvent.detail.value ?? '') }))} /></IonItem>
               </IonList>
             )}
-            <IonButton expand="block" disabled={!draftConfig.capturer.trim()} onClick={commitSettings}>이 기기에 저장</IonButton>
+            <IonButton expand="block" disabled={!draftConfig.capturer.trim()} onClick={commitSettings}>설정 저장</IonButton>
           </IonContent>
+        </IonModal>
+        <IonModal className="person-action-modal" isOpen={Boolean(personActionComposer)} onDidDismiss={closePersonActionComposer} initialBreakpoint={0.62} breakpoints={[0, 0.62, 0.9]}>
+          {personActionComposer && (
+            <>
+              <IonHeader><IonToolbar><IonTitle>{personActionCopy[personActionComposer.kind].title}</IonTitle><IonButton slot="end" fill="clear" disabled={personActionSubmitting} onClick={closePersonActionComposer}>취소</IonButton></IonToolbar></IonHeader>
+              <IonContent className="ion-padding">
+                <div className="person-action-composer">
+                  <span className="eyebrow">{personActionCopy[personActionComposer.kind].eyebrow}</span>
+                  <p>{personActionCopy[personActionComposer.kind].helper}</p>
+                  <IonTextarea aria-label={personActionCopy[personActionComposer.kind].title} autofocus autoGrow maxlength={2000} label={personActionCopy[personActionComposer.kind].title} labelPlacement="stacked" placeholder={personActionCopy[personActionComposer.kind].placeholder} value={personActionText} onIonInput={(inputEvent) => setPersonActionText(String(inputEvent.detail.value ?? ''))} />
+                  <small>{personActionText.length.toLocaleString()} / 2,000</small>
+                  <IonButton expand="block" disabled={!personActionText.trim() || personActionSubmitting} onClick={() => void submitPersonAction()}>{personActionSubmitting ? '접수 중…' : personActionCopy[personActionComposer.kind].submit}</IonButton>
+                </div>
+              </IonContent>
+            </>
+          )}
         </IonModal>
         <IonModal isOpen={documentOpen} onDidDismiss={() => setDocumentOpen(false)}>
           <IonHeader><IonToolbar><IonTitle>{documentTitle}</IonTitle><IonButton slot="end" fill="clear" onClick={() => setDocumentOpen(false)}>닫기</IonButton></IonToolbar></IonHeader>

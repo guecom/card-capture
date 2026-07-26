@@ -249,14 +249,18 @@ test('restores brief, profile, contact, search, and post-processing actions', as
     await page.getByRole('button', { name: '닫기' }).click();
 
     // 복원된 프로필 프렙 카드에도 메모 추가·조사 지시가 있으므로 브리핑 카드 쪽으로 스코프한다.
-    page.once('dialog', (dialog) => void dialog.accept('후속 자료 보내기'));
+    const composer = page.locator('ion-modal.person-action-modal');
     await page.locator('.brief-detail').getByRole('button', { name: '메모 추가' }).click();
+    await composer.locator('ion-textarea[aria-label="메모 추가"] textarea').fill('후속 자료 보내기');
+    await composer.getByRole('button', { name: '메모 저장' }).click();
     await expect.poll(() => actionBodies.some((body) => body.action === 'addnote')).toBe(true);
-    page.once('dialog', (dialog) => void dialog.accept('공개 인터뷰 확인'));
     await page.locator('.brief-detail').getByRole('button', { name: '조사 지시' }).click();
+    await composer.locator('ion-textarea[aria-label="조사 지시"] textarea').fill('공개 인터뷰 확인');
+    await composer.getByRole('button', { name: '조사 요청' }).click();
     await expect.poll(() => actionBodies.some((body) => body.action === 'researchinstruction')).toBe(true);
-    page.once('dialog', (dialog) => void dialog.accept('직함 수정'));
     await page.getByRole('button', { name: '수정 요청' }).click();
+    await composer.locator('ion-textarea[aria-label="수정 요청"] textarea').fill('직함 수정');
+    await composer.getByRole('button', { name: '수정 요청 보내기' }).click();
     await expect.poll(() => actionBodies.some((body) => body.action === 'correction')).toBe(true);
     await page.getByRole('button', { name: '다시 처리' }).click();
     await expect.poll(() => actionBodies.some((body) => body.action === 'requeue')).toBe(true);
