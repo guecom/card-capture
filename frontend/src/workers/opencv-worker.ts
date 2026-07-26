@@ -227,8 +227,12 @@ function detectOnMat(source: Cv, minAreaRatio: number, fast: boolean, previous: 
 
     // 조명 평탄화: 큰 블러(=조명 성분)를 빼서 지역 대비만 남긴다.
     const illumination = track(new cv.Mat());
-    const sigma = Math.max(4, Math.round(Math.min(width, height) / 12));
-    cv.GaussianBlur(gray, illumination, new cv.Size(0, 0), sigma, sigma, cv.BORDER_REPLICATE);
+    const small = track(new cv.Mat());
+    const smallSize = new cv.Size(Math.max(16, Math.round(width / 4)), Math.max(16, Math.round(height / 4)));
+    cv.resize(gray, small, smallSize, 0, 0, cv.INTER_AREA);
+    const sigma = Math.max(2, Math.round(Math.min(smallSize.width, smallSize.height) / 12));
+    cv.GaussianBlur(small, small, new cv.Size(0, 0), sigma, sigma, cv.BORDER_REPLICATE);
+    cv.resize(small, illumination, new cv.Size(width, height), 0, 0, cv.INTER_LINEAR);
     const flat = track(new cv.Mat());
     cv.addWeighted(gray, 1, illumination, -1, 128, flat);
 
@@ -243,14 +247,14 @@ function detectOnMat(source: Cv, minAreaRatio: number, fast: boolean, previous: 
     cv.morphologyEx(canny, canny, cv.MORPH_CLOSE, closeKernel); // 끊긴 윤곽 잇기
     edgeMaps.push(canny);
 
-    // 모폴로지 그래디언트: 대비가 약해도 경계에서 확실히 반응한다.
-    const gradient = track(new cv.Mat());
-    cv.morphologyEx(flat, gradient, cv.MORPH_GRADIENT, kernel);
-    cv.threshold(gradient, gradient, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
-    cv.morphologyEx(gradient, gradient, cv.MORPH_CLOSE, closeKernel);
-    edgeMaps.push(gradient);
-
     if (!fast) {
+      // 모폴로지 그래디언트: 대비가 약해도 경계에서 확실히 반응한다 (깊은 프레임 전용 — 비싸다).
+      const gradient = track(new cv.Mat());
+      cv.morphologyEx(flat, gradient, cv.MORPH_GRADIENT, kernel);
+      cv.threshold(gradient, gradient, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
+      cv.morphologyEx(gradient, gradient, cv.MORPH_CLOSE, closeKernel);
+      edgeMaps.push(gradient);
+
       const adaptive = track(new cv.Mat());
       cv.adaptiveThreshold(gray, adaptive, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 21, 6);
       cv.morphologyEx(adaptive, adaptive, cv.MORPH_CLOSE, closeKernel);
@@ -258,20 +262,32 @@ function detectOnMat(source: Cv, minAreaRatio: number, fast: boolean, previous: 
     }
 
     const supportKernel = track(cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5)));
+
+    // 추적 우선(track-then-detect): 직전 사각형이 이번 프레임에서도 경계 위에 있으면 그대로 쓴다.
+    // 후보 생성(Hough·컨투어)을 통째로 건너뛰므로 느린 기기에서 프레임당 비용이 크게 떨어진다.
+    // 단 가벼운 프레임에서만 — 깊은 프레임은 항상 재탐색해서 잘못 잡힌 락이 굳지 않게 한다.
+    if (fast && previous) {
+      const trackMap = track(new cv.Mat());
+      cv.dilate(edgeMaps[0], trackMap, supportKernel);
+      const held = scoreQuad(previous, trackMap, minimumArea, maximumArea);
+      if (held >= 0.5) return previous;
+      previousBest = held;
+    }
+
     edgeMaps.forEach((edgeMap) => {
       // edge support 조회용으로 한 번만 팽창시킨 맵 (±2px 허용 오차를 여기서 흡수한다).
       const supportMap = track(new cv.Mat());
       cv.dilate(edgeMap, supportMap, supportKernel);
       if (previous) previousBest = Math.max(previousBest, scoreQuad(previous, supportMap, minimumArea, maximumArea));
 
-      // (1) 직선 기반 — 윤곽이 끊겨도 복원된다.
-      consider(quadFromHough(edgeMap, minimumLineLength), supportMap);
+      // (1) 직선 기반 — 윤곽이 끊겨도 복원된다 (비싸므로 깊은 프레임에서만).
+      if (!fast) consider(quadFromHough(edgeMap, minimumLineLength), supportMap);
 
       // (2) 컨투어 기반 — 윤곽이 살아 있으면 가장 정확하다.
       const contours = new cv.MatVector();
       mats.push(contours);
       const hierarchy = track(new cv.Mat());
-      cv.findContours(edgeMap, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+      cv.findContours(edgeMap, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
       // 면적 상위 컨투어만 본다 — 저대비 프레임에서는 컨투어가 수천 개 나온다.
       const ranked: Array<{ index: number; area: number }> = [];
       for (let index = 0; index < contours.size(); index += 1) {
