@@ -24,7 +24,7 @@ import {
 import { getOpenCvWorker, type OpenCvWorkerClient, plausibleCard, type Point } from '../services/opencv';
 import { blankAutoCaptureState, nextAutoCaptureState } from '../services/auto-capture';
 import { preloadQuickNameOcr } from '../services/vision';
-import { type CoverMap, coverMap, guideRectDisplay, guideRectInVideo, lerpQuad, rectToQuad, videoPointToDisplay } from '../services/stage-geometry';
+import { type CoverMap, coverMapInBox, guideRectDisplay, guideRectInVideo, lerpQuad, rectToQuad, videoPointToDisplay } from '../services/stage-geometry';
 
 // 촬영 전용 모달 — 맥락 입력·이름 확인·완료는 legacy처럼 메인 화면이 소유한다 (ISS-000091 항목 18).
 // 명함 감지 엔진(OpenCV)은 Web Worker에서만 돌아 이 화면의 버튼은 어떤 시점에도 잠기지 않는다 (TSK-000230).
@@ -44,6 +44,16 @@ const failureCopy: Record<string, string> = {
   camera_busy: '다른 앱이 카메라를 사용 중입니다. 닫은 뒤 다시 시도하세요.',
   camera_failed: '카메라를 시작하지 못했습니다. 기본 카메라로 계속하세요.',
 };
+
+// 비디오 프레임 → 오버레이 좌표 매핑. 두 엘리먼트가 실제로 그려진 상자를 매 프레임 재서 만든다.
+// 상자가 같다고 가정하면 레이아웃이 바뀌는 순간 감지 박스가 명함에서 통째로 떨어진다 (ISS-000098).
+function stageCoverMap(video: HTMLVideoElement, overlay: HTMLCanvasElement): CoverMap {
+  const videoBox = video.getBoundingClientRect();
+  const overlayBox = overlay.getBoundingClientRect();
+  // 오버레이가 숨겨진 순간(rect 0)에는 비디오 상자를 그대로 좌표계로 쓴다.
+  const reference = overlayBox.width > 0 && overlayBox.height > 0 ? overlayBox : videoBox;
+  return coverMapInBox(video.videoWidth, video.videoHeight, videoBox, reference);
+}
 
 function quadPath(context: CanvasRenderingContext2D, quad: Point[]): void {
   context.beginPath();
@@ -239,7 +249,7 @@ export function CameraCaptureModal({
         // 감지 실패 폴백: 화면 가이드 영역만 잘라 배경 전체가 올라가지 않게 한다 (legacy 규칙).
         const overlay = overlayRef.current;
         if (overlay) {
-          const map = coverMap(full.width, full.height, overlay.clientWidth, overlay.clientHeight);
+          const map = stageCoverMap(video, overlay);
           const region = guideRectInVideo(map);
           const cropped = region ? cropCanvasRegion(full, region) : null;
           if (cropped) {
@@ -385,7 +395,7 @@ export function CameraCaptureModal({
 
       let target: Point[];
       if (detected && live) {
-        const map: CoverMap = coverMap(video.videoWidth, video.videoHeight, width, height);
+        const map = stageCoverMap(video, overlay);
         target = live.quad.map((point) => videoPointToDisplay(map, point));
       } else {
         target = rectToQuad(guideRectDisplay(width, height));

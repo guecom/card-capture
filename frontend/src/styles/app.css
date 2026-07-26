@@ -139,8 +139,10 @@ ion-toolbar {
 ion-modal.camera-preview-modal { --height: 100%; --width: min(100%, 680px); }
 .camera-preview-content { --background: #0f1722; }
 .camera-preview-stage { position: relative; display: grid; width: 100%; max-height: 62vh; aspect-ratio: 3 / 4; place-items: center; overflow: hidden; border: 1px solid rgba(255,255,255,0.12); border-radius: 22px; background: #080d13; }
-.camera-preview-stage video, .camera-preview-stage img { width: 100%; height: 100%; object-fit: cover; }
-.camera-preview-stage img { position: absolute; inset: 0; }
+/* legacy .cam video 파리티: 반드시 absolute여야 한다. grid 아이템으로 두면 height:100%가 순환
+   참조라 auto로 풀려 비디오 상자가 스테이지보다 길어지고(341x455 스테이지에 341x606 비디오),
+   화면은 프레임 위쪽만 보여 주는데 앱은 가운데를 본다고 계산해 감지 박스가 명함 위로 뜬다 (ISS-000098). */
+.camera-preview-stage video, .camera-preview-stage img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 /* 실시간 감지 오버레이 캔버스: 스크림·감지 사각형·코너 브래킷·진행 링을 rAF로 그린다 (legacy camLoop) */
 .camera-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .camera-hint-pill { position: absolute; inset: auto 0 64px; display: grid; place-items: center; pointer-events: none; }
