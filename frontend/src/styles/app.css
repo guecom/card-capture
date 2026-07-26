@@ -92,7 +92,7 @@ ion-toolbar {
 .queue-list { display: grid; gap: 9px; }
 .queue-row { display: flex; min-height: 66px; align-items: center; gap: 11px; padding: 10px; border: 1px solid var(--cc-line); border-radius: 16px; background: rgba(248,250,253,0.9); }
 .queue-row-main { display: flex; min-width: 0; flex: 1; align-items: center; gap: 11px; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; }
-.queue-row-main > img, .queue-placeholder { width: 48px; height: 48px; flex: 0 0 auto; border-radius: 12px; background: #e8eef7; object-fit: cover; }
+.queue-row-main > img, .queue-placeholder { width: 48px; height: 48px; flex: 0 0 auto; border-radius: 12px; background: #e8eef7; object-fit: contain; }
 .queue-placeholder { display: grid; place-items: center; color: var(--cc-muted); }
 .retry-action { flex: 0 0 auto; border: 0; border-radius: 11px; background: #fff0ef; color: #a54848; font-size: 10px; font-weight: 720; padding: 9px 10px; }
 
@@ -142,7 +142,11 @@ ion-modal.camera-preview-modal { --height: 100%; --width: min(100%, 680px); }
 /* legacy .cam video 파리티: 반드시 absolute여야 한다. grid 아이템으로 두면 height:100%가 순환
    참조라 auto로 풀려 비디오 상자가 스테이지보다 길어지고(341x455 스테이지에 341x606 비디오),
    화면은 프레임 위쪽만 보여 주는데 앱은 가운데를 본다고 계산해 감지 박스가 명함 위로 뜬다 (ISS-000098). */
-.camera-preview-stage video, .camera-preview-stage img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.camera-preview-stage video, .camera-preview-stage img { position: absolute; inset: 0; width: 100%; height: 100%; }
+.camera-preview-stage video { object-fit: cover; }
+/* 촬영 결과 썸네일은 잘라내지 않는다 — cover로 두면 가로로 긴 명함이 세로에 맞춰 확대돼
+   양옆이 잘리고, 사용자는 "잘못 찍혔다"고 읽는다 (founder 판정 2026-07-26). */
+.camera-preview-stage img { object-fit: contain; }
 /* 실시간 감지 오버레이 캔버스: 스크림·감지 사각형·코너 브래킷·진행 링을 rAF로 그린다 (legacy camLoop) */
 .camera-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .camera-hint-pill { position: absolute; inset: auto 0 64px; display: grid; place-items: center; pointer-events: none; }
@@ -160,7 +164,7 @@ ion-modal.camera-preview-modal { --height: 100%; --width: min(100%, 680px); }
 .camera-live-actions ion-button { flex: 1; font-size: 11px; }
 .capture-thumbnails { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 12px 0; }
 .capture-thumbnails button { display: grid; min-width: 0; gap: 7px; padding: 8px; border: 1px solid rgba(255,255,255,0.18); border-radius: 15px; background: rgba(255,255,255,0.08); color: #dfe9f6; font-size: 10px; }
-.capture-thumbnails img, .thumbnail-add { width: 100%; height: 88px; border-radius: 10px; object-fit: cover; }
+.capture-thumbnails img, .thumbnail-add { width: 100%; height: 88px; border-radius: 10px; background: #e8eef7; object-fit: contain; }
 .thumbnail-add { display: grid; place-items: center; border: 1px dashed rgba(255,255,255,0.34); color: #dfe9f6; font-size: 27px; }
 .quick-name-panel, .capture-context-fields { display: grid; gap: 8px; margin: 12px 0; padding: 15px; border-radius: 18px; background: rgba(255,255,255,0.96); color: var(--cc-ink); }
 .quick-name-panel label, .capture-context-fields h3 { margin: 0; font-size: 12px; font-weight: 740; }
@@ -170,7 +174,7 @@ ion-modal.camera-preview-modal { --height: 100%; --width: min(100%, 680px); }
 .native-camera-input { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .queue-edit-images { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
 .queue-edit-images > div { display: grid; min-height: 160px; gap: 8px; align-content: start; padding: 9px; border: 1px solid var(--cc-line); border-radius: 16px; background: white; }
-.queue-edit-images img, .queue-edit-images span { display: grid; width: 100%; height: 112px; place-items: center; border-radius: 11px; background: #eef2f7; color: var(--cc-muted); object-fit: cover; font-size: 10px; }
+.queue-edit-images img, .queue-edit-images span { display: grid; width: 100%; height: 112px; place-items: center; border-radius: 11px; background: #eef2f7; color: var(--cc-muted); object-fit: contain; font-size: 10px; }
 .queue-edit-images button { min-height: 35px; border: 0; border-radius: 10px; background: #edf3ff; color: var(--cc-blue); font-size: 10px; font-weight: 700; }
 .capture-context-fields.light { border: 1px solid var(--cc-line); background: white; }
 
