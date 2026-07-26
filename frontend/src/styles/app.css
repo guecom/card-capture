@@ -342,3 +342,23 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(35,104,216,0.34)
 .gallery-toggle small { color: var(--cc-muted); font-size: 11px; line-height: 1.5; word-break: keep-all; }
 .gallery-foot { color: var(--cc-muted); font-size: 11px; line-height: 1.5; }
 .camera-privacy-note { margin: 10px 2px 2px; color: rgba(223,233,246,0.72); font-size: 11.5px; text-align: center; }
+
+/* 처리 단계 스테퍼 — "몇 단계 중 몇 단계 · 얼마나 남았나"를 한눈에 (TSK-000249) */
+.stage-track { display: grid; gap: 9px; padding: 12px 14px 13px; border-top: 1px solid var(--cc-line); background: rgba(240,246,255,0.55); }
+.stage-track.late { background: rgba(255,246,240,0.7); }
+.stage-track.failed { background: rgba(255,241,241,0.75); }
+.stage-head { display: grid; gap: 2px; }
+.stage-head strong { color: var(--cc-ink); font-size: 12px; font-weight: 720; letter-spacing: -0.02em; }
+.stage-head span { color: var(--cc-muted); font-size: 11px; }
+.stage-dots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 0; padding: 0; list-style: none; }
+.stage-dots li { display: grid; gap: 5px; justify-items: start; color: var(--cc-muted); font-size: 9.5px; line-height: 1.25; }
+.stage-dots li i { display: block; width: 100%; height: 4px; border-radius: 99px; background: rgba(42,63,89,0.14); }
+.stage-dots li.stage-done i { background: var(--cc-teal); }
+.stage-dots li.stage-done { color: #4a7a74; }
+.stage-dots li.stage-active i { background: linear-gradient(90deg, var(--cc-blue), rgba(35,104,216,0.25)); }
+.stage-dots li.stage-active { color: var(--cc-blue); font-weight: 700; }
+.stage-dots li.stage-failed i { background: #d4756c; }
+.stage-dots li.stage-failed { color: #a54848; font-weight: 700; }
+.stage-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.stage-actions button, .stage-actions a { display: inline-flex; align-items: center; gap: 5px; padding: 7px 11px; border: 0; border-radius: 11px; background: white; color: var(--cc-blue); font-size: 10.5px; font-weight: 700; text-decoration: none; }
+.refresh-hint { margin-left: auto; color: var(--cc-muted); font-size: 10px; font-variant-numeric: tabular-nums; }

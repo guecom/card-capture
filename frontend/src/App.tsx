@@ -27,7 +27,8 @@ import { ActionSection, ContactActions, PersonDocument } from './components/Pers
 import { addPersonNote, listBriefs, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
 import { type CapturedCameraFrame, thumbnailOf } from './services/camera';
 import { buildLegacyNote, buildQueuedCapture, parseLegacyNote } from './services/capture-item';
-import { actionErrorMessage, briefListTitle, briefNameMap, briefTitle, elapsedMinutesOf, pendingProgress } from './services/brief-view';
+import { actionErrorMessage, briefListTitle, briefNameMap, briefTitle, elapsedMinutesOf } from './services/brief-view';
+import { captureProgress, refreshHint } from './services/capture-progress';
 import { contactCardFromBrief } from './services/contacts';
 import { getOpenCvWorker, prefetchOpenCv } from './services/opencv';
 import { prefetchQuickOcrAssets } from './services/paddle-quickname';
@@ -96,6 +97,14 @@ function queueNamedImageSource(item: CaptureQueueItem, name: 'front.jpg' | 'back
 function queueImageSource(item: CaptureQueueItem): string {
   if (item.thumb) return item.thumb;
   return queueNamedImageSource(item, 'front.jpg');
+}
+
+// 자동 새로고침 주기. 화면에 남은 시간을 그대로 보여 주므로 사용자가 주기를 알 수 있다.
+const AUTO_REFRESH_MS = 20_000;
+
+// 대기열 행에 보여 줄 단계 요약. 서버 응답이 아직 없으면 로컬 전송 상태만으로 계산한다.
+function queueProgressOf(item: CaptureQueueItem) {
+  return captureProgress({ queue: item, elapsedMinutes: elapsedMinutesOf(item) });
 }
 
 function queueStateCopy(item: CaptureQueueItem): string {
@@ -226,6 +235,9 @@ function App() {
   const [memo, setMemo] = useState('');
   const [researchText, setResearchText] = useState(sticky.research);
   const [queueing, setQueueing] = useState(false);
+  // 자동 새로고침 안내용: 마지막 갱신 시각과 현재 시각(1초 tick).
+  const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
+  const [clockTick, setClockTick] = useState(() => Date.now());
   const [quickName, setQuickName] = useState<QuickName | null>(null);
   const [nameText, setNameText] = useState('');
   const [ocrState, setOcrState] = useState('이름 인식 대기');
@@ -254,6 +266,7 @@ function App() {
       setResearchInstructionEnabled(seeAll && research);
       saveOwnerFlags({ seeAll, researchInstructionEnabled: research });
       setHasMoreBriefs(response.hasMore === true);
+      setRefreshedAt(Date.now());
     } catch (error) {
       if (announce) setMessage(`새로고침 실패: ${actionErrorMessage(error)}`);
       throw error;
@@ -312,11 +325,13 @@ function App() {
       setRelKairen((value) => value || restored.relKairen);
       setResearchText((value) => value || restored.research);
     };
-    const interval = window.setInterval(() => silentRefresh(), 20_000);
+    const interval = window.setInterval(() => silentRefresh(), AUTO_REFRESH_MS);
+    const clock = window.setInterval(() => setClockTick(Date.now()), 1_000);
     window.addEventListener('online', handleOnline);
     document.addEventListener('visibilitychange', handleVisibility);
     return () => {
       window.clearInterval(interval);
+      window.clearInterval(clock);
       window.removeEventListener('online', handleOnline);
       document.removeEventListener('visibilitychange', handleVisibility);
     };
@@ -359,14 +374,21 @@ function App() {
     return entries.sort((a, b) => b.id.localeCompare(a.id));
   }, [briefs, queue]);
 
+  // "언제 저절로 갱신되는지"를 화면에 그대로 보여 준다 (founder 판정 2026-07-26).
+  const sinceRefresh = refreshedAt === null ? null : (clockTick - refreshedAt) / 60_000;
+  const untilRefresh = refreshedAt === null
+    ? AUTO_REFRESH_MS / 1000
+    : Math.max(0, (AUTO_REFRESH_MS - (clockTick - refreshedAt)) / 1000);
+  const autoRefreshHint = refreshHint(untilRefresh, sinceRefresh);
+
   // 상단 바의 한 줄 상태. 제품 이름 대신 "지금 무슨 일이 일어나는지"를 소유한다.
   const pendingCount = useMemo(() => feed.filter((entry) => (entry.local && entry.local.state !== 'sent')
     || (entry.brief && entry.brief.status !== 'processed' && entry.brief.status !== 'skipped')).length, [feed]);
   const headerStatus = !configured ? '연결 필요 — 개인 링크로 열어주세요'
     : loading ? '최신 상태 확인 중…'
       : sending ? '사진 전송 중…'
-        : pendingCount > 0 ? `${pendingCount}건 처리 중`
-          : feed.length > 0 ? `기록 ${feed.length}건 · 모두 최신`
+        : pendingCount > 0 ? `${pendingCount}건 처리 중 · ${autoRefreshHint}`
+          : feed.length > 0 ? `기록 ${feed.length}건 · ${autoRefreshHint}`
             : '첫 명함을 기다리고 있어요';
 
   const setupBannerMessage = !config.apiUrl
@@ -727,7 +749,7 @@ function App() {
           {imageSource ? <img src={imageSource} alt="명함 앞면 미리보기" /> : <span className="queue-placeholder"><Camera aria-hidden="true" size={18} /></span>}
           <div className="row-copy">
             <strong>{displayName}</strong>
-            <span>{contextLine || formatMoment(item.capturedAt)} · {sideLabel} · {queueStateCopy(item)}</span>
+            <span>{contextLine || formatMoment(item.capturedAt)} · {sideLabel} · {queueProgressOf(item).headline}</span>
             {item.err && <small>{actionErrorMessage(item.err)}</small>}
           </div>
           <ChevronRight aria-hidden="true" size={16} />
@@ -743,7 +765,7 @@ function App() {
   function renderBriefCard(item: BriefItem, local: CaptureQueueItem | null) {
     const expanded = expandedBriefs.has(item.captureId);
     const minutes = elapsedMinutesOf(item);
-    const progress = pendingProgress(item, minutes);
+    const progress = captureProgress({ brief: item, queue: local, elapsedMinutes: minutes });
     const title = briefTitle(item);
     // 목록에는 "이름 — 한 줄 요약"을 보여 준다 (founder 판정 2026-07-26: 전부 "이런 분이에요"라 구분이 안 됨).
     const listTitle = briefListTitle(item);
@@ -762,11 +784,22 @@ function App() {
           <StatusBadge status={item.status} />
           <ChevronRight className={expanded ? 'expanded' : ''} aria-hidden="true" size={17} />
         </button>
-        {progress && (
-          <div className={`processing-line ${progress.late ? 'late' : ''}`}>
-            <span>{progress.text}</span>
+        {!progress.done && (
+          <div className={`stage-track ${progress.late ? 'late' : ''} ${progress.failed ? 'failed' : ''}`}>
+            <div className="stage-head">
+              <strong>{progress.headline}</strong>
+              <span>{progress.detail}</span>
+            </div>
+            <ol className="stage-dots" aria-label={progress.headline}>
+              {progress.stages.map((stage) => (
+                <li key={stage.key} className={`stage-${stage.state}`}>
+                  <i aria-hidden="true" />
+                  <span>{stage.label}</span>
+                </li>
+              ))}
+            </ol>
             {progress.late && (
-              <div>
+              <div className="stage-actions">
                 <button type="button" onClick={() => void retryProcessing(item.captureId)}><RotateCcw aria-hidden="true" size={13} />다시 처리 요청</button>
                 <a href={`mailto:guecom90@gmail.com?subject=${encodeURIComponent(`[명함] 처리 지연 문의 ${item.captureId}`)}`}><Mail aria-hidden="true" size={13} />문의하기</a>
               </div>
@@ -884,6 +917,7 @@ function App() {
             <span className="caret" aria-hidden="true">{recordsCollapsed ? '▸' : '▾'}</span> 명함 기록
           </button>
           {sending && <span className="sending-note">전송 중…</span>}
+          <span className="refresh-hint" role="status">{autoRefreshHint}</span>
         </div>
         {!recordsCollapsed && <div className="records-feed">{renderFeedBody()}</div>}
       </div>

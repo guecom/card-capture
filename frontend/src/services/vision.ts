@@ -188,6 +188,7 @@ export async function recognizeQuickName(
             confidence: line.confidence,
             heightRatio: output.height > 0 ? line.box.height / output.height : 0,
             centerRatio: output.height > 0 ? (line.box.y + line.box.height / 2) / output.height : 0.5,
+            leftRatio: output.width > 0 ? line.box.x / output.width : 0,
           }));
           const picked = quickNameOf(nameFromOcrWords(words), 'device_ppocr', now);
           if (picked) return picked;
