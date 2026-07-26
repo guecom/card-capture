@@ -1,6 +1,15 @@
-// 명함에서 "이름"을 고르는 공용 픽커 — 글꼴 크기(bbox 높이) 신호가 1순위다.
-// 한국 명함은 이름이 거의 항상 카드에서 가장 큰 글자라서, 텍스트 휴리스틱만 쓰던
-// 기존 방식보다 오탐(회사명·직함을 이름으로 뽑는 문제)이 크게 준다 (ISS-000096).
+// 명함에서 "사람 이름"을 고르는 공용 픽커.
+//
+// v1은 "카드에서 가장 큰 글자 = 이름"으로 가정했다(heightRatio * 400). 로고를 크게 넣는
+// 명함에서는 이 가정이 정반대로 작동한다 — founder 본인 명함이 그 예다(`KAIREN`이 이름보다 크다).
+// 그래서 회사명을 이름으로 뽑는 오탐이 잦았다 (ISS-000096, founder 판정 2026-07-26).
+//
+// v2는 글꼴 크기를 여러 신호 중 하나로 낮추고, 사람 이름에만 있는 신호를 함께 본다:
+//   - 한국 성씨 prior: 2~4자 한글 후보는 실제 성씨로 시작해야 한다 (카이렌·로보틱스 제거).
+//   - 직함 인접: 바로 위/아래 줄이 직함이면 그 줄은 이름일 확률이 매우 높다.
+//   - 이메일 대조: 이메일 아이디에 같은 토큰이 있으면 사람 이름이다 (jinwoo@... ↔ Jinwoo).
+//   - 전부 대문자 영문은 로고로 보고 감점한다 (KAIREN ROBOTICS ↔ Jane Kim).
+// 확신 가는 후보가 없으면 null을 돌려준다 — 틀린 이름을 채우는 것보다 비워두는 편이 낫다.
 
 export interface OcrWord {
   text: string;
@@ -14,11 +23,46 @@ export interface OcrWord {
 
 export const BLOCKED_NAME_PATTERN = /주식회사|유한회사|\(주\)|회사|그룹|센터|연구소|대학교|대학|병원|협회|재단|본부|사업부|팀\b|대표이사|대표|이사|부사장|사장|전무|상무|부장|차장|과장|팀장|매니저|책임|선임|수석|주임|사원|프로|파트너|director|manager|president|ceo|cto|coo|cfo|lead|head|company|corporation|corp\.?|inc\.?|ltd\.?|co\.,|team|group|office|tel|fax|mobile|email|kakao/i;
 
+// 회사·브랜드에서 반복되는 꼬리표. 성씨 prior를 통과하는 단어(로보틱스 등)를 여기서 거른다.
+export const COMPANY_WORD_PATTERN = /로보틱스|로보틱|로봇|테크놀로지|테크놀러지|테크|솔루션|시스템즈|시스템|소프트|정보통신|커뮤니케이션|네트웍스|네트워크|전자|산업|중공업|엔지니어링|건설|화학|제약|바이오|메디컬|메디칼|식품|물산|유통|무역|기획|컨설팅|에이전시|파트너스|홀딩스|컴퍼니|모터스|스튜디오|디자인|랩스|연구원|공사|공단|재단법인|사단법인|robotics|technolog|solutions?|systems?|software|networks?|holdings?|partners?|labs?|studio|motors|bio|medical|pharma|industr|engineering|consulting|agency/i;
+
+// 한국 성씨(상위 빈도 중심). 2~4자 한글 후보는 이 중 하나로 시작해야 사람 이름으로 본다.
+const KOREAN_SURNAMES = new Set([
+  '김', '이', '박', '최', '정', '강', '조', '윤', '장', '임', '한', '오', '서', '신', '권', '황', '안', '송', '전', '홍',
+  '유', '고', '문', '양', '손', '배', '백', '허', '남', '심', '노', '하', '곽', '성', '차', '주', '우', '구', '민', '류',
+  '나', '진', '지', '엄', '채', '원', '천', '방', '공', '현', '함', '변', '염', '여', '추', '도', '소', '석', '선', '설',
+  '마', '길', '위', '표', '명', '기', '반', '왕', '금', '옥', '육', '인', '맹', '제', '모', '탁', '국', '어', '은', '편',
+  '용', '봉', '경', '피', '두', '감', '음', '빈', '동', '온', '호', '범', '좌', '팽', '승', '간', '상', '시', '태', '아',
+]);
+const COMPOUND_SURNAMES = ['남궁', '황보', '제갈', '사공', '선우', '독고', '서문', '동방'];
+
 const HANGUL_NAME = /^[가-힣]{2,4}$/;
 const ENGLISH_NAME = /^[A-Z][A-Za-z'.-]{1,20}(?:\s+[A-Z][A-Za-z'.-]{1,20}){1,2}$/;
+const TITLE_PATTERN = /대표이사|대표|이사|부사장|사장|전무|상무|본부장|실장|부장|차장|과장|팀장|매니저|책임|선임|수석|주임|연구원|엔지니어|디자이너|컨설턴트|변호사|회계사|교수|박사|founder|co-?founder|ceo|cto|coo|cfo|president|director|manager|engineer|designer|consultant|partner|head of|lead/i;
 
 function lineIsNoise(text: string): boolean {
   return /@|https?:|www\.|\.com|\.kr|\d{2,}/.test(text);
+}
+
+function hasKoreanSurname(name: string): boolean {
+  if (COMPOUND_SURNAMES.some((surname) => name.startsWith(surname))) return name.length >= 3;
+  return KOREAN_SURNAMES.has(name[0]);
+}
+
+function emailLocalParts(words: OcrWord[]): string[] {
+  return words.flatMap((word) => Array.from(String(word.text).matchAll(/([A-Za-z0-9._-]+)@/g)).map((match) => match[1].toLowerCase()));
+}
+
+// 바로 위·아래 줄(세로 위치 기준)이 직함이면 이 줄은 이름일 확률이 높다.
+function nearTitleLine(words: OcrWord[], index: number): boolean {
+  const ordered = words.map((word, position) => ({ word, position })).sort((a, b) => a.word.centerRatio - b.word.centerRatio);
+  const at = ordered.findIndex((entry) => entry.position === index);
+  if (at < 0) return false;
+  return [ordered[at - 1], ordered[at + 1]].some((neighbour) => {
+    if (!neighbour) return false;
+    const text = neighbour.word.text;
+    return TITLE_PATTERN.test(text) && Math.abs(neighbour.word.centerRatio - words[index].centerRatio) < 0.22;
+  });
 }
 
 export interface PickedName {
@@ -28,43 +72,62 @@ export interface PickedName {
 }
 
 export function nameFromOcrWords(words: OcrWord[]): PickedName | null {
+  const locals = emailLocalParts(words);
+  const emailMentions = (name: string): boolean => {
+    const tokens = name.toLowerCase().split(/[^a-z]+/).filter((token) => token.length >= 3);
+    return tokens.length > 0 && locals.some((local) => tokens.some((token) => local.includes(token)));
+  };
+
   let best: { name: string; score: number; confidence: number } | null = null;
 
-  for (const word of words) {
+  words.forEach((word, index) => {
     const line = word.text.replace(/\s+/g, ' ').trim();
-    if (!line || lineIsNoise(line)) continue;
-    if (word.confidence < 0.35) continue;
+    if (!line || lineIsNoise(line)) return;
+    if (word.confidence < 0.35) return;
 
-    const tokens = line.split(' ').filter(Boolean);
+    const titleNeighbour = nearTitleLine(words, index);
     const candidates: Array<{ name: string; bonus: number }> = [];
 
-    // 라인 전체가 이름 형태면 최우선 (이름은 보통 한 줄을 단독으로 쓴다).
-    if (HANGUL_NAME.test(line) && !BLOCKED_NAME_PATTERN.test(line)) candidates.push({ name: line, bonus: 40 });
-    else if (ENGLISH_NAME.test(line) && !BLOCKED_NAME_PATTERN.test(line)) candidates.push({ name: line, bonus: 30 });
-    else {
+    if (HANGUL_NAME.test(line) && !BLOCKED_NAME_PATTERN.test(line) && !COMPANY_WORD_PATTERN.test(line)) {
+      // 줄 전체가 한글 이름 형태 — 성씨로 시작하거나, 직함 줄과 붙어 있어야 사람 이름으로 본다.
+      if (hasKoreanSurname(line) || titleNeighbour) candidates.push({ name: line, bonus: 40 });
+    } else if (ENGLISH_NAME.test(line) && !BLOCKED_NAME_PATTERN.test(line) && !COMPANY_WORD_PATTERN.test(line)) {
+      candidates.push({ name: line, bonus: 30 });
+    } else {
       // "홍길동 대표이사"처럼 직함이 같은 줄에 붙는 경우 — 토큰 단위로 이름만 뽑는다.
-      for (const token of tokens) {
-        if (HANGUL_NAME.test(token) && !BLOCKED_NAME_PATTERN.test(token)) candidates.push({ name: token, bonus: 12 });
+      for (const token of line.split(' ').filter(Boolean)) {
+        if (!HANGUL_NAME.test(token)) continue;
+        if (BLOCKED_NAME_PATTERN.test(token) || COMPANY_WORD_PATTERN.test(token)) continue;
+        if (!hasKoreanSurname(token)) continue;
+        candidates.push({ name: token, bonus: 12 });
       }
-      const english = line.match(/[A-Z][A-Za-z'.-]{1,20}(?:\s+[A-Z][A-Za-z'.-]{1,20}){1,2}/g) ?? [];
-      for (const match of english) {
-        if (!BLOCKED_NAME_PATTERN.test(match)) candidates.push({ name: match, bonus: 8 });
+      for (const match of line.match(/[A-Z][A-Za-z'.-]{1,20}(?:\s+[A-Z][A-Za-z'.-]{1,20}){1,2}/g) ?? []) {
+        if (BLOCKED_NAME_PATTERN.test(match) || COMPANY_WORD_PATTERN.test(match)) continue;
+        candidates.push({ name: match, bonus: 8 });
       }
     }
 
     for (const candidate of candidates) {
-      // 글꼴 크기(heightRatio)가 지배 신호. 위쪽 절반 배치·신뢰도·형태 보너스가 보조.
-      const score = word.heightRatio * 400
-        + word.confidence * 40
-        + (word.centerRatio < 0.55 ? 8 : 0)
-        + (/^[가-힣]/.test(candidate.name) ? 6 : 0)
-        + candidate.bonus;
-      if (!best || score > best.score) {
-        best = { name: candidate.name, score, confidence: word.confidence };
-      }
+      const hangul = /^[가-힣]/.test(candidate.name);
+      // 전부 대문자 영문은 로고·회사명일 확률이 높다 (KAIREN ROBOTICS ↔ Jane Kim).
+      const shouty = !hangul && candidate.name === candidate.name.toUpperCase();
+      const corroborated = emailMentions(candidate.name);
+      if (shouty && !corroborated) continue;
+
+      const score = 100
+        + word.heightRatio * 220          // 글꼴 크기는 여전히 강한 신호지만 지배 신호는 아니다
+        + word.confidence * 30
+        + candidate.bonus
+        + (hangul && hasKoreanSurname(candidate.name) ? 45 : 0)
+        + (titleNeighbour ? 35 : 0)
+        + (corroborated ? 40 : 0)
+        + (word.centerRatio < 0.55 ? 6 : 0)
+        + (hangul ? 6 : 0);
+      if (!best || score > best.score) best = { name: candidate.name, score, confidence: word.confidence };
     }
-  }
+  });
 
   if (!best) return null;
-  return { name: best.name, confidence: Math.max(0, Math.min(100, Math.round(best.confidence * 100))) };
+  const picked: { name: string; confidence: number } = best;
+  return { name: picked.name, confidence: Math.max(0, Math.min(100, Math.round(picked.confidence * 100))) };
 }
