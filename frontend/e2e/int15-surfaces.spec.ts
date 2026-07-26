@@ -97,19 +97,35 @@ async function boot(page: import('@playwright/test').Page): Promise<Harness> {
   return { server, requests };
 }
 
-// 001: 네 칸이 같은 무게로 쌓여 촬영 버튼을 아래로 밀던 구조를 접히는 카드 하나로 바꿨다.
-test('the meeting-context block stays quiet until opened, then reads back exactly what it stores', async ({ page }) => {
+// 001: 촬영 직후 바로 쓰는 칸이므로 처음부터 펼쳐져 있고, 입력 칸이 입력 칸으로 보여야 한다
+// (founder 판정 2026-07-27: "중요하니까 처음에 펼쳐놔" / "글쓰기 박스인지 구별이 안돼").
+test('the meeting-context block opens by default and its fields read as fields', async ({ page }) => {
   const harness = await boot(page);
   try {
     const block = page.locator('.context-block');
     await expect(block.getByText('만남 맥락')).toBeVisible();
-    // 접힌 상태에서는 입력 칸이 하나도 펼쳐져 있지 않다 — 촬영 버튼이 아래로 밀리지 않는다.
-    await expect(block.locator('ion-input')).toHaveCount(0);
-    await expect(page.getByRole('button', { name: /만남 맥락/ })).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByRole('button', { name: /만남 맥락/ })).toHaveAttribute('aria-expanded', 'true');
+    // 네 칸이 처음부터 보인다.
+    await expect(block.getByRole('textbox', { name: '어디서 만났나요?' })).toBeVisible();
+    await expect(block.getByRole('textbox', { name: 'Kairen과의 관계' })).toBeVisible();
+    await expect(block.getByRole('textbox', { name: '나와의 관계' })).toBeVisible();
+    await expect(block.getByRole('textbox', { name: '메모' })).toBeVisible();
 
-    await page.getByRole('button', { name: /만남 맥락/ }).click();
+    // 음성 입력 안내가 메모 안이 아니라 제목 옆에서 처음부터 보인다.
+    await expect(block.getByText('키보드 마이크로 말해도 돼요')).toBeVisible();
+
+    // 입력 칸은 카드 배경과 다른 색·테두리를 가져야 "쓰는 칸"으로 읽힌다.
+    const field = await block.getByRole('textbox', { name: '어디서 만났나요?' }).evaluate((node) => {
+      const box = node.closest('ion-input') ?? node;
+      const style = getComputedStyle(box);
+      const card = getComputedStyle(document.querySelector('.context-block')!);
+      return { background: style.backgroundColor, border: style.borderTopWidth, card: card.backgroundColor, height: (box as HTMLElement).getBoundingClientRect().height };
+    });
+    expect(field.background).not.toBe(field.card);
+    expect(parseFloat(field.border)).toBeGreaterThanOrEqual(1);
+    expect(field.height).toBeGreaterThanOrEqual(44);
+
     // `2시간 유지` 안내는 칸마다 반복하지 않고 영역 위에 한 번만 나온다.
-    await expect(block.getByText(/2시간 동안 그대로 남아요/)).toHaveCount(1);
     await expect(block.getByText(/2시간/)).toHaveCount(1);
 
     // 자주 쓰는 답은 chip으로 먼저 제안하고, chip을 누르면 그 값이 입력된다.
@@ -124,6 +140,21 @@ test('the meeting-context block stays quiet until opened, then reads back exactl
   }
 });
 
+// 001-b: 만난 자리 예시는 기록이 없어도 실무 동선으로 채워지고, 실제 기록이 있으면 그게 먼저다.
+test('the meeting-place chips start from real work situations and prefer actual past events', async ({ page }) => {
+  const harness = await boot(page);
+  try {
+    const chips = page.locator('.context-block').getByRole('group', { name: '만난 자리 예시' });
+    // fixture의 실제 만난 곳이 앞에 온다.
+    await expect(chips.getByRole('button').first()).toHaveText('2026 로보월드');
+    // 뒤는 실무 예시로 채운다 — 빈 화면에서도 무엇을 적는 칸인지 보인다.
+    await expect(chips.getByRole('button', { name: '고객사 방문' })).toBeVisible();
+    await expect(chips.getByRole('button', { name: 'IR·투자 미팅' })).toBeVisible();
+  } finally {
+    harness.server.close();
+  }
+});
+
 // 002: 조사 지시는 일반 메모가 아니라 AI에게 맡기는 일이다. 표면·표식·단계·경계가 그렇게 보여야 한다.
 test('the research request looks and behaves like handing work to an AI, without widening its authority', async ({ page }) => {
   const harness = await boot(page);
@@ -131,7 +162,6 @@ test('the research request looks and behaves like handing work to an AI, without
     const surface = page.locator('.ai-surface.research-request');
     await expect(surface.getByText('AI 조사 요청')).toBeVisible();
     await expect(surface.getByText('소유자 전용')).toBeVisible();
-    await expect(surface.getByText('공개 자료에서 확인할 내용을 AI에게 맡깁니다.')).toBeVisible();
 
     // 접수 후 어떤 단계를 거치는지 미리 보인다 — 불투명한 로딩이 아니다.
     const rail = surface.locator('.ai-stage-rail');
@@ -140,13 +170,46 @@ test('the research request looks and behaves like handing work to an AI, without
     await expect(rail.getByText('출처 정리 중')).toBeVisible();
     await expect(rail.locator('li.ai-stage-active')).toHaveText(/작성 중/);
 
-    // 권한 경계는 화면에 그대로 적혀 있다 (DEC-000035를 넓히지 않는다).
-    await expect(surface.getByText(/로그인이 필요한 자료, 민감한 특성 추론, 외부로 보내는 행동은 하지 않아요/)).toBeVisible();
+    // 묻기 껄끄럽지만 실제로 필요한 판단을 먼저 꺼내 놓는다 (founder 지시 2026-07-27).
+    await expect(surface.getByRole('button', { name: '실력·전문성 추정' })).toBeVisible();
+    await expect(surface.getByRole('button', { name: '의사결정 권한' })).toBeVisible();
+    await expect(surface.getByRole('button', { name: '평판·레퍼런스' })).toBeVisible();
+
+    // 그 판단은 근거·확신도를 붙이는 조건에서만 허용된다.
+    await expect(surface.getByText(/근거로 판단까지 합니다. 근거와 확신도를 함께 적고, 모르는 건 모른다고 남겨요/)).toBeVisible();
+    // 넓히지 않은 경계는 그대로 적혀 있다 — DEC-000035의 금지 항목은 유지된다.
+    await expect(surface.getByText(/로그인이 필요한 자료, 정치·종교·건강 같은 사적 특성, 집주소·가족 같은 신상, 외부로 보내는 행동은 하지 않아요/)).toBeVisible();
 
     // 예시 chip은 기존 입력을 지우지 않고 덧붙인다.
     await surface.locator('ion-textarea textarea').fill('최근 발표 확인');
-    await surface.getByRole('button', { name: '회사 소식·투자' }).click();
-    await expect(surface.locator('ion-textarea textarea')).toHaveValue('최근 발표 확인, 회사 소식·투자');
+    await surface.getByRole('button', { name: '실력·전문성 추정' }).click();
+    await expect(surface.locator('ion-textarea textarea')).toHaveValue('최근 발표 확인, 실력·전문성 추정');
+  } finally {
+    harness.server.close();
+  }
+});
+
+// 002-b: 예시와 경계 문구가 길어져도 접수 버튼은 시트 안에 남아야 한다.
+// 실제로 chip을 8개로 늘렸더니 버튼이 시트 밖으로 밀려 아예 누를 수 없었다.
+test('the research composer keeps its submit button reachable however tall the surface gets', async ({ page }) => {
+  const harness = await boot(page);
+  try {
+    await page.getByRole('button', { name: '진행', exact: true }).click();
+    await page.locator('.brief-summary').filter({ hasText: '김민서' }).click();
+    await page.locator('.brief-detail').getByRole('button', { name: 'AI 조사 요청' }).click();
+
+    const composer = page.locator('ion-modal.person-action-modal');
+    await composer.locator('ion-textarea[aria-label="AI 조사 요청"] textarea').fill('실력이 진짜인지 공개 결과물로 판단해줘');
+    const submit = composer.getByRole('button', { name: '조사 요청 접수' });
+    await expect(submit).toBeEnabled();
+
+    // 스크롤하지 않아도 버튼 전체가 화면 안에 있어야 한다.
+    const box = await submit.boundingBox();
+    const viewport = page.viewportSize();
+    expect(box, '접수 버튼이 화면에 없다').not.toBeNull();
+    expect(box!.y + box!.height).toBeLessThanOrEqual(viewport!.height);
+    await submit.click();
+    await expect(composer).toBeHidden();
   } finally {
     harness.server.close();
   }

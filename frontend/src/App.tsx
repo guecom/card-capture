@@ -16,7 +16,7 @@ import {
   IonToolbar,
   setupIonicReact,
 } from '@ionic/react';
-import { ArrowUpRight, Camera, ChevronRight, FileText, ImageOff, Mail, MessageCircle, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, Waves } from 'lucide-react';
+import { ArrowUpRight, Camera, ChevronRight, FileText, ImageOff, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, Waves } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { BriefItem, CaptureQueueItem, PersonTarget, QuickName, RuntimeConfig, SearchItem } from './contracts/capture';
@@ -31,7 +31,9 @@ import {
   RECALL_SCOPE_NOTE,
   recallStages,
   RESEARCH_EXAMPLE_CHIPS,
-  RESEARCH_SCOPE_NOTE,
+  RESEARCH_PLACEHOLDER,
+  RESEARCH_SCOPE_DOES,
+  RESEARCH_SCOPE_LIMITS,
   researchStages,
   type RecallStageKey,
   type ResearchStageKey,
@@ -40,8 +42,8 @@ import { type CapturedCameraFrame, thumbnailOf } from './services/camera';
 import {
   captureContextFilled,
   captureContextSummary,
+  eventChips as buildEventChips,
   KAIREN_RELATION_CHIPS,
-  recentEventChips,
   SELF_RELATION_CHIPS,
   toggleChipValue,
 } from './services/capture-context';
@@ -193,8 +195,8 @@ const personActionCopy = {
   research: {
     eyebrow: '공개 정보 조사',
     title: 'AI 조사 요청',
-    helper: '공개 자료에서 확인할 내용을 AI에게 맡깁니다. 요청 내용·대상·시각과 처리 결과가 기록됩니다.',
-    placeholder: '예: 최근 경력과 회사 활동, 인터뷰·발표, Kairen과의 접점을 중심으로 확인',
+    helper: '묻기 껄끄럽지만 알아야 하는 것까지 맡기세요. 공개된 근거로 판단하고 확신도를 함께 적습니다. 요청 내용·대상·시각과 처리 결과가 기록됩니다.',
+    placeholder: '예: 이 사람 실력이 진짜인지 공개된 결과물로 판단해줘. 실제로 결정 권한이 있는 자리인지도.',
     submit: '조사 요청 접수',
   },
   correction: {
@@ -271,7 +273,7 @@ function App() {
   const [relKairen, setRelKairen] = useState(sticky.relKairen);
   const [memo, setMemo] = useState('');
   const [researchText, setResearchText] = useState(sticky.research);
-  const [contextCollapsed, setContextCollapsed] = useState(() => loadSectionCollapsed('context', true));
+  const [contextCollapsed, setContextCollapsed] = useState(() => loadSectionCollapsed('context', false));
   const [queueing, setQueueing] = useState(false);
   // 자동 새로고침 안내용: 마지막 갱신 시각과 현재 시각(1초 tick).
   const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
@@ -405,7 +407,7 @@ function App() {
   const contextValue = useMemo(() => ({ event, relKairen, relSelf, memo }), [event, memo, relKairen, relSelf]);
   const contextSummary = useMemo(() => captureContextSummary(contextValue), [contextValue]);
   const contextFilled = useMemo(() => captureContextFilled(contextValue), [contextValue]);
-  const eventChips = useMemo(() => recentEventChips(briefs, event), [briefs, event]);
+  const eventChips = useMemo(() => buildEventChips(briefs, event), [briefs, event]);
 
   // 로컬 캡처 + 서버 브리핑 통합 목록 (실폰 피드백 2): 같은 captureId는 한 항목으로.
   const feed = useMemo<FeedEntry[]>(() => {
@@ -1001,8 +1003,13 @@ function App() {
           <section className="context-block">
             <button className="context-toggle" type="button" aria-expanded={!contextCollapsed} onClick={toggleContext}>
               <span className="context-toggle-copy">
-                <strong>만남 맥락</strong>
-                <small>{contextSummary || '선택 입력 — 나중에 이 사람을 떠올릴 단서예요'}</small>
+                <span className="context-title-row">
+                  <strong>만남 맥락</strong>
+                  {/* 음성 입력은 실제로 가장 빠른 입력 수단인데 메모 placeholder 안에 묻혀 있었다
+                      (founder 지시 2026-07-27: 처음에 잘 볼 수 있도록). */}
+                  <span className="context-mic"><Mic aria-hidden="true" size={11} />키보드 마이크로 말해도 돼요</span>
+                </span>
+                <small>{contextSummary || '나중에 이 사람을 떠올릴 단서예요'}</small>
               </span>
               {contextFilled > 0 && <span className="context-count">{contextFilled}개</span>}
               <ChevronRight className={contextCollapsed ? '' : 'expanded'} aria-hidden="true" size={16} />
@@ -1010,18 +1017,21 @@ function App() {
             {!contextCollapsed && (
               <div className="capture-context-fields plain">
                 <p className="context-note">만난 곳·관계·AI 조사 요청은 2시간 동안 그대로 남아요. 메모는 명함마다 새로 씁니다.</p>
+                {/* Ionic의 stacked label은 입력 박스와 같은 회색조라 "여기가 쓰는 칸"이 안 읽혔다.
+                    라벨을 밖으로 꺼내고 입력 박스에 흰 배경·테두리를 줘 글쓰기 칸임을 분명히 한다
+                    (founder 판정 2026-07-27: "글쓰기 박스인지 구별이 안돼는 등 총체적 난국"). */}
                 <div className="context-field">
-                  <IonInput label="어디서 만났나요?" labelPlacement="stacked" placeholder="예: 2026 로보월드 전시회" value={event} onIonInput={(inputEvent) => setEvent(String(inputEvent.detail.value ?? ''))} />
-                  {eventChips.length > 0 && (
-                    <div className="context-chips" role="group" aria-label="최근 만난 곳">
-                      {eventChips.map((chip) => (
-                        <button key={chip} type="button" className={event === chip ? 'on' : ''} onClick={() => setEvent(toggleChipValue(event, chip))}>{chip}</button>
-                      ))}
-                    </div>
-                  )}
+                  <span className="context-label">어디서 만났나요?</span>
+                  <IonInput aria-label="어디서 만났나요?" placeholder="예: 스마트팩토리·자동화전 부스" value={event} onIonInput={(inputEvent) => setEvent(String(inputEvent.detail.value ?? ''))} />
+                  <div className="context-chips" role="group" aria-label="만난 자리 예시">
+                    {eventChips.map((chip) => (
+                      <button key={chip} type="button" className={event === chip ? 'on' : ''} onClick={() => setEvent(toggleChipValue(event, chip))}>{chip}</button>
+                    ))}
+                  </div>
                 </div>
                 <div className="context-field">
-                  <IonInput label="Kairen과의 관계" labelPlacement="stacked" placeholder="예: 부품 공급사 담당자" value={relKairen} onIonInput={(inputEvent) => setRelKairen(String(inputEvent.detail.value ?? ''))} />
+                  <span className="context-label">Kairen과의 관계</span>
+                  <IonInput aria-label="Kairen과의 관계" placeholder="예: 부품 공급사 담당자" value={relKairen} onIonInput={(inputEvent) => setRelKairen(String(inputEvent.detail.value ?? ''))} />
                   <div className="context-chips" role="group" aria-label="Kairen과의 관계 예시">
                     {KAIREN_RELATION_CHIPS.map((chip) => (
                       <button key={chip} type="button" className={relKairen === chip ? 'on' : ''} onClick={() => setRelKairen(toggleChipValue(relKairen, chip))}>{chip}</button>
@@ -1029,14 +1039,18 @@ function App() {
                   </div>
                 </div>
                 <div className="context-field">
-                  <IonInput label="나와의 관계" labelPlacement="stacked" placeholder="예: 대학 선배" value={relSelf} onIonInput={(inputEvent) => setRelSelf(String(inputEvent.detail.value ?? ''))} />
+                  <span className="context-label">나와의 관계</span>
+                  <IonInput aria-label="나와의 관계" placeholder="예: 대학 선배" value={relSelf} onIonInput={(inputEvent) => setRelSelf(String(inputEvent.detail.value ?? ''))} />
                   <div className="context-chips" role="group" aria-label="나와의 관계 예시">
                     {SELF_RELATION_CHIPS.map((chip) => (
                       <button key={chip} type="button" className={relSelf === chip ? 'on' : ''} onClick={() => setRelSelf(toggleChipValue(relSelf, chip))}>{chip}</button>
                     ))}
                   </div>
                 </div>
-                <IonTextarea label="메모" labelPlacement="stacked" placeholder="예: 공장장님, 우리 부품에 관심 많으심 (키보드 마이크로 말해도 돼요)" autoGrow value={memo} onIonInput={(inputEvent) => setMemo(String(inputEvent.detail.value ?? ''))} />
+                <div className="context-field">
+                  <span className="context-label">메모</span>
+                  <IonTextarea aria-label="메모" placeholder="예: 공장장님, 우리 부품에 관심 많으심" autoGrow value={memo} onIonInput={(inputEvent) => setMemo(String(inputEvent.detail.value ?? ''))} />
+                </div>
               </div>
             )}
           </section>
@@ -1045,18 +1059,19 @@ function App() {
               (INT-000015 Feedback item 002). 권한은 기존 owner-only public-research-v1 그대로다. */}
           {researchInstructionEnabled && (
             <AiSurface className="research-request">
-              <AiSurfaceHead title="AI 조사 요청" badge="소유자 전용" helper="공개 자료에서 확인할 내용을 AI에게 맡깁니다." />
+              <AiSurfaceHead title="AI 조사 요청" badge="소유자 전용" helper="묻기 껄끄럽지만 알아야 하는 것까지 맡기세요. 공개된 근거로 판단하고 확신도를 함께 적습니다." />
               <IonTextarea
                 aria-label="AI 조사 요청"
                 maxlength={2000}
                 autoGrow
-                placeholder="예: 최근 경력·이직, 회사 소식, 나와의 접점 위주로 확인해줘"
+                placeholder={RESEARCH_PLACEHOLDER}
                 value={researchText}
                 onIonInput={(inputEvent) => setResearchText(String(inputEvent.detail.value ?? ''))}
               />
               <AiExampleChips examples={RESEARCH_EXAMPLE_CHIPS} onPick={appendResearchExample} label="조사 요청 예시" />
               <AiStageRail stages={researchStages('draft')} label="AI 조사 요청 진행 단계" />
-              <AiScopeNote>{RESEARCH_SCOPE_NOTE}</AiScopeNote>
+              <AiScopeNote>{RESEARCH_SCOPE_DOES}</AiScopeNote>
+              <AiScopeNote limit>{RESEARCH_SCOPE_LIMITS}</AiScopeNote>
             </AiSurface>
           )}
 
@@ -1362,7 +1377,7 @@ function App() {
             <IonButton expand="block" disabled={!draftConfig.capturer.trim()} onClick={commitSettings}>설정 저장</IonButton>
           </IonContent>
         </IonModal>
-        <IonModal className="person-action-modal" isOpen={Boolean(personActionComposer)} onDidDismiss={closePersonActionComposer} initialBreakpoint={0.62} breakpoints={[0, 0.62, 0.9]}>
+        <IonModal className="person-action-modal" isOpen={Boolean(personActionComposer)} onDidDismiss={closePersonActionComposer} initialBreakpoint={personActionComposer?.kind === 'research' ? 0.92 : 0.62} breakpoints={[0, 0.62, 0.92]}>
           {personActionComposer && (
             <>
               <IonHeader><IonToolbar><IonTitle>{personActionCopy[personActionComposer.kind].title}</IonTitle><IonButton slot="end" fill="clear" disabled={personActionSubmitting} onClick={closePersonActionComposer}>취소</IonButton></IonToolbar></IonHeader>
@@ -1375,7 +1390,8 @@ function App() {
                       <IonTextarea aria-label="AI 조사 요청" autofocus autoGrow maxlength={2000} placeholder={personActionCopy.research.placeholder} value={personActionText} onIonInput={(inputEvent) => setPersonActionText(String(inputEvent.detail.value ?? ''))} />
                       <AiExampleChips examples={RESEARCH_EXAMPLE_CHIPS} onPick={(value) => setPersonActionText((current) => (current.trim() ? (current.includes(value) ? current : `${current.trim()}, ${value}`) : value))} label="조사 요청 예시" />
                       <AiStageRail stages={researchStages(personActionSubmitting ? 'received' : 'draft')} label="AI 조사 요청 진행 단계" />
-                      <AiScopeNote>{RESEARCH_SCOPE_NOTE}</AiScopeNote>
+                      <AiScopeNote>{RESEARCH_SCOPE_DOES}</AiScopeNote>
+                      <AiScopeNote limit>{RESEARCH_SCOPE_LIMITS}</AiScopeNote>
                     </AiSurface>
                   ) : (
                     <>
@@ -1384,8 +1400,11 @@ function App() {
                       <IonTextarea aria-label={personActionCopy[personActionComposer.kind].title} autofocus autoGrow maxlength={2000} label={personActionCopy[personActionComposer.kind].title} labelPlacement="stacked" placeholder={personActionCopy[personActionComposer.kind].placeholder} value={personActionText} onIonInput={(inputEvent) => setPersonActionText(String(inputEvent.detail.value ?? ''))} />
                     </>
                   )}
-                  <small>{personActionText.length.toLocaleString()} / 2,000</small>
-                  <IonButton expand="block" disabled={!personActionText.trim() || personActionSubmitting} onClick={() => void submitPersonAction()}>{personActionSubmitting ? '접수 중…' : personActionCopy[personActionComposer.kind].submit}</IonButton>
+                  {/* 접수 버튼은 시트 아래에 고정한다 — 예시 chip이 늘어나도 화면 밖으로 밀리면 안 된다. */}
+                  <div className="person-action-submit">
+                    <small>{personActionText.length.toLocaleString()} / 2,000</small>
+                    <IonButton expand="block" disabled={!personActionText.trim() || personActionSubmitting} onClick={() => void submitPersonAction()}>{personActionSubmitting ? '접수 중…' : personActionCopy[personActionComposer.kind].submit}</IonButton>
+                  </div>
                 </div>
               </IonContent>
             </>

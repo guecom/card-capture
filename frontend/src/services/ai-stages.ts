@@ -49,11 +49,32 @@ export function researchStages(active: ResearchStageKey): AiStage[] {
   return build(RESEARCH_STAGES, active);
 }
 
-/** 조사 지시가 넘지 않는 경계. 화면에 그대로 보여 준다 (DEC-000035). */
-export const RESEARCH_SCOPE_NOTE = '공개·합법 출처만 봐요. 로그인이 필요한 자료, 민감한 특성 추론, 외부로 보내는 행동은 하지 않아요.';
+// 조사 지시가 무엇을 하고 무엇을 안 하는지. 화면에 그대로 보여 준다 (DEC-000035).
+//
+// 경계를 정확히 읽는 것이 중요하다. `public-research-v1`의 mode는 `public_professional_background`이고,
+// 금지되는 `민감 특성`은 정치성향·종교·성적 지향·건강·질병·인종이다. **공개된 결과물을 근거로 한
+// 직업적 판단(실력·권한·평판)은 금지 대상이 아니다.** founder 지시 2026-07-27: "실력 추정 집어넣어.
+// 이런 것처럼 민감하지만 진짜로 필요한 것들을 과감하게 집어넣어."
+//
+// 그래서 넓힌 것은 권한이 아니라 **요청 예시와 문구**다. 판단을 하되 근거·확신도를 붙이고 모르는 건
+// 모른다고 남기는 것이 원래 계약(`report_sources_confidence_and_unknowns`)이다.
+export const RESEARCH_SCOPE_DOES = '공개된 결과물(경력·논문·특허·발표·제품·기사·평가)을 근거로 판단까지 합니다. 근거와 확신도를 함께 적고, 모르는 건 모른다고 남겨요.';
+export const RESEARCH_SCOPE_LIMITS = '로그인이 필요한 자료, 정치·종교·건강 같은 사적 특성, 집주소·가족 같은 신상, 외부로 보내는 행동은 하지 않아요.';
 
-/** 요청 예시. 사용자가 무엇을 맡길 수 있는지 빈 화면에서 알 수 있게 한다. */
-export const RESEARCH_EXAMPLE_CHIPS = ['최근 경력·이직', '회사 소식·투자', '인터뷰·발표', '나와의 접점'] as const;
+/** 요청 예시. 묻기 껄끄럽지만 실제로 필요한 판단을 먼저 꺼내 놓는다. */
+export const RESEARCH_EXAMPLE_CHIPS = [
+  '실력·전문성 추정',
+  '의사결정 권한',
+  '평판·레퍼런스',
+  '최근 성과와 실패',
+  '이해관계·경쟁 관계',
+  '최근 경력·이직',
+  '회사 소식·투자',
+  '나와의 접점',
+] as const;
+
+/** 무엇을 맡길 수 있는지 한 문장으로 보여 주는 기본 예시. */
+export const RESEARCH_PLACEHOLDER = '예: 이 사람 실력이 진짜인지 공개된 결과물로 판단해줘. 실제로 결정 권한이 있는 자리인지도.';
 
 // ── AI 사람 찾기 (기기 안 회상 검색) ──
 

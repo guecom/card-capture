@@ -312,10 +312,10 @@ test('captures front and back with context into the legacy queue without uploadi
 
   try {
     await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
-    // legacy 작업 화면: 맥락 필드는 촬영 전에도 열 수 있고 완료는 앞면 전까지 잠긴다.
-    // INT-000015에서 맥락 영역은 접히는 카드가 됐다 — 접근성은 그대로, 기본은 접힘이다.
-    await page.getByRole('button', { name: /만남 맥락/ }).click();
-    await expect(page.getByLabel('어디서 만났나요?')).toBeVisible();
+    // legacy 작업 화면: 맥락 필드가 촬영 전에도 보이고 완료는 앞면 전까지 잠긴다.
+    // 이 테스트는 이름 온보딩 모달을 띄운 채 진행한다 — Ionic이 모달 표시 중 본문에 aria-hidden을
+    // 걸어 role 조회가 간헐적으로 비는 구간이 있으므로 속성 선택자로 고정한다.
+    await expect(page.locator('ion-input[aria-label="어디서 만났나요?"]')).toBeVisible();
     await expect(page.getByRole('button', { name: '완료', exact: true })).toBeDisabled();
     await page.getByRole('button', { name: '명함 앞면 촬영' }).click();
 
@@ -337,10 +337,10 @@ test('captures front and back with context into the legacy queue without uploadi
     await expect(page.getByAltText('앞면 미리보기')).toBeVisible();
     await expect(page.getByRole('textbox', { name: '이름 후보' })).toHaveValue('김카이렌');
     await expect(page.getByText('인식 완료 · 확인해 주세요', { exact: true })).toBeVisible();
-    await page.getByRole('textbox', { name: '어디서 만났나요?' }).fill('2026 로보월드');
-    await page.getByRole('textbox', { name: '나와의 관계' }).fill('오늘 처음 인사');
-    await page.getByRole('textbox', { name: 'Kairen과의 관계' }).fill('잠재 고객');
-    await page.getByRole('textbox', { name: '메모', exact: true }).fill('자료 보내기');
+    await page.locator('ion-input[aria-label="어디서 만났나요?"] input').fill('2026 로보월드');
+    await page.locator('ion-input[aria-label="나와의 관계"] input').fill('오늘 처음 인사');
+    await page.locator('ion-input[aria-label="Kairen과의 관계"] input').fill('잠재 고객');
+    await page.locator('ion-textarea[aria-label="메모"] textarea').fill('자료 보내기');
     await page.getByRole('button', { name: '완료', exact: true }).click();
     await expect(page.getByText('사진을 로컬 대기열에 보관했습니다. 연결 설정 뒤 자동으로 전송합니다.', { exact: false })).toBeVisible();
     await expect(page.locator('.queue-row', { hasText: '김카이렌' })).toContainText('4단계 중 1단계 · 사진 전송 중');

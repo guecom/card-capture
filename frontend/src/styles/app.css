@@ -146,6 +146,10 @@ ion-toolbar {
 .person-action-composer > p { margin: 0; color: var(--cc-muted); font-size: 13px; line-height: 1.6; word-break: keep-all; }
 .person-action-composer ion-textarea { --background: #f5f7fb; --padding-start: 13px; --padding-end: 13px; border: 1px solid var(--cc-line); border-radius: 14px; }
 .person-action-composer > small { margin-top: -7px; color: var(--cc-muted); font-size: 10px; text-align: right; }
+/* 접수 버튼은 시트 바닥에 붙어 있어야 한다 — 예시 chip·경계 문구가 늘어나면 예전에는 화면 밖으로
+   밀려 버튼을 아예 누를 수 없었다 (회귀 게이트가 잡았다). */
+.person-action-submit { position: sticky; bottom: 0; display: grid; gap: 5px; padding-top: 9px; margin-top: -3px; background: linear-gradient(180deg, rgba(255,255,255,0), var(--ion-background-color, #fff) 26%); }
+.person-action-submit small { color: var(--cc-muted); font-size: 10px; text-align: right; }
 
 ion-modal.camera-preview-modal { --height: 100%; --width: min(100%, 680px); }
 .camera-preview-content { --background: #0f1722; }
@@ -376,7 +380,9 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(35,104,216,0.34)
 .ai-surface ion-textarea { --background: rgba(255,255,255,0.92); --padding-start: 12px; --padding-end: 12px; border: 1px solid rgba(35,104,216,0.16); border-radius: 13px; font-size: 12.5px; }
 .ai-example-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .ai-example-chips button { min-height: 32px; padding: 7px 10px; border: 1px solid rgba(35,104,216,0.2); border-radius: 999px; background: rgba(255,255,255,0.85); color: #1c58b8; font-size: 10.5px; font-weight: 700; }
-.ai-scope-note { margin: 0; color: var(--cc-muted); font-size: 10.5px; line-height: 1.5; word-break: keep-all; }
+.ai-scope-note { margin: 0; color: #4b5a70; font-size: 10.5px; line-height: 1.55; word-break: keep-all; }
+/* "하지 않는 일"은 시각적으로 분리해 경계가 눈에 띄게 한다. */
+.ai-scope-note.is-limit { padding-top: 7px; border-top: 1px solid rgba(35,104,216,0.14); color: var(--cc-muted); }
 
 /* 단계 막대: 진행률을 시간으로 채우지 않고 실제 단계만 보여 준다. */
 .ai-stage-rail { display: grid; gap: 6px; }
@@ -392,21 +398,53 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(35,104,216,0.34)
 .ai-stage-path li.ai-stage-active { color: var(--cc-blue); font-weight: 760; }
 .action-grid button.ai-action { border-color: rgba(35,104,216,0.28); background: linear-gradient(145deg, rgba(238,245,255,0.98), rgba(247,244,255,0.96)); color: #1c58b8; }
 
-/* ── 만남 맥락 카드 (INT-000015 Feedback item 001) ── */
-.context-block { margin: 16px 0 0; border: 1px solid var(--cc-line); border-radius: 17px; background: rgba(248,250,253,0.85); }
-.context-toggle { display: flex; width: 100%; min-height: 56px; align-items: center; gap: 10px; padding: 11px 13px; border: 0; background: transparent; color: inherit; text-align: left; }
-.context-toggle-copy { display: grid; flex: 1; min-width: 0; gap: 3px; }
-.context-toggle-copy strong { color: var(--cc-ink); font-size: 13px; font-weight: 760; letter-spacing: -0.02em; }
-.context-toggle-copy small { overflow: hidden; color: var(--cc-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+/* ── 만남 맥락 카드 (INT-000015 Feedback item 001) ──
+   2026-07-27 founder 판정: "가독성·시인성이 너무 안 좋아. 글쓰기 박스인지 구별이 안돼."
+   원인은 카드 배경(#f8fafd)과 입력 배경(#f5f7fb)이 사실상 같은 색이라 입력 칸의 경계가 없었고,
+   라벨이 Ionic stacked label이라 placeholder와 같은 회색조·같은 크기로 묻힌 것이다.
+   → 카드는 흰 배경, 라벨은 밖으로 꺼내 진한 잉크색, 입력 칸은 테두리 있는 흰 상자로 분리한다. */
+.context-block { margin: 16px 0 0; border: 1px solid var(--cc-line); border-radius: 18px; background: var(--cc-surface); box-shadow: 0 8px 22px rgba(34,53,76,0.05); }
+.context-toggle { display: flex; width: 100%; min-height: 58px; align-items: center; gap: 10px; padding: 13px 14px; border: 0; background: transparent; color: inherit; text-align: left; }
+.context-toggle-copy { display: grid; flex: 1; min-width: 0; gap: 4px; }
+.context-title-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.context-title-row strong { color: var(--cc-ink); font-size: 14.5px; font-weight: 790; letter-spacing: -0.025em; }
+/* 음성 입력 안내를 제목 옆에 둔다 — 가장 빠른 입력 수단이 메모 placeholder에 묻혀 있었다. */
+.context-mic { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 999px; background: rgba(31,143,130,0.12); color: #176f66; font-size: 10px; font-weight: 740; white-space: nowrap; }
+.context-toggle-copy small { overflow: hidden; color: var(--cc-muted); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
 .context-count { flex: 0 0 auto; padding: 4px 8px; border-radius: 999px; background: rgba(31,143,130,0.12); color: #176f66; font-size: 10px; font-weight: 760; }
 .context-toggle > svg { flex: 0 0 auto; color: var(--cc-muted); transition: transform 160ms ease; }
 .context-toggle > svg.expanded { transform: rotate(90deg); }
-.context-note { margin: 0; color: var(--cc-muted); font-size: 10.5px; line-height: 1.5; word-break: keep-all; }
-.context-field { display: grid; gap: 7px; }
+.context-note { margin: 0; padding: 9px 11px; border-radius: 11px; background: rgba(42,63,89,0.045); color: var(--cc-muted); font-size: 11px; line-height: 1.55; word-break: keep-all; }
+.context-field { display: grid; gap: 8px; }
+.context-label { color: var(--cc-ink); font-size: 12.5px; font-weight: 760; letter-spacing: -0.015em; }
+/* 입력 칸은 카드와 다른 배경 + 또렷한 테두리 + 충분한 높이 — "여기가 쓰는 칸"이 한눈에 보여야 한다. */
+.capture-card .context-block .capture-context-fields ion-input,
+.capture-card .context-block .capture-context-fields ion-textarea {
+  /* 카드가 흰색이므로 입력 칸은 살짝 눌린 회색 + 또렷한 테두리로 둘 다 다르게 만든다.
+     예전에는 카드(#f8fafd)와 입력(#f5f7fb)이 같은 색인데 테두리마저 없어 칸이 안 보였다. */
+  --background: #f7f9fc;
+  --color: var(--cc-ink);
+  --placeholder-color: #7f8da1;
+  --placeholder-opacity: 1;
+  --padding-start: 13px;
+  --padding-end: 13px;
+  --padding-top: 11px;
+  --padding-bottom: 11px;
+  min-height: 50px;
+  border: 1.5px solid rgba(42,63,89,0.26);
+  border-radius: 14px;
+  font-size: 14.5px;
+  box-shadow: inset 0 1px 2px rgba(34,53,76,0.04);
+}
+.capture-card .context-block .capture-context-fields ion-input:focus-within,
+.capture-card .context-block .capture-context-fields ion-textarea:focus-within {
+  border-color: rgba(35,104,216,0.55);
+  box-shadow: 0 0 0 3px rgba(35,104,216,0.12);
+}
 .context-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.context-chips button { min-height: 32px; padding: 7px 10px; border: 1px solid var(--cc-line); border-radius: 999px; background: white; color: var(--cc-muted); font-size: 10.5px; font-weight: 680; }
-.context-chips button.on { border-color: rgba(31,143,130,0.4); background: rgba(31,143,130,0.1); color: #176f66; font-weight: 760; }
-.capture-card .context-block .capture-context-fields.plain { gap: 13px; margin: 0; padding: 0 13px 14px; }
+.context-chips button { min-height: 34px; padding: 8px 11px; border: 1px solid var(--cc-line); border-radius: 999px; background: #f6f8fb; color: #56657a; font-size: 11.5px; font-weight: 700; }
+.context-chips button.on { border-color: rgba(31,143,130,0.45); background: rgba(31,143,130,0.12); color: #176f66; font-weight: 780; }
+.capture-card .context-block .capture-context-fields.plain { gap: 17px; margin: 0; padding: 2px 14px 16px; }
 
 /* ── AI 사람 찾기: 진행·후보 묶음 (INT-000015 항목 003·004) ── */
 .recall-progress { display: grid; gap: 9px; padding: 13px 15px; border: 1px solid rgba(35,104,216,0.2); border-radius: 16px; background: linear-gradient(152deg, rgba(238,245,255,0.96), rgba(249,246,255,0.94)); }

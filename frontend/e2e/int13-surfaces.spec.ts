@@ -63,6 +63,18 @@ const personFixture = [
   '- 국산화 파일럿의 검증 기간을 줄이는 방법에 관심이 있다.',
 ].join('\n');
 
+// `지난주`는 요일에 따라 창이 통째로 움직인다. "8일 전"처럼 고정 일수로 두면 주가 넘어가는 날
+// (일→월) 창 밖으로 밀려 이 게이트가 날짜 때문에 빨개진다 — 2026-07-27에 실제로 그렇게 됐다.
+// 주 시작(월요일)을 기준으로 그 주의 금요일을 잡아 어느 요일에 돌려도 같은 구간에 들어오게 한다.
+function weeksBack(weeks: number): string {
+  const monday = new Date();
+  monday.setHours(9, 0, 0, 0);
+  monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+  const friday = new Date(monday);
+  friday.setDate(friday.getDate() - weeks * 7 + 4);
+  return friday.toISOString();
+}
+
 function listFixture() {
   const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
   return {
@@ -72,12 +84,12 @@ function listFixture() {
     hasMore: false,
     items: [
       {
-        captureId: '20260718-090000-a1', receivedAt: ago(8 * DAY_MINUTES), status: 'processed', person: 'PER-000001', capturer: '이강규', event: '2026 로보월드',
+        captureId: '20260718-090000-a1', receivedAt: weeksBack(1), status: 'processed', person: 'PER-000001', capturer: '이강규', event: '2026 로보월드',
         contact: { name: '김민서', title: '구매팀장', organization: '한화시스템' },
         brief: '# 김민서 — 이런 분이에요\n자동화 라인 부품 국산화를 검토 중입니다.',
       },
       {
-        captureId: '20260715-140000-a2', receivedAt: ago(11 * DAY_MINUTES), status: 'processed', person: 'PER-000002', capturer: '이강규', event: '판교 밋업',
+        captureId: '20260715-140000-a2', receivedAt: weeksBack(2), status: 'processed', person: 'PER-000002', capturer: '이강규', event: '판교 밋업',
         contact: { name: '박지훈', title: 'CTO', organization: '넥스트로보' },
         brief: '# 박지훈 — 이런 분이에요\n로봇 제어 소프트웨어 창업자입니다.',
       },

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { BriefItem } from '../contracts/capture';
-import { captureContextFilled, captureContextSummary, recentEventChips, toggleChipValue } from './capture-context';
+import { captureContextFilled, captureContextSummary, eventChips, recentEventChips, toggleChipValue } from './capture-context';
 
 const empty = { event: '', relKairen: '', relSelf: '', memo: '' };
 
@@ -39,6 +39,30 @@ describe('recentEventChips', () => {
 
   it('만난 곳이 없는 기록은 건너뛴다', () => {
     expect(recentEventChips([brief('', 'a'), brief('판교 밋업', 'b')])).toEqual(['판교 밋업']);
+  });
+});
+
+describe('eventChips', () => {
+  const brief = (event: string, captureId: string): BriefItem => ({ captureId, event } as BriefItem);
+
+  it('기록이 없어도 실무 예시로 빈 화면을 채운다', () => {
+    const chips = eventChips([]);
+    expect(chips).toEqual(['전시회 부스', '고객사 방문', '우리 사무실', 'IR·투자 미팅', '세미나·학회', '채용 면접']);
+  });
+
+  it('실제로 쓴 만난 곳을 예시보다 앞에 둔다', () => {
+    const chips = eventChips([brief('2026 로보월드', 'a'), brief('판교 밋업', 'b')]);
+    expect(chips.slice(0, 2)).toEqual(['2026 로보월드', '판교 밋업']);
+    expect(chips).toHaveLength(6);
+  });
+
+  it('이미 입력한 값은 예시로도 다시 제안하지 않는다', () => {
+    expect(eventChips([], '고객사 방문')).not.toContain('고객사 방문');
+  });
+
+  it('같은 값이 기록과 예시에 모두 있어도 한 번만 나온다', () => {
+    const chips = eventChips([brief('고객사 방문', 'a')]);
+    expect(chips.filter((chip) => chip === '고객사 방문')).toHaveLength(1);
   });
 });
 
