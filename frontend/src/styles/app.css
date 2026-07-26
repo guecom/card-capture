@@ -272,3 +272,5 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(35,104,216,0.34)
 .records-feed { display: grid; gap: 10px; }
 .records-feed .queue-row { background: var(--cc-surface); box-shadow: 0 10px 30px rgba(34,53,76,0.04); }
 .local-context { margin: 0; padding: 8px 10px; border-radius: 10px; background: rgba(42,63,89,0.05); color: var(--cc-muted); font-size: 11.5px; }
+
+.build-line { margin: 2px 4px 0; color: var(--cc-muted); font-size: 10px; text-align: center; opacity: 0.75; }

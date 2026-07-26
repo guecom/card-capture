@@ -3,48 +3,6 @@ export interface Point {
   y: number;
 }
 
-// OpenCV.js is a pinned legacy UMD runtime with no maintained TypeScript surface.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type OpenCvRuntime = any;
-
-let runtimePromise: Promise<OpenCvRuntime | null> | null = null;
-
-function resolveRuntime(candidate: OpenCvRuntime): Promise<OpenCvRuntime | null> {
-  if (!candidate) return Promise.resolve(null);
-  if (typeof candidate.then === 'function') return candidate.then((runtime: OpenCvRuntime) => runtime ?? null);
-  if (candidate.Mat) return Promise.resolve(candidate);
-  return new Promise((resolve) => {
-    candidate.onRuntimeInitialized = () => resolve(candidate);
-  });
-}
-
-// 파일만 미리 받아 캐시에 넣는다 — 실행·컴파일은 하지 않으므로 메인 스레드를 막지 않는다.
-// 실제 실행(loadOpenCv)은 카메라 미리보기가 뜬 뒤라, 버튼을 누르는 순간 프리즈가 생기지 않는다.
-export function prefetchOpenCv(): void {
-  if (runtimePromise || typeof fetch !== 'function') return;
-  void fetch(new URL('../vendor/opencv.js', document.baseURI).href, { cache: 'force-cache' }).catch(() => undefined);
-}
-
-export function loadOpenCv(): Promise<OpenCvRuntime | null> {
-  if (runtimePromise) return runtimePromise;
-  if (!window.WebAssembly) return Promise.resolve(null);
-  const globalWindow = window as typeof window & { cv?: OpenCvRuntime };
-  if (globalWindow.cv) {
-    runtimePromise = resolveRuntime(globalWindow.cv);
-    return runtimePromise;
-  }
-
-  runtimePromise = new Promise<OpenCvRuntime | null>((resolve) => {
-    const script = document.createElement('script');
-    script.src = new URL('../vendor/opencv.js', document.baseURI).href;
-    script.async = true;
-    script.onload = () => void resolveRuntime(globalWindow.cv).then(resolve);
-    script.onerror = () => resolve(null);
-    document.head.appendChild(script);
-  });
-  return runtimePromise;
-}
-
 export function orderQuad(points: Point[]): Point[] {
   const bySum = points.slice().sort((a, b) => (a.x + a.y) - (b.x + b.y));
   const byDifference = points.slice().sort((a, b) => (a.y - a.x) - (b.y - b.x));
@@ -61,144 +19,126 @@ export function plausibleCard(quad: Point[]): boolean {
   return (ratio >= 1.15 && ratio <= 2.7) || (ratio >= 0.37 && ratio <= 0.87);
 }
 
-export function detectCardQuad(canvas: HTMLCanvasElement, cv: OpenCvRuntime, minAreaRatio = 0.06, fast = false): Point[] | null {
-  if (!cv) return null;
-  const mats: OpenCvRuntime[] = [];
-  const track = (mat: OpenCvRuntime) => { if (mat) mats.push(mat); return mat; };
-  const width = canvas.width;
-  const height = canvas.height;
-  const minimumArea = minAreaRatio * width * height;
-  const maximumArea = 0.96 * width * height;
-  let best: Point[] | null = null;
-  let bestScore = 0;
+// 파일만 미리 받아 HTTP 캐시에 넣는다 — 실행·컴파일이 아니므로 메인 스레드를 막지 않고,
+// 워커의 importScripts가 캐시에서 즉시 읽게 된다.
+export function prefetchOpenCv(): void {
+  if (typeof fetch !== 'function') return;
+  void fetch(new URL('../vendor/opencv.js', document.baseURI).href, { cache: 'force-cache' }).catch(() => undefined);
+}
 
-  try {
-    const source = track(cv.imread(canvas));
-    const gray = track(new cv.Mat());
-    cv.cvtColor(source, gray, cv.COLOR_RGBA2GRAY);
-    cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
-    const equalized = track(new cv.Mat());
-    cv.equalizeHist(gray, equalized);
-    const kernel = track(cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3)));
-    const edgeMaps: OpenCvRuntime[] = [];
-    const otsuMat = track(new cv.Mat());
-    const otsu = cv.threshold(equalized, otsuMat, 0, 255, cv.THRESH_BINARY + cv.THRESH_OTSU);
-    const canny = track(new cv.Mat());
-    cv.Canny(equalized, canny, Math.max(10, 0.5 * otsu), Math.max(40, otsu));
-    cv.dilate(canny, canny, kernel);
-    edgeMaps.push(canny);
+// ── OpenCV Web Worker 클라이언트 ──
+// 엔진 로드·WASM 컴파일·감지·warp가 전부 워커에서 돌아 메인 스레드는 어떤 시점에도 잠기지 않는다
+// (2026-07-26 실폰 프리즈: prefetch+지연 실행만으로는 컴파일 블로킹이 카메라 진입 시점에 남았다).
 
-    if (!fast) {
-      const adaptive = track(new cv.Mat());
-      cv.adaptiveThreshold(gray, adaptive, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 21, 6);
-      cv.morphologyEx(adaptive, adaptive, cv.MORPH_CLOSE, kernel);
-      edgeMaps.push(adaptive);
-    }
+export interface OpenCvAnalysis {
+  quad: Point[] | null;
+  blur: number | null;
+  clippedRatio: number;
+}
 
-    edgeMaps.forEach((edgeMap) => {
-      const contours = new cv.MatVector();
-      mats.push(contours);
-      const hierarchy = track(new cv.Mat());
-      cv.findContours(edgeMap, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
-      for (let index = 0; index < contours.size(); index += 1) {
-        const contour = contours.get(index);
-        const approximation = new cv.Mat();
-        try {
-          const perimeter = cv.arcLength(contour, true);
-          cv.approxPolyDP(contour, approximation, 0.02 * perimeter, true);
-          if (approximation.rows !== 4 || !cv.isContourConvex(approximation)) continue;
-          const area = cv.contourArea(approximation);
-          if (area <= minimumArea || area >= maximumArea) continue;
-          const quad = orderQuad(Array.from({ length: 4 }, (_, pointIndex) => ({
-            x: approximation.data32S[pointIndex * 2],
-            y: approximation.data32S[pointIndex * 2 + 1],
-          })));
-          const score = area * (plausibleCard(quad) ? 1.6 : 0.35);
-          if (score > bestScore) {
-            best = quad;
-            bestScore = score;
-          }
-        } finally {
-          approximation.delete();
-          contour.delete();
+export interface OpenCvWorkerClient {
+  ready: Promise<boolean>;
+  isReady(): boolean;
+  /** 라이브 프레임 분석. 이전 분석이 진행 중이면 프레임을 버리고 null을 반환한다(자연 스로틀). */
+  analyze(image: ImageData, options: { minAreaRatio: number; fast: boolean; withGate: boolean }): Promise<OpenCvAnalysis | null>;
+  /** 원본 해상도에서 명함 감지·perspective 보정. 실패·미감지·타임아웃이면 null. */
+  rectify(image: ImageData, timeoutMs?: number): Promise<ImageData | null>;
+  blurScore(image: ImageData, timeoutMs?: number): Promise<number | null>;
+}
+
+interface WorkerReply {
+  id: number;
+  ok: boolean;
+  quad?: Point[] | null;
+  blur?: number | null;
+  clippedRatio?: number;
+  image?: ImageData | null;
+}
+
+let clientSingleton: OpenCvWorkerClient | null = null;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => resolve(fallback), timeoutMs);
+    promise.then((value) => { window.clearTimeout(timer); resolve(value); })
+      .catch(() => { window.clearTimeout(timer); resolve(fallback); });
+  });
+}
+
+export function getOpenCvWorker(): OpenCvWorkerClient {
+  if (clientSingleton) return clientSingleton;
+
+  let worker: Worker | null = null;
+  const pending = new Map<number, (reply: WorkerReply) => void>();
+  let nextId = 1;
+  let readyState = false;
+  let analyzeInFlight = false;
+
+  function post<T>(message: Record<string, unknown>, transfer: Transferable[], map: (reply: WorkerReply) => T, fallback: T): Promise<T> {
+    if (!worker) return Promise.resolve(fallback);
+    const id = nextId;
+    nextId += 1;
+    return new Promise<T>((resolve) => {
+      pending.set(id, (reply) => resolve(reply.ok ? map(reply) : fallback));
+      worker?.postMessage({ id, ...message }, transfer);
+    });
+  }
+
+  const ready = new Promise<boolean>((resolve) => {
+    try {
+      // classic worker: 내부 importScripts가 vendor/opencv.js를 워커 스레드에서 로드·컴파일한다.
+      worker = new Worker(new URL('../workers/opencv-worker.ts', import.meta.url));
+      worker.onmessage = (messageEvent: MessageEvent<WorkerReply>) => {
+        const reply = messageEvent.data;
+        const resolver = pending.get(reply.id);
+        if (resolver) {
+          pending.delete(reply.id);
+          resolver(reply);
         }
-      }
-    });
-    return best;
-  } catch {
-    return null;
-  } finally {
-    mats.forEach((mat) => { try { mat?.delete(); } catch { /* best-effort OpenCV cleanup */ } });
-  }
-}
+      };
+      worker.onerror = () => {
+        readyState = false;
+        resolve(false);
+      };
+      const vendorUrl = new URL('../vendor/opencv.js', document.baseURI).href;
+      void post({ type: 'init', vendorUrl }, [], () => true, false).then((ok) => {
+        readyState = ok;
+        resolve(ok);
+      });
+    } catch {
+      resolve(false);
+    }
+  });
 
-export function warpCard(sourceCanvas: HTMLCanvasElement, quad: Point[], cv: OpenCvRuntime): HTMLCanvasElement | null {
-  if (!cv || !plausibleCard(quad)) return null;
-  const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
-  const width = Math.round(Math.max(distance(quad[0], quad[1]), distance(quad[3], quad[2])));
-  const height = Math.round(Math.max(distance(quad[0], quad[3]), distance(quad[1], quad[2])));
-  if (width < 60 || height < 60) return null;
-  let source: OpenCvRuntime;
-  let sourceTriangle: OpenCvRuntime;
-  let destinationTriangle: OpenCvRuntime;
-  let matrix: OpenCvRuntime;
-  let destination: OpenCvRuntime;
-  try {
-    source = cv.imread(sourceCanvas);
-    sourceTriangle = cv.matFromArray(4, 1, cv.CV_32FC2, quad.flatMap((point) => [point.x, point.y]));
-    destinationTriangle = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, width, 0, width, height, 0, height]);
-    matrix = cv.getPerspectiveTransform(sourceTriangle, destinationTriangle);
-    destination = new cv.Mat();
-    cv.warpPerspective(source, destination, matrix, new cv.Size(width, height), cv.INTER_LINEAR, cv.BORDER_REPLICATE, new cv.Scalar());
-    const output = document.createElement('canvas');
-    cv.imshow(output, destination);
-    return output;
-  } catch {
-    return null;
-  } finally {
-    [source, sourceTriangle, destinationTriangle, matrix, destination].forEach((mat) => {
-      try { mat?.delete(); } catch { /* best-effort OpenCV cleanup */ }
-    });
-  }
-}
-
-export function rectifyCardCanvas(source: HTMLCanvasElement, cv: OpenCvRuntime): HTMLCanvasElement | null {
-  const previewWidth = 640;
-  const previewHeight = Math.max(1, Math.round(previewWidth * source.height / source.width));
-  const preview = document.createElement('canvas');
-  preview.width = previewWidth;
-  preview.height = previewHeight;
-  const context = preview.getContext('2d');
-  if (!context) return null;
-  context.drawImage(source, 0, 0, previewWidth, previewHeight);
-  const quad = detectCardQuad(preview, cv);
-  if (!quad || !plausibleCard(quad)) return null;
-  const scale = source.width / previewWidth;
-  return warpCard(source, quad.map((point) => ({ x: point.x * scale, y: point.y * scale })), cv);
-}
-
-export function blurScore(canvas: HTMLCanvasElement, cv: OpenCvRuntime): number | null {
-  if (!cv) return null;
-  let source: OpenCvRuntime;
-  let gray: OpenCvRuntime;
-  let laplacian: OpenCvRuntime;
-  let mean: OpenCvRuntime;
-  let standardDeviation: OpenCvRuntime;
-  try {
-    source = cv.imread(canvas);
-    gray = new cv.Mat();
-    cv.cvtColor(source, gray, cv.COLOR_RGBA2GRAY);
-    laplacian = new cv.Mat();
-    cv.Laplacian(gray, laplacian, cv.CV_64F);
-    mean = new cv.Mat();
-    standardDeviation = new cv.Mat();
-    cv.meanStdDev(laplacian, mean, standardDeviation);
-    return Math.pow(standardDeviation.data64F[0], 2);
-  } catch {
-    return null;
-  } finally {
-    [source, gray, laplacian, mean, standardDeviation].forEach((mat) => {
-      try { mat?.delete(); } catch { /* best-effort OpenCV cleanup */ }
-    });
-  }
+  clientSingleton = {
+    ready,
+    isReady: () => readyState,
+    analyze(image, options) {
+      if (!readyState || analyzeInFlight) return Promise.resolve(null);
+      analyzeInFlight = true;
+      return post(
+        { type: 'analyze', image, minAreaRatio: options.minAreaRatio, fast: options.fast, withGate: options.withGate },
+        [image.data.buffer],
+        (reply) => ({ quad: reply.quad ?? null, blur: reply.blur ?? null, clippedRatio: reply.clippedRatio ?? 0 }),
+        null as OpenCvAnalysis | null,
+      ).finally(() => { analyzeInFlight = false; });
+    },
+    rectify(image, timeoutMs = 4_000) {
+      if (!readyState) return Promise.resolve(null);
+      return withTimeout(
+        post({ type: 'rectify', image }, [image.data.buffer], (reply) => reply.image ?? null, null as ImageData | null),
+        timeoutMs,
+        null,
+      );
+    },
+    blurScore(image, timeoutMs = 1_500) {
+      if (!readyState) return Promise.resolve(null);
+      return withTimeout(
+        post({ type: 'blur', image }, [image.data.buffer], (reply) => reply.blur ?? null, null as number | null),
+        timeoutMs,
+        null,
+      );
+    },
+  };
+  return clientSingleton;
 }

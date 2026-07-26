@@ -115,6 +115,8 @@ export default defineConfig({
   base: './',
   define: {
     __CARD_CAPTURE_DEFAULT_API__: JSON.stringify(readLegacyDefaultApi()),
+    // 설정 화면에 노출되는 빌드 식별자 — "지금 무슨 버전을 보고 있나"를 원격으로 확인하는 용도.
+    __CARD_CAPTURE_BUILD_ID__: JSON.stringify(new Date().toISOString().slice(0, 16).replace('T', ' ') + 'Z'),
   },
   plugins: [
     react(),
