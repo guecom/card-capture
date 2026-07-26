@@ -12,17 +12,36 @@ export interface CoverMap {
   offsetY: number;
 }
 
-export function coverMap(videoWidth: number, videoHeight: number, displayWidth: number, displayHeight: number): CoverMap {
-  const scale = videoWidth > 0 && videoHeight > 0 ? Math.max(displayWidth / videoWidth, displayHeight / videoHeight) : 1;
+export interface Box {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+// 비디오가 "실제로 그려진 상자"를 기준으로 cover 매핑을 만들고, 결과를 오버레이 좌표계로 옮긴다.
+//
+// 왜 상자를 따로 받는가 (ISS-000098): 비디오 상자와 오버레이 상자가 같다고 가정하면,
+// 레이아웃이 조금만 달라져도 감지 박스가 명함에서 통째로 떨어진다. 실제로 React 이식 과정에서
+// video가 grid 아이템이 되며 height:100%가 순환 참조로 auto가 됐고(341x455 오버레이 위에
+// 341x606 비디오), 화면은 프레임 위쪽을 보여 주는데 앱은 가운데를 보여 준다고 계산해
+// 박스가 명함보다 76px 위에 그려졌다. 렌더된 상자를 재서 쓰면 이 계열의 오차가 원천 차단된다.
+export function coverMapInBox(videoWidth: number, videoHeight: number, videoBox: Box, overlayBox: Box): CoverMap {
+  const scale = videoWidth > 0 && videoHeight > 0 ? Math.max(videoBox.width / videoWidth, videoBox.height / videoHeight) : 1;
   return {
     videoWidth,
     videoHeight,
-    displayWidth,
-    displayHeight,
+    displayWidth: overlayBox.width,
+    displayHeight: overlayBox.height,
     scale,
-    offsetX: (displayWidth - videoWidth * scale) / 2,
-    offsetY: (displayHeight - videoHeight * scale) / 2,
+    offsetX: (videoBox.left - overlayBox.left) + (videoBox.width - videoWidth * scale) / 2,
+    offsetY: (videoBox.top - overlayBox.top) + (videoBox.height - videoHeight * scale) / 2,
   };
+}
+
+export function coverMap(videoWidth: number, videoHeight: number, displayWidth: number, displayHeight: number): CoverMap {
+  const box: Box = { left: 0, top: 0, width: displayWidth, height: displayHeight };
+  return coverMapInBox(videoWidth, videoHeight, box, box);
 }
 
 export function videoPointToDisplay(map: CoverMap, point: Point): Point {

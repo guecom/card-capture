@@ -2,6 +2,7 @@
 // "감지 성공 여부 + 감지 박스가 실제 카드에 앉는가"를 시나리오별로 계측한다.
 // founder 증상: "명함에서 오프셋된, 명함 위 사각박스" = 감지 실패 시 그려지는 고정 가이드 프레임.
 import { expect, test } from '@playwright/test';
+import { cardBoxOnScreen, centerDistance, overlayHole } from './stage-truth';
 import { readFile, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { extname, resolve, sep } from 'node:path';
@@ -152,42 +153,30 @@ test('detection matrix over realistic scenes', async ({ page }) => {
         const overlay = document.querySelector('canvas.camera-overlay') as HTMLCanvasElement | null;
         const video = document.querySelector('.camera-preview-stage video') as HTMLVideoElement | null;
         if (!overlay || !video) return null;
-        const context = overlay.getContext('2d');
-        if (!context) return null;
-        const { width, height } = overlay;
-        const image = context.getImageData(0, 0, width, height);
-        let minX = width; let minY = height; let maxX = 0; let maxY = 0; let holePixels = 0;
-        for (let y = 0; y < height; y += 2) {
-          for (let x = 0; x < width; x += 2) {
-            if (image.data[(y * width + x) * 4 + 3] < 100) {
-              holePixels += 1;
-              if (x < minX) minX = x; if (x > maxX) maxX = x;
-              if (y < minY) minY = y; if (y > maxY) maxY = y;
-            }
-          }
-        }
         return {
-          stage: { width, height },
+          stage: { width: overlay.width, height: overlay.height },
           video: { width: video.videoWidth, height: video.videoHeight },
-          hole: holePixels > 20 ? { x: minX, y: minY, width: maxX - minX, height: maxY - minY } : null,
           hint: document.querySelector('.camera-hint-pill span')?.textContent ?? null,
         };
       });
+      const hole = await overlayHole(page);
 
       let verdict = 'NO_BOX';
       let centerDx = -1; let centerDy = -1; let sizeRatio = -1;
-      if (probe?.hole) {
-        const scale = Math.max(probe.stage.width / probe.video.width, probe.stage.height / probe.video.height);
-        const offsetX = (probe.stage.width - probe.video.width * scale) / 2;
-        const offsetY = (probe.stage.height - probe.video.height * scale) / 2;
-        const expected = { x: CARD.x * scale + offsetX, y: CARD.y * scale + offsetY, width: CARD.width * scale, height: CARD.height * scale };
-        centerDx = Math.round(Math.abs((probe.hole.x + probe.hole.width / 2) - (expected.x + expected.width / 2)));
-        centerDy = Math.round(Math.abs((probe.hole.y + probe.hole.height / 2) - (expected.y + expected.height / 2)));
-        sizeRatio = +((probe.hole.width * probe.hole.height) / (expected.width * expected.height)).toFixed(2);
-        // 가이드 프레임(감지 실패 시 그려짐)은 화면 42% 지점의 고정 박스다.
-        const guideWidth = Math.min(probe.stage.width * 0.88, 520);
-        const looksLikeGuide = Math.abs(probe.hole.width - guideWidth) < 12 && Math.abs((probe.hole.y + probe.hole.height / 2) - probe.stage.height * 0.42) < 14;
-        verdict = looksLikeGuide ? 'GUIDE_FALLBACK' : (centerDx < expected.width * 0.15 && centerDy < expected.height * 0.15 ? 'ON_CARD' : 'OFFSET');
+      if (probe && hole) {
+        // 기대 위치는 앱의 좌표 공식이 아니라 렌더된 화면 픽셀에서 찾은 카드다 (TSK-000241).
+        // 예전에는 여기서 앱과 같은 cover 공식을 다시 계산해, 매핑이 통째로 틀려도 ON_CARD가 나왔다.
+        const expected = await cardBoxOnScreen(page);
+        if (expected) {
+          ({ dx: centerDx, dy: centerDy } = centerDistance(hole, expected));
+          sizeRatio = +((hole.width * hole.height) / (expected.width * expected.height)).toFixed(2);
+          // 가이드 프레임(감지 실패 시 그려짐)은 화면 42% 지점의 고정 박스다.
+          const guideWidth = Math.min(probe.stage.width * 0.88, 520);
+          const looksLikeGuide = Math.abs(hole.width - guideWidth) < 12 && Math.abs((hole.y + hole.height / 2) - probe.stage.height * 0.42) < 14;
+          verdict = looksLikeGuide ? 'GUIDE_FALLBACK' : (centerDx < expected.width * 0.15 && centerDy < expected.height * 0.15 ? 'ON_CARD' : 'OFFSET');
+        } else {
+          verdict = 'NO_TRUTH'; // 장면에서 카드를 픽셀로 찾지 못함 (저대비 시나리오)
+        }
       }
       report.push({ scenario, verdict, centerDx, centerDy, sizeRatio, hint: probe?.hint ?? null });
       await page.locator('.camera-preview-stage').screenshot({ path: resolve(outDir, `scene-${scenario}.png`) });

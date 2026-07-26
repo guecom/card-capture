@@ -7,6 +7,7 @@
 // 이 환경에서 videoinput 자체를 만들지 못했고(NotReadableError), 캔버스 스트림은
 // 실제 MediaStream이라 앱 코드 경로(video.play·videoWidth·프레임 그리기)가 그대로 돈다.
 import { expect, test } from '@playwright/test';
+import { cardBoxOnScreen, centerDistance, overlayHole } from './stage-truth';
 import { readFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { extname, resolve, sep } from 'node:path';
@@ -128,23 +129,16 @@ test('live camera overlay tracks the real card and quick-name reads it end to en
     await expect(page.locator('.camera-preview-stage')).toHaveAttribute('data-state', 'streaming', { timeout: 20_000 });
 
     // 엔진 준비를 기다리지 않는다 — 카메라를 연 사용자가 실제로 겪는 시간을 잰다.
+    // 잠금 신호는 스크림 알파 추정이 아니라 앱이 실제로 "인식됨"을 띄운 순간이다 (TSK-000241):
+    // 알파 휴리스틱은 감지 전 대기 프레임에서도 참이 돼, 감지되기 전 오버레이를 재고 통과시켰다.
     const lockDeadline = Date.now() + 12_000;
     let lockMs = -1;
     while (Date.now() < lockDeadline) {
-      const locked = await page.evaluate(() => {
-        const overlay = document.querySelector('canvas.camera-overlay') as HTMLCanvasElement | null;
-        if (!overlay) return false;
-        const context = overlay.getContext('2d');
-        if (!context) return false;
-        const image = context.getImageData(0, 0, overlay.width, overlay.height);
-        let maxAlpha = 0;
-        for (let index = 3; index < image.data.length; index += 4 * 53) maxAlpha = Math.max(maxAlpha, image.data[index]);
-        // 감지 상태의 스크림은 0.5(≈128), 미감지 대기 프레임은 0.34(≈87)다.
-        return maxAlpha > 110;
-      });
-      if (locked) { lockMs = 12_000 - (lockDeadline - Date.now()); break; }
-      await page.waitForTimeout(250);
+      const hint = await page.locator('.camera-hint-pill span').textContent().catch(() => null);
+      if (hint?.startsWith('인식됨')) { lockMs = 12_000 - (lockDeadline - Date.now()); break; }
+      await page.waitForTimeout(200);
     }
+    await page.waitForTimeout(500); // 감지 사각형이 목표 위치로 보간을 마칠 시간
     console.log('LOCK_MS', lockMs);
     expect(lockMs, '카메라를 연 뒤 명함 박스가 붙기까지 걸린 시간').toBeGreaterThan(-1);
     expect(lockMs, '감지 엔진이 미리 기동돼 있어야 한다 (legacy v1.0 파리티)').toBeLessThan(8_000);
@@ -154,34 +148,15 @@ test('live camera overlay tracks the real card and quick-name reads it end to en
       const overlay = document.querySelector('canvas.camera-overlay') as HTMLCanvasElement | null;
       const video = document.querySelector('.camera-preview-stage video') as HTMLVideoElement | null;
       if (!overlay || !video) return null;
-      const context = overlay.getContext('2d');
-      if (!context) return null;
-      const width = overlay.width;
-      const height = overlay.height;
-      const image = context.getImageData(0, 0, width, height);
-      let maxAlpha = 0;
-      for (let index = 3; index < image.data.length; index += 4 * 53) maxAlpha = Math.max(maxAlpha, image.data[index]);
-      const holeThreshold = maxAlpha * 0.75;
-      let minX = width; let minY = height; let maxX = 0; let maxY = 0; let holePixels = 0;
-      for (let y = 0; y < height; y += 2) {
-        for (let x = 0; x < width; x += 2) {
-          if (image.data[(y * width + x) * 4 + 3] < holeThreshold) {
-            holePixels += 1;
-            if (x < minX) minX = x;
-            if (x > maxX) maxX = x;
-            if (y < minY) minY = y;
-            if (y > maxY) maxY = y;
-          }
-        }
-      }
       return {
-        stage: { width, height },
+        stage: { width: overlay.width, height: overlay.height },
         video: { width: video.videoWidth, height: video.videoHeight },
-        hole: holePixels > 20 ? { x: minX, y: minY, width: maxX - minX, height: maxY - minY } : null,
+        videoBox: (() => { const rect = video.getBoundingClientRect(); return { width: Math.round(rect.width), height: Math.round(rect.height) }; })(),
         hint: document.querySelector('.camera-hint-pill span')?.textContent ?? null,
         engine: document.querySelector('.camera-engine-note')?.textContent ?? null,
       };
     });
+    const holeBox = await overlayHole(page);
     console.log('LIVE_PROBE', JSON.stringify(live));
     console.log('ALPHA_PROBE', JSON.stringify(await page.evaluate(() => {
       const overlay = document.querySelector('canvas.camera-overlay') as HTMLCanvasElement | null;
@@ -221,24 +196,22 @@ test('live camera overlay tracks the real card and quick-name reads it end to en
       await writeFile(resolve(fileURLToPath(new URL('../test-results/', import.meta.url)), 'overlay-dump.png'), Buffer.from(overlayPng.split(',')[1], 'base64'));
     }
     await page.locator('.camera-preview-stage').screenshot({ path: resolve(fileURLToPath(new URL('../test-results/', import.meta.url)), 'stage-dump.png') });
-    expect(live?.hole).not.toBeNull();
+    expect(holeBox, '오버레이에 감지 사각형이 없다').not.toBeNull();
+    // 스테이지 전체가 구멍으로 잡혔다면 감지 전 대기 프레임을 잰 것이다 — 비교해봐야 의미가 없다.
+    expect(holeBox!.width, '감지 사각형이 스테이지 전체를 덮고 있다').toBeLessThan(live!.stage.width * 0.95);
+    expect(holeBox!.height, '감지 사각형이 스테이지 전체를 덮고 있다').toBeLessThan(live!.stage.height * 0.95);
 
-    const scale = Math.max(live!.stage.width / live!.video.width, live!.stage.height / live!.video.height);
-    const offsetX = (live!.stage.width - live!.video.width * scale) / 2;
-    const offsetY = (live!.stage.height - live!.video.height * scale) / 2;
-    const expected = {
-      x: CARD.x * scale + offsetX,
-      y: CARD.y * scale + offsetY,
-      width: CARD.width * scale,
-      height: CARD.height * scale,
-    };
-    const hole = live!.hole!;
-    const centerDx = Math.round(Math.abs((hole.x + hole.width / 2) - (expected.x + expected.width / 2)));
-    const centerDy = Math.round(Math.abs((hole.y + hole.height / 2) - (expected.y + expected.height / 2)));
+    // 기대 위치는 앱의 공식이 아니라 "렌더된 화면 픽셀에서 찾은 카드"다 (TSK-000241).
+    // 예전 게이트는 여기서 앱과 같은 cover 공식을 다시 계산해, 매핑이 통째로 틀려도 통과했다.
+    const truth = await cardBoxOnScreen(page);
+    expect(truth, '스테이지 픽셀에서 카드를 찾지 못했다').not.toBeNull();
+    const hole = holeBox!;
+    const { dx: centerDx, dy: centerDy } = centerDistance(hole, truth!);
     console.log('LIVE_MATCH', JSON.stringify({
-      expected: { x: Math.round(expected.x), y: Math.round(expected.y), width: Math.round(expected.width), height: Math.round(expected.height) },
+      truth: { x: Math.round(truth!.x), y: Math.round(truth!.y), width: Math.round(truth!.width), height: Math.round(truth!.height) },
       hole, centerDx, centerDy,
     }));
+    const expected = truth!;
 
     // 2) 촬영 → 완료 → 크롭 산출물·빠른 이름 계측.
     await page.getByRole('button', { name: '앞면 촬영', exact: true }).click();
