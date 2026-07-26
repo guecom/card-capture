@@ -9,7 +9,7 @@
 
 ## Working Rules (all agents)
 
-1. **Branch + draft PR로만 작업한다.** `main` 직접 push, self-merge, release tag 생성은 하지 않는다. merge·release·GAS deployment는 사람 승인 단계다.
+1. **Branch + draft PR로만 작업한다.** `main` 직접 push와 release tag 생성은 하지 않는다. PR merge 권한은 아래 Risk-Based Merge Lanes를 따르고, release·GAS deployment는 사람 승인 단계다.
 2. 모든 커밋/PR에 Kairen Task 참조를 남긴다: `Kairen-Ref: TSK-XXXXXX`.
 3. **secret 금지.** 토큰 값, `TOKENS` JSON, Drive folder ID, 실캡처 데이터(이미지·capture.json·brief), Person 개인정보를 이 저장소에 넣지 않는다. `docs/index.html`의 `DEFAULT_API`(GAS exec URL)만 예외로 허용된 공개값이다.
 4. PR 전에 `scripts/validate.ps1`을 실행하고 PASS를 확인한다(secret scan, 필수 파일, .ps1 BOM, eval fixture 검사 포함).
@@ -20,6 +20,33 @@
 9. eval fixture는 **합성 데이터만** 허용한다. 실명함 유래 fixture는 익명화 사람 승인 후에만 추가한다(`eval/README.md`).
 10. 처리 파이프라인(워처·Codex 세션)의 쓰기 허용 경로는 vault `CardCapture_Processing.md`의 allowlist가 계약이다. 워처 프롬프트와 eval의 adversarial fixture가 이를 강제한다.
 
+## Risk-Based Merge Lanes (DEC-000041)
+
+모든 PR은 diff 크기가 아니라 영향과 복구 경계로 아래 lane 중 정확히 하나를 선언한다.
+
+### `AUTO-MERGE OK`
+
+구현 agent와 분리된 review context가 아래 조건을 exact current head에서 모두 확인한 경우에만 agent가 repository auto-merge를 enable할 수 있다.
+
+- GitHub Actions `validate`가 성공했다.
+- merge conflict가 없고 unresolved review conversation이 0이다.
+- 관련 Issue acceptance가 deterministic evidence로 검증됐다.
+- rollback이 data·release·deploy·external recovery 없이 PR revert 하나로 끝난다.
+- 변경이 `docs/`, `Code.gs`, `watcher/`, `.github/workflows/`, dependency manifest/lockfile, auth·credential·data, user-visible behavior, camera/OCR/mobile performance, Product contract, external send/write, paid API, release/deploy, final operating state를 건드리지 않는다.
+- independent review 결론이 `AUTO-MERGE OK`로 기록됐다.
+
+새 commit은 이전 check와 review 결론을 무효화한다. Auto-merge는 requirements를 기다리는 수단이며 approval을 만들지 않는다.
+
+### `HUMAN TEST REQUIRED`
+
+`docs/` live Pages surface, user-visible behavior, visual interaction, camera/OCR, real-phone, offline/PWA 또는 체감 성능처럼 machine gate가 판정할 수 없는 outcome은 이 lane을 사용한다. Exact-head CI와 independent review가 먼저 통과해야 하며, founder가 observable outcome을 승인하기 전에는 merge하지 않는다.
+
+### `MATERIAL APPROVAL REQUIRED`
+
+Product contract·authority, identity/access, credential, production data, `Code.gs`, watcher processing boundary, external send/write, paid resource, release/deploy, dependency 또는 workflow trust, final operating state와 PR revert 이상이 필요한 rollback은 이 lane을 사용한다. Evidence, 추천, exact proposal, impact, rollback, validation을 준비하고 `approve / revise / reject`를 받은 뒤에만 merge한다.
+
+Repository admin bypass는 recovery 전용이며 정상 merge 경로가 아니다.
+
 ## Human Gates
 
-에이전트가 최종 상태로 만들지 않는 것: PR merge, release tag, GAS deployment, 토큰 발급·회수·rotation, Script Properties 변경, 실데이터 삭제, 알림 채널 enablement.
+에이전트가 최종 상태로 만들지 않는 것: `HUMAN TEST REQUIRED` 또는 `MATERIAL APPROVAL REQUIRED` PR의 무승인 merge, release tag, GAS deployment, 토큰 발급·회수·rotation, Script Properties 변경, 실데이터 삭제, 알림 채널 enablement.
