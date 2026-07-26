@@ -162,6 +162,30 @@ function imageSourceToCameraFrame(source: CanvasImageSource, width: number, heig
   return { dataUrl: canvas.toDataURL('image/jpeg', 0.85), ...size };
 }
 
+// 촬영 파이프라인 마무리: legacy와 같은 2000px 상한·JPEG 0.85로 인코딩한다.
+export function finalizeCameraFrame(canvas: HTMLCanvasElement): CapturedCameraFrame {
+  const size = fitCameraFrame(canvas.width, canvas.height);
+  let output = canvas;
+  if (size.width !== canvas.width || size.height !== canvas.height) {
+    output = document.createElement('canvas');
+    output.width = size.width;
+    output.height = size.height;
+    const context = output.getContext('2d');
+    if (!context) throw new CandidateCameraError('camera_failed');
+    context.drawImage(canvas, 0, 0, size.width, size.height);
+  }
+  return { dataUrl: output.toDataURL('image/jpeg', 0.85), ...size };
+}
+
+// ImageData(워커 warp 결과)를 캔버스로 되돌린다.
+export function canvasFromImageData(image: ImageData): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = image.width;
+  canvas.height = image.height;
+  canvas.getContext('2d')?.putImageData(image, 0, 0);
+  return canvas;
+}
+
 // 목록 표시에 원본 대신 쓸 104px 썸네일 (legacy thumbOf — 전송 후 원본이 정리돼도 남는다).
 export function thumbnailOf(dataUrl: string): Promise<string> {
   return new Promise((resolve) => {

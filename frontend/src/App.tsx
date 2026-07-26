@@ -799,6 +799,7 @@ function App() {
           <div><strong>새 credential을 만들지 않습니다.</strong><p>현재 앱은 이전 앱과 같은 origin·local storage·IndexedDB를 사용합니다. token은 repository나 log에 포함하지 않습니다.</p></div>
         </section>
         <a className="legacy-link" href="../legacy.html">이전 앱 열기 · 복구용 <ArrowUpRight aria-hidden="true" size={16} /></a>
+        <p className="build-line">빌드 {__CARD_CAPTURE_BUILD_ID__}</p>
       </div>
     );
   }

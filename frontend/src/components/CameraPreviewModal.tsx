@@ -13,19 +13,21 @@ import {
   CandidateCameraError,
   cameraHasTorch,
   type CapturedCameraFrame,
-  captureCameraFrame,
+  canvasFromImageData,
   cropCanvasRegion,
   fileToCameraFrame,
+  finalizeCameraFrame,
   openEnvironmentCamera,
   setCameraTorch,
   stopCameraStream,
 } from '../services/camera';
-import { blurScore, detectCardQuad, loadOpenCv, type OpenCvRuntime, plausibleCard, type Point, rectifyCardCanvas } from '../services/opencv';
-import { blankAutoCaptureState, clippedRatio, nextAutoCaptureState } from '../services/auto-capture';
+import { getOpenCvWorker, type OpenCvWorkerClient, plausibleCard, type Point } from '../services/opencv';
+import { blankAutoCaptureState, nextAutoCaptureState } from '../services/auto-capture';
 import { preloadQuickNameOcr } from '../services/vision';
 import { type CoverMap, coverMap, guideRectDisplay, guideRectInVideo, lerpQuad, rectToQuad, videoPointToDisplay } from '../services/stage-geometry';
 
 // 촬영 전용 모달 — 맥락 입력·이름 확인·완료는 legacy처럼 메인 화면이 소유한다 (ISS-000091 항목 18).
+// 명함 감지 엔진(OpenCV)은 Web Worker에서만 돌아 이 화면의 버튼은 어떤 시점에도 잠기지 않는다 (TSK-000230).
 type PreviewPhase = 'idle' | 'requesting' | 'streaming' | 'choice' | 'error';
 export type CardSide = 'front' | 'back';
 
@@ -42,19 +44,6 @@ const failureCopy: Record<string, string> = {
   camera_busy: '다른 앱이 카메라를 사용 중입니다. 닫은 뒤 다시 시도하세요.',
   camera_failed: '카메라를 시작하지 못했습니다. 기본 카메라로 계속하세요.',
 };
-
-function quadPixels(canvas: HTMLCanvasElement, quad: Point[]): ImageData | null {
-  const x = Math.max(0, Math.floor(Math.min(...quad.map((point) => point.x))));
-  const y = Math.max(0, Math.floor(Math.min(...quad.map((point) => point.y))));
-  const right = Math.min(canvas.width, Math.ceil(Math.max(...quad.map((point) => point.x))));
-  const bottom = Math.min(canvas.height, Math.ceil(Math.max(...quad.map((point) => point.y))));
-  if (right - x < 2 || bottom - y < 2) return null;
-  try {
-    return canvas.getContext('2d')?.getImageData(x, y, right - x, bottom - y) ?? null;
-  } catch {
-    return null;
-  }
-}
 
 function quadPath(context: CanvasRenderingContext2D, quad: Point[]): void {
   context.beginPath();
@@ -122,7 +111,7 @@ export function CameraCaptureModal({
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const nativeInputRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const cvRef = useRef<OpenCvRuntime | null>(null);
+  const workerRef = useRef<OpenCvWorkerClient | null>(null);
   const autoGateRef = useRef(blankAutoCaptureState());
   const capturingRef = useRef(false);
   const liveQuadRef = useRef<{ quad: Point[]; at: number } | null>(null);
@@ -132,7 +121,11 @@ export function CameraCaptureModal({
   // 감지용 다운스케일 캔버스는 한 번만 만들어 재사용한다 (모바일 GC 부담 축소).
   const detectCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [phase, setPhase] = useState<PreviewPhase>('idle');
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
   const [side, setSide] = useState<CardSide>(initialSide);
+  const sideRef = useRef(side);
+  sideRef.current = side;
   const [detail, setDetail] = useState('');
   const [cvState, setCvState] = useState('명함 감지 엔진 대기');
   const [choiceThumb, setChoiceThumb] = useState('');
@@ -188,13 +181,12 @@ export function CameraCaptureModal({
       setTorchAvailable(cameraHasTorch(stream));
       setPhase('streaming');
       setDetail('');
-      // 엔진은 앱 시작 시 프리로드된다(App) — 여기 호출은 이미 끝난 Promise 재사용이 보통이다.
-      // 미리보기가 뜬 뒤에 엔진을 실행한다 — 사용자가 화면을 겨누는 동안 로드되고,
-      // 준비 전에도 수동 촬영·가이드 크롭은 그대로 동작한다 (2026-07-26 실폰 결함 1).
-      setCvState('명함 감지 엔진 준비 중… 지금도 촬영할 수 있어요');
-      void loadOpenCv().then((runtime) => {
-        cvRef.current = runtime;
-        setCvState(runtime ? '명함 감지·자동 촬영 준비됨' : '전체 프레임 fallback 준비됨');
+      // 엔진은 워커 스레드에서 로드·컴파일된다 — 이 화면은 준비 전에도 전부 동작한다.
+      const client = getOpenCvWorker();
+      workerRef.current = client;
+      setCvState(client.isReady() ? '명함 감지·자동 촬영 준비됨' : '명함 감지 엔진 준비 중… 지금도 촬영할 수 있어요');
+      void client.ready.then((ok) => {
+        setCvState(ok ? '명함 감지·자동 촬영 준비됨' : '전체 프레임 fallback 준비됨');
       });
       preloadQuickNameOcr();
     } catch (error) {
@@ -205,49 +197,70 @@ export function CameraCaptureModal({
     }
   }, [stopPreview]);
 
-  const capturePreviewFrame = useCallback((source: 'manual' | 'auto' = 'manual') => {
+  const capturePreviewFrame = useCallback(async (source: 'manual' | 'auto' = 'manual') => {
     const video = videoRef.current;
     if (!video || capturingRef.current) return;
     capturingRef.current = true;
     try {
+      if (!video.videoWidth) throw new CandidateCameraError('frame_not_ready');
+      const full = document.createElement('canvas');
+      full.width = video.videoWidth;
+      full.height = video.videoHeight;
+      const fullContext = full.getContext('2d');
+      if (!fullContext) throw new CandidateCameraError('camera_failed');
+      fullContext.drawImage(video, 0, 0);
+
+      let result: HTMLCanvasElement | null = null;
       let cropState: CapturedSideMeta['cropState'] = 'full';
-      let blurry = false;
-      const cv = cvRef.current;
-      const overlay = overlayRef.current;
-      const frame = captureCameraFrame(video, undefined, (sourceCanvas) => {
-        const rectified = cv ? rectifyCardCanvas(sourceCanvas, cv) : null;
-        let result = rectified;
-        if (rectified) {
-          cropState = 'rectified';
-        } else if (overlay) {
-          // 감지 실패 폴백: 화면 가이드 영역만 잘라 배경 전체가 올라가지 않게 한다 (legacy 규칙).
-          const map = coverMap(sourceCanvas.width, sourceCanvas.height, overlay.clientWidth, overlay.clientHeight);
+      const client = workerRef.current;
+      if (client?.isReady()) {
+        try {
+          const image = fullContext.getImageData(0, 0, full.width, full.height);
+          const rectified = await client.rectify(image);
+          if (rectified) {
+            result = canvasFromImageData(rectified);
+            cropState = 'rectified';
+          }
+        } catch {
+          // getImageData 불가(제한된 context 등) → 아래 가이드 크롭 폴백.
+        }
+      }
+      if (!result) {
+        // 감지 실패 폴백: 화면 가이드 영역만 잘라 배경 전체가 올라가지 않게 한다 (legacy 규칙).
+        const overlay = overlayRef.current;
+        if (overlay) {
+          const map = coverMap(full.width, full.height, overlay.clientWidth, overlay.clientHeight);
           const region = guideRectInVideo(map);
-          const cropped = region ? cropCanvasRegion(sourceCanvas, region) : null;
+          const cropped = region ? cropCanvasRegion(full, region) : null;
           if (cropped) {
             result = cropped;
             cropState = 'guide';
           }
         }
-        const finalCanvas = result ?? sourceCanvas;
-        if (cv) {
-          // 촬영 직후 흐림 점수 경고 (legacy blurScore < 45).
-          try {
-            const scale = Math.min(1, 600 / Math.max(1, finalCanvas.width));
-            const check = document.createElement('canvas');
-            check.width = Math.max(1, Math.round(finalCanvas.width * scale));
-            check.height = Math.max(1, Math.round(finalCanvas.height * scale));
-            check.getContext('2d')?.drawImage(finalCanvas, 0, 0, check.width, check.height);
-            const score = blurScore(check, cv);
-            blurry = score !== null && score < 45;
-          } catch {
-            blurry = false;
-          }
+      }
+      const finalCanvas = result ?? full;
+
+      // 촬영 직후 흐림 점수 경고 (legacy blurScore < 45) — 워커에서 계산.
+      let blurry = false;
+      if (client?.isReady()) {
+        try {
+          const scale = Math.min(1, 600 / Math.max(1, finalCanvas.width));
+          const check = document.createElement('canvas');
+          check.width = Math.max(1, Math.round(finalCanvas.width * scale));
+          check.height = Math.max(1, Math.round(finalCanvas.height * scale));
+          const checkContext = check.getContext('2d');
+          checkContext?.drawImage(finalCanvas, 0, 0, check.width, check.height);
+          const image = checkContext?.getImageData(0, 0, check.width, check.height);
+          const score = image ? await client.blurScore(image) : null;
+          blurry = score !== null && score < 45;
+        } catch {
+          blurry = false;
         }
-        return finalCanvas;
-      });
-      onCaptured(side, frame, { cropState, blurry, source });
-      if (side === 'front' && withBackChoice) {
+      }
+
+      const frame = finalizeCameraFrame(finalCanvas);
+      onCaptured(sideRef.current, frame, { cropState, blurry, source });
+      if (sideRef.current === 'front' && withBackChoice) {
         // 카메라를 벗어나지 않는 선택지: 뒷면도 찍기 / 뒷면 없이 완료 / 앞면 다시 찍기 (legacy camChoiceUI).
         setChoiceThumb(frame.dataUrl);
         setPhase('choice');
@@ -261,17 +274,17 @@ export function CameraCaptureModal({
       setPhase('error');
       setDetail('카메라 프레임이 아직 준비되지 않았습니다. 다시 시도하거나 기본 카메라를 사용하세요.');
     }
-  }, [onCaptured, onFinished, side, stopPreview, withBackChoice]);
+  }, [onCaptured, onFinished, stopPreview, withBackChoice]);
 
-  // 명함 감지 루프: 자동 촬영이 꺼져 있어도 오버레이 표시는 계속한다 (legacy camLoop).
+  // 명함 감지 루프: 프레임을 워커로 보내고 결과만 받는다. 자동 촬영이 꺼져 있어도 오버레이 표시는 계속한다.
   useEffect(() => {
     if (phase !== 'streaming') return;
     let deepCounter = 0;
     const interval = window.setInterval(() => {
       const video = videoRef.current;
-      const cv = cvRef.current;
+      const client = workerRef.current;
       if (!video || !video.videoWidth || capturingRef.current) return;
-      if (!cv) {
+      if (!client?.isReady()) {
         setAutoHint('명함을 화면 안에 담아 찍어 주세요');
         return;
       }
@@ -280,42 +293,52 @@ export function CameraCaptureModal({
       if (canvas.width !== 320) canvas.width = 320;
       if (canvas.height !== targetHeight) canvas.height = targetHeight;
       const context = canvas.getContext('2d');
-      if (!context) return;
+      if (!context || typeof context.getImageData !== 'function') return;
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
       deepCounter += 1;
-      const quad = detectCardQuad(canvas, cv, 0.07, deepCounter % 3 !== 0);
-      const now = performance.now();
-      if (!quad || !plausibleCard(quad)) {
-        if (autoCapture) {
-          autoGateRef.current = nextAutoCaptureState(autoGateRef.current, { detected: false }, now);
-          autoProgressRef.current = 0;
+      let image: ImageData;
+      try {
+        image = context.getImageData(0, 0, canvas.width, canvas.height);
+      } catch {
+        return;
+      }
+      const frameWidth = canvas.width;
+      const frameHeight = canvas.height;
+      const videoScale = video.videoWidth / frameWidth;
+      void client.analyze(image, { minAreaRatio: 0.07, fast: deepCounter % 3 !== 0, withGate: autoCapture }).then((analysis) => {
+        if (!analysis) return; // 이전 프레임 분석 중 — 이 프레임은 버림(자연 스로틀).
+        if (phaseRef.current !== 'streaming' || capturingRef.current) return;
+        const now = performance.now();
+        if (!analysis.quad || !plausibleCard(analysis.quad)) {
+          if (autoCapture) {
+            autoGateRef.current = nextAutoCaptureState(autoGateRef.current, { detected: false }, now);
+            autoProgressRef.current = 0;
+          }
+          setAutoHint('명함을 화면 안에 담아 주세요');
+          return;
         }
-        setAutoHint('명함을 화면 안에 담아 주세요');
-        return;
-      }
-      const videoScale = video.videoWidth / canvas.width;
-      liveQuadRef.current = { quad: quad.map((point) => ({ x: point.x * videoScale, y: point.y * videoScale })), at: now };
-      if (!autoCapture) {
-        setAutoHint('인식됨 · 아래 버튼으로 촬영할 수 있어요');
-        return;
-      }
-      const pixels = quadPixels(canvas, quad);
-      autoGateRef.current = nextAutoCaptureState(autoGateRef.current, {
-        detected: true,
-        plausible: true,
-        quad,
-        frameWidth: canvas.width,
-        frameHeight: canvas.height,
-        blur: blurScore(canvas, cv),
-        clippedRatio: pixels ? clippedRatio(pixels) : 0,
-      }, now);
-      const gate = autoGateRef.current;
-      autoProgressRef.current = gate.progress;
-      setAutoHint(gate.reason === 'blur' ? '조금 흐려요 · 휴대폰을 고정해 주세요'
-        : gate.reason === 'glare' ? '빛 반사를 줄여 주세요'
-          : gate.fired ? '좋아요 · 자동 촬영 중'
-            : '인식됨 · 잠시 고정하면 자동 촬영해요');
-      if (gate.fired) capturePreviewFrame('auto');
+        liveQuadRef.current = { quad: analysis.quad.map((point) => ({ x: point.x * videoScale, y: point.y * videoScale })), at: now };
+        if (!autoCapture) {
+          setAutoHint('인식됨 · 아래 버튼으로 촬영할 수 있어요');
+          return;
+        }
+        autoGateRef.current = nextAutoCaptureState(autoGateRef.current, {
+          detected: true,
+          plausible: true,
+          quad: analysis.quad,
+          frameWidth,
+          frameHeight,
+          blur: analysis.blur,
+          clippedRatio: analysis.clippedRatio,
+        }, now);
+        const gate = autoGateRef.current;
+        autoProgressRef.current = gate.progress;
+        setAutoHint(gate.reason === 'blur' ? '조금 흐려요 · 휴대폰을 고정해 주세요'
+          : gate.reason === 'glare' ? '빛 반사를 줄여 주세요'
+            : gate.fired ? '좋아요 · 자동 촬영 중'
+              : '인식됨 · 잠시 고정하면 자동 촬영해요');
+        if (gate.fired) void capturePreviewFrame('auto');
+      });
     }, 180);
     return () => window.clearInterval(interval);
   }, [autoCapture, capturePreviewFrame, phase]);
@@ -332,10 +355,8 @@ export function CameraCaptureModal({
       const width = overlay.clientWidth;
       const height = overlay.clientHeight;
       if (!width || !height) return;
-      if (overlay.width !== width || overlay.height !== height) {
-        overlay.width = width;
-        overlay.height = height;
-      }
+      if (overlay.width !== width) overlay.width = width;
+      if (overlay.height !== height) overlay.height = height;
       const context = overlay.getContext('2d');
       // 일부 WebView가 제한된 2D context를 줄 수 있다 — 오버레이는 장식이므로 조용히 건너뛴다.
       if (!context || typeof context.clearRect !== 'function') return;
@@ -392,14 +413,14 @@ export function CameraCaptureModal({
     setDetail('기본 카메라 사진을 준비하고 있어요.');
     try {
       const frame = await fileToCameraFrame(file);
-      onCaptured(side, frame, { cropState: 'native', blurry: false, source: 'native' });
+      onCaptured(sideRef.current, frame, { cropState: 'native', blurry: false, source: 'native' });
       stopPreview();
       onFinished();
     } catch {
       setPhase('error');
       setDetail('사진을 읽지 못했습니다. 다시 시도해 주세요.');
     }
-  }, [onCaptured, onFinished, side, stopPreview]);
+  }, [onCaptured, onFinished, stopPreview]);
 
   const beginSession = useCallback(() => {
     setChoiceThumb('');
@@ -451,7 +472,7 @@ export function CameraCaptureModal({
               <IonButton fill={autoCapture ? 'solid' : 'outline'} onClick={toggleAutoCapture}>{autoCapture ? '자동 촬영 켜짐' : '자동 촬영 꺼짐'}</IonButton>
               {torchAvailable && <IonButton fill={torchOn ? 'solid' : 'outline'} onClick={() => void toggleTorch()}><Lightbulb aria-hidden="true" size={17} /> 플래시</IonButton>}
             </div>
-            <IonButton expand="block" onClick={() => capturePreviewFrame('manual')}><ImageIcon aria-hidden="true" slot="start" size={18} />{side === 'front' ? '앞면' : '뒷면'} 촬영</IonButton>
+            <IonButton expand="block" onClick={() => void capturePreviewFrame('manual')}><ImageIcon aria-hidden="true" slot="start" size={18} />{side === 'front' ? '앞면' : '뒷면'} 촬영</IonButton>
             <IonButton expand="block" fill="outline" onClick={() => nativeInputRef.current?.click()}>기본 카메라 앱으로 찍기</IonButton>
           </>
         )}
