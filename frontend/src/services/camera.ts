@@ -186,6 +186,20 @@ export function canvasFromImageData(image: ImageData): HTMLCanvasElement {
   return canvas;
 }
 
+/**
+ * 기기에 보관돼 있던 사진을 다시 촬영 초안으로 되돌린다 (FI-049 되돌리기).
+ * **다시 인코딩하지 않는다** — 같은 바이트를 그대로 들고 크기만 재서, 되돌린 뒤 다시 저장해도
+ * 화질이 한 단계 더 떨어지지 않게 한다. 크기를 못 재도 사진 자체는 그대로 살린다.
+ */
+export function storedCameraFrame(dataUrl: string): Promise<CapturedCameraFrame> {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => resolve({ dataUrl, width: image.naturalWidth || 0, height: image.naturalHeight || 0 });
+    image.onerror = () => resolve({ dataUrl, width: 0, height: 0 });
+    image.src = dataUrl;
+  });
+}
+
 // 목록 표시에 원본 대신 쓸 104px 썸네일 (legacy thumbOf — 전송 후 원본이 정리돼도 남는다).
 export function thumbnailOf(dataUrl: string): Promise<string> {
   return new Promise((resolve) => {

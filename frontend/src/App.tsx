@@ -38,7 +38,13 @@ import {
   type RecallStageKey,
   type ResearchStageKey,
 } from './services/ai-stages';
-import { type CapturedCameraFrame, thumbnailOf } from './services/camera';
+import { type CapturedCameraFrame, storedCameraFrame, thumbnailOf } from './services/camera';
+import {
+  QUICK_NAME_LATER_LABEL,
+  QUICK_NAME_STATUS_COPY,
+  queueRowName,
+  quickNameReadingCopy,
+} from './services/capture-name';
 import {
   captureContextFilled,
   captureContextSummary,
@@ -47,7 +53,7 @@ import {
   SELF_RELATION_CHIPS,
   toggleChipValue,
 } from './services/capture-context';
-import { buildLegacyNote, buildQueuedCapture, parseLegacyNote } from './services/capture-item';
+import { buildLegacyNote, buildQueuedCapture, parseLegacyNote, restoredDraftOf } from './services/capture-item';
 import { actionErrorMessage, briefListTitle, briefNameMap, briefTitle, elapsedMinutesOf } from './services/brief-view';
 import { captureProgress, refreshHint } from './services/capture-progress';
 import { contactCardFromBrief } from './services/contacts';
@@ -62,6 +68,9 @@ import {
   QueueWriteError,
   queueWriteMessage,
   readQueueChecked,
+  takeBackQueueItem,
+  undoRefusalMessage,
+  undoRefusalOf,
   withQueueLock,
 } from './services/queue';
 import {
@@ -318,10 +327,16 @@ function App() {
   const [clockTick, setClockTick] = useState(() => Date.now());
   const [quickName, setQuickName] = useState<QuickName | null>(null);
   const [nameText, setNameText] = useState('');
-  const [ocrState, setOcrState] = useState('이름 인식 대기');
+  const [ocrState, setOcrState] = useState(QUICK_NAME_STATUS_COPY.idle);
+  // 사용자가 `모름 / 나중에`를 **명시적으로** 골랐는가 (FI-067). 화면 표시 전용이다 —
+  // 저장되는 값은 이름 없음(quickName: null) 그대로이고 새 필드를 만들지 않는다.
+  const [nameLater, setNameLater] = useState(false);
   const ocrSessionRef = useRef(0);
   const nameEditedRef = useRef(false);
   const [cameraSession, setCameraSession] = useState<{ side: CardSide; withChoice: boolean } | null>(null);
+  // 방금 저장한 촬영의 captureId (FI-049). 되돌리기·다시 열기의 대상이다.
+  const [lastSavedId, setLastSavedId] = useState('');
+  const [undoing, setUndoing] = useState(false);
 
   const configured = Boolean(config.apiUrl && config.token);
 
@@ -482,6 +497,15 @@ function App() {
   const contextSummary = useMemo(() => captureContextSummary(contextValue), [contextValue]);
   const contextFilled = useMemo(() => captureContextFilled(contextValue), [contextValue]);
   const eventChips = useMemo(() => buildEventChips(event), [event]);
+
+  // 방금 저장한 촬영 (FI-049). 다음 장을 찍기 시작하면 내려간다 — 되돌리기가 촬영 중인
+  // 초안과 다투면 안 되고, 카메라가 열려 있는 동안 화면을 바꿔치기해서도 안 된다.
+  const lastSavedItem = useMemo(
+    () => queue.find((item) => item.captureId === lastSavedId) ?? null,
+    [lastSavedId, queue],
+  );
+  const showLastSaved = Boolean(lastSavedItem) && !frontFrame && !backFrame && !cameraSession;
+  const lastSavedUndoable = Boolean(lastSavedItem) && undoRefusalOf(lastSavedItem ?? undefined) === null;
 
   // 로컬 캡처 + 서버 브리핑 통합 목록 (실폰 피드백 2): 같은 captureId는 한 항목으로.
   const feed = useMemo<FeedEntry[]>(() => {
@@ -664,22 +688,25 @@ function App() {
     nameEditedRef.current = false;
     setQuickName(null);
     setNameText('');
-    setOcrState('이름 읽는 중…');
+    setNameLater(false);
+    setOcrState(quickNameReadingCopy());
     void recognizeQuickName(frame.dataUrl, (progress) => {
-      if (session === ocrSessionRef.current && !nameEditedRef.current) setOcrState(`이름 읽는 중 ${progress}%`);
+      if (session === ocrSessionRef.current && !nameEditedRef.current) setOcrState(quickNameReadingCopy(progress));
     }).then((result) => {
       if (session !== ocrSessionRef.current || nameEditedRef.current) return;
       setQuickName(result);
       setNameText(result?.name ?? '');
-      setOcrState(result?.name ? '인식 완료 · 확인해 주세요' : '직접 확인해 주세요');
+      // 못 읽은 것은 실패가 아니라 "지금은 모른다"는 결과다 (FI-067).
+      setOcrState(result?.name ? QUICK_NAME_STATUS_COPY.read : QUICK_NAME_STATUS_COPY.unreadable);
     }).catch(() => {
-      if (session === ocrSessionRef.current && !nameEditedRef.current) setOcrState('직접 확인해 주세요');
+      if (session === ocrSessionRef.current && !nameEditedRef.current) setOcrState(QUICK_NAME_STATUS_COPY.unreadable);
     });
   }, []);
 
   const editQuickName = useCallback((value: string) => {
     const name = value.trim().slice(0, 80);
     nameEditedRef.current = true;
+    setNameLater(false);
     setNameText(value.slice(0, 80));
     setQuickName(name ? {
       name,
@@ -688,15 +715,30 @@ function App() {
       confirmed: true,
       recognizedAt: quickName?.recognizedAt ?? new Date().toISOString(),
     } : null);
-    setOcrState(name ? '직접 확인됨' : '이름을 입력해 주세요');
+    // 지운 칸을 "입력하라"고 하지 않는다 — 이름 없이 저장하는 것도 정상 결과다 (FI-067).
+    setOcrState(name ? QUICK_NAME_STATUS_COPY.confirmed : QUICK_NAME_STATUS_COPY.blank);
   }, [quickName]);
+
+  /**
+   * `모름 / 나중에` (FI-067). 잘못 읽힌 후보를 지우고, 이 촬영은 이름 없이 저장한다.
+   * 진행 중인 인식 세션도 무효화해 나중에 도착한 OCR 결과가 이 선택을 덮어쓰지 않게 한다.
+   */
+  const markNameLater = useCallback(() => {
+    ocrSessionRef.current += 1;
+    nameEditedRef.current = true;
+    setQuickName(null);
+    setNameText('');
+    setNameLater(true);
+    setOcrState(QUICK_NAME_STATUS_COPY.later);
+  }, []);
 
   const resetQuickName = useCallback(() => {
     ocrSessionRef.current += 1;
     nameEditedRef.current = false;
     setQuickName(null);
     setNameText('');
-    setOcrState('이름 인식 대기');
+    setNameLater(false);
+    setOcrState(QUICK_NAME_STATUS_COPY.idle);
   }, []);
 
   // 캡처 수정 화면의 재촬영도 앱 카메라를 쓴다 — 예전에는 OS 기본 카메라를 열어 갤러리에 사본이 생겼다.
@@ -751,7 +793,10 @@ function App() {
       // 이 확인을 통과하기 전에는 촬영 화면을 비우지 않는다 — 비우면 사진이 사라진다.
       await putQueueItemVerified(item);
       setQueue((current) => [item, ...current].sort((a, b) => b.captureId.localeCompare(a.captureId)));
+      // 방금 저장한 이 촬영을 즉시 되돌리거나 다시 열 수 있게 기억한다 (FI-049).
+      setLastSavedId(item.captureId);
       // 즉시 초기화해서 다음 명함을 바로 찍을 수 있게 — 만난 곳·관계·조사 지시는 2시간 유지, 메모만 비운다.
+      // 메모는 이 사람 한 명에 대한 사실이므로 다음 사람에게 새어 나가면 안 된다 (FI-046).
       setFrontFrame(null);
       setBackFrame(null);
       setMemo('');
@@ -771,6 +816,52 @@ function App() {
       setQueueing(false);
     }
   }, [backFrame, configured, event, flushPendingQueue, frontFrame, memo, queueing, quickName, relKairen, relSelf, researchInstructionEnabled, researchText, resetQuickName]);
+
+  /**
+   * 방금 찍은 촬영을 대기열에서 빼서 촬영 화면으로 되돌린다 (FI-049).
+   *
+   * 지우고 끝내지 않는다 — 사진·메모·이름 후보를 촬영 초안으로 그대로 되살려서, 다시 찍든
+   * 그대로 다시 저장하든 사용자가 고를 수 있게 한다. 되돌리기가 성립하는지의 판정은
+   * `takeBackQueueItem`이 전송 잠금 안에서 다시 읽어 결정한다.
+   */
+  const undoLastCapture = useCallback(async () => {
+    // 다음 장을 이미 찍어 둔 상태에서는 되돌리지 않는다 — 되돌린 사진이 그 장을 덮어쓴다.
+    if (!lastSavedId || undoing || frontFrame || cameraSession) return;
+    setUndoing(true);
+    try {
+      const outcome = await takeBackQueueItem(lastSavedId);
+      if (!outcome.item) {
+        setMessage(undoRefusalMessage[outcome.refusal ?? 'missing']);
+        await refresh().catch(() => undefined);
+        return;
+      }
+      const draft = restoredDraftOf(outcome.item);
+      setQueue((current) => current.filter((item) => item.captureId !== outcome.item?.captureId));
+      setLastSavedId('');
+      setFrontFrame(draft.front ? await storedCameraFrame(draft.front) : null);
+      setBackFrame(draft.back ? await storedCameraFrame(draft.back) : null);
+      setMemo(draft.memo);
+      // 세션 공통 값은 지금 비어 있을 때만 되살린다 — 그 뒤에 새로 적은 값을 덮어쓰지 않는다.
+      setEvent((value) => value || draft.event);
+      setRelSelf((value) => value || draft.relSelf);
+      setRelKairen((value) => value || draft.relKairen);
+      if (draft.quickName?.name) {
+        ocrSessionRef.current += 1;
+        nameEditedRef.current = true;
+        setQuickName(draft.quickName);
+        setNameText(draft.quickName.name);
+        setNameLater(false);
+        setOcrState(QUICK_NAME_STATUS_COPY.confirmed);
+      } else {
+        resetQuickName();
+      }
+      setMessage('촬영 화면으로 되돌렸어요 — 지금은 이 폰에도 저장돼 있지 않으니, 남기려면 완료를 다시 눌러 주세요.');
+    } catch (error) {
+      setMessage(`되돌리지 못했어요: ${actionErrorMessage(error)}`);
+    } finally {
+      setUndoing(false);
+    }
+  }, [cameraSession, frontFrame, lastSavedId, refresh, resetQuickName, undoing]);
 
   const retryQueueItem = useCallback(async (item: CaptureQueueItem) => {
     await putQueueItem({ ...item, state: 'queued', err: undefined });
@@ -939,7 +1030,8 @@ function App() {
   function renderQueueRow(item: CaptureQueueItem) {
     const imageSource = queueImageSource(item);
     const processedName = processedNames[item.captureId];
-    const displayName = processedName || item.quickName?.name || '이름 인식 대기';
+    // 이름을 모르는 것은 정상 결과다 — 끝난 인식을 `대기`로 적으면 거짓말이 된다 (FI-067).
+    const displayName = queueRowName(processedName, item.quickName);
     const contextLine = queueContextLine(item);
     // 뒷면이 실제로 담겼는지 목록에서 바로 보이게 한다 — 예전에는 편집 화면을 열어야만 확인됐다.
     const sideLabel = queueNamedImageSource(item, 'back.jpg') ? '앞·뒷면' : '앞면';
@@ -1086,7 +1178,11 @@ function App() {
             <section className="quick-name-panel inline" aria-live="polite">
               <div className="quick-name-top"><label htmlFor="quick-name-input">이름 먼저 확인</label><span role="status">{ocrState}</span></div>
               <IonInput id="quick-name-input" aria-label="이름 후보" value={nameText} placeholder="인식된 이름" onIonInput={(inputEvent) => editQuickName(String(inputEvent.detail.value ?? ''))} />
-              <small>기기 안에서 먼저 읽어요. 틀리면 여기서 바로 고치면 이후 정리에 반영됩니다.</small>
+              {/* 모르는 것을 고를 수 있어야 정상 결과가 된다 — 빈칸을 숙제로 남겨 두지 않는다 (FI-067). */}
+              <div className="quick-name-actions">
+                <button type="button" className={nameLater ? 'on' : ''} aria-pressed={nameLater} onClick={markNameLater}>{QUICK_NAME_LATER_LABEL}</button>
+              </div>
+              <small>기기 안에서 먼저 읽어요. 틀리면 여기서 고치고, 모르면 비워 둬도 괜찮아요 — 사진과 만남 맥락으로 이어서 정리합니다.</small>
             </section>
           )}
 
@@ -1178,6 +1274,29 @@ function App() {
 
           <IonButton className="primary-action" expand="block" disabled={!frontFrame || queueing} onClick={() => void completeCapture()}>{queueing ? '저장 중…' : '완료'}</IonButton>
           <p className="hint">전파가 약해도 기기에 저장했다가 자동으로 다시 보내요.</p>
+
+          {/* 방금 찍은 것을 즉시 되돌리거나 다시 열기 (FI-049). 서버가 이미 받은 촬영에는
+              되돌리기를 내밀지 않는다 — 로컬에서 지워도 서버의 캡처는 사라지지 않는다. */}
+          {showLastSaved && lastSavedItem && (
+            <section className="last-saved" aria-label="방금 저장한 촬영">
+              <div className="last-saved-copy">
+                <strong>방금 저장 · {queueRowName(processedNames[lastSavedItem.captureId], lastSavedItem.quickName)}</strong>
+                <small>{lastSavedUndoable
+                  ? '아직 이 폰에만 있어요. 잘못 찍었으면 지금 되돌릴 수 있어요.'
+                  : '서버가 이미 받아서 되돌릴 수 없어요. 내용은 다시 열어 고칠 수 있어요.'}</small>
+              </div>
+              <div className="last-saved-actions">
+                {lastSavedUndoable && (
+                  <button type="button" disabled={undoing} onClick={() => void undoLastCapture()}>
+                    <RotateCcw aria-hidden="true" size={13} />{undoing ? '되돌리는 중…' : '되돌리기'}
+                  </button>
+                )}
+                <button type="button" onClick={() => setQueueEdit(normalizedQueueItem(structuredClone(lastSavedItem)))}>
+                  <PenLine aria-hidden="true" size={13} />다시 열기
+                </button>
+              </div>
+            </section>
+          )}
         </section>
 
         <div className="section-toggle-row">
