@@ -455,9 +455,23 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(35,104,216,0.34)
 .capture-card .hint { margin: 10px 0 0; color: var(--cc-muted); font-size: 12.5px; line-height: 1.5; text-align: center; }
 
 .quick-name-panel.inline { margin: 12px 0 0; border: 1px solid rgba(31,143,130,0.28); background: rgba(31,143,130,0.06); }
-.quick-name-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.quick-name-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 10px; }
 .quick-name-top label { margin: 0; font-size: 12.5px; font-weight: 780; color: var(--cc-ink); }
-.quick-name-top span { color: var(--cc-teal); font-size: 11.5px; font-weight: 720; }
+.quick-name-top span { color: var(--cc-teal); font-size: 11.5px; font-weight: 720; word-break: keep-all; }
+
+/* 이름을 모르는 것도 고를 수 있는 정상 결과다 (FI-067). */
+.quick-name-actions { display: flex; justify-content: flex-end; }
+.quick-name-actions button { display: inline-flex; min-height: 32px; align-items: center; gap: 5px; padding: 7px 12px; border: 1px solid var(--cc-line); border-radius: 999px; background: var(--cc-solid); color: var(--cc-muted); font-size: 11.5px; font-weight: 700; }
+.quick-name-actions button.on { border-color: var(--cc-teal); background: rgba(31,143,130,0.12); color: var(--cc-teal); }
+
+/* 방금 저장한 촬영을 즉시 되돌리거나 다시 열기 (FI-049). */
+.last-saved { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 12px; padding: 11px 13px; border: 1px solid rgba(35,104,216,0.2); border-radius: 15px; background: rgba(35,104,216,0.05); }
+.last-saved-copy { display: grid; flex: 1 1 148px; gap: 3px; min-width: 0; }
+.last-saved-copy strong { color: var(--cc-ink); font-size: 12.5px; font-weight: 760; overflow-wrap: anywhere; }
+.last-saved-copy small { color: var(--cc-muted); font-size: 11px; line-height: 1.45; word-break: keep-all; }
+.last-saved-actions { display: flex; flex: 0 1 auto; flex-wrap: wrap; gap: 6px; }
+.last-saved-actions button { display: inline-flex; min-height: 34px; align-items: center; gap: 5px; padding: 8px 11px; border: 1px solid var(--cc-line); border-radius: 11px; background: var(--cc-solid); color: var(--cc-ink); font-size: 11.5px; font-weight: 720; }
+.last-saved-actions button[disabled] { opacity: 0.55; }
 
 .section-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 2px 3px -8px; }
 .section-toggle { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; color: var(--cc-muted); font-size: 13px; font-weight: 750; cursor: pointer; padding: 4px 0; }

@@ -151,8 +151,12 @@ test('still retries when the server truly never received it', async ({ page }) =
     await expect.poll(() => posts.length, { timeout: 20_000 }).toBeGreaterThanOrEqual(1);
 
     // 서버가 갖고 있지 않으므로 다시 보내야 한다.
-    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-    await expect.poll(() => posts.length, { timeout: 25_000 }).toBeGreaterThanOrEqual(2);
+    // `online` 이벤트가 flush를 **즉시** 부른다. `visibilitychange`는 `document.hidden`이
+    // false여야 진행하고 그 뒤 20초 자동 주기에 의존하게 되어 느린 CI에서 흔들렸다.
+    await expect.poll(async () => {
+      await page.evaluate(() => window.dispatchEvent(new Event('online')));
+      return posts.length;
+    }, { timeout: 30_000, intervals: [500, 1_000, 2_000, 2_000, 2_000] }).toBeGreaterThanOrEqual(2);
     expect(new Set(posts)).toEqual(new Set([CAPTURE_ID]));
   } finally {
     await stopServer(server);

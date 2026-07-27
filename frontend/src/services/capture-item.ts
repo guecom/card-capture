@@ -31,6 +31,44 @@ export function parseLegacyNote(note: string | undefined): { relSelf: string; re
   return parsed;
 }
 
+/** 되돌린 촬영을 다시 촬영 초안으로 펼치기 위한 값 (FI-049). */
+export interface RestoredCaptureDraft {
+  /** 앞면 data URL. 없으면 되돌릴 것이 없다. */
+  front: string;
+  /** 뒷면 data URL 또는 빈 문자열. */
+  back: string;
+  event: string;
+  relSelf: string;
+  relKairen: string;
+  memo: string;
+  quickName: QuickName | null;
+}
+
+function storedImageDataUrl(item: CaptureQueueItem, name: 'front.jpg' | 'back.jpg'): string {
+  const image = item.images.find((candidate) => candidate.name === name && candidate.dataB64);
+  return image?.dataB64 ? `data:${image.mime ?? 'image/jpeg'};base64,${image.dataB64}` : '';
+}
+
+/**
+ * 대기열에서 빼낸 항목을 촬영 초안으로 되돌린다 (FI-049).
+ * 구버전 항목(관계 필드 없이 note만 있는 경우)도 같은 방식으로 되살린다 — 되돌리기가
+ * 예전에 저장된 촬영에서 맥락을 잃어버리면 안 된다.
+ */
+export function restoredDraftOf(item: CaptureQueueItem): RestoredCaptureDraft {
+  const legacy = item.relSelf === undefined && item.relKairen === undefined && item.memo === undefined
+    ? parseLegacyNote(item.note)
+    : null;
+  return {
+    front: storedImageDataUrl(item, 'front.jpg'),
+    back: storedImageDataUrl(item, 'back.jpg'),
+    event: item.event?.trim() ?? '',
+    relSelf: (legacy?.relSelf ?? item.relSelf ?? '').trim(),
+    relKairen: (legacy?.relKairen ?? item.relKairen ?? '').trim(),
+    memo: (legacy?.memo ?? item.memo ?? '').trim(),
+    quickName: item.quickName ?? null,
+  };
+}
+
 export function buildQueuedCapture(
   frame: CapturedCameraFrame,
   options: {

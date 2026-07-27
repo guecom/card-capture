@@ -2,6 +2,7 @@ import { IDBKeyRange, indexedDB } from 'fake-indexeddb';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CaptureQueueItem } from '../contracts/capture';
 import {
+  deleteQueueItem,
   flushQueue,
   inspectQueueItems,
   pruneSentQueue,
@@ -10,6 +11,8 @@ import {
   QueueWriteError,
   readQueue,
   readQueueChecked,
+  takeBackQueueItem,
+  undoRefusalOf,
   withQueueLock,
 } from './queue';
 import { FakeStorage } from './test-storage';
@@ -398,5 +401,59 @@ describe('one tab owns the send — storage lease fallback (FI-053)', () => {
   it('still sends when the browser gives no usable storage at all', async () => {
     vi.stubGlobal('localStorage', undefined);
     expect(await withQueueLock(async () => 'sent-anyway')).toBe('sent-anyway');
+  });
+});
+
+// 방금 찍은 촬영을 되돌릴 수 있는가 (FI-049). 되돌리기는 "아직 이 폰에만 있는" 촬영에만 성립한다.
+describe('taking a just-taken capture back out of the queue (FI-049)', () => {
+  beforeEach(() => {
+    // Web Locks 없는 경로로 고정해 `전송 중` 판정까지 재현한다.
+    vi.stubGlobal('navigator', {});
+    vi.stubGlobal('localStorage', new FakeStorage());
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('refuses on every state where the capture is not this phone’s alone', () => {
+    expect(undoRefusalOf(undefined)).toBe('missing');
+    expect(undoRefusalOf({ ...item('20260727-120001-a'), state: 'sent' })).toBe('already_sent');
+    expect(undoRefusalOf({ ...item('20260727-120001-a'), sentAt: '2026-07-27T03:00:00.000Z' })).toBe('already_sent');
+    expect(undoRefusalOf({ ...item('20260727-120001-a'), reconciledAt: '2026-07-27T03:00:00.000Z' })).toBe('already_sent');
+    expect(undoRefusalOf({ ...item('20260727-120001-a'), images: [{ name: 'front.jpg', mime: 'image/jpeg' }] })).toBe('no_original');
+    expect(undoRefusalOf(item('20260727-120001-a'))).toBeNull();
+    expect(undoRefusalOf(item('20260727-120001-a', 'failed'))).toBeNull();
+  });
+
+  it('hands the capture back with its original image and removes exactly that row', async () => {
+    await putQueueItem(item('20260727-120001-a'));
+    await putQueueItem(item('20260727-120002-b'));
+
+    const outcome = await takeBackQueueItem('20260727-120002-b');
+    expect(outcome.refusal).toBeUndefined();
+    expect(outcome.item?.images[0].dataB64).toBe('20260727-120002-b-image');
+    expect((await readQueue()).map((row) => row.captureId)).toEqual(['20260727-120001-a']);
+  });
+
+  it('never deletes a capture the server already has', async () => {
+    await putQueueItem({ ...item('20260727-120003-c', 'sent'), sentAt: '2026-07-27T03:00:00.000Z' });
+
+    expect(await takeBackQueueItem('20260727-120003-c')).toEqual({ refusal: 'already_sent' });
+    expect((await readQueue()).map((row) => row.captureId)).toEqual(['20260727-120003-c']);
+  });
+
+  it('refuses while the queue is being sent instead of guessing', async () => {
+    await putQueueItem(item('20260727-120004-d'));
+    // 다른 탭(또는 이 탭의 전송)이 잠금을 들고 있는 상태.
+    localStorage.setItem('cc_queue_flush_lock', JSON.stringify({ owner: 'sending-tab', expiresAt: Date.now() + 30_000 }));
+
+    expect(await takeBackQueueItem('20260727-120004-d')).toEqual({ refusal: 'busy' });
+    expect((await readQueue()).map((row) => row.captureId)).toEqual(['20260727-120004-d']);
+  });
+
+  it('reports a row that is no longer there without touching the rest', async () => {
+    await putQueueItem(item('20260727-120005-e'));
+    await deleteQueueItem('20260727-120005-e');
+
+    expect(await takeBackQueueItem('20260727-120005-e')).toEqual({ refusal: 'missing' });
+    expect(await readQueue()).toEqual([]);
   });
 });

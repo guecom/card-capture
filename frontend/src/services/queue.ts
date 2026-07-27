@@ -69,6 +69,21 @@ export async function putQueueItem(item: CaptureQueueItem): Promise<void> {
   }
 }
 
+export async function deleteQueueItem(captureId: string): Promise<void> {
+  const database = await openDatabase();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(STORE, 'readwrite');
+      transaction.objectStore(STORE).delete(captureId);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(new QueueWriteError(classifyWriteError(transaction.error), transaction.error));
+      transaction.onabort = () => reject(new QueueWriteError(classifyWriteError(transaction.error), transaction.error));
+    });
+  } finally {
+    database.close();
+  }
+}
+
 /** 저장된 항목이 원본과 같은 사진을 담고 있는지 (FI-032 read-back 판정 기준). */
 function storesSameImages(stored: CaptureQueueItem | undefined, item: CaptureQueueItem): boolean {
   if (!stored || stored.captureId !== item.captureId) return false;
@@ -197,6 +212,59 @@ export async function withQueueLock<T>(run: () => Promise<T>, now = Date.now()):
     }
   }
 }
+
+/**
+ * 방금 찍은 촬영을 대기열에서 되돌릴 수 없는 이유 (FI-049).
+ * 되돌리기는 "아직 이 폰에만 있는" 촬영에만 성립한다.
+ */
+export type UndoRefusal =
+  /** 대기열에 그 항목이 없다. */
+  | 'missing'
+  /** 서버가 이미 받았다 — 로컬에서 지워도 서버의 캡처는 사라지지 않는다. */
+  | 'already_sent'
+  /** 원본 사진이 정리돼 촬영 화면으로 되돌릴 것이 없다. */
+  | 'no_original'
+  /** 지금 전송 중이라 판정할 수 없다. 모르는 채로 지우지 않는다. */
+  | 'busy';
+
+export function undoRefusalOf(item: CaptureQueueItem | undefined): UndoRefusal | null {
+  if (!item) return 'missing';
+  // reconciledAt/sentAt은 "서버가 갖고 있다"는 기록이다 — state만 보면 판정이 헐거워진다.
+  if (item.state === 'sent' || item.sentAt || item.reconciledAt) return 'already_sent';
+  if (!item.images.some((image) => image.dataB64)) return 'no_original';
+  return null;
+}
+
+export interface UndoOutcome {
+  /** 대기열에서 빼낸 항목. 호출자가 촬영 초안으로 되돌려 준다. */
+  item?: CaptureQueueItem;
+  refusal?: UndoRefusal;
+}
+
+/**
+ * 대기열에서 항목을 빼내 호출자에게 돌려준다 (FI-049 되돌리기).
+ *
+ * 전송 잠금을 잡고, **잠금 안에서 상태를 다시 읽어** 판정한다. 화면이 알고 있던 상태를 믿고
+ * 지우면 전송이 이미 시작된 촬영을 지워 서버에만 남는 유령 캡처가 생긴다. 잠금을 못 잡으면
+ * (다른 탭이나 이 탭의 전송이 진행 중) 추측하지 않고 `busy`로 거절한다.
+ */
+export async function takeBackQueueItem(captureId: string): Promise<UndoOutcome> {
+  const outcome = await withQueueLock<UndoOutcome>(async () => {
+    const item = (await readQueue()).find((candidate) => candidate.captureId === captureId);
+    const refusal = undoRefusalOf(item);
+    if (refusal || !item) return { refusal: refusal ?? 'missing' };
+    await deleteQueueItem(captureId);
+    return { item };
+  });
+  return outcome ?? { refusal: 'busy' };
+}
+
+export const undoRefusalMessage: Record<UndoRefusal, string> = {
+  missing: '되돌릴 촬영을 대기열에서 찾지 못했어요. 명함 기록에서 상태를 확인해 주세요.',
+  already_sent: '이미 서버가 받은 촬영이라 이 폰에서 되돌릴 수 없어요. 내용은 다시 열어 고칠 수 있어요.',
+  no_original: '이 촬영은 원본 사진이 정리돼 촬영 화면으로 되돌릴 수 없어요. 다시 열어 새로 찍어 주세요.',
+  busy: '지금 전송 중이라 되돌릴 수 없어요 — 대기열은 그대로 두었습니다. 잠시 뒤 다시 눌러 주세요.',
+};
 
 export type QueueSender = (item: CaptureQueueItem) => Promise<void>;
 
