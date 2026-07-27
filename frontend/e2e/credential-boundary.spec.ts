@@ -86,9 +86,11 @@ test('never sends the personal link code to an API origin supplied through the l
     await expect(page.getByText('허용되지 않은 서버 주소라 무시했어요', { exact: false })).toBeVisible();
 
     // 앱을 계속 써도(새로고침·탭 이동) 공격자에게 가지 않는다.
-    await page.reload({ waitUntil: 'networkidle' });
+    // service worker가 붙은 뒤에는 networkidle이 안정적으로 도달하지 않는다 — 앱 셸로 판정한다.
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expect(page.getByRole('navigation', { name: '주요 화면' })).toBeVisible({ timeout: 20_000 });
     await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '진행' }).click();
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(1_000);
     expect(hostileRequests).toEqual([]);
   } finally {
     await stopStaticServer(server);
