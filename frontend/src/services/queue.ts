@@ -206,27 +206,70 @@ export interface FlushResult {
   failed: number;
   /** 전송할 수 없어 건너뛴 손상 항목 수. 지우지 않고 남겨 둔다 (FI-025). */
   quarantined: number;
+  /** 재전송 대신 서버 기록과 대조해 접수 완료로 판정한 수 (FI-016). */
+  reconciled: number;
 }
 
-export async function flushQueue(send: QueueSender): Promise<FlushResult> {
+/**
+ * 서버가 이미 갖고 있는 captureId 집합을 돌려준다. 조회할 수 없으면 `null`.
+ * `null`은 "없다"가 아니라 "모른다"이며, 모를 때는 재전송하지 않는다 (FI-016).
+ */
+export type QueueReconciler = () => Promise<Set<string> | null>;
+
+/** 실패 원인을 모르는 채로 다시 올리면 안 되는 항목인가. */
+function needsReconcile(item: CaptureQueueItem): boolean {
+  return item.state === 'failed' && item.errKind === 'ambiguous';
+}
+
+export async function flushQueue(send: QueueSender, reconcile?: QueueReconciler): Promise<FlushResult> {
   const integrity = inspectQueueItems(await readQueue());
   const items = integrity.healthy
     .filter((item) => item.state !== 'sent')
     .sort((a, b) => a.captureId.localeCompare(b.captureId));
   // 손상 항목은 아무리 재시도해도 성공하지 못한다. 큐 전체를 막지 않도록 건너뛴다.
-  const result: FlushResult = { attempted: items.length, sent: 0, failed: 0, quarantined: integrity.damaged.length };
+  const result: FlushResult = { attempted: 0, sent: 0, failed: 0, quarantined: integrity.damaged.length, reconciled: 0 };
+
+  // 응답을 못 받았던 항목이 있을 때만, 그리고 이 flush 안에서 딱 한 번만 서버 목록을 읽는다.
+  // `undefined`=아직 안 물어봄, `null`=물어봤지만 알 수 없음.
+  let serverIds: Set<string> | null | undefined;
 
   for (const item of items) {
+    // reconciler가 없으면 호출자가 대조를 쓰지 않기로 한 것이다 — 기존대로 그냥 보낸다.
+    if (reconcile && needsReconcile(item)) {
+      if (serverIds === undefined) serverIds = await reconcile();
+      if (serverIds === null) {
+        // 서버에 물어볼 수 없다. 모르는 채로 덮어쓰지 않고 다음 flush로 미룬다
+        // (대개 오프라인이라 재전송해도 어차피 실패한다).
+        continue;
+      }
+      if (serverIds.has(item.captureId)) {
+        // 이미 접수됐다. 다시 올리면 서버가 capture.json을 덮어써 처리 상태가 처음으로 되돌아간다.
+        await putQueueItem({
+          ...item,
+          state: 'sent',
+          err: undefined,
+          errKind: undefined,
+          reconciledAt: new Date().toISOString(),
+          sentAt: item.sentAt ?? new Date().toISOString(),
+        });
+        result.reconciled += 1;
+        continue;
+      }
+    }
+
+    result.attempted += 1;
     try {
       await send(item);
-      await putQueueItem({ ...item, state: 'sent', err: undefined, sentAt: new Date().toISOString() });
+      await putQueueItem({ ...item, state: 'sent', err: undefined, errKind: undefined, sentAt: new Date().toISOString() });
       result.sent += 1;
     } catch (error) {
+      const kind = (error as { kind?: CaptureQueueItem['errKind'] })?.kind;
       await putQueueItem({
         ...item,
         state: 'failed',
         tries: (item.tries ?? 0) + 1,
         err: error instanceof Error ? error.message : String(error),
+        errKind: kind === 'ambiguous' || kind === 'rejected' ? kind : 'ambiguous',
       });
       result.failed += 1;
     }

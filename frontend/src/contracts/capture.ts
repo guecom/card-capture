@@ -38,6 +38,13 @@ export interface CaptureQueueItem {
   tries: number;
   thumb?: string;
   err?: string;
+  /**
+   * 마지막 실패가 "서버가 거절"인지 "응답을 못 받음"인지 (FI-016).
+   * `ambiguous`는 접수 여부를 모르는 상태이므로 재전송 전에 서버 기록과 대조해야 한다.
+   */
+  errKind?: 'rejected' | 'ambiguous';
+  /** 재전송 대신 서버 기록과 대조해 접수 완료로 판정한 시각 (FI-016). */
+  reconciledAt?: string;
   /** 서버가 성공 receipt를 준 시각. 이 시각 이후에만 기기에 남은 원본을 정리한다 (ISS-000102). */
   sentAt?: string;
 }
