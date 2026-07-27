@@ -1,7 +1,18 @@
 import { IDBKeyRange, indexedDB } from 'fake-indexeddb';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CaptureQueueItem } from '../contracts/capture';
-import { flushQueue, pruneSentQueue, putQueueItem, readQueue } from './queue';
+import {
+  flushQueue,
+  inspectQueueItems,
+  pruneSentQueue,
+  putQueueItem,
+  putQueueItemVerified,
+  QueueWriteError,
+  readQueue,
+  readQueueChecked,
+  withQueueLock,
+} from './queue';
+import { FakeStorage } from './test-storage';
 
 Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: indexedDB });
 Object.defineProperty(globalThis, 'IDBKeyRange', { configurable: true, value: IDBKeyRange });
@@ -50,11 +61,11 @@ describe('offline queue contract', () => {
     const sender = vi.fn(async (value: CaptureQueueItem) => { order.push(value.captureId); });
 
     const result = await flushQueue(sender);
-    expect(result).toEqual({ attempted: 2, sent: 2, failed: 0 });
+    expect(result).toEqual({ attempted: 2, sent: 2, failed: 0, quarantined: 0 });
     expect(order).toEqual(['20260725-120002-b', '20260725-120003-c']);
 
     const second = await flushQueue(sender);
-    expect(second).toEqual({ attempted: 0, sent: 0, failed: 0 });
+    expect(second).toEqual({ attempted: 0, sent: 0, failed: 0, quarantined: 0 });
     expect(sender).toHaveBeenCalledTimes(2);
   });
 
@@ -62,13 +73,13 @@ describe('offline queue contract', () => {
     await putQueueItem(item('20260725-120004-d'));
     const firstSender = vi.fn(async () => { throw new Error('offline'); });
 
-    expect(await flushQueue(firstSender)).toEqual({ attempted: 1, sent: 0, failed: 1 });
+    expect(await flushQueue(firstSender)).toEqual({ attempted: 1, sent: 0, failed: 1, quarantined: 0 });
     const [failed] = await readQueue();
     expect(failed).toMatchObject({ state: 'failed', tries: 1, err: 'offline' });
     expect(failed.images[0].dataB64).toBe('20260725-120004-d-image');
 
     const retrySender = vi.fn(async () => undefined);
-    expect(await flushQueue(retrySender)).toEqual({ attempted: 1, sent: 1, failed: 0 });
+    expect(await flushQueue(retrySender)).toEqual({ attempted: 1, sent: 1, failed: 0, quarantined: 0 });
     const [sent] = await readQueue();
     expect(sent.state).toBe('sent');
     expect(sent.tries).toBe(1);
@@ -103,5 +114,202 @@ describe('offline queue contract', () => {
     expect(later[1].images[0]).not.toHaveProperty('dataB64');
     expect(later[2].images[0]).toHaveProperty('dataB64');
     expect(later[3].images[0]).toHaveProperty('dataB64');
+  });
+});
+
+// ── 저장 실패를 구분되는 사실로 만든다 (FI-032 / FI-052) ──
+
+/** 저장소가 특정 이유로 실패하는 상황을 재현하는 최소 대역. */
+function failingIndexedDb(errorName: string) {
+  const error = Object.assign(new Error('stub'), { name: errorName });
+  return {
+    open: () => {
+      const request: Record<string, unknown> = {
+        result: {
+          objectStoreNames: { contains: () => true },
+          transaction: () => {
+            const transaction: Record<string, unknown> = { error, objectStore: () => ({ put: () => undefined }) };
+            setTimeout(() => (transaction.onerror as (() => void) | undefined)?.(), 0);
+            return transaction;
+          },
+          close: () => undefined,
+        },
+      };
+      setTimeout(() => (request.onsuccess as (() => void) | undefined)?.(), 0);
+      return request;
+    },
+  };
+}
+
+/** 쓰기는 성공했다고 하면서 실제로는 아무것도 남기지 않는 저장소. */
+function forgetfulIndexedDb() {
+  return {
+    open: () => {
+      const request: Record<string, unknown> = {
+        result: {
+          objectStoreNames: { contains: () => true },
+          transaction: () => {
+            const transaction: Record<string, unknown> = {
+              objectStore: () => ({
+                put: () => undefined,
+                getAll: () => {
+                  const getAll: Record<string, unknown> = { result: [] };
+                  setTimeout(() => (getAll.onsuccess as (() => void) | undefined)?.(), 0);
+                  return getAll;
+                },
+              }),
+            };
+            setTimeout(() => (transaction.oncomplete as (() => void) | undefined)?.(), 0);
+            return transaction;
+          },
+          close: () => undefined,
+        },
+      };
+      setTimeout(() => (request.onsuccess as (() => void) | undefined)?.(), 0);
+      return request;
+    },
+  };
+}
+
+describe('local-safe truth (FI-032 / FI-052)', () => {
+  afterEach(() => {
+    Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: indexedDB });
+  });
+
+  it('confirms the capture by reading it back, not by trusting the write', async () => {
+    const stored = await putQueueItemVerified(item('20260727-120000-ok'));
+    expect(stored.images[0].dataB64).toBe('20260727-120000-ok-image');
+  });
+
+  it('separates a full device from a generic failure so the advice can differ', async () => {
+    Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: failingIndexedDb('QuotaExceededError') });
+    await expect(putQueueItemVerified(item('20260727-120001-full'))).rejects.toMatchObject({ failure: 'quota' });
+
+    Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: failingIndexedDb('SomethingElseError') });
+    await expect(putQueueItemVerified(item('20260727-120002-odd'))).rejects.toMatchObject({ failure: 'unknown' });
+  });
+
+  it('refuses to call a capture safe when the read-back does not find it', async () => {
+    Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: forgetfulIndexedDb() });
+    const error = await putQueueItemVerified(item('20260727-120003-lost')).catch((value) => value);
+    expect(error).toBeInstanceOf(QueueWriteError);
+    expect(error.failure).toBe('verify');
+  });
+
+  it('reports an unusable storage engine instead of silently dropping the capture', async () => {
+    Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: undefined });
+    await expect(putQueueItemVerified(item('20260727-120004-none'))).rejects.toMatchObject({ failure: 'unavailable' });
+  });
+});
+
+describe('queue integrity is isolated, never repaired in place (FI-025)', () => {
+  it('classifies each way a stored entry can be unusable', () => {
+    const integrity = inspectQueueItems([
+      item('20260727-130000-good'),
+      { ...item('20260727-130001-bad'), state: 'weird' },
+      { ...item('20260727-130002-bad'), images: [{ name: 'front.jpg', mime: 'image/jpeg' }] },
+      { ...item('20260727-130003-bad'), images: undefined },
+      { ...item('20260727-130004-bad'), captureId: '' },
+      null,
+      // 전송이 끝난 항목은 원본이 정리돼 사진이 비어 있는 것이 정상이다.
+      { ...item('20260727-130005-sent', 'sent'), images: [{ name: 'front.jpg', mime: 'image/jpeg' }] },
+    ]);
+
+    expect(integrity.healthy.map((value) => value.captureId)).toEqual(['20260727-130000-good', '20260727-130005-sent']);
+    expect(integrity.damaged).toEqual([
+      { captureId: '20260727-130001-bad', damage: ['bad_state'] },
+      { captureId: '20260727-130002-bad', damage: ['empty_payload'] },
+      { captureId: '20260727-130003-bad', damage: ['no_images'] },
+      { captureId: '(식별자 없음 #5)', damage: ['missing_id'] },
+      { captureId: '(식별자 없음 #6)', damage: ['missing_id', 'bad_state', 'no_images'] },
+    ]);
+  });
+
+  it('keeps sending the healthy captures while a damaged one sits beside them', async () => {
+    await putQueueItem(item('20260727-140000-good'));
+    await putQueueItem({ ...item('20260727-140001-bad'), images: [{ name: 'front.jpg', mime: 'image/jpeg' }] } as CaptureQueueItem);
+    const sent: string[] = [];
+
+    const result = await flushQueue(async (value) => { sent.push(value.captureId); });
+
+    expect(result).toEqual({ attempted: 1, sent: 1, failed: 0, quarantined: 1 });
+    expect(sent).toEqual(['20260727-140000-good']);
+
+    // 손상 항목은 지워지지 않고 그대로 남아 사람이 판단할 수 있다.
+    const stillStored = await readQueue();
+    expect(stillStored.map((value) => value.captureId).sort()).toEqual(['20260727-140000-good', '20260727-140001-bad']);
+    const checked = await readQueueChecked();
+    expect(checked.damaged).toEqual([{ captureId: '20260727-140001-bad', damage: ['empty_payload'] }]);
+  });
+});
+
+/** Web Locks 대역. `ifAvailable` 의미만 재현한다 — Node 버전에 따라 있고 없고가 갈리면 안 된다. */
+function fakeLockManager() {
+  const held = new Set<string>();
+  return {
+    request: async (name: string, options: { ifAvailable?: boolean }, callback: (lock: unknown) => Promise<unknown>) => {
+      if (options?.ifAvailable && held.has(name)) return callback(null);
+      held.add(name);
+      try {
+        return await callback({ name });
+      } finally {
+        held.delete(name);
+      }
+    },
+  };
+}
+
+describe('one tab owns the send — Web Locks path (FI-053)', () => {
+  beforeEach(() => vi.stubGlobal('navigator', { locks: fakeLockManager() }));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('lets a second tab find the lock held instead of sending the same capture twice', async () => {
+    let release: (() => void) | null = null;
+    const firstDone = withQueueLock(() => new Promise<string>((resolve) => { release = () => resolve('first'); }));
+    await Promise.resolve();
+
+    expect(await withQueueLock(async () => 'second')).toBeNull();
+    release!();
+    expect(await firstDone).toBe('first');
+
+    // 첫 탭이 끝나면 잠금이 풀린다.
+    expect(await withQueueLock(async () => 'third')).toBe('third');
+  });
+
+  it('releases the lock even when the send throws', async () => {
+    await expect(withQueueLock(async () => { throw new Error('offline'); })).rejects.toThrow('offline');
+    expect(await withQueueLock(async () => 'next')).toBe('next');
+  });
+});
+
+describe('one tab owns the send — storage lease fallback (FI-053)', () => {
+  // Web Locks가 없는 브라우저에서도 같은 계약이 성립해야 한다.
+  beforeEach(() => {
+    vi.stubGlobal('navigator', {});
+    vi.stubGlobal('localStorage', new FakeStorage());
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('holds the lease while one tab is sending and hands it back afterwards', async () => {
+    let release: (() => void) | null = null;
+    const firstDone = withQueueLock(() => new Promise<string>((resolve) => { release = () => resolve('first'); }), 1_000);
+    await Promise.resolve();
+
+    expect(await withQueueLock(async () => 'second', 1_100)).toBeNull();
+    release!();
+    expect(await firstDone).toBe('first');
+    expect(localStorage.getItem('cc_queue_flush_lock')).toBeNull();
+    expect(await withQueueLock(async () => 'third', 1_200)).toBe('third');
+  });
+
+  it('reclaims a lease left behind by a tab that never came back', async () => {
+    localStorage.setItem('cc_queue_flush_lock', JSON.stringify({ owner: 'crashed-tab', expiresAt: 1_000 }));
+    expect(await withQueueLock(async () => 'recovered', 1_001)).toBe('recovered');
+    expect(localStorage.getItem('cc_queue_flush_lock')).toBeNull();
+  });
+
+  it('still sends when the browser gives no usable storage at all', async () => {
+    vi.stubGlobal('localStorage', undefined);
+    expect(await withQueueLock(async () => 'sent-anyway')).toBe('sent-anyway');
   });
 });
