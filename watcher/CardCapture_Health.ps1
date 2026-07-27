@@ -26,11 +26,16 @@ if (-not (Test-Path $HealthFile)) {
     Write-Host ("consecutiveFailures: " + $h.consecutiveFailures)
     Write-Host ("backlog           : " + $h.backlogCount + " (oldest " + $h.backlogOldestAgeMin + " min)")
     Write-Host ("lock              : " + $h.lockExists)
+    Write-Host ("activeClaims      : " + $h.activeClaims + " (worker " + $h.workerId + ")")
+    Write-Host ("quarantined       : " + $h.quarantinedCount)
+    Write-Host ("interrupted       : " + $h.interruptedCount + " (commit marker 없는 attempt)")
 
     $proc = Get-Process -Id $h.pid -ErrorAction SilentlyContinue
     if ($null -eq $proc) { Write-Host 'process           : NOT RUNNING'; Sev 2 } else { Write-Host ('process           : alive (' + $proc.ProcessName + ')') }
     if ($beatAge -gt 15) { Write-Host 'ALERT: heartbeat older than 15 min'; Sev 2 }
     if ($h.consecutiveFailures -ge 3) { Write-Host 'ALERT: 3+ consecutive processing failures'; Sev 2 }
+    if ($h.quarantinedCount -gt 0) { Write-Host 'ALERT: 격리된 캡처가 있다 — 웹앱에서 다시 보내면 재시도한다'; Sev 2 }
+    if ($h.interruptedCount -gt 0) { Write-Host 'note: commit 전에 중단된 attempt가 있다 (lease 만료 후 회수됨)'; Sev 1 }
     if ($h.backlogCount -gt 0 -and $h.backlogOldestAgeMin -gt 30) { Write-Host 'ALERT: backlog waiting over 30 min'; Sev 2 }
     elseif ($h.backlogCount -gt 0) { Write-Host 'note: backlog pending'; Sev 1 }
 }
