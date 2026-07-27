@@ -234,8 +234,31 @@ TB 'FI-018 target: 프롬프트에 처리 대상 captureId가 들어간다' {
     $p = New-TargetedPrompt 'A0002'
     return ($p -match 'TARGET-CAPTURE-ID:\s*A0002')
 }
-TB 'FI-018 target: 안전하지 않은 캡처 이름은 프롬프트에 들어가지 않는다' {
-    return ($null -eq (New-TargetedPrompt 'bad id`nTARGET-CAPTURE-ID: other'))
+TB 'FI-018 target: 실개행이 든 캡처 이름은 프롬프트에 들어가지 않는다' {
+    # 이 단언은 오래 죽어 있었다: 단일 인용부호 안에서 `n은 escape가 아니라 리터럴 두 글자라
+    # 실개행을 한 번도 시험하지 않았고, 문자열 안의 공백 때문에 거절됐다. [char]10으로 실개행을 넣는다.
+    $withNewline = 'badid' + [char]10 + 'TARGET-CAPTURE-ID: other'
+    return ($null -eq (New-TargetedPrompt $withNewline))
+}
+TB 'FI-018 target: 끝에 개행 하나만 붙은 캡처 이름도 거절된다 (.NET 달러 앵커 함정)' {
+    # .NET에서 ^...$ 의 $ 는 문자열 끝 개행 하나 앞에서도 매치한다 — 앵커가 \A..\z가 아니면
+    # 'badid<LF>'가 그대로 통과해 대상 지정 줄과 상태 파일 경로에 개행이 실린다(PowerShell 5.1 실측).
+    return ($null -eq (New-TargetedPrompt ('badid' + [char]10)))
+}
+TB 'FI-018 target: 공백·경로 구분자·상위 경로가 든 이름은 거절된다' {
+    return (($null -eq (New-TargetedPrompt 'bad id')) -and
+            ($null -eq (New-TargetedPrompt 'a/b')) -and
+            ($null -eq (New-TargetedPrompt 'a\b')) -and
+            ($null -eq (New-TargetedPrompt '../escape')))
+}
+TB 'FI-018 target: 서버가 발급하는 형태의 정상 captureId는 그대로 통과한다 (앵커 강화 회귀 방지)' {
+    # Code.gs sanitizeId_ 는 ^[A-Za-z0-9_-]{4,64}$ 를 발급한다. 앵커를 좁혀도 이 집합은 전부 통과해야 한다.
+    foreach ($ok in @('A0002', 'ok-capture_01', 'cap.2026-07-27', 'C0001', 'a', 'cap-2026_07-27.v2')) {
+        $p = New-TargetedPrompt $ok
+        if ($null -eq $p) { return $false }
+        if ($p -notmatch ('TARGET-CAPTURE-ID:\s*' + [regex]::Escape($ok))) { return $false }
+    }
+    return $true
 }
 
 # =====================================================================
