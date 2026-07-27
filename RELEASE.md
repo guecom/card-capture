@@ -41,6 +41,23 @@ release 기록은 이 파일 하단 "Verified Baselines"에 최신이 위로 오
 
 ## Verified Baselines
 
+### v2.5.0 @ `e335652a2379fa6c90cdbdca2a8c3230e76fd676` — 검증 2026-07-27 (agent:kairen.claude, Kairen-Ref: TSK-000276·277·278·279) — **GAS 배포 PENDING · 워처 재기동 PENDING**
+
+> ⚠️ **이 baseline은 두 곳이 미완이다.** `Code.gs`와 `watcher/`가 모두 바뀌었고 둘 다 사람 게이트다. 앱(`docs/`)만 자동 반영된다. **재배포·재기동 전까지 `ISS-000108`(브리핑 조작)은 live에서 여전히 열려 있다.**
+
+- repository: annotated tag `v2.5.0` → `e335652a2379fa6c90cdbdca2a8c3230e76fd676`. 담은 merge는 PR #39(`e941e5e`), #41(`3da2003`), #40(`58b475c`), #42(`e335652`)다. v2.4.0의 미배포 `Code.gs` 변경 위에 #41이 쌓였다.
+- human gate: founder가 `순차적으로 개발 진행 · 내 승인 없이 그냥 쭉 진행 · 결정 필요사항은 너의 추천대로 · 적절한 시점마다 merge 및 릴리즈`와 `병렬적으로 진행 · 멀티 에이전트`로 구현·merge·tag를 사전 승인함. **Apps Script 재배포와 라이브 워처 재기동은 승인 범위에서 제외**(Google 로그인·운영 프로세스 조작).
+- CI: `validate` SUCCESS — PR #39 run `30237928703`, #41 `30238273284`, #40 `30238618766`, #42 `30238847458`. 최종 head 기준 unit 229 PASS, Playwright 56 PASS, repository validator fail=0 warn=0(신규 eval 게이트 4종 등록 포함).
+- Pages: build commit `e335652…`, status `built`. live와 commit blob이 exact-match — `docs/index.html` `0b491c9253fc2058a88232403667363115e600ff4807f6997734af9bf76cfe16`; `docs/next/index.html`·active JS `assets/index-H1CA71r5.js`·active CSS `assets/index-DZeXLMal.css` 전부 일치.
+- **GAS deployment: 미실행 (PENDING).** repository `Code.gs` 정규화(EOL LF) sha256 = `f9a78d9aa5bc34cc1a70a3ffaf51b5d73db81b0f77a9d90f23e8ff48dfb5b364`. live deployment는 v2.0.0의 **version 5**(`990487a7…`)다. **세 해시가 모두 다르다** — v2.4.0·v2.5.0의 서버 변경이 누적 미배포다. 재배포 시 반드시 **v2.5.0의 해시**로 확인해야 한다(v2.4.0 체크리스트의 값은 이제 낡았다).
+- GAS live probe: `ping` ok, 무효 토큰 `invalid_token`, unknown action `unknown_action`. **이 probe는 예전 배포본을 확인한 것이며 이번 변경을 검증하지 않는다.** 유효 token 미사용.
+- **watcher: 재기동 미실행 (PENDING).** `watcher/`가 4파일 바뀌었다(`git diff v2.4.0 e335652 -- watcher/`). 실행 중 PID `34896`은 예전 프로토콜이며 **건드리지 않았다.** health 파일이 `pid=39880`을 가리키는 불일치도 관찰만 했다 — 재기동 시 함께 확인해야 한다. `.ps1` 4개 UTF-8 BOM 확인.
+- processing contract: vault `CardCapture_Processing.md` 변경 없음. 단, deep 프롬프트에 `TARGET-CAPTURE-ID`가 추가돼 "가장 이른 한 건" 규칙을 좁힌다(`FI-019` 동작에 필수).
+- 이 release가 소스에서 닫은 Feature Index slice: `FI-011`·`FI-012`(파일명)·`FI-013`(파일 이름 서버 소유), `FI-017`·`FI-018`·`FI-019`(워처 프로토콜), `FI-022`·`FI-023`(golden·adversarial 게이트), `FI-046`·`FI-049`·`FI-067`(촬영 세션).
+- **미해결로 남긴 것**: `TSK-000277`이 찾아낸 D3 — `doPost`가 `prior`를 읽은 뒤 워처가 마감하면 내용 변경 재업로드가 그 마감을 덮으며 이전 결과 표식을 하나도 남기지 않는다(`TSK-000275`의 잔여 race). 후속 lane 필요.
+- rollback: Pages는 해당 PR `git revert`. GAS는 배포하지 않았으므로 되돌릴 것이 없다. 워처는 재기동하지 않았으므로 되돌릴 것이 없다.
+- **남은 human gate**: (1) Apps Script 재배포, (2) 라이브 워처 재기동, (3) founder actual-phone acceptance. 셋 다 `NOT RUN — HUMAN/EXTERNAL`이다.
+
 ### v2.4.0 @ `ba307992b29198442196f33bde11866bd72aaba3` — 검증 2026-07-27 (agent:kairen.claude, Kairen-Ref: TSK-000275) — **GAS 배포 PENDING**
 
 > ⚠️ **이 baseline은 불완전하다.** `Code.gs`가 바뀐 첫 릴리즈이고 **Apps Script 재배포가 아직 실행되지 않았다.** 따라서 이 태그는 "repository와 회귀 게이트가 확정됐다"까지만 증명하며, **live 서버는 여전히 v2.0.0에서 배포한 version 5의 예전 동작**이다. 재배포와 그 후의 live probe가 끝날 때까지 이 릴리즈를 "서버가 보호된다"로 읽지 마라.
