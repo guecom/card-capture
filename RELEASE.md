@@ -18,11 +18,12 @@ release 기록은 이 파일 하단 "Verified Baselines"에 최신이 위로 오
 
 ## Release 절차 (사람 게이트 포함)
 
-1. branch → draft PR → `scripts/validate.ps1` PASS → 사람 review·merge (human gate).
-2. 사람: release tag `vX.Y` 생성 (human gate).
-3. `Code.gs` 변경이 있으면 사람: GAS 재배포 — vault `CardCapture_Setup.md`의 클릭 단위 절차 (human gate).
-4. 검증: 위 표의 각 항목 확인(Pages 해시 비교, GAS probe는 무효 토큰 거부까지 스크립트로, 유효 토큰 실동작은 폰에서).
-5. 이 파일에 baseline 기록 + vault Task에 exact SHA·결과 회수.
+1. **릴리즈 PR 안에서, merge 전에** 버전을 확정한다 — (a) `CHANGELOG.md`의 `[Unreleased]` 아래에 `## vX.Y.Z — 날짜 — 커밋` heading을 만들고, (b) `frontend/package.json`의 `version`을 `X.Y.Z`로 올리고, (c) 빈 `[Unreleased]`를 위에 남긴다. **tag 뒤로 미루지 마라** — 미루면 tag가 붙는 커밋에 옛 버전이 담겨 배포된 앱이 자기 버전을 틀리게 말한다. v2.13.0에서 실제로 일어났다(앱이 `버전 2.12.0`을 표시했고, `package.json`과 CHANGELOG가 **함께** 뒤처져 서로 일치했기 때문에 두 곳을 대조하는 검사로는 보이지도 않았다). `eval/version-sync.test.js`가 이 셋(heading·`package.json`·**실제 tag**)을 CI에서 강제한다.
+2. branch → draft PR → `scripts/validate.ps1` PASS → 사람 review·merge (human gate).
+3. 사람: release tag `vX.Y.Z` 생성 (human gate). 1단계에서 확정한 값과 **정확히 같은** 버전이어야 한다.
+4. `Code.gs` 변경이 있으면 사람: GAS 재배포 — vault `CardCapture_Setup.md`의 클릭 단위 절차 (human gate).
+5. 검증: 위 표의 각 항목 확인(Pages 해시 비교, GAS probe는 무효 토큰 거부까지 스크립트로, 유효 토큰 실동작은 폰에서). **배포된 앱의 설정 화면이 이 tag와 같은 버전을 말하는지 확인한다.**
+6. 이 파일에 baseline 기록 + vault Task에 exact SHA·결과 회수.
 
 조사 지시를 되돌릴 때는 code rollback 전에도 Script Property `RESEARCH_INSTRUCTION_ENABLED=false`로 새 접수를 닫을 수 있다. 이 변경과 재활성화는 사람 운영 게이트다.
 
@@ -41,6 +42,8 @@ release 기록은 이 파일 하단 "Verified Baselines"에 최신이 위로 오
 
 ## Verified Baselines
 
+> **기록 공백 (정직한 경계):** `v2.10.0`·`v2.11.0`·`v2.12.0`·`v2.13.0`은 tag가 존재하지만 여기에 baseline이 없다. 절차 6단계가 실행되지 않았다. **사후에 지어내지 않는다** — 그때의 Pages live 콘텐츠·워처 상태·사람 게이트 시점을 지금은 확인할 수 없기 때문이다. 각 릴리즈의 내용은 `CHANGELOG.md`와 vault Task에 남아 있다. 이 공백은 `ISS-000123`(배포된 앱이 자기 버전을 틀리게 말함)과 같은 뿌리다 — **릴리즈 기록과 실제 상태가 따로 놀았다.**
+
 ### v2.14.0 @ `0380b9e` — 검증 2026-07-28 (agent:kairen.claude, Kairen-Ref: TSK-000312 / ISS-000119) — **Code.gs 무변경**
 
 - repository: annotated tag `v2.14.0` → merge commit `0380b9e`(main). 담은 merge는 PR #52(UI 변경)와 PR #54(버전 표기·CHANGELOG 구간 정리) 둘이다. lane은 둘 다 `HUMAN TEST REQUIRED`.
@@ -50,7 +53,9 @@ release 기록은 이 파일 하단 "Verified Baselines"에 최신이 위로 오
 - Pages: **live와 commit blob이 exact-match** — `docs/index.html` `0b491c9253fc2058…`, `docs/sw.js` `f171a6c6190a541a…`, `docs/next/index.html` `543bff7e3a315e1c…`, `docs/next/sw.js` `ce3e16e8f528be53…`, `docs/legacy.html` `e1a3a46c4b79639f…`. 이번 변경이 실제로 나갔는지는 앱이 부르는 스타일시트로 따로 확인했다 — `docs/next/assets/index-DQj-IU3x.css` `91ed24e52bff9de8…`, 그 안에 `--cc-accent` 두 테마 값과 `cc-ai-sweep`이 들어 있다.
   - Windows 체크아웃에서 working copy를 그대로 해싱하면 CRLF 때문에 전부 DIFF로 보인다. 위 값은 **commit blob**(`git show HEAD:docs/...`) 기준이다.
 - **GAS deployment: 해당 없음.** `Code.gs` 무변경. 이전 baseline의 상태와 확인 해시가 그대로 유효하다.
-- Watcher: 무변경. 운영 클론 갱신·재시작 불필요.
+- Watcher: 이 릴리즈의 diff는 `watcher/`를 바꾸지 않는다. **그러나 v2.10.0부터 열려 있던 재기동 human gate가 이 시점에 해소됐다** — 운영 클론 `watcher/CardCapture_Watcher.ps1`이 저장소와 byte 동일(`525e23340ef3…`)이고, 그 파일이 2026-07-28 01:12:20에 갱신된 **뒤** 01:38:37에 프로세스(PID 50892)가 새로 떴다. 즉 지금 실행 중인 것이 v2.11.0·v2.12.0의 하드닝된 코드다(명함 내용 로그 분리, 프롬프트 경계 하드닝, 지문 미상 시 격리). `eval/prompt-injection.test.js`의 `PENDING_DEPLOY_LIVE_SURFACE_SHA256` 선언을 걷고 엄격 동일성으로 복귀시켰다.
+  - **PID 세기 함정**: 워처 프로세스를 세는 진단 명령이 `CommandLine -like '*CardCapture_Watcher*'`로 거르는데 **그 명령 자신이 그 문자열을 갖고 있어 자기를 잡는다.** 이 세션에서 두 번 났다(PID 47728, 55484). `$PID`와 부모를 제외해야 실제 워처가 **하나**임이 드러난다.
+  - **남은 문제**: 재기동 뒤에도 `watcher-health.json`이 갱신되지 않는다 — 아직 2026-07-26 16:26의 PID 39880이다. 이 표의 "Watcher: 실행 중 PID·health 파일 최신성" 항목이 **이 릴리즈에서 검증 불가**라는 뜻이다. `watcher.log` 쪽은 판정을 보류한다: 관측한 에이전트가 AppContainer 샌드박스에서 돌아 `%LOCALAPPDATA%`가 리다이렉트되고, 그 에이전트가 01:28에 해당 파일을 쓴 뒤라 copy-on-write 사본을 보고 있을 수 있다. 별건으로 `ISS-000127`.
 - 실기기 판정: **미완료.** 이 릴리즈는 시각 변경이 본체이고 machine gate는 렌더된 픽셀까지만 증명한다. founder의 실폰 확인이 남아 있다.
 
 ### v2.9.0 @ `5f90f1b` — 검증 2026-07-27 (agent:kairen.claude, Kairen-Ref: TSK-000288·289·290) — **Code.gs 무변경**

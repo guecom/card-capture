@@ -14,6 +14,11 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          # 릴리즈 tag까지 받아 온다. eval/version-sync.test.js가 "CHANGELOG에 기록되지 않은
+          # 릴리즈 tag"를 잡으려면 tag가 보여야 한다. 얕은 clone이면 그 검사는 pass가 아니라
+          # 미검증으로 남는다 — 조용한 통과가 이 게이트가 막으려는 실패 양식이기 때문이다.
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
