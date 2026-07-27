@@ -146,13 +146,17 @@ var VAULT_CONTRACT = path.join(VAULT_ROOT,
   '01_Company', '00_Company_Operations', '05_Tools_and_Systems', 'CardCapture_Processing.md');
 
 /* 처리 파이프라인의 쓰기 allowlist — vault CardCapture_Processing.md 0장이 계약 원본이다.
-   Part C가 워처 프롬프트·vault 계약과 집합이 같은지 확인한다. */
+   Part C가 워처 프롬프트·vault 계약과 집합이 같은지 확인한다.
+   2026-07-28: 만남 저장처가 `Interaction/` → `Encounter/`로 바뀌었다(`DEC-000053` D-01 / `RSL-000170`).
+     만남은 Encounter, 세션 기록은 Interaction이다. **이 배열을 계약보다 먼저 고치지 마라** — 계약이
+     원본이고 이 배열은 사본이다. 실제로 vault 계약만 먼저 바꿨을 때 이 게이트가 `allowlist-parity`로
+     정확히 잡았고, 그 FAIL이 이 상수의 존재 이유다. */
 var ALLOWLIST = [
   '00_Inbox/BusinessCards/',
   '02_Kairen_OS/30_Instance/Person/',
   '02_Kairen_OS/30_Instance/Organization/',
   '90_Vault/Attachment/BusinessCards/',
-  '02_Kairen_OS/30_Instance/Interaction/'
+  '02_Kairen_OS/30_Instance/Encounter/'
 ];
 
 var EXPECTED_SAFE_ID_REGEX = '\\A[A-Za-z0-9][A-Za-z0-9_.\\-]{0,79}\\z';
@@ -470,9 +474,14 @@ function promptSurfaceFingerprint(surf) {
      — 선언 지문 `171f926ccb50…`.
    2026-07-28: **배포 완료.** 운영 클론 워처가 저장소와 byte 동일(sha256 `525e23340ef3…`)이고, 그 파일이
      01:12:20에 갱신된 뒤 01:38:37에 프로세스(PID 50892)가 새로 떴다 — 즉 지금 실행 중인 것이 하드닝된
-     코드다. 선언을 null로 되돌려 엄격 동일성으로 복귀한다. 이 상수가 다시 필요해지는 때는
-     "저장소 워처를 고쳤고 아직 클론 갱신/재시작을 안 했다"는 상태뿐이다. */
-var PENDING_DEPLOY_LIVE_SURFACE_SHA256 = null;
+     코드다. 선언을 null로 되돌려 엄격 동일성으로 복귀했다.
+   2026-07-28 (같은 날, 이후): **다시 배포 대기다.** 만남 저장처를 `Interaction/` → `Encounter/`로
+     바꾸면서 워처 프롬프트가 바뀌었다(`DEC-000053` D-01 / `RSL-000170`). 운영 클론은 아직
+     `Interaction/`을 허용하는 프롬프트를 실행 중이고, 그 지문이 아래 값이다.
+     **사람이 클론을 갱신하고 워처를 재시작하면 이 상수를 다시 null로 되돌려라.**
+     그때까지 vault 계약의 8-2 (f)가 전환 구간을 정의한다 — 그 실행의 allowlist에 `Encounter/`가
+     없으면 Encounter를 만들지 말고, `Interaction/`으로 대신 쓰지도 말고, 캡처는 정상 완료한다. */
+var PENDING_DEPLOY_LIVE_SURFACE_SHA256 = '6018b3489e377c87f91d994c1ee740c7ab7378c08ff38d1a17ce6580755d2080';
 
 runCase('premise-live-watcher', '게이트가 읽는 워처 소스와 형제 클론(운영 실행본)의 차이가 선언된 배포 대기분과 정확히 같다', function () {
   var live = process.env.CARDCAPTURE_LIVE_WATCHER ||
@@ -531,11 +540,14 @@ runCase('prompt-composition', '캡처 텍스트는 프롬프트 문자열에 들
 
 /* PowerShell 실물 대조로 맞춘 렌더 지문. 워처를 `$CardCaptureWatcherTestMode = $true`로 dot-source해
    `New-TargetedPrompt 'inj-ignore-previous'`의 출력을 CRLF→LF 정규화한 뒤 SHA-256을 잡은 값이다
-   (LF 3236자 / CRLF 3259자). 워처 파일은 CRLF이므로 **정규화 없이 해시하면 값이 다르다.**
+   (LF 3362자 / CRLF 3385자). 워처 파일은 CRLF이므로 **정규화 없이 해시하면 값이 다르다.**
+   `powershell.exe`에 **`-ExecutionPolicy Bypass`를 빼면 dot-source가 정책에 막혀** 함수가 정의되지
+   않고 `New-TargetedPrompt`가 CommandNotFound로 죽는다(2026-07-28 실측). 그 상태에서 렌더가 빈
+   문자열이 되므로, 빈 문자열의 해시를 진실로 착각하지 마라.
    이 값이 틀리면 아래 모든 프롬프트 단언이 실제로 실행되는 텍스트를 검사하지 않는 것이 된다.
    갱신할 때는 아래 실패 메시지의 명령을 그대로 실행해 **PowerShell 실물에서 도출**하고,
    게이트가 보고하는 JS 재현값과 일치하는지 대조해라 — 실패 메시지의 값을 베끼면 재현본이 틀려도 모른다. */
-var GROUND_TRUTH_PROMPT_SHA256 = '470e561538cb780acab562d0b37d9ac859b9dc79089b5c22bd5b502c7776172b';
+var GROUND_TRUTH_PROMPT_SHA256 = '9755b8459b2669492c1a2fc314694d811e4ff9d82a9447eac5cc8d759d4e4ac8';
 var GROUND_TRUTH_PROMPT_ID = 'inj-ignore-previous';
 
 runCase('prompt-render-matches-powershell', '이 파일이 재현하는 프롬프트가 PowerShell이 실제로 만드는 문자열과 같다', function () {
@@ -543,13 +555,13 @@ runCase('prompt-render-matches-powershell', '이 파일이 재현하는 프롬�
   check(r !== null, '기준 captureId 렌더 실패');
   if (!r) return;
   var text = eolNorm(r.text);
-  eq(text.length, 3236, '렌더 길이가 대조 시점과 다르다');
+  eq(text.length, 3362, '렌더 길이가 대조 시점과 다르다');
   eq(sha256(text), GROUND_TRUTH_PROMPT_SHA256,
     '워처 프롬프트가 바뀌었다. 이 게이트의 모든 단언은 "PowerShell이 실제로 만드는 문자열"을 전제로 한다 — ' +
     '아래를 실행해 **PowerShell 실물에서** 새 지문을 도출하고(이 메시지의 "실제" 값을 베끼지 마라. ' +
     '베끼면 JS 재현본이 틀려도 알 수 없다), 도출값이 이 메시지의 "실제"와 같은지 대조한 뒤 ' +
     '경계 문구가 여전히 유효한지 사람이 확인하고 갱신해라:\n' +
-    '      powershell -NoProfile -Command "$CardCaptureWatcherTestMode=$true; . watcher\\CardCapture_Watcher.ps1; ' +
+    '      powershell -NoProfile -ExecutionPolicy Bypass -Command "$CardCaptureWatcherTestMode=$true; . watcher\\CardCapture_Watcher.ps1; ' +
     '$t=(New-TargetedPrompt \'' + GROUND_TRUTH_PROMPT_ID + '\') -replace \\"`r`n\\",\\"`n\\"; $t.Length; ' +
     '(([System.Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($t))|%{$_.ToString(\'x2\')}) -join \'\')"');
   notes.push('프롬프트 렌더 지문(LF 정규화): len=' + text.length + ' sha256=' + sha256(text) +
@@ -1013,7 +1025,7 @@ runCase('path-normalizer', '경로 정규화기가 traversal·인코딩·절대�
     '00_Inbox/BusinessCards/inj-x/brief.md',
     '02_Kairen_OS/30_Instance/Person/PER-000001 홍길동.md',
     '02_Kairen_OS/30_Instance/Organization/ORG-000001 회사.md',
-    '02_Kairen_OS/30_Instance/Interaction/INT-000001.md',
+    '02_Kairen_OS/30_Instance/Encounter/ENC-000001.md',
     '90_Vault/Attachment/BusinessCards/PER-000001_20260727_front.jpg'
   ];
   var denied = [
