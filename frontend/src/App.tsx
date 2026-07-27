@@ -19,6 +19,10 @@ import {
 import { ArrowUpRight, Camera, ChevronRight, FileText, ImageOff, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, Waves } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+// 릴리즈 버전은 저장소가 선언한 값 하나만 쓴다 (founder 지시 2026-07-27: "버전이 설정에 표기되었으면 함").
+// `package.json`은 이미 빌드 식별자의 해시 입력이므로 값이 바뀌면 식별자도 함께 바뀐다 —
+// 벽시계·환경변수와 달리 빌드마다 달라지지 않아 재현성 계약(eval/build-reproducibility.test.js)을 깨지 않는다.
+import { version as APP_VERSION } from '../package.json';
 import type { BriefItem, CaptureQueueItem, PersonTarget, QuickName, RuntimeConfig, SearchItem } from './contracts/capture';
 import { CameraCaptureModal, type CapturedSideMeta, type CardSide } from './components/CameraPreviewModal';
 import { StatusBadge } from './components/StatusBadge';
@@ -281,6 +285,9 @@ function App() {
   const [nameDraft, setNameDraft] = useState('');
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
+  // 빠른 검색이 시작된 시각. "빠르긴 하지만 텀이 있는 만큼 진행을 인지할 수 있으면 좋겠다"
+  // (founder 2026-07-27). 남은 시간을 지어내지 않고, 아는 것(경과)만 센다.
+  const [searchStartedAt, setSearchStartedAt] = useState<number | null>(null);
   const [searchResults, setSearchResults] = useState<SearchItem[]>([]);
   // 검색 결과 근거 (FI-104). 서버는 `via`만 주고 어디가 맞았는지는 말하지 않는다.
   // 제목 일치는 제목 안 매칭 구간 자체가 근거이고, 본문 일치는 문서를 읽어 주변만 잘라 온다.
@@ -305,7 +312,15 @@ function App() {
   const [theme, setTheme] = useState<ThemePreference>(loadThemePreference);
   const [osPrefersDark, setOsPrefersDark] = useState(systemPrefersDark);
   const resolvedTheme = resolveTheme(theme, osPrefersDark);
-  const [sending, setSending] = useState(false);
+  /**
+   * 지금 **실제로 서버에 올리고 있는** captureId. 없으면 보내는 중이 아니다 (FI-034).
+   *
+   * 예전에는 전역 boolean 하나였다. `flushQueue`는 20초 주기와 `online` 이벤트로도 돌기 때문에
+   * **보낼 것이 하나도 없는 flush 동안에도** 그 값이 켜졌고, 화면은 그것을 구획별·항목별
+   * 진행처럼 렌더했다 — founder가 실기기에서 본 "'전송 중...'이 아님에도 이렇게 표기되는 것"이다.
+   * 이제 값의 출처는 업로드 호출 그 자체이므로, 보낼 것이 없으면 아무 데도 켜지지 않는다.
+   */
+  const [sendingId, setSendingId] = useState<string | null>(null);
   // owner 게이트는 legacy처럼 localStorage 캐시로 시작해 서버 응답으로 갱신한다 — 오프라인에도 유지.
   const [ownerCanSeeAll, setOwnerCanSeeAll] = useState(() => loadOwnerFlags().seeAll);
   const [researchInstructionEnabled, setResearchInstructionEnabled] = useState(() => {
@@ -334,6 +349,10 @@ function App() {
   const [personActionText, setPersonActionText] = useState('');
   const [personActionSubmitting, setPersonActionSubmitting] = useState(false);
   const [queueEdit, setQueueEdit] = useState<CaptureQueueItem | null>(null);
+  // 기다리게 하는 동작에는 예외 없이 "지금 하고 있다"가 붙어야 한다 (founder 원칙 2026-07-27).
+  const [savingQueueEdit, setSavingQueueEdit] = useState(false);
+  const [retryingId, setRetryingId] = useState('');
+  const [requeueingId, setRequeueingId] = useState('');
   const [queueRetakeSide, setQueueRetakeSide] = useState<'front.jpg' | 'back.jpg'>('front.jpg');
   // 카메라 모달이 "새 캡처"가 아니라 "기존 캡처의 한 면 교체"로 열렸는지.
   const [retakeMode, setRetakeMode] = useState(false);
@@ -450,12 +469,23 @@ function App() {
   const flushPendingQueue = useCallback(async (announce = false) => {
     if (!configured || flushingRef.current) return;
     flushingRef.current = true;
-    setSending(true);
     try {
       // 탭 하나만 전송한다 — 두 탭이 동시에 올리면 같은 명함이 두 번 접수된다 (FI-053).
       // 응답을 못 받았던 항목은 다시 올리기 전에 서버 기록과 대조한다 (FI-016).
+      //
+      // 전송 진행의 진실 원천은 여기다: `flushQueue`는 실제로 올릴 항목에 대해서만 이 함수를
+      // 부른다(대조로 건너뛴 항목·보류한 항목에는 부르지 않는다). 그래서 화면이 "지금 무엇을
+      // 보내는 중인가"를 추측하지 않고 그대로 말할 수 있다.
       const result = await withQueueLock(() => flushQueue(
-        (item) => uploadCapture(config, item),
+        async (item) => {
+          setSendingId(item.captureId);
+          try {
+            await uploadCapture(config, item);
+          } finally {
+            // 이 항목의 전송이 끝났다. 다음 항목이 이미 시작했다면 그 값을 덮어쓰지 않는다.
+            setSendingId((current) => (current === item.captureId ? null : current));
+          }
+        },
         () => fetchServerCaptureIds(config),
       ));
       if (result === null) {
@@ -473,7 +503,8 @@ function App() {
       if (announce) setMessage(`전송 재시도 실패: ${actionErrorMessage(error)}`);
     } finally {
       flushingRef.current = false;
-      setSending(false);
+      // 안전망. 정상 경로에서는 위의 항목별 정리가 이미 비웠다.
+      setSendingId(null);
     }
   }, [config, configured, refresh]);
 
@@ -587,13 +618,39 @@ function App() {
     : Math.max(0, (AUTO_REFRESH_MS - (clockTick - refreshedAt)) / 1000);
   const autoRefreshHint = refreshHint(untilRefresh, sinceRefresh);
 
-  // 상단 바의 한 줄 상태. 제품 이름 대신 "지금 무슨 일이 일어나는지"를 소유한다.
-  const pendingCount = useMemo(() => feed.filter((entry) => (entry.local && entry.local.state !== 'sent')
-    || (entry.brief && entry.brief.status !== 'processed' && entry.brief.status !== 'skipped')).length, [feed]);
+  // 지금 올리고 있는 촬영의 표시 이름. 없으면 빈 문자열이다.
+  const sendingItem = useMemo(
+    () => (sendingId ? queue.find((item) => item.captureId === sendingId) ?? null : null),
+    [queue, sendingId],
+  );
+  const sendingName = sendingItem ? queueRowName(processedNames[sendingItem.captureId], sendingItem.quickName) : '';
+
+  /**
+   * 상단 바의 한 줄 상태. 제품 이름 대신 "지금 무슨 일이 일어나는지"를 소유한다.
+   *
+   * 예전에는 숫자 하나가 **서로 다른 두 진실을 합산**했다: 이 폰에 있고 아직 못 보낸 촬영과,
+   * 서버가 받았지만 아직 끝내지 못한 캡처. 둘은 사용자가 할 일도, 기다리는 대상도 다른데
+   * `N건 처리 중`의 N이 무엇인지 알 방법이 없었다. 이제 축마다 이름을 붙인다.
+   *
+   * 어느 축에 넣을지는 목록이 그 항목을 어떤 행으로 그리는지(`renderFeedEntry`)와 같은 규칙을
+   * 쓴다 — 미전송 로컬이 우선이다. 그래야 위의 숫자와 아래 목록이 서로 다른 말을 하지 않는다.
+   */
+  const awaitingSendCount = useMemo(
+    () => feed.filter((entry) => entry.local && entry.local.state !== 'sent').length,
+    [feed],
+  );
+  const serverPendingCount = useMemo(() => feed.filter((entry) => !(entry.local && entry.local.state !== 'sent')
+    && entry.brief && entry.brief.status !== 'processed' && entry.brief.status !== 'skipped').length, [feed]);
+  const pendingStatus = awaitingSendCount > 0 && serverPendingCount > 0
+    ? `전송 대기 ${awaitingSendCount}건 · 서버에서 ${serverPendingCount}건 처리 중`
+    : awaitingSendCount > 0 ? `전송 대기 ${awaitingSendCount}건`
+      : serverPendingCount > 0 ? `서버에서 ${serverPendingCount}건 처리 중`
+        : '';
   const headerStatus = !configured ? '연결 필요 — 개인 링크로 열어주세요'
-    : loading ? '최신 상태 확인 중…'
-      : sending ? '사진 전송 중…'
-        : pendingCount > 0 ? `${pendingCount}건 처리 중 · ${autoRefreshHint}`
+    // 실제로 올리고 있는 촬영이 있으면 그것이 가장 구체적인 사실이다.
+    : sendingId ? `${sendingName || '명함'} 전송 중…`
+      : loading ? '최신 상태 확인 중…'
+        : pendingStatus ? `${pendingStatus} · ${autoRefreshHint}`
           : feed.length > 0 ? `기록 ${feed.length}건 · ${autoRefreshHint}`
             : '첫 명함을 기다리고 있어요';
 
@@ -628,6 +685,7 @@ function App() {
     if (!normalized || !configured || !ownerCanSeeAll) return;
     const run = ++searchRunRef.current;
     setSearching(true);
+    setSearchStartedAt(Date.now());
     setSearchEvidence({});
     setSearchTerm(normalized);
     try {
@@ -961,14 +1019,23 @@ function App() {
     }
   }, [cameraSession, frontFrame, lastSavedId, refresh, resetQuickName, undoing]);
 
+  // 누른 뒤 기기 저장·전송 시작까지 아무 반응이 없으면 사용자는 눌렸는지조차 알 수 없다.
   const retryQueueItem = useCallback(async (item: CaptureQueueItem) => {
-    await putQueueItem({ ...item, state: 'queued', err: undefined });
-    setQueue((current) => current.map((candidate) => candidate.captureId === item.captureId
-      ? { ...candidate, state: 'queued', err: undefined }
-      : candidate));
-    if (configured) void flushPendingQueue(true);
-    else setMessage('연결 설정을 저장하면 이 캡처를 자동으로 다시 보냅니다.');
-  }, [configured, flushPendingQueue]);
+    if (retryingId) return;
+    setRetryingId(item.captureId);
+    try {
+      await putQueueItem({ ...item, state: 'queued', err: undefined });
+      setQueue((current) => current.map((candidate) => candidate.captureId === item.captureId
+        ? { ...candidate, state: 'queued', err: undefined }
+        : candidate));
+      if (configured) void flushPendingQueue(true);
+      else setMessage('연결 설정을 저장하면 이 캡처를 자동으로 다시 보냅니다.');
+    } catch (error) {
+      setMessage(`다시 보내지 못했어요: ${actionErrorMessage(error)}`);
+    } finally {
+      setRetryingId('');
+    }
+  }, [configured, flushPendingQueue, retryingId]);
 
   const startRetake = useCallback((side: 'front.jpg' | 'back.jpg') => {
     setQueueRetakeSide(side);
@@ -977,7 +1044,7 @@ function App() {
   }, []);
 
   const saveQueueEdit = useCallback(async () => {
-    if (!queueEdit || !queueEdit.images.some((image) => image.dataB64)) return;
+    if (!queueEdit || savingQueueEdit || !queueEdit.images.some((image) => image.dataB64)) return;
     const editRelSelf = queueEdit.relSelf?.trim() ?? '';
     const editRelKairen = queueEdit.relKairen?.trim() ?? '';
     const editMemo = queueEdit.memo?.trim() ?? '';
@@ -993,12 +1060,19 @@ function App() {
       err: undefined,
     };
     // 과거 캡처 편집은 현재 스티키 맥락을 건드리지 않는다 (legacy 동작).
-    await putQueueItem(next);
-    setQueueEdit(null);
-    await refresh().catch(() => undefined);
-    if (configured) void flushPendingQueue(true);
-    else setMessage('변경을 같은 captureId에 저장했습니다. 연결되면 다시 전송합니다.');
-  }, [configured, flushPendingQueue, queueEdit, refresh]);
+    setSavingQueueEdit(true);
+    try {
+      await putQueueItem(next);
+      setQueueEdit(null);
+      await refresh().catch(() => undefined);
+      if (configured) void flushPendingQueue(true);
+      else setMessage('변경을 같은 captureId에 저장했습니다. 연결되면 다시 전송합니다.');
+    } catch (error) {
+      setMessage(error instanceof QueueWriteError ? queueWriteMessage[error.failure] : queueWriteMessage.unknown);
+    } finally {
+      setSavingQueueEdit(false);
+    }
+  }, [configured, flushPendingQueue, queueEdit, refresh, savingQueueEdit]);
 
   const toggleBrief = useCallback((captureId: string) => {
     setExpandedBriefs((current) => {
@@ -1113,6 +1187,8 @@ function App() {
   }, [config, personActionComposer, personActionSubmitting, personActionText, runPersonAction]);
 
   const retryProcessing = useCallback(async (captureId: string) => {
+    if (requeueingId) return;
+    setRequeueingId(captureId);
     try {
       const response = await requeueCapture(config, captureId);
       if (!response.ok) throw new Error(response.error ?? 'requeue_failed');
@@ -1122,12 +1198,17 @@ function App() {
       await refresh().catch(() => undefined);
     } catch (error) {
       setMessage(`재처리 실패: ${actionErrorMessage(error)}`);
+    } finally {
+      setRequeueingId('');
     }
-  }, [config, refresh]);
+  }, [config, refresh, requeueingId]);
 
   function renderQueueRow(item: CaptureQueueItem) {
     const imageSource = queueImageSource(item);
     const processedName = processedNames[item.captureId];
+    // 이 행이 지금 회선을 타고 있는가 / 사용자가 방금 다시 보내기를 눌렀는가.
+    const isSending = item.captureId === sendingId;
+    const retrying = retryingId === item.captureId;
     // 이름을 모르는 것은 정상 결과다 — 끝난 인식을 `대기`로 적으면 거짓말이 된다 (FI-067).
     const displayName = queueRowName(processedName, item.quickName);
     const contextLine = queueContextLine(item);
@@ -1140,14 +1221,26 @@ function App() {
           <div className="row-copy">
             <strong>{displayName}</strong>
             <span>{contextLine || formatMoment(item.capturedAt)} · {sideLabel} · {queueProgressOf(item).headline}</span>
-            {item.err && <small>{actionErrorMessage(item.err)}</small>}
+            {/* 위 줄은 "이 촬영이 4단계 중 몇 번째에 있는가"라는 자리 표시다. 지금 실제로 회선을
+                타고 있는 촬영은 이 줄이 따로 말한다 — 둘을 섞으면 다시 거짓 진행이 된다. */}
+            {isSending && <small className="row-sending" role="status">지금 이 명함을 보내는 중…</small>}
+            {item.err && !isSending && <small>{actionErrorMessage(item.err)}</small>}
           </div>
           <ChevronRight aria-hidden="true" size={16} />
         </button>
         {processedName && item.state !== 'failed' && (
           <button className="note-action" type="button" onClick={() => promptNote({ captureId: item.captureId })}><Plus aria-hidden="true" size={13} />메모</button>
         )}
-        {item.state === 'failed' && <button className="retry-action" type="button" onClick={() => void retryQueueItem(item)}>다시 보내기</button>}
+        {item.state === 'failed' && (
+          <button
+            className="retry-action"
+            type="button"
+            aria-label="다시 보내기"
+            aria-busy={retrying}
+            disabled={retrying}
+            onClick={() => void retryQueueItem(item)}
+          >{retrying ? '보내는 중…' : '다시 보내기'}</button>
+        )}
       </article>
     );
   }
@@ -1190,7 +1283,14 @@ function App() {
             </ol>
             {progress.late && (
               <div className="stage-actions">
-                <button type="button" onClick={() => void retryProcessing(item.captureId)}><RotateCcw aria-hidden="true" size={13} />다시 처리 요청</button>
+                {/* 접근 이름은 고정한다 — 보이는 글자가 진행에 따라 바뀌어도 낭독기·자동화가 같은 버튼을 계속 가리킨다. */}
+                <button
+                  type="button"
+                  aria-label="다시 처리 요청"
+                  aria-busy={requeueingId === item.captureId}
+                  disabled={requeueingId === item.captureId}
+                  onClick={() => void retryProcessing(item.captureId)}
+                ><RotateCcw aria-hidden="true" size={13} />{requeueingId === item.captureId ? '요청하는 중…' : '다시 처리 요청'}</button>
                 <a href={`mailto:guecom90@gmail.com?subject=${encodeURIComponent(`[명함] 처리 지연 문의 ${item.captureId}`)}`}><Mail aria-hidden="true" size={13} />문의하기</a>
               </div>
             )}
@@ -1409,7 +1509,8 @@ function App() {
           <button className="section-toggle" type="button" aria-expanded={!recordsCollapsed} onClick={toggleRecords}>
             <span className="caret" aria-hidden="true">{recordsCollapsed ? '▸' : '▾'}</span> 명함 기록
           </button>
-          {sending && <span className="sending-note">전송 중…</span>}
+          {/* 이 구획의 진실만 쓴다. 지금 올리는 촬영이 있을 때만, 그리고 그것이 무엇인지 이름을 붙여서. */}
+          {sendingId && <span className="sending-note" role="status">{sendingName || '명함'} 전송 중…</span>}
           <span className="refresh-hint" role="status">{autoRefreshHint}</span>
         </div>
         {!recordsCollapsed && <div className="records-feed">{renderFeedBody()}</div>}
@@ -1642,6 +1743,21 @@ function App() {
           </div>
         )}
         {(!configured || !ownerCanSeeAll) && <EmptyState title="소유자 연결이 필요해요" body="Person 검색은 기존과 동일하게 owner token에서만 동작합니다." action="설정 열기" onAction={() => { setDraftConfig(config); setSettingsOpen(true); }} />}
+        {/* 빠른 검색도 왕복이 있는 일이다. 버튼 글자만 바뀌면 결과 자리는 예전 화면 그대로라
+            "눌린 건가?"가 남는다. 여기서 진행을 결과 자리에 둔다 — 진행률은 알 수 없으므로
+            지어내지 않고, 무엇을 찾는 중인지와 얼마나 지났는지만 말한다. */}
+        {configured && ownerCanSeeAll && !recall && searching && (
+          <section className="search-progress" role="status">
+            <IonSpinner name="crescent" />
+            <div>
+              <strong>‘{searchTerm}’ 를 기록 전체에서 찾는 중</strong>
+              <small>
+                {searchStartedAt === null ? '' : `${elapsedLabel(clockTick - searchStartedAt)} 경과 · `}
+                이름·회사·만난 곳과 기록 본문을 함께 봅니다
+              </small>
+            </div>
+          </section>
+        )}
         {configured && ownerCanSeeAll && !recall && searchResults.length === 0 && !searching && <EmptyState title="찾을 사람을 입력하세요" body="미팅 전 10초 회상 — 이름·회사·만난 곳으로 기존 기록을 찾습니다." />}
         {configured && ownerCanSeeAll && !recall && searchResults.map(renderPersonSearchRow)}
         {configured && ownerCanSeeAll && recall && renderRecall()}
@@ -1717,7 +1833,11 @@ function App() {
           <IonButton fill="outline" color="danger" expand="block" disabled={!config.token} onClick={() => setSignOutOpen(true)}>연결 해제</IonButton>
         </section>
         <a className="legacy-link" href="../legacy.html">문제가 있을 때 이전 앱 열기 <ArrowUpRight aria-hidden="true" size={16} /></a>
-        <p className="build-line">빌드 {__CARD_CAPTURE_BUILD_ID__}</p>
+        {/* 두 값은 서로 다른 일을 한다. 버전은 사람이 말하기 위한 것이고(“2.12.0 쓰고 있어요”),
+            소스 식별자는 그 화면이 정확히 어느 소스에서 나왔는지 저장소에서 다시 계산해 대조하기
+            위한 것이다. 하나만으로는 문제를 알릴 수도, 확인할 수도 없다. */}
+        <p className="build-line">버전 {APP_VERSION} · 빌드 {__CARD_CAPTURE_BUILD_ID__}</p>
+        <p className="build-note">문제를 알리실 때 이 두 줄을 함께 알려 주세요. 버전은 이 앱이 나온 릴리즈 이름이고, 빌드는 그 화면을 만든 소스를 가리킵니다.</p>
       </div>
     );
   }
@@ -1884,7 +2004,7 @@ function App() {
                   <IonTextarea label="메모" labelPlacement="stacked" autoGrow value={queueEdit.memo ?? ''} onIonInput={(inputEvent) => setQueueEdit((current) => current ? { ...current, memo: String(inputEvent.detail.value ?? '') } : null)} />
                 </section>
                 {!queueEdit.images.some((image) => image.dataB64) && <p className="modal-copy">오래된 전송 완료 캡처라 원본 사진이 정리됐습니다. 앞면을 다시 찍으면 같은 captureId로 재전송할 수 있습니다.</p>}
-                <IonButton expand="block" disabled={!queueEdit.images.some((image) => image.dataB64)} onClick={() => void saveQueueEdit()}>저장하고 다시 보내기</IonButton>
+                <IonButton expand="block" disabled={savingQueueEdit || !queueEdit.images.some((image) => image.dataB64)} onClick={() => void saveQueueEdit()}>{savingQueueEdit ? '저장하는 중…' : '저장하고 다시 보내기'}</IonButton>
               </>
             )}
           </IonContent>

@@ -49,60 +49,75 @@
   --cc-warn: #8a6a27;
   /* AI 표면이 평소에 내는 옅은 빛 (INT-000016 항목 002). */
   --cc-ai-glow: rgba(106, 75, 208, 0.16);
+  /* 표면 **둘레**의 빛 (founder 지시 2026-07-27). `--cc-ai-glow`는 표면 안을 지나가는 sheen이고,
+     이 둘은 다른 층이다. `rim`이 평소, `rim-lit`이 숨을 들이쉰 순간·처리 중이다. */
+  --cc-ai-rim: rgba(106, 75, 208, 0.16);
+  --cc-ai-rim-lit: rgba(106, 75, 208, 0.32);
 }
 
-/* ── 다크 (INT-000016 항목 003) ──
+/* ── 다크 (INT-000016 항목 003 · 보라 중심 재조정 TSK-000305) ──
    `data-theme`는 사용자가 설정에서 고른 값이 해석된 결과다. `시스템`을 골랐을 때만 OS 설정을 따르므로
    여기서 `prefers-color-scheme`를 직접 보지 않는다 — 그러면 `라이트`를 고른 사람의 화면까지 어두워진다.
 
    원칙은 "배경을 뒤집는다"가 아니라 **같은 위계를 어두운 쪽에서 다시 만든다**는 것이다:
-   면(surface)은 배경보다 밝고, 잉크는 충분히 밝고, 강조색은 어두운 배경에서 읽히도록 밝기를 올린다. */
+   면(surface)은 배경보다 밝고, 잉크는 충분히 밝고, 강조색은 어두운 배경에서 읽히도록 밝기를 올린다.
+
+   founder 지시 2026-07-27: "다크 테마는 파란색 보다 보라색 중심이였으면 좋겠음."
+   바꾼 것은 **색상각뿐**이다. 위계도, 밝기 관계도, 상태 색의 뜻도 그대로 둔다:
+     - 중립 면과 강조색을 남보라(255~258°)로 옮겼다. 예전 값은 파랑(213~215°)이었다.
+     - 성공(teal)·경고(warn)·위험(danger)은 **건드리지 않았다**. 색이 뜻을 나르는 자리다.
+     - 라이트 테마는 요청 범위 밖이라 한 줄도 바꾸지 않았다.
+   대비는 눈이 아니라 계산으로 맞췄다(WCAG 2.1, 배경을 실제로 겹쳐서). 이 팔레트의 최저값은
+   `.search-shell` 버튼의 4.77:1이고 나머지는 5.6~15.3:1이다. `int16-surfaces.spec.ts`의
+   다크 대비 스윕이 네 화면 전체를 매번 다시 잰다. */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --ion-background-color: #0f151e;
-  --ion-text-color: #e6edf7;
-  --ion-color-primary: #6aa4f5;
-  --ion-color-primary-rgb: 106, 164, 245;
-  --ion-toolbar-background: rgba(17, 24, 35, 0.92);
-  --ion-toolbar-border-color: rgba(158, 180, 208, 0.16);
-  --cc-ink: #e7eef8;
-  --cc-muted: #9dabc0;
-  --cc-line: rgba(158, 180, 208, 0.18);
-  --cc-surface: rgba(28, 37, 50, 0.92);
-  --cc-blue: #6aa4f5;
+  --ion-background-color: #141020;
+  --ion-text-color: #eae6f8;
+  --ion-color-primary: #a98bf5;
+  --ion-color-primary-rgb: 169, 139, 245;
+  --ion-toolbar-background: rgba(24, 19, 38, 0.92);
+  --ion-toolbar-border-color: rgba(184, 172, 214, 0.16);
+  --cc-ink: #eae6f8;
+  --cc-muted: #a8a0bd;
+  --cc-line: rgba(184, 172, 214, 0.18);
+  --cc-surface: rgba(34, 28, 51, 0.92);
+  --cc-blue: #a98bf5;
   --cc-teal: #48bcab;
 
-  --cc-page: #0f151e;
-  --cc-page-tint: rgba(48, 135, 230, 0.16);
-  --cc-solid: #1b2431;
+  --cc-page: #141020;
+  --cc-page-tint: rgba(150, 110, 245, 0.18);
+  --cc-solid: #221c33;
   --cc-solid-soft: rgba(255, 255, 255, 0.055);
   --cc-solid-faint: rgba(255, 255, 255, 0.03);
-  --cc-sunken: #141c26;
+  --cc-sunken: #1a1529;
   --cc-soft: rgba(255, 255, 255, 0.045);
-  --cc-quiet: #263141;
-  --cc-chip: #1e2734;
+  --cc-quiet: #2f2747;
+  --cc-chip: #251e38;
   --cc-shadow: rgba(0, 0, 0, 0.5);
   --cc-shadow-soft: rgba(0, 0, 0, 0.35);
   --cc-shadow-strong: rgba(0, 0, 0, 0.42);
-  --cc-blue-soft: rgba(106, 164, 245, 0.15);
-  --cc-blue-wash: rgba(106, 164, 245, 0.16);
-  --cc-blue-ink: #a9caf9;
+  --cc-blue-soft: rgba(169, 139, 245, 0.16);
+  --cc-blue-wash: rgba(169, 139, 245, 0.14);
+  --cc-blue-ink: #cbb6fd;
   --cc-teal-soft: rgba(72, 188, 171, 0.16);
   --cc-teal-ink: #7fd9c9;
   --cc-danger: #ff9d92;
   --cc-danger-soft: rgba(214, 109, 96, 0.18);
   --cc-warn: #e2b76d;
-  --cc-ai-glow: rgba(146, 126, 255, 0.24);
+  --cc-ai-glow: rgba(158, 120, 255, 0.28);
+  --cc-ai-rim: rgba(158, 120, 255, 0.22);
+  --cc-ai-rim-lit: rgba(158, 120, 255, 0.44);
 }
 
 /* 아래 규칙들은 라이트 전용으로 박혀 있던 색이다. 토큰으로 바꿀 수 없는 그라데이션·상태 배지가 대부분이다. */
-:root[data-theme="dark"] .hero-card { background: linear-gradient(155deg, rgba(35,46,62,0.96), rgba(26,38,58,0.94)); }
-:root[data-theme="dark"] .search-shortcut { border-color: rgba(106,164,245,0.3); background: linear-gradient(145deg, rgba(30,44,66,0.98), rgba(26,35,48,0.96)); }
+:root[data-theme="dark"] .hero-card { background: linear-gradient(155deg, rgba(44,36,64,0.96), rgba(34,27,54,0.94)); }
+:root[data-theme="dark"] .search-shortcut { border-color: rgba(169,139,245,0.3); background: linear-gradient(145deg, rgba(40,32,62,0.98), rgba(32,26,48,0.96)); }
 /* 채도 높은 칩 위의 글자는 다크에서도 흰색이 가장 잘 읽힌다 — 반전시키면 대비가 3.4:1로 떨어진다. */
-:root[data-theme="dark"] .prep-card { background: linear-gradient(145deg, rgba(31,42,58,0.96), rgba(25,33,45,0.98)); }
-:root[data-theme="dark"] .now-card { border-color: rgba(72,188,171,0.28); background: linear-gradient(150deg, rgba(24,48,48,0.95), rgba(24,32,44,0.98)); }
-:root[data-theme="dark"] .ai-surface { border-color: rgba(106,164,245,0.3); background: linear-gradient(152deg, rgba(32,45,68,0.95), rgba(38,36,62,0.93)); }
-:root[data-theme="dark"] .ai-surface.tone-teal { border-color: rgba(72,188,171,0.3); background: linear-gradient(152deg, rgba(24,47,48,0.95), rgba(24,36,42,0.93)); }
+:root[data-theme="dark"] .prep-card { background: linear-gradient(145deg, rgba(40,33,58,0.96), rgba(31,25,45,0.98)); }
+:root[data-theme="dark"] .now-card { border-color: rgba(72,188,171,0.28); background: linear-gradient(150deg, rgba(24,48,48,0.95), rgba(30,24,45,0.98)); }
+:root[data-theme="dark"] .ai-surface { border-color: rgba(169,139,245,0.3); background: linear-gradient(152deg, rgba(45,34,72,0.95), rgba(37,30,60,0.93)); }
+:root[data-theme="dark"] .ai-surface.tone-teal { border-color: rgba(72,188,171,0.3); background: linear-gradient(152deg, rgba(24,47,48,0.95), rgba(28,32,50,0.93)); }
 :root[data-theme="dark"] .ai-scope-note { color: var(--cc-muted); }
 :root[data-theme="dark"] .boundary-note { background: rgba(31,143,130,0.14); color: var(--cc-teal-ink); }
 :root[data-theme="dark"] .boundary-note p { color: var(--cc-muted); }
@@ -112,18 +127,18 @@
 :root[data-theme="dark"] .quick-name-panel { background: var(--cc-solid); color: var(--cc-ink); }
 :root[data-theme="dark"] .status-badge { background: var(--cc-quiet); color: var(--cc-muted); }
 :root[data-theme="dark"] .status-processed { background: rgba(31,143,130,0.2); color: var(--cc-teal-ink); }
-:root[data-theme="dark"] .status-processing { background: rgba(106,164,245,0.2); color: var(--cc-blue-ink); }
+:root[data-theme="dark"] .status-processing { background: rgba(169,139,245,0.2); color: var(--cc-blue-ink); }
 :root[data-theme="dark"] .status-skipped { background: rgba(158,140,120,0.2); color: #cbb9a5; }
 :root[data-theme="dark"] .signout-warning { border-color: rgba(214,109,96,0.4); background: rgba(214,109,96,0.16); color: var(--cc-danger); }
 :root[data-theme="dark"] .signout-warning b { color: var(--cc-danger); }
 :root[data-theme="dark"] .setup-banner { background: rgba(224,183,109,0.12); }
-:root[data-theme="dark"] .stage-track { background: rgba(106,164,245,0.09); }
+:root[data-theme="dark"] .stage-track { background: rgba(169,139,245,0.09); }
 :root[data-theme="dark"] .stage-track.late { background: rgba(224,183,109,0.11); }
 :root[data-theme="dark"] .stage-track.failed { background: rgba(214,109,96,0.13); }
-:root[data-theme="dark"] .stage-dots li i { background: rgba(158,180,208,0.2); }
+:root[data-theme="dark"] .stage-dots li i { background: rgba(184,172,214,0.22); }
 :root[data-theme="dark"] .stage-dots li.stage-done { color: var(--cc-teal-ink); }
 :root[data-theme="dark"] .stage-dots li.stage-failed { color: var(--cc-danger); }
-:root[data-theme="dark"] .ai-stage-bars i { background: rgba(158,180,208,0.2); }
+:root[data-theme="dark"] .ai-stage-bars i { background: rgba(184,172,214,0.22); }
 :root[data-theme="dark"] .ai-stage-path li.ai-stage-done,
 :root[data-theme="dark"] .migration-list li.done > span + strong { color: var(--cc-teal-ink); }
 :root[data-theme="dark"] .md-table-wrap th,
@@ -134,8 +149,8 @@
 :root[data-theme="dark"] .manage-actions .action-grid button { background: rgba(255,255,255,0.06); color: var(--cc-muted); }
 :root[data-theme="dark"] .record-actions .action-grid button { color: var(--cc-blue-ink); }
 :root[data-theme="dark"] .context-chips button { color: var(--cc-muted); }
-:root[data-theme="dark"] .tab-footer ion-toolbar { --background: rgba(17,24,35,0.94); }
-:root[data-theme="dark"] .tab-bar button { color: #8494aa; }
+:root[data-theme="dark"] .tab-footer ion-toolbar { --background: rgba(24,19,38,0.94); }
+:root[data-theme="dark"] .tab-bar button { color: #9c93b4; }
 :root[data-theme="dark"] .contact-actions .action-grid a,
 :root[data-theme="dark"] .contact-actions .action-grid button { border-color: rgba(72,188,171,0.3); background: rgba(72,188,171,0.12); color: var(--cc-teal-ink); }
 :root[data-theme="dark"] .queue-edit-images img,
@@ -144,23 +159,30 @@
 :root[data-theme="dark"] .queue-placeholder,
 :root[data-theme="dark"] .capture-thumbnails img,
 :root[data-theme="dark"] .thumbnail-add { background: var(--cc-quiet); }
-:root[data-theme="dark"] .avatar { background: linear-gradient(145deg, rgba(106,164,245,0.22), rgba(106,164,245,0.12)); color: var(--cc-blue-ink); }
+:root[data-theme="dark"] .avatar { background: linear-gradient(145deg, rgba(169,139,245,0.22), rgba(169,139,245,0.12)); color: var(--cc-blue-ink); }
 :root[data-theme="dark"] .prep-card > strong,
 :root[data-theme="dark"] .now-card li p { color: var(--cc-ink); }
-:root[data-theme="dark"] .profile-links a { border-color: rgba(106,164,245,0.28); background: rgba(106,164,245,0.12); color: var(--cc-blue-ink); }
+:root[data-theme="dark"] .profile-links a { border-color: rgba(169,139,245,0.28); background: rgba(169,139,245,0.12); color: var(--cc-blue-ink); }
 :root[data-theme="dark"] .action-grid button:hover,
-:root[data-theme="dark"] .action-grid a:hover { border-color: rgba(106,164,245,0.35); background: rgba(106,164,245,0.1); }
+:root[data-theme="dark"] .action-grid a:hover { border-color: rgba(169,139,245,0.35); background: rgba(169,139,245,0.1); }
 :root[data-theme="dark"] .mode-switch button.active { background: var(--cc-solid); color: var(--cc-blue-ink); }
 :root[data-theme="dark"] .note-action,
-:root[data-theme="dark"] .action-grid button.ai-action { border-color: rgba(106,164,245,0.32); background: rgba(106,164,245,0.14); color: var(--cc-blue-ink); }
+:root[data-theme="dark"] .action-grid button.ai-action { border-color: rgba(169,139,245,0.32); background: rgba(169,139,245,0.14); color: var(--cc-blue-ink); }
 :root[data-theme="dark"] .capture-card .context-block .capture-context-fields ion-input,
 :root[data-theme="dark"] .capture-card .context-block .capture-context-fields ion-textarea {
   --background: var(--cc-sunken);
-  --placeholder-color: #8695ab;
-  border-color: rgba(158,180,208,0.3);
+  --placeholder-color: #978eb0;
+  border-color: rgba(184,172,214,0.3);
   box-shadow: inset 0 1px 2px rgba(0,0,0,0.25);
 }
-:root[data-theme="dark"] .ai-surface ion-textarea { border-color: rgba(106,164,245,0.24); --background: rgba(12,18,26,0.55); }
+:root[data-theme="dark"] .ai-surface ion-textarea { border-color: rgba(169,139,245,0.24); --background: rgba(17,13,28,0.6); }
+/* 처리 중 테두리·둘레 발광이 라이트 파랑으로 박혀 있어 다크에서 이 표면만 파랗게 남았다. */
+:root[data-theme="dark"] .ai-surface.is-active { border-color: rgba(169,139,245,0.6); --cc-ai-rim: rgba(158,120,255,0.4); --cc-ai-rim-lit: rgba(158,120,255,0.66); }
+:root[data-theme="dark"] .ai-surface.tone-teal { --cc-ai-rim: rgba(72,188,171,0.2); --cc-ai-rim-lit: rgba(72,188,171,0.4); }
+:root[data-theme="dark"] .ai-surface.tone-teal.is-active { border-color: rgba(72,188,171,0.6); --cc-ai-rim: rgba(72,188,171,0.4); --cc-ai-rim-lit: rgba(72,188,171,0.66); }
+/* 키보드 포커스 링도 다크 배경에서 보여야 한다 — 라이트 파랑은 어두운 면 위에서 거의 사라진다. */
+:root[data-theme="dark"] button:focus-visible,
+:root[data-theme="dark"] a:focus-visible { outline-color: rgba(169,139,245,0.62); }
 
 /* 앱 껍데기는 "지금 보이는 높이"와 같아야 한다.
    Ionic의 `body { position: fixed; height: 100% }`에서 100%는 주소창이 접힌 상태의
@@ -294,6 +316,13 @@ ion-toolbar {
 .search-shell input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--cc-ink); font: inherit; font-size: 14px; }
 .search-shell button, .empty-state button { border: 0; border-radius: 12px; background: var(--cc-blue-wash); color: var(--cc-blue); font-size: 11px; font-weight: 700; padding: 10px 13px; }
 .search-shell button:disabled { opacity: 0.45; }
+/* 빠른 검색의 진행. 결과가 나올 자리에 둔다 — 버튼 글자만 바뀌면 결과 영역은 예전 화면 그대로라
+   "눌린 건가?"가 남는다. 진행률 막대는 없다: 서버 왕복의 남은 시간을 알 수 없기 때문이다. */
+.search-progress { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border: 1px solid var(--cc-line); border-radius: 18px; background: var(--cc-surface); box-shadow: 0 10px 30px var(--cc-shadow-soft); }
+.search-progress ion-spinner { width: 20px; height: 20px; color: var(--cc-blue); }
+.search-progress div { display: grid; gap: 3px; min-width: 0; }
+.search-progress strong { color: var(--cc-ink); font-size: 12.5px; font-weight: 700; word-break: keep-all; }
+.search-progress small { color: var(--cc-muted); font-size: 11px; line-height: 1.45; word-break: keep-all; }
 .empty-state { display: grid; justify-items: center; padding: 38px 24px; border: 1px dashed rgba(42,63,89,0.18); border-radius: 22px; background: var(--cc-solid-faint); text-align: center; }
 .empty-icon { display: grid; width: 48px; height: 48px; place-items: center; border-radius: 16px; background: var(--cc-blue-wash); color: var(--cc-blue); }
 .empty-state h2 { margin: 15px 0 6px; color: var(--cc-ink); font-size: 16px; }
@@ -490,6 +519,8 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(35,104,216,0.34)
 .section-toggle .caret { width: 12px; }
 .refresh-chip { border: 1px solid var(--cc-line); border-radius: 999px; background: var(--cc-solid); color: var(--cc-muted); font-size: 12px; font-weight: 650; padding: 7px 12px; min-height: 34px; }
 .sending-note { color: var(--cc-blue); font-size: 11px; font-weight: 700; }
+/* 지금 회선을 타고 있는 그 행만 이 줄을 갖는다. */
+.row-sending { color: var(--cc-blue); font-size: 11px; font-weight: 700; }
 .section-empty { margin: 4px 2px; color: var(--cc-muted); font-size: 12.5px; }
 
 .name-onboard-modal { --height: auto; --width: min(92%, 360px); --border-radius: 22px; }
@@ -520,6 +551,7 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(35,104,216,0.34)
 .local-context { margin: 0; padding: 8px 10px; border-radius: 10px; background: rgba(42,63,89,0.05); color: var(--cc-muted); font-size: 11.5px; }
 
 .build-line { margin: 2px 4px 0; color: var(--cc-muted); font-size: 10px; text-align: center; opacity: 0.75; }
+.build-note { margin: 4px 16px 0; color: var(--cc-muted); font-size: 10px; line-height: 1.55; text-align: center; word-break: keep-all; }
 
 /* ── AI 사람 찾기 (자연어 회상 검색, ISS-000103) ── */
 .mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; border: 1px solid var(--cc-line); border-radius: 15px; background: var(--cc-solid-soft); }
@@ -597,8 +629,12 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(35,104,216,0.34)
 /* ── AI가 맡은 일의 공통 표면 (INT-000015) ──
    일반 입력 박스와 구분되는 배경·테두리 + sparkle 표식 + 권한 배지 + 실제 단계 막대.
    `AI 조사 요청`과 `AI 사람 찾기`가 같은 문법을 쓴다. */
-.ai-surface { position: relative; isolation: isolate; overflow: hidden; display: grid; gap: 11px; margin: 14px 0 0; padding: 14px; border: 1px solid rgba(35,104,216,0.24); border-radius: 18px; background: linear-gradient(152deg, rgba(238,245,255,0.96), rgba(249,246,255,0.94)); transition: border-color 220ms ease, box-shadow 220ms ease; }
-.ai-surface.tone-teal { border-color: rgba(31,143,130,0.26); background: linear-gradient(152deg, rgba(233,248,245,0.96), rgba(246,252,251,0.94)); }
+/* 바깥쪽 발광은 `overflow: hidden`과 무관하다 — 자기 overflow는 자식만 자르고
+   자신의 box-shadow는 그대로 밖에 그려진다.
+   정지 상태의 발광은 여기 선언한다. 애니메이션이 끝나거나 꺼져도(움직임 최소화) 이 값으로
+   돌아오므로, 표식이 사라지는 순간이 없다 — `animation-fill-mode`에 기대지 않는 이유다. */
+.ai-surface { position: relative; isolation: isolate; overflow: hidden; display: grid; gap: 11px; margin: 14px 0 0; padding: 14px; border: 1px solid rgba(35,104,216,0.24); border-radius: 18px; background: linear-gradient(152deg, rgba(238,245,255,0.96), rgba(249,246,255,0.94)); box-shadow: 0 0 0 1px var(--cc-ai-rim), 0 0 14px -3px var(--cc-ai-rim); transition: border-color 220ms ease; animation: cc-ai-rim 7.5s ease-in-out infinite; }
+.ai-surface.tone-teal { border-color: rgba(31,143,130,0.26); background: linear-gradient(152deg, rgba(233,248,245,0.96), rgba(246,252,251,0.94)); --cc-ai-rim: rgba(31,143,130,0.16); --cc-ai-rim-lit: rgba(31,143,130,0.32); }
 
 /* ── AI 표면의 동적 시인성 (INT-000016 항목 002) ──
    founder: "AI 쪽에는 지금도 시인성이 괜찮은 편이라고 생각하는데 동적으로 AI스러운 시인성 효과도
@@ -624,8 +660,8 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(35,104,216,0.34)
 .ai-surface > * { position: relative; z-index: 1; }
 
 /* 진행 중에는 같은 문법이 빨라지고 진해진다. */
-.ai-surface.is-active { border-color: rgba(35,104,216,0.52); box-shadow: 0 0 0 3px rgba(35,104,216,0.09); }
-.ai-surface.tone-teal.is-active { border-color: rgba(31,143,130,0.52); box-shadow: 0 0 0 3px rgba(31,143,130,0.1); }
+.ai-surface.is-active { border-color: rgba(35,104,216,0.52); --cc-ai-rim: rgba(35,104,216,0.3); --cc-ai-rim-lit: rgba(35,104,216,0.55); animation-duration: 2.6s; }
+.ai-surface.tone-teal.is-active { border-color: rgba(31,143,130,0.52); --cc-ai-rim: rgba(31,143,130,0.3); --cc-ai-rim-lit: rgba(31,143,130,0.55); }
 .ai-surface.is-active::before { animation-duration: 2.6s; --cc-ai-peak: 1; }
 .ai-surface.is-done { border-color: rgba(31,143,130,0.45); }
 .ai-surface.is-error { border-color: rgba(165,72,72,0.45); }
@@ -645,6 +681,12 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(35,104,216,0.34)
   0%, 100% { box-shadow: 0 5px 13px rgba(69,74,214,0.24); }
   50% { box-shadow: 0 5px 13px rgba(69,74,214,0.24), 0 0 0 6px rgba(106,75,208,0.11); }
 }
+/* 표면 전체 둘레가 아주 은은하게 밝아졌다 어두워진다. 대비에는 영향이 없다 —
+   box-shadow는 글자 뒤 배경을 바꾸지 않는다. */
+@keyframes cc-ai-rim {
+  0%, 100% { box-shadow: 0 0 0 1px var(--cc-ai-rim), 0 0 14px -3px var(--cc-ai-rim); }
+  50% { box-shadow: 0 0 0 1px var(--cc-ai-rim-lit), 0 0 21px -1px var(--cc-ai-rim-lit); }
+}
 @keyframes cc-ai-rail {
   from { background-position: 130% 0; }
   to { background-position: -130% 0; }
@@ -654,6 +696,10 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(35,104,216,0.34)
 @media (prefers-reduced-motion: reduce) {
   .ai-surface::before { display: none; }
   .ai-surface .ai-mark { animation: none; }
+  /* 발광은 **멈추되 사라지지 않는다**. 이 박스가 AI 표면이라는 표식은 정지한 빛으로 남는다.
+     전역 reduced-motion 규칙(반복 1회·지속 0.01ms)만 믿으면 애니메이션이 끝난 뒤 값이
+     기본 선언으로 되돌아가므로, 여기서 꺼진 상태의 최종 모습을 직접 못 박는다. */
+  .ai-surface { animation: none; box-shadow: 0 0 0 1px var(--cc-ai-rim-lit), 0 0 14px -3px var(--cc-ai-rim-lit); }
   .ai-stage-bars i.ai-stage-active { background: linear-gradient(90deg, var(--cc-blue), rgba(106,75,208,0.45)); background-size: auto; animation: none; }
 }
 .ai-surface-head { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
