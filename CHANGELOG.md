@@ -4,7 +4,7 @@
 
 ## [Unreleased]
 
-**만난 기록이 만난 시각을 지어내지 않는다** (branch `agent/w9-encounter-contract`, Kairen-Ref: TSK-000322)
+**만난 기록이 만난 시각을 지어내지 않는다** (branch `agent/w9-encounter-contract`, Kairen-Ref: TSK-000325)
 
 > ⚠️ **라이브 워처 재기동(사람) 전까지 적용되지 않는다.** 그동안에도 명함 처리는 정상 진행된다 — 만남 기록만 잠시 만들지 않는다.
 
