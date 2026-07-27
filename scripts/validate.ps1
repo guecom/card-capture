@@ -24,7 +24,7 @@ $required = @(
   'docs/vendor/paddleocr/PP-OCRv5_mobile_det_infer.onnx','docs/vendor/paddleocr/korean_PP-OCRv5_mobile_rec_infer.onnx',
   'docs/vendor/paddleocr/ppocrv5_korean_dict.txt','docs/vendor/ort/ort-wasm-simd-threaded.wasm','docs/vendor/ort/ort-wasm-simd-threaded.mjs',
   'watcher/CardCapture_Watcher.ps1','watcher/CardCapture_Health.ps1',
-  'eval/README.md','eval/run-eval.ps1','eval/upload-idempotency.test.js','eval/camera-quality.test.js','eval/page-syntax.test.js','eval/server-syntax.test.js','eval/ocr-browser-smoke.html','scripts/validate.ps1'
+  'eval/README.md','eval/run-eval.ps1','eval/upload-idempotency.test.js','eval/gas-sandbox.js','eval/golden-capture.test.js','eval/adversarial-capture.test.js','eval/camera-quality.test.js','eval/page-syntax.test.js','eval/server-syntax.test.js','eval/ocr-browser-smoke.html','scripts/validate.ps1'
 )
 $missing = @($required | Where-Object { -not (Test-Path (Join-Path $root $_)) })
 if ($missing.Count -gt 0) { Fail ("required files missing: " + ($missing -join ', ')) } else { Pass 'required files present' }
@@ -132,6 +132,10 @@ if ($null -eq $node) {
   if ($LASTEXITCODE -ne 0) { Fail 'upload idempotency / lifecycle non-regression test failed' } else { Pass 'upload idempotency deterministic tests passed' }
   & $node.Source (Join-Path $root 'eval\status-consistency.test.js')
   if ($LASTEXITCODE -ne 0) { Fail 'status consistency test failed' } else { Pass 'status consistency deterministic tests passed' }
+  & $node.Source (Join-Path $root 'eval\golden-capture.test.js')
+  if ($LASTEXITCODE -ne 0) { Fail 'golden capture suite failed' } else { Pass 'golden capture deterministic tests passed' }
+  & $node.Source (Join-Path $root 'eval\adversarial-capture.test.js')
+  if ($LASTEXITCODE -ne 0) { Fail 'adversarial capture corpus failed' } else { Pass 'adversarial capture negative corpus passed' }
 }
 
 # ---------- 8. pinned on-device OCR assets ----------
