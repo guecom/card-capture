@@ -2,9 +2,24 @@
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
 
+/* 서체 (founder 판정 2026-07-28 — "서체는 너가 확인해봐").
+   확인 결과: `Inter, Pretendard`를 이름으로만 적어 두고 **한 번도 싣지 않았다.** 모든 기기가
+   OS 기본 서체로 떨어졌고, 이 스타일시트가 위계를 위해 쓰는 numeric weight 15종(550~800)이
+   대부분 렌더되지 않았다 — Windows Chrome 실측에서 `650`과 `780`의 글자 폭이 완전히 같았다.
+   이제 가변 서체를 실제로 싣는다. `wght` 축이 45~930이라 중간 단계가 전부 진짜로 그려진다.
+   `swap`: 받기 전에는 지금까지의 시스템 서체로 그리고, 도착하면 바꿔 끼운다 — 글자가 사라지는
+   순간이 없다. 부분집합·라이선스·SHELL 제외 이유는 `src/fonts/README.md`. */
+@font-face {
+  font-family: "Pretendard Variable";
+  src: url("../fonts/pretendard-variable-korean.woff2") format("woff2-variations");
+  font-weight: 45 930;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   color-scheme: light;
-  --ion-font-family: Inter, Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --ion-font-family: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --ion-background-color: #f5f7fb;
   --ion-text-color: #162333;
   --ion-color-primary: #2368d8;
@@ -75,8 +90,8 @@
   /* AI 표면을 지나가는 빛 (INT-000016 항목 002 · 전폭 재설계 2026-07-28 항목 2·5).
      `glow`는 띠의 가장자리, `glow-core`는 한가운데다. 두 값이 있어야 띠의 모양이 생긴다 —
      하나뿐이던 예전 값은 작은 원반 하나라 박스의 절반도 지나지 못했다. */
-  --cc-ai-glow: rgba(var(--cc-accent), 0.05);
-  --cc-ai-glow-core: rgba(var(--cc-accent), 0.15);
+  --cc-ai-glow: rgba(var(--cc-accent), 0.07);
+  --cc-ai-glow-core: rgba(var(--cc-accent), 0.22);
   /* 표면 **둘레**의 빛 (founder 지시 2026-07-27). `--cc-ai-glow`는 표면 안을 지나가는 띠이고,
      이 둘은 다른 층이다. `rim`이 평소, `rim-lit`이 숨을 들이쉰 순간·처리 중이다. */
   --cc-ai-rim: rgba(var(--cc-accent), 0.16);
@@ -140,8 +155,8 @@
   /* 색조는 --cc-accent가 소유하고 여기서는 **세기**만 정한다. 어두운 면 위에서는 같은 알파가
      훨씬 적게 보이므로 라이트보다 올린다 — 예전에 라이트와 같은 값을 쓴 결과가 "안 나온다"였다.
      실측 기준: 띠가 지나갈 때 배경 채널이 30/255 안팎으로 움직인다 (은은하되 보이는 구간). */
-  --cc-ai-glow: rgba(var(--cc-accent), 0.07);
-  --cc-ai-glow-core: rgba(var(--cc-accent), 0.19);
+  --cc-ai-glow: rgba(var(--cc-accent), 0.09);
+  --cc-ai-glow-core: rgba(var(--cc-accent), 0.28);
   --cc-ai-rim: rgba(var(--cc-accent), 0.26);
   --cc-ai-rim-lit: rgba(var(--cc-accent), 0.5);
 }
@@ -461,9 +476,18 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(var(--cc-accent)
   .signal-grid { grid-template-columns: repeat(2, minmax(0, 220px)); }
 }
 
+/* 움직임 최소화. 두 갈래로 적는다:
+   1. 미디어 쿼리 — JS가 `data-motion`을 붙이기 전 **첫 프레임부터** 폰 설정을 존중한다.
+      단 `켜기`를 명시적으로 고른 사람은 제외한다(`:not([data-motion="on"])`).
+   2. 속성 — 폰은 그대로인데 앱에서만 끄기를 고른 사람. */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  :root:not([data-motion="on"]) *,
+  :root:not([data-motion="on"]) *::before,
+  :root:not([data-motion="on"]) *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
+:root[data-motion="off"] *,
+:root[data-motion="off"] *::before,
+:root[data-motion="off"] *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 
 /* ── 브리핑·프로필 마크다운 렌더링 (legacy mdLite 파리티) ── */
 .md-lite { display: grid; gap: 2px; color: var(--cc-ink); font-size: 13px; line-height: 1.55; }
@@ -683,18 +707,26 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(var(--cc-accent)
    원반 하나였고, 한 주기 동안 폭의 72%(다크)·48%(라이트)만 스쳤다. 나머지는 늘 같은 색이라
    "박스가 빛난다"가 아니라 "구석에 얼룩이 있다"로 읽힌다.
    지금은 표면보다 넓은 **띠**가 왼쪽 밖에서 오른쪽 밖까지 건너간다. 어느 열도 빠지지 않는다.
-   회귀 게이트(`e2e/surface-polish.spec.ts`)가 열 단위로 커버리지와 진폭을 실제 픽셀에서 잰다. */
+   회귀 게이트(`e2e/surface-polish.spec.ts`)가 열 단위로 커버리지와 진폭을 실제 픽셀에서 잰다.
+
+   2026-07-28 2차 판정: 실기기에서 "여전히 안 나옴". 조건을 하나씩 흉내 내 재 보니
+   원인은 이 층이 아니라 **폰의 움직임 최소화**였다(그 상태에서 시간에 따른 픽셀 변화 0).
+   그건 아래 `[data-motion="off"]`가 소유한다. 다만 같이 고친 두 가지가 여기 있다:
+     1. 움직임을 `transform`으로 옮겼다. `background-position`은 매 프레임 다시 칠해야 해서
+        폰에서 프레임이 떨어지면 느린 7.5초 띠가 정지 화면처럼 보인다. transform은 합성만 한다.
+     2. 세기를 올렸다. 어두운 면 위 26/255는 밝은 실내에서 "없는 것"과 구별되지 않았다.
+   `::before`는 표면과 같은 크기이고, -100%에서 +100%까지 미끄러지며 밝은 한가운데가
+   왼쪽 끝에서 오른쪽 끝까지 지나간다. 양 끝 구간은 빛이 화면 밖이라 사이에 쉼이 생긴다. */
 .ai-surface::before {
   position: absolute;
   z-index: 0;
   inset: 0;
-  background: linear-gradient(100deg, transparent 0%, var(--cc-ai-glow) 34%, var(--cc-ai-glow-core) 50%, var(--cc-ai-glow) 66%, transparent 100%);
-  background-repeat: no-repeat;
-  background-size: 260% 100%;
-  opacity: var(--cc-ai-peak, 0.62);
+  background: linear-gradient(100deg, transparent 0%, var(--cc-ai-glow) 28%, var(--cc-ai-glow-core) 50%, var(--cc-ai-glow) 72%, transparent 100%);
+  opacity: var(--cc-ai-peak, 1);
   content: "";
   pointer-events: none;
-  animation: cc-ai-sweep 7.5s ease-in-out infinite;
+  will-change: transform;
+  animation: cc-ai-sweep 6.5s ease-in-out infinite;
 }
 /* 내용은 항상 빛 위에 있어야 한다 — 가독성은 이 효과보다 우선한다. */
 .ai-surface > * { position: relative; z-index: 1; }
@@ -711,10 +743,10 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(var(--cc-accent)
 .ai-surface.is-active .ai-mark { animation-duration: 1.6s; }
 
 /* 띠는 표면 밖에서 시작해 표면 밖에서 끝난다. 중간에 꺼지지 않으므로 어느 열도 빠지지 않는다.
-   `260%` 크기에 `180% → -80%` 위치는 밝은 한가운데가 왼쪽 밖에서 오른쪽 밖까지 건너가는 구간이다. */
+   `-100% → 100%`는 표면과 같은 크기의 층이 왼쪽 완전 바깥에서 오른쪽 완전 바깥까지 가는 구간이다. */
 @keyframes cc-ai-sweep {
-  0% { background-position: 180% 0; }
-  100% { background-position: -80% 0; }
+  0% { transform: translate3d(-100%, 0, 0); }
+  100% { transform: translate3d(100%, 0, 0); }
 }
 @keyframes cc-ai-breath {
   0%, 100% { box-shadow: 0 5px 13px rgba(var(--cc-accent), 0.22); }
@@ -731,16 +763,15 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(var(--cc-accent)
   to { background-position: -130% 0; }
 }
 
-/* 움직임을 끄면 효과는 사라지되 상태는 남는다 — 테두리·단계 글자가 그대로 말한다. */
-@media (prefers-reduced-motion: reduce) {
-  .ai-surface::before { display: none; }
-  .ai-surface .ai-mark { animation: none; }
-  /* 발광은 **멈추되 사라지지 않는다**. 이 박스가 AI 표면이라는 표식은 정지한 빛으로 남는다.
-     전역 reduced-motion 규칙(반복 1회·지속 0.01ms)만 믿으면 애니메이션이 끝난 뒤 값이
-     기본 선언으로 되돌아가므로, 여기서 꺼진 상태의 최종 모습을 직접 못 박는다. */
-  .ai-surface { animation: none; box-shadow: 0 0 0 1px var(--cc-ai-rim-lit), 0 0 14px -3px var(--cc-ai-rim-lit); }
-  .ai-stage-bars i.ai-stage-active { background: linear-gradient(90deg, rgb(var(--cc-accent)), rgba(var(--cc-accent), 0.45)); background-size: auto; animation: none; }
-}
+/* 움직임을 끄면 효과는 사라지되 상태는 남는다 — 테두리·단계 글자가 그대로 말한다.
+   `data-motion`은 사용자가 설정에서 고른 값이 해석된 결과다(`services/motion.ts`).
+   `시스템`을 골랐을 때만 폰의 움직임 최소화를 따르므로 여기서 `prefers-reduced-motion`을
+   직접 보지 않는다 — 그러면 `켜기`를 고른 사람의 화면까지 멈춘다. 테마와 같은 규칙이다. */
+:root[data-motion="off"] .ai-surface::before { display: none; }
+:root[data-motion="off"] .ai-surface .ai-mark { animation: none; }
+/* 발광은 **멈추되 사라지지 않는다**. 이 박스가 AI 표면이라는 표식은 정지한 빛으로 남는다. */
+:root[data-motion="off"] .ai-surface { animation: none; box-shadow: 0 0 0 1px var(--cc-ai-rim-lit), 0 0 14px -3px var(--cc-ai-rim-lit); }
+:root[data-motion="off"] .ai-stage-bars i.ai-stage-active { background: linear-gradient(90deg, rgb(var(--cc-accent)), rgba(var(--cc-accent), 0.45)); background-size: auto; animation: none; }
 .ai-surface-head { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
 .ai-surface-head strong { color: var(--cc-ink); font-size: 13.5px; font-weight: 790; letter-spacing: -0.02em; }
 .ai-surface-head p { flex: 1 0 100%; margin: 0; color: var(--cc-muted); font-size: 11.5px; line-height: 1.5; word-break: keep-all; }

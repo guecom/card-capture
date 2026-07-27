@@ -76,7 +76,12 @@ function candidatePwa(): Plugin {
     name: 'card-capture-candidate-pwa',
     apply: 'build',
     generateBundle(_options, bundle) {
-      const emitted = Object.keys(bundle).filter((file) => !file.endsWith('.map')).sort();
+      // `.woff2`는 SHELL에서 뺀다 (founder 판정 2026-07-28, 서체 도입).
+      // `cache.addAll(SHELL)`은 **원자적**이라 한 항목만 실패해도 설치 전체가 실패하고 오프라인
+      // 껍데기가 통째로 안 만들어진다. 1.7MB 서체 하나 때문에 전시장 회선에서 그 위험을 지는 대신,
+      // `font-display: swap`으로 필요할 때 받아 브라우저 HTTP 캐시에 맡긴다. 못 받으면 시스템
+      // 서체로 그려질 뿐 기능은 그대로다. 자세한 근거는 `src/fonts/README.md`.
+      const emitted = Object.keys(bundle).filter((file) => !file.endsWith('.map') && !file.endsWith('.woff2')).sort();
       const shell = Array.from(new Set(['./', './index.html', ...emitted.map((file) => `./${file}`)]));
       const cacheName = `cardcapture-next-${stableHash(shell)}`;
       const serviceWorker = `/* Generated candidate service worker — Kairen-Ref: TSK-000221 */

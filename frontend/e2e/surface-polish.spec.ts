@@ -320,3 +320,106 @@ test('corner radii stay on a deliberate scale instead of blanket softness', asyn
     harness.server.close();
   }
 });
+
+// ── 007: 폰이 움직임을 줄여도, 사용자가 켜기를 고르면 앱은 움직인다 ──
+//
+// founder 2차 판정 2026-07-28: "여전히 하이라이팅이 안 나옴".
+// 실측으로 원인을 갈랐다 — 폰이 `움직임 최소화`를 켜고 있으면 우리 빛은 한 픽셀도 그려지지 않았다
+// (그 조건에서 시간에 따른 픽셀 변화 0). 그건 결함이 아니라 존중이지만 **말없이 사라지면 고장으로
+// 읽힌다.** 그래서 OS 설정은 기본값이 되고, 설정에서 직접 켤 수 있어야 한다.
+//
+// 이 게이트가 지키는 계약은 셋이다:
+//   (a) 아무것도 고르지 않은 사람에게는 폰 설정이 그대로 존중된다 (지금까지의 약속을 깨지 않는다)
+//   (b) 그때 화면은 **왜** 멈춰 있는지 말한다
+//   (c) `켜기`를 고르면 폰이 여전히 줄이라고 해도 앱 안에서는 움직인다
+test('a phone that reduces motion stops the light, says so, and can be overridden', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const harness = await boot(page, 'dark');
+  try {
+    // (a) 기본값 `시스템` — 폰이 줄이라고 하면 멈춘다.
+    await expect(page.locator('html')).toHaveAttribute('data-motion', 'off');
+    const surface = page.locator('.ai-surface.research-request');
+    const stopped = await surface.evaluate((node) => ({
+      sweep: getComputedStyle(node, '::before').display,
+      looping: node.getAnimations({ subtree: true })
+        .filter((a) => a.playState === 'running' && (a.effect?.getComputedTiming().iterations ?? 1) === Infinity).length,
+    }));
+    expect(stopped.sweep, '움직임을 줄인 폰에서 빛이 계속 그려진다').toBe('none');
+    expect(stopped.looping, '움직임을 줄인 폰에서 무한 애니메이션이 돈다').toBe(0);
+
+    // (b) 왜 멈춰 있는지 화면이 말한다.
+    await page.getByRole('button', { name: '설정', exact: true }).click();
+    const card = page.getByRole('radiogroup', { name: '화면 움직임' });
+    await expect(card).toBeVisible();
+    await expect(page.getByText(/움직임 최소화를 켜 두어서/)).toBeVisible();
+
+    // (c) 켜기를 고르면 폰 설정과 무관하게 앱 안에서 움직인다 — 이게 이번 판정의 핵심이다.
+    await card.getByRole('radio', { name: /켜기/ }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-motion', 'on');
+    await page.getByRole('button', { name: '캡처', exact: true }).click();
+    await surface.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(200);
+    const revived = await surface.evaluate((node) => ({
+      sweep: getComputedStyle(node, '::before').display,
+      looping: node.getAnimations({ subtree: true })
+        .filter((a) => a.playState === 'running' && (a.effect?.getComputedTiming().iterations ?? 1) === Infinity).length,
+    }));
+    expect(revived.sweep, '켜기를 골랐는데도 빛이 그려지지 않는다').not.toBe('none');
+    expect(revived.looping, '켜기를 골랐는데도 애니메이션이 돌지 않는다').toBeGreaterThan(0);
+
+    // 값이 아니라 픽셀로 확인한다 — 애니메이션이 "돈다"고 보고되면서 화면은 정지한 경우가 실제로 있었다.
+    const box = (await surface.boundingBox())!;
+    const clip = { x: Math.round(box.x) + 8, y: Math.round(box.y) + 2, width: Math.round(box.width) - 16, height: 10 };
+    const frames: Buffer[] = [];
+    for (let i = 0; i < 4; i += 1) { frames.push(await page.screenshot({ clip })); await page.waitForTimeout(800); }
+    let moved = 0;
+    for (let i = 0; i < frames.length; i += 1) {
+      for (let j = i + 1; j < frames.length; j += 1) moved = Math.max(moved, ...(await columnDeltas(page, frames[i], frames[j])));
+    }
+    expect(moved, `켜기를 골랐는데 화면이 실제로는 정지해 있다 (${moved}/255)`).toBeGreaterThanOrEqual(10);
+
+    // 고른 값은 이 기기에 남는다.
+    expect(await page.evaluate(() => localStorage.getItem('cc_motion'))).toBe('on');
+  } finally {
+    harness.server.close();
+  }
+});
+
+// ── 008: 스타일시트가 요구하는 굵기가 실제로 렌더된다 ──
+//
+// founder 2026-07-28: "서체는 너가 확인해봐."
+// 확인 결과 `Inter, Pretendard`를 이름으로만 적어 두고 한 번도 싣지 않았다. 모든 기기가 OS 기본
+// 서체로 떨어졌고, 위계를 위해 쓴 numeric weight 15종이 두 단계로 뭉개졌다 — 수정 전 실측에서
+// `650`과 `780`의 글자 폭이 **완전히 같았다**(둘 다 bold로 스냅).
+// 이 게이트는 "서체 파일이 있다"가 아니라 **"굵기가 서로 다르게 그려진다"**를 잰다.
+test('the weights the stylesheet asks for are actually different on screen', async ({ page }) => {
+  const harness = await boot(page, 'light');
+  try {
+    const measured = await page.evaluate(async () => {
+      await document.fonts.ready;
+      const family = getComputedStyle(document.documentElement).getPropertyValue('--ion-font-family');
+      const loaded = [...document.fonts].filter((face) => face.status === 'loaded').map((face) => face.family);
+      const probe = document.createElement('div');
+      probe.style.cssText = 'position:fixed;left:-9999px;top:0;font-size:40px;white-space:nowrap';
+      probe.style.fontFamily = family;
+      document.body.appendChild(probe);
+      const widths: Record<number, number> = {};
+      // 한글과 라틴을 같이 잰다 — 라틴만 실린 서체는 본문 대부분을 못 고친다.
+      for (const weight of [400, 550, 650, 700, 780, 800]) {
+        probe.style.fontWeight = String(weight);
+        probe.textContent = '명함 캡처 Kairen';
+        widths[weight] = Math.round(probe.getBoundingClientRect().width * 100) / 100;
+      }
+      probe.remove();
+      return { loaded, widths };
+    });
+    expect(measured.loaded.length, '실제로 로드된 웹폰트가 하나도 없다 — 이름만 적어 둔 상태다').toBeGreaterThan(0);
+    const distinct = new Set(Object.values(measured.widths));
+    expect(
+      distinct.size,
+      `굵기가 화면에서 구분되지 않는다 (요청 6단계 → 실제 ${distinct.size}단계): ${JSON.stringify(measured.widths)}`,
+    ).toBeGreaterThanOrEqual(5);
+  } finally {
+    harness.server.close();
+  }
+});
