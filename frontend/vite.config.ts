@@ -2,7 +2,10 @@ import { defineConfig } from 'vitest/config';
 import type { Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { join, relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 function readLegacyDefaultApi(): string {
   const legacyHtml = readFileSync(new URL('../docs/legacy.html', import.meta.url), 'utf8');
@@ -10,6 +13,54 @@ function readLegacyDefaultApi(): string {
   if (!match?.[1]) throw new Error('legacy_default_api_missing');
   return match[1];
 }
+
+/**
+ * 빌드 식별자 = 소스의 내용 해시. 벽시계가 아니다. (Kairen-Ref: TSK-000290)
+ *
+ * 예전 값은 `new Date()`였다. 그 문자열이 App.tsx의 build-line을 통해 entry 청크에 박히는
+ * 바람에, 소스를 하나도 안 바꿔도 분이 넘어가면 entry 내용 → entry 콘텐츠 해시 파일명 →
+ * index.html의 script src → sw.js의 SHELL 목록과 캐시 이름까지 연쇄로 바뀌었다.
+ * 결과적으로 커밋된 `docs/next/**`가 정말 그 소스에서 나온 산출물인지 검증할 수 없었다.
+ *
+ * 지금 값은 번들에 실제로 들어가는 입력만으로 결정된다. 그래서
+ *   1. 같은 소스 → 항상 같은 산출물 (eval/build-reproducibility.test.js가 강제한다)
+ *   2. 설정 화면에 보이는 식별자로 "이 번들이 어느 소스에서 나왔나"를 역으로 대조할 수 있다
+ * CRLF/LF는 정규화한다 — Windows 체크아웃(core.autocrlf=true)과 리눅스 CI가 같은 소스에
+ * 대해 같은 식별자를 내야 하기 때문이다.
+ */
+function sourceBuildId(defaultApi: string): string {
+  const frontendDir = fileURLToPath(new URL('.', import.meta.url));
+  const files: string[] = [];
+  const collect = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) collect(full);
+      else files.push(full);
+    }
+  };
+  collect(join(frontendDir, 'src'));
+  for (const name of ['index.html', 'package.json', 'package-lock.json', 'vite.config.ts']) {
+    files.push(join(frontendDir, name));
+  }
+
+  // 정렬 키는 OS 경로 구분자와 무관해야 한다.
+  const keyed = files
+    .map((full) => ({ rel: relative(frontendDir, full).split(sep).join('/'), full }))
+    .sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+
+  const hash = createHash('sha256');
+  for (const { rel, full } of keyed) {
+    hash.update(rel);
+    hash.update('\0');
+    hash.update(readFileSync(full, 'utf8').replace(/\r\n/g, '\n'));
+    hash.update('\0');
+  }
+  // docs/legacy.html에서 주입되는 pinned endpoint도 번들 내용의 일부다.
+  hash.update(defaultApi);
+  return `src-${hash.digest('hex').slice(0, 12)}`;
+}
+
+const legacyDefaultApi = readLegacyDefaultApi();
 
 function stableHash(values: string[]): string {
   let hash = 2166136261;
@@ -132,9 +183,10 @@ export default defineConfig({
     ],
   },
   define: {
-    __CARD_CAPTURE_DEFAULT_API__: JSON.stringify(readLegacyDefaultApi()),
+    __CARD_CAPTURE_DEFAULT_API__: JSON.stringify(legacyDefaultApi),
     // 설정 화면에 노출되는 빌드 식별자 — "지금 무슨 버전을 보고 있나"를 원격으로 확인하는 용도.
-    __CARD_CAPTURE_BUILD_ID__: JSON.stringify(new Date().toISOString().slice(0, 16).replace('T', ' ') + 'Z'),
+    // 소스 내용 해시라 재현 가능하고, 저장소에서 다시 계산해 대조할 수 있다.
+    __CARD_CAPTURE_BUILD_ID__: JSON.stringify(sourceBuildId(legacyDefaultApi)),
   },
   plugins: [
     react(),
