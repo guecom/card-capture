@@ -398,6 +398,98 @@ TB 'FI-019 안전: 이름이 안전하지 않은 캡처 폴더는 처리 대상�
     return (@($bl | Where-Object { $_.id -match 'evil' }).Count -eq 0)
 }
 
+# =====================================================================
+# FI-019 재충전 경계 (TSK-000291)
+#   판정: 사람이 입력을 실제로 고쳐 다시 보낸 것에 새 시도 예산을 주는 것은 설계다 — 결함이 아니다.
+#         (워처 주석 계약: '웹앱에서 다시 보내면(receivedAt 갱신) 자동 해제된다')
+#         서버(Code.gs sameAsStoredUpload_)가 똑같은 내용 재전송을 dedup해 capture.json을 다시
+#         쓰지 않으므로 receivedAt이 갱신되지 않는다 = blind 재전송은 재충전 경로가 아니다.
+#   결함은 '사람 개입 없이' 예산이 재충전되는 경로다. 아래가 그 경계를 고정한다.
+# =====================================================================
+$null = New-Capture 'Z0001' 'received' '2026-07-25T09:00:00Z'
+$null = New-Capture 'Z0009' 'received' '2026-07-25T09:30:00Z'
+Set-StubConf @('Z0001') 'exit1'
+
+function ZPath { return (Join-Path (Join-Path $sbInbox 'Z0001') 'capture.json') }
+function ZMeta { return (Get-Content (ZPath) -Raw -Encoding UTF8 | ConvertFrom-Json) }
+function ZWrite($m) { ($m | ConvertTo-Json) | Out-File -Encoding utf8 (ZPath) }
+# 격리될 때까지 트리거를 반복한다 (실패마다 루프가 break하므로 트리거가 여러 번 필요하다).
+function Invoke-UntilQuarantined {
+    for ($i = 0; $i -lt 8; $i++) {
+        $st = Get-CaptureState 'Z0001'
+        if ($st.quarantined -eq $true) { break }
+        $script:ConsecutiveFailures = 0
+        Invoke-Processing
+    }
+}
+
+TB 'FI-019 recharge: 출발점 — poison 항목이 MaxAttempts 소진 후 격리된다' {
+    Invoke-UntilQuarantined
+    $st = Get-CaptureState 'Z0001'
+    return (($st.quarantined -eq $true) -and ([int]$st.attempts -eq $maxA) -and ((Count-Calls 'Z0001') -eq $maxA))
+}
+
+TB 'FI-019 recharge: 처리기가 쓰는 출력 필드는 입력 fingerprint를 바꾸지 않는다 (자동 재충전 없음)' {
+    # codex 처리기와 quick-pass(contact)가 capture.json에 쓰는 필드는 전부 출력측이다.
+    # 하나라도 입력 fingerprint에 들어가면 '처리를 시도했다'는 사실만으로 지문이 달라져
+    # 사람 개입 없이 예산이 재충전된다 = 무한 재시도. 지문이 그대로인지 직접 비교한다
+    # (격리 유지만 보면 값이 우연히 같을 때 게이트가 통과해 버린다).
+    $fpBefore = Fp 'Z0001'
+    $m = ZMeta
+    foreach ($kv in @(@('processedAt', '2026-07-25T10:00:00Z'), @('person', 'PER-000999'),
+                      @('personAction', 'updated'), @('processedBy', 'stub'), @('reviewStatus', 'agent_checked'))) {
+        $m | Add-Member -NotePropertyName $kv[0] -NotePropertyValue $kv[1] -Force
+    }
+    $m | Add-Member -NotePropertyName contact -NotePropertyValue ([PSCustomObject]@{ name = 'quick-extract' }) -Force
+    ZWrite $m
+    $fpAfter = Fp 'Z0001'
+    $held = Test-CaptureQuarantined 'Z0001' $fpAfter
+    $st = Get-CaptureState 'Z0001'
+    return (($fpBefore -ne '') -and ($fpAfter -eq $fpBefore) -and $held -and
+            ([int]$st.attempts -eq $maxA) -and ((Count-Calls 'Z0001') -eq $maxA))
+}
+
+TB 'FI-019 recharge: 입력 fingerprint를 읽지 못하면 격리를 해제하지 않는다 (fail-closed)' {
+    # Drive 동기화 중 부분 기록·파싱 실패면 Get-CaptureFingerprint가 ''를 낸다.
+    # ''는 '입력이 달라졌다'가 아니라 '지금은 알 수 없다'다. 이걸 새 입력으로 취급하면
+    # capture.json을 한 번 못 읽을 때마다 사람 개입 없이 MaxAttempts가 재충전된다.
+    $good = Get-Content (ZPath) -Raw -Encoding UTF8
+    # raw에는 status=received가 그대로 보이지만 JSON 파싱은 실패하는 부분 기록 상태
+    '{"captureId":"Z0001","status":"received","receivedAt":"2026-07-25T09:00:00Z","files":["front.jpg"' |
+        Out-File -Encoding utf8 (ZPath)
+    $unknownFp = (Fp 'Z0001')
+    $held = Test-CaptureQuarantined 'Z0001' $unknownFp
+    $st = Get-CaptureState 'Z0001'
+    $queued = @((Get-Backlog) | Where-Object { $_.id -eq 'Z0001' }).Count
+    $good | Out-File -Encoding utf8 (ZPath)
+    return (($unknownFp -eq '') -and $held -and ([int]$st.attempts -eq $maxA) -and ($queued -eq 0))
+}
+
+TB 'FI-019 recharge: 읽기 실패 뒤 파일이 정상으로 돌아와도 격리가 그대로다' {
+    $st = Get-CaptureState 'Z0001'
+    return ((Test-CaptureQuarantined 'Z0001' (Fp 'Z0001')) -and ([int]$st.attempts -eq $maxA))
+}
+
+TB 'FI-019 recharge: 진짜 입력 변경은 예산을 정확히 MaxAttempts만큼만 재충전한다' {
+    # 사람이 note를 고쳐 다시 보낸 경우 = 새 입력. 새 예산을 주는 것은 설계다.
+    # 다만 그 예산도 다시 유한해야 한다 — 재충전이 무한 재시도로 번지면 안 된다.
+    $before = Count-Calls 'Z0001'
+    $m = ZMeta
+    $m | Add-Member -NotePropertyName note -NotePropertyValue 'user edited this note' -Force
+    ZWrite $m
+    $released = -not (Test-CaptureQuarantined 'Z0001' (Fp 'Z0001'))
+    $st0 = Get-CaptureState 'Z0001'
+    Invoke-UntilQuarantined
+    $st = Get-CaptureState 'Z0001'
+    return ($released -and ([int]$st0.attempts -eq 0) -and ($st.quarantined -eq $true) -and
+            ([int]$st.attempts -eq $maxA) -and (((Count-Calls 'Z0001') - $before) -eq $maxA))
+}
+
+TB 'FI-019 recharge: 재충전 중에도 정상 항목은 계속 처리된다' {
+    $m = Get-Content (Join-Path (Join-Path $sbInbox 'Z0009') 'capture.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    return ($m.status -eq 'processed')
+}
+
 # ---- summary + cleanup ----
 Write-Host ''
 Write-Host ("summary: pass=" + $pass + " fail=" + $fail)

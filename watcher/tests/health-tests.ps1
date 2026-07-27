@@ -125,8 +125,52 @@ function Invoke-Health($extra) {
     return [PSCustomObject]@{ out = $out; code = $code }
 }
 
+# 고아 워처가 '여럿'인 상황을 프로세스를 새로 띄우거나 죽이지 않고 재현한다.
+# health를 중간 셸을 한 단계 거쳐 손자로 실행하면, 워처 패턴에 걸리는 살아 있는 프로세스가
+# 러너와 중간 셸 둘이 된다. health는 자기 자신(PID)만 고아 목록에서 제외하므로 둘 다 고아로 보여야 한다.
+# (실제 사고와 같은 모양: health가 가리키는 pid는 죽었고, 그것과 다른 워처 프로세스가 여러 개 떠 있다.)
+$orphanMarker = 'CCWA4ORPHANMARK'
+$multiOrphanPattern = '(health-tests\.ps1|' + $orphanMarker + ')'
+
+function Invoke-HealthNested($extra) {
+    # 인자는 반드시 작은따옴표로 감싼다. 큰따옴표는 native 인자 전달에서 벗겨져
+    # 패턴의 괄호·파이프가 안쪽 셸에서 명령으로 해석된다(실측: 'module could not be loaded').
+    $q = [string][char]39
+    $innerArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ($q + $healthScript + $q),
+        '-Root', ($q + $root + $q), '-WatcherProcessPattern', ($q + $multiOrphanPattern + $q))
+    if ($extra) { $innerArgs += $extra }
+    # marker 문자열을 중간 셸의 command line에 남기는 것이 목적이다 (동작은 no-op).
+    $outer = $q + $orphanMarker + $q + ' | Out-Null; & powershell.exe ' + ($innerArgs -join ' ')
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $out = ''
+    try {
+        $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $outer 2>&1 | Out-String
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+    return [PSCustomObject]@{ out = $out; code = -1 }
+}
+
+# QUARANTINE(격리 발생) 한 줄과 quarantine released(격리 해제) 한 줄을 함께 담은 로그.
+function Set-LogWithRelease {
+    $lines = @(
+        '2026-07-27 10:00:00 === watcher started (watcher-v3.0, codex engine) PID=4242 ===',
+        '2026-07-27 10:01:00 QUARANTINE CAP0001 attempts=3 reason=processor_exit_1 — 캡처는 그대로 둔다',
+        '2026-07-27 10:02:00 quarantine released CAP0001 (new input fingerprint)',
+        '2026-07-27 10:02:30 quarantine hold CAP0002 — 입력 fingerprint를 읽지 못했다(unknown), 격리를 유지한다',
+        '2026-07-27 10:03:00 heartbeat (PID=4242, loop alive)'
+    )
+    $lines -join "`r`n" | Out-File -Encoding utf8 (Join-Path $root 'watcher.log')
+}
+
 function Get-Json($r) {
     try { return ($r.out | ConvertFrom-Json) } catch { return $null }
+}
+
+function Show-Or-Null($v) {
+    if ($null -eq $v) { return '<null>' }
+    return [string]$v
 }
 
 function Test-NoSentinel($text) {
@@ -310,6 +354,54 @@ try {
     T ($null -ne $j -and $j.exitCode -eq $rj.code) 'G16 json exitCode matches process exit code'
     # -cmatch: 대소문자를 구분한다. 'exit code ... 2 critical' 같은 안내 문구에 우연히 걸리면 안 된다.
     T ($rh.out -cmatch 'verdict\s*:\s*CRITICAL') 'G16 human output states the verdict'
+
+    # ---- G17 고아 워처가 여럿이면 전부 나열한다 ----
+    #      운영 함정: 하나만 정리하고 재기동하면 남은 프로세스가 싱글턴 mutex를 쥐고 있어
+    #      새 워처가 'another instance running, exit'로 즉시 죽는다. 하나만 보여주면 못 고친다.
+    Reset-Fixture
+    Set-Health @{ version = 'watcher-v3.0'; pid = $deadPid; startedAt = $nowStamp; lastHeartbeat = $nowStamp; backlogCount = 0 }
+    $rn = Invoke-HealthNested @('-Json')
+    $jn = Get-Json $rn
+    $orphans = @()
+    if ($null -ne $jn) { $orphans = @($jn.watcher.orphanWatchers) }
+    T ($orphans.Count -ge 2) ('G17 multiple orphan watchers all listed (listed=' + $orphans.Count + ')')
+    T (@($orphans | Where-Object { [int]$_.pid -eq $selfPid }).Count -eq 1) 'G17 the runner process is one of the listed orphans'
+    $orphanPids = @()
+    if ($null -ne $jn) { $orphanPids = @($jn.watcher.orphanWatcherPids) }
+    T ($orphanPids.Count -eq $orphans.Count) ('G17 pid list and detail list agree in size (pids=' + $orphanPids.Count + ' detail=' + $orphans.Count + ')')
+
+    # ---- G18 각 고아는 시작 시각과 함께 보고된다 (pid만으로는 무엇을 정리했는지 알 수 없다) ----
+    $stamped = @($orphans | Where-Object { $_.startedAt -and ([string]$_.startedAt) -match '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$' })
+    T ($orphans.Count -ge 2 -and $stamped.Count -eq $orphans.Count) ('G18 every orphan carries a start time (' + $stamped.Count + '/' + $orphans.Count + ')')
+    $selfStart = ''
+    try { $selfStart = (Get-Process -Id $selfPid).StartTime.ToString('yyyy-MM-dd HH:mm:ss') } catch { $selfStart = '' }
+    $selfRow = @($orphans | Where-Object { [int]$_.pid -eq $selfPid })
+    T ($selfStart -and $selfRow.Count -eq 1 -and ([string]$selfRow[0].startedAt) -eq $selfStart) 'G18 reported start time matches the real process start time'
+
+    # ---- G19 사람용 출력도 고아를 하나씩 pid + 시작 시각으로 낸다 ----
+    $rnh = Invoke-HealthNested @()
+    $orphanLines = @([regex]::Matches($rnh.out, '(?m)^  - pid (\d+)  started (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s*$'))
+    T ($orphanLines.Count -ge 2) ('G19 human output lists each orphan on its own line (' + $orphanLines.Count + ')')
+    T (@($orphanLines | Where-Object { [int]$_.Groups[1].Value -eq $selfPid }).Count -eq 1) 'G19 human output shows the runner orphan with its start time'
+
+    # ---- G20 로그 이벤트 라벨은 대소문자를 구분한다 ----
+    #      'quarantine released'가 '^QUARANTINE '에 대소문자 무시로 걸리면 격리 해제가
+    #      격리 발생으로 집계돼, 운영자가 재충전된 항목을 새로 막힌 항목으로 읽는다.
+    Reset-Fixture
+    Set-Health @{ version = 'watcher-v3.0'; pid = $selfPid; startedAt = $nowStamp; lastHeartbeat = $nowStamp; backlogCount = 0 }
+    Set-LogWithRelease
+    $r = Invoke-Health @('-Json', '-WatcherProcessPattern', $selfPattern)
+    $j = Get-Json $r
+    $qc = $null; $qr = $null
+    if ($null -ne $j) { $qc = $j.log.eventCounts.quarantine; $qr = $j.log.eventCounts.quarantine_released }
+    T ($qr -eq 1) ('G20 quarantine release is labeled quarantine_released (got ' + (Show-Or-Null $qr) + ')')
+    T ($qc -eq 1) ('G20 quarantine count is not inflated by release lines (got ' + (Show-Or-Null $qc) + ')')
+    # 워처가 새로 쓰는 줄은 allowlist에 있어야 한다. 없으면 '처리기 raw 출력'으로 묻혀
+    # 격리를 유지한 사실이 진단 표면에서 사라진다.
+    $qh = $null
+    if ($null -ne $j) { $qh = $j.log.eventCounts.quarantine_hold }
+    T ($qh -eq 1) ('G20 quarantine hold is a recognized watcher event (got ' + (Show-Or-Null $qh) + ')')
+    T ($null -ne $j -and $j.log.suppressedLines -eq 0) ('G20 no watcher-written line is dropped as processor output (suppressed=' + $(if ($null -ne $j) { $j.log.suppressedLines } else { '?' }) + ')')
 } finally {
     $env:LOCALAPPDATA = $origLocal
     Remove-Item $sandbox -Recurse -Force -ErrorAction SilentlyContinue

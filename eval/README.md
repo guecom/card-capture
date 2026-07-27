@@ -38,8 +38,16 @@ node eval\server-syntax.test.js
 node eval\golden-capture.test.js
 node eval\adversarial-capture.test.js
 node eval\upload-content-type.test.js
+node eval\persondoc-owner.test.js
+node eval\prompt-injection.test.js
+node eval\build-reproducibility.test.js
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\validate.ps1
 ```
+
+- `persondoc-owner.test.js` — owner 전용 조회(`search`·`doc`·`persondoc`)의 **성공 경로**. 두 세션 동안 `UNPROVEN`이었던 이유는 Drive 계층 스텁이 없어서였다. 스텁이 무엇을 충실히 모사하고 **무엇을 모사하지 않는지**가 `gas-sandbox.js`의 `Drive 계층 충실도 계약` 절에 적혀 있다 — 그 목록 없이는 이 게이트의 PASS가 의미 없다.
+- `prompt-injection.test.js` — 명함 문장이 처리 agent의 지시를 덮어쓸 수 있는가(`FI-020`). 워처 프롬프트가 literal here-string이고 보간되는 값이 allowlist를 통과한 captureId 하나뿐임을 고정한다. 프롬프트 텍스트는 PowerShell 실물 렌더와 sha256으로 대조돼 있어, **워처 프롬프트가 바뀌면 게이트가 재대조를 요구하며 FAIL한다.** 실제 LLM이 주입에 순응하는지는 여전히 `UNPROVEN`이고, 산출물 채점기는 `eval/.work/<id>/`가 생기면 그대로 적용된다.
+- `build-reproducibility.test.js` — 같은 소스에서 두 번 빌드한 산출물이 바이트 동일한가. 가짜 시계·타임존을 주입해 판정한다 — 그냥 두 번 빌드하면 타임스탬프 단위가 1분이라 결함이 있어도 대부분 통과한다.
+- `fixtures/injection/`은 하위 폴더에 있다. 기존 소비자(`golden-capture.test.js`·`run-eval.ps1`·`scripts/validate.ps1`)가 `fixtures`를 **비재귀**로 스캔하므로 기존 corpus 크기·채점 계약에 영향이 없다.
 
 `camera-quality.test.js`는 안정 감지, 흔들림 reset, 흐림, 심한 과노출, 한국어·영어 이름 후보, 회사·연락처 오인을 검증한다. `server-syntax.test.js`는 GAS 문법 뒤 `research-policy.test.js`, `gas-research-policy.test.js`, `status-consistency.test.js`를 실행한다. 마지막 테스트는 목록 cache-busting·`no-store`, POST requeue, 완료·건너뜀 상태 비후퇴, 최신 `receivedAt` 기준 경과 시간을 고정한다. 조사 지시 테스트는 owner/guest, feature flag, target mismatch, initial/existing Person, prompt injection과 금지 effect 9개 fixture를 검증한다. `research-ui-smoke.html`은 390×844 owner 화면에서 최초 등록 tab과 기존 Person action·modal을 확인한다. `ocr-browser-smoke.html`은 로컬 HTTP 서버에서 자체 호스팅 한국어+영어 WASM OCR을 실제로 기동하는 브라우저 smoke다. 실제 명함 감지·자동 촬영·owner/guest live receipt는 `device-acceptance.md`의 Android Chrome/iOS Safari gate를 별도로 통과해야 한다.
 

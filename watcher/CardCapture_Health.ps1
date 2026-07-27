@@ -105,7 +105,13 @@ function Get-PowerShellProcessMap {
     foreach ($p in $procs) {
         $isWatcher = $false
         try { $isWatcher = ([string]$p.CommandLine -match $WatcherProcessPattern) } catch { $isWatcher = $false }
-        $map[[int]$p.ProcessId] = $isWatcher
+        # 시작 시각까지 담는다. 고아가 둘 이상일 때 pid만으로는 운영자가 무엇을 이미 정리했는지,
+        # 어느 쪽이 먼저 떠서 싱글턴 mutex를 쥐고 있는지 구분할 수 없다.
+        $startedAt = $null
+        try {
+            if ($null -ne $p.CreationDate) { $startedAt = ([datetime]$p.CreationDate).ToString('yyyy-MM-dd HH:mm:ss') }
+        } catch { $startedAt = $null }
+        $map[[int]$p.ProcessId] = [PSCustomObject]@{ isWatcher = $isWatcher; startedAt = $startedAt }
     }
     return $map
 }
@@ -200,6 +206,7 @@ $LogEventPatterns = @(
     @{ label = 'card_failed';         re = '^card FAILED' },
     @{ label = 'quarantine';          re = '^QUARANTINE ' },
     @{ label = 'quarantine_released'; re = '^quarantine released' },
+    @{ label = 'quarantine_hold';     re = '^quarantine hold ' },
     @{ label = 'loop_done';           re = '^processing loop done' },
     @{ label = 'lock';                re = '^(lock exists|stale lock)' },
     @{ label = 'lease';               re = '^(claim held by|stale lease reclaimed|claim race lost|claim write failed|lease lost during processing)' },
@@ -228,7 +235,10 @@ function Get-LogEvents {
         $rest = $Matches[2]
         $label = $null
         foreach ($pat in $LogEventPatterns) {
-            if ($rest -match $pat.re) { $label = $pat.label; break }
+            # -cmatch(대소문자 구분)이어야 한다. -match였을 때 'quarantine released'가 '^QUARANTINE '에
+            # 걸려 격리 해제가 격리 발생으로 집계됐다 — 운영자가 정반대 사실을 읽는다.
+            # 모든 패턴은 워처가 실제로 쓰는 대소문자 그대로 적혀 있다.
+            if ($rest -cmatch $pat.re) { $label = $pat.label; break }
         }
         if (-not $label) { $skipped++; continue }   # 워처가 쓰지 않은 줄 = 처리기 출력. 버린다.
         if ($counts.ContainsKey($label)) { $counts[$label] = $counts[$label] + 1 } else { $counts[$label] = 1 }
@@ -261,6 +271,7 @@ $watcher = [PSCustomObject]@{
     heartbeatAgeMin = $null
     process = [PSCustomObject]@{ running = $null; identity = 'unknown' }
     orphanWatcherPids = @()
+    orphanWatchers = @()
 }
 $reported = [PSCustomObject]@{
     stale = $null
@@ -328,7 +339,7 @@ if ($null -ne $h) {
         } elseif ($null -eq $procMap) {
             $watcher.process.identity = 'unknown'
             Sev 1 'watcher_identity_unverified'
-        } elseif ($procMap.ContainsKey($pidInt) -and $procMap[$pidInt]) {
+        } elseif ($procMap.ContainsKey($pidInt) -and $procMap[$pidInt].isWatcher) {
             $watcher.process.identity = 'watcher'
         } else {
             # pid는 살아 있지만 워처가 아니다 = pid 재사용. 워처는 죽은 것이다.
@@ -352,17 +363,25 @@ if ($null -ne $h) {
 }
 
 # 고아 워처: health가 가리키지 않는데 워처로 떠 있는 프로세스.
+# 하나만 보고하면 안 된다 — 운영자가 그 하나만 정리하고 재기동하면 남은 프로세스가 싱글턴 mutex를
+# 쥐고 있어 새 워처가 'another instance running, exit'로 즉시 죽는다(로그 라벨 singleton_blocked).
+# 전부 나열하고, 각각의 시작 시각을 함께 낸다.
 if ($null -ne $procMap) {
     $orphans = New-Object System.Collections.ArrayList
     foreach ($k in ($procMap.Keys | Sort-Object)) {
-        if (-not $procMap[$k]) { continue }
+        if (-not $procMap[$k].isWatcher) { continue }
         if ($k -eq $PID) { continue }                                  # 이 진단 프로세스 자신
         if ($null -ne $watcher.pid -and $k -eq $watcher.pid) { continue }
-        [void]$orphans.Add([int]$k)
+        [void]$orphans.Add([PSCustomObject]@{ pid = [int]$k; startedAt = $procMap[$k].startedAt })
     }
-    $watcher.orphanWatcherPids = @($orphans.ToArray())
+    # 먼저 뜬 것부터. 시작 시각을 모르는 항목은 뒤로 보내고 pid로 순서를 확정한다(출력은 결정적이어야 한다).
+    $sortedOrphans = @($orphans.ToArray() |
+        Sort-Object @{ Expression = { if ($_.startedAt) { [string]$_.startedAt } else { '9999-99-99 99:99:99' } } },
+                    @{ Expression = { [int]$_.pid } })
+    $watcher.orphanWatchers = $sortedOrphans
+    $watcher.orphanWatcherPids = @($sortedOrphans | ForEach-Object { [int]$_.pid })
     # 기록된 pid가 실제 워처인 동안의 중복 프로세스는 싱글턴 mutex가 정리한다 — 그때는 경보하지 않는다.
-    if ($orphans.Count -gt 0 -and $watcher.process.identity -ne 'watcher') { Sev 1 'orphan_watcher_process' }
+    if ($sortedOrphans.Count -gt 0 -and $watcher.process.identity -ne 'watcher') { Sev 1 'orphan_watcher_process' }
 }
 
 # state 디렉터리 관측값은 health 파일이 없거나 낡아도 지금의 사실이다.
@@ -429,8 +448,14 @@ if (-not $healthPresent) {
     Write-Host ("process            : " + $procLine)
     Write-Host ("identity           : " + $watcher.process.identity + "   (기록된 pid가 정말 워처인가)")
 }
-if (@($watcher.orphanWatcherPids).Count -gt 0) {
-    Write-Host ("orphan watcher pid : " + (@($watcher.orphanWatcherPids) -join ', ') + "   (health가 가리키지 않는 워처 프로세스)")
+$orphanRows = @($watcher.orphanWatchers)
+if ($orphanRows.Count -gt 0) {
+    Write-Host ("orphan watchers    : " + $orphanRows.Count + "   (health가 가리키지 않는 워처 프로세스 — 전부 정리해야 재기동이 싱글턴에 막히지 않는다)")
+    foreach ($o in $orphanRows) {
+        $startText = 'unknown'
+        if ($o.startedAt) { $startText = [string]$o.startedAt }
+        Write-Host ("  - pid " + $o.pid + "  started " + $startText)
+    }
 }
 
 Write-Host ''
