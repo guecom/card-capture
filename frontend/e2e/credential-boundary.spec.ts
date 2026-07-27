@@ -402,6 +402,20 @@ test('keeps API responses out of the offline cache', async ({ page }) => {
     const api = encodeURIComponent('https://api.example.test/exec');
     await page.goto(`${origin}next/?api=${api}&k=owner-token`, { waitUntil: 'networkidle' });
 
+    // 캐시가 실제로 채워질 때까지 기다린다. `networkidle`은 Service Worker의 install 캐싱 완료를
+    // 보장하지 않아, 러너가 느린 날에는 아래 읽기가 빈 배열을 받는다.
+    // 빈 배열이면 이어지는 두 보안 단언이 **둘 다 자동으로 통과한다** — `[].filter(...)`는 `[]`이고
+    // `[].some(...)`은 `false`다. 즉 이 테스트가 조용히 아무것도 검사하지 않게 된다.
+    // `toBeGreaterThan(0)`이 그 공허한 통과를 막는 전제 단언이고, 이 대기가 없으면 그 전제가
+    // 간헐적으로 깨져 실패로 나타난다(실측: CI run 30293153027, 문서 한 줄만 바꾼 커밋에서).
+    await page.waitForFunction(async () => {
+      for (const key of await caches.keys()) {
+        const cache = await caches.open(key);
+        if ((await cache.keys()).length > 0) return true;
+      }
+      return false;
+    }, undefined, { timeout: 20_000 });
+
     const cachedUrls = await page.evaluate(async () => {
       const keys = await caches.keys();
       const urls: string[] = [];
