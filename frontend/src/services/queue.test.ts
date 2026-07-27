@@ -243,7 +243,26 @@ describe('queue integrity is isolated, never repaired in place (FI-025)', () => 
   });
 });
 
+/** Web Locks 대역. `ifAvailable` 의미만 재현한다 — Node 버전에 따라 있고 없고가 갈리면 안 된다. */
+function fakeLockManager() {
+  const held = new Set<string>();
+  return {
+    request: async (name: string, options: { ifAvailable?: boolean }, callback: (lock: unknown) => Promise<unknown>) => {
+      if (options?.ifAvailable && held.has(name)) return callback(null);
+      held.add(name);
+      try {
+        return await callback({ name });
+      } finally {
+        held.delete(name);
+      }
+    },
+  };
+}
+
 describe('one tab owns the send — Web Locks path (FI-053)', () => {
+  beforeEach(() => vi.stubGlobal('navigator', { locks: fakeLockManager() }));
+  afterEach(() => vi.unstubAllGlobals());
+
   it('lets a second tab find the lock held instead of sending the same capture twice', async () => {
     let release: (() => void) | null = null;
     const firstDone = withQueueLock(() => new Promise<string>((resolve) => { release = () => resolve('first'); }));
