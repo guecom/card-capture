@@ -9,6 +9,17 @@ import { fileURLToPath } from 'node:url';
 // Kairen-Ref: TSK-000269 (FI-004 / FI-005 / FI-006 / FI-007)
 
 const buildRoot = resolve(fileURLToPath(new URL('../../docs/', import.meta.url)));
+const legacyHtmlPath = resolve(fileURLToPath(new URL('../../docs/legacy.html', import.meta.url)));
+
+/**
+ * 빌드에 박힌 배포본 주소. `vite.config.ts`가 같은 값을 읽어 `__CARD_CAPTURE_DEFAULT_API__`로 넣는다 —
+ * 게이트가 빌드와 같은 원본을 보게 해서, 배포본이 바뀌어도 게이트가 조용히 무의미해지지 않게 한다.
+ */
+async function pinnedApiEndpoint(): Promise<string> {
+  const match = /var DEFAULT_API = '([^']+)'/.exec(await readFile(legacyHtmlPath, 'utf8'));
+  if (!match?.[1]) throw new Error('legacy_default_api_missing');
+  return match[1];
+}
 
 const contentTypes: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -60,6 +71,12 @@ async function serverOrigin(): Promise<{ server: Server; origin: string }> {
 
 test.beforeEach(async ({ page }) => {
   await page.context().route('**/vendor/**', (route) => route.abort());
+  // 실제 GAS 배포본으로는 어떤 요청도 나가지 않는다. `?api=` 를 거부하면 앱은 빌드에 박힌
+  // 기본 주소로 되돌아가므로, 이 가드가 없으면 테스트 토큰이 실서버로 나간다.
+  // 개별 test가 나중에 등록하는 route가 더 우선하므로 그쪽에서 관찰은 계속 가능하다.
+  await page.context().route('https://script.google.com/**', (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, items: [], seeAll: false }),
+  }));
   // 첫 실행 이름 온보딩 모달이 하단 탭을 가리지 않게 이름을 미리 넣는다.
   await page.addInitScript(() => localStorage.setItem('cc_name', 'E2E Owner'));
 });
@@ -92,6 +109,77 @@ test('never sends the personal link code to an API origin supplied through the l
     await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '진행' }).click();
     await page.waitForTimeout(1_000);
     expect(hostileRequests).toEqual([]);
+  } finally {
+    await stopStaticServer(server);
+  }
+});
+
+// FI-004 재검증 — Kairen-Ref: TSK-000285
+//
+// 위 게이트는 **다른 origin**만 시험한다. 그런데 빌드에 박힌 API는 Apps Script 웹앱이고,
+// `script.google.com`은 누구나 배포할 수 있는 multi-tenant 호스트다. origin만 비교하면
+// `?api=https://script.google.com/macros/s/<공격자 배포 ID>/exec` 가 통과해
+// **같은 origin, 다른 경로**로 저장된 개인 링크 코드가 그대로 나간다.
+test('never sends the personal link code to another deployment on the pinned API origin', async ({ page }) => {
+  const { server, origin } = await serverOrigin();
+  // 존재하지 않는 명백한 가짜 배포 ID다. route가 먼저 잡아 실제 GAS에는 나가지 않는다.
+  const hostileDeployment = 'https://script.google.com/macros/s/AKfycb-e2e-not-our-deployment/exec';
+  const hostileRequests: string[] = [];
+
+  await page.context().route('https://script.google.com/**', async (route) => {
+    const url = route.request().url();
+    if (url.includes('AKfycb-e2e-not-our-deployment')) hostileRequests.push(url);
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, items: [], seeAll: true }) });
+  });
+
+  try {
+    await page.goto(`${origin}next/?api=${encodeURIComponent(hostileDeployment)}&k=owner-token`, { waitUntil: 'networkidle' });
+
+    // 1) 공격자 배포본으로 나간 요청이 한 건도 없다.
+    expect(hostileRequests).toEqual([]);
+    // 2) 거부한 주소를 저장하지 않고 빌드에 박힌 기본 주소로 되돌아간다.
+    expect(await page.evaluate(() => localStorage.getItem('cc_api'))).toBeNull();
+    // 3) 같은 서버라도 우리 배포본이 아니라는 사실을 화면에 말한다.
+    await expect(page.getByText('이 앱이 쓰는 주소가 아니라 무시했어요', { exact: false })).toBeVisible();
+
+    // 새로고침·탭 이동으로도 되살아나지 않는다.
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expect(page.getByRole('navigation', { name: '주요 화면' })).toBeVisible({ timeout: 20_000 });
+    await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '진행' }).click();
+    await page.waitForTimeout(1_000);
+    expect(hostileRequests).toEqual([]);
+  } finally {
+    await stopStaticServer(server);
+  }
+});
+
+// FI-004 / FI-007 재검증 — Kairen-Ref: TSK-000285
+//
+// `?api=<우리 배포본>?k=TOKEN` 은 자격 정보를 API 주소의 query에 실어 보낸다.
+// 채택한 주소를 그대로 저장하면 코드가 `cc_api` 값 안에 남고, `연결 해제`는 `cc_api`를
+// 지우지 않으므로 "연결 해제가 token을 제거한다"는 주장이 그만큼 깨진다.
+test('never stores a personal link code hidden in the API address, and clears the address on disconnect', async ({ page }) => {
+  const { server, origin } = await serverOrigin();
+  const pinned = await pinnedApiEndpoint();
+
+  try {
+    await page.goto(`${origin}next/?api=${encodeURIComponent(`${pinned}?k=hidden-token`)}&k=owner-token`, { waitUntil: 'networkidle' });
+
+    // 1) 저장된 주소에는 query가 아예 없다 — 자격 정보가 섞일 자리가 없다.
+    const storedApi = await page.evaluate(() => localStorage.getItem('cc_api') ?? '');
+    expect(storedApi).toBe(pinned);
+    expect(await page.evaluate(() => Object.values(localStorage).map(String).join('\n'))).not.toContain('hidden-token');
+
+    // 2) 연결 해제는 주소까지 정리하고, 다음 실행은 빌드에 박힌 기본 주소로 시작한다.
+    await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '설정' }).click();
+    await page.getByRole('button', { name: '연결 해제' }).click();
+    await expect(page.getByText('개인 링크 코드, 촬영자 이름', { exact: false })).toBeVisible();
+    await page.getByRole('button', { name: '연결 해제하기' }).click();
+
+    expect(await page.evaluate(() => ({
+      api: localStorage.getItem('cc_api'),
+      token: localStorage.getItem('cc_token'),
+    }))).toEqual({ api: null, token: null });
   } finally {
     await stopStaticServer(server);
   }
