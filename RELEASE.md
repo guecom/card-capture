@@ -41,6 +41,25 @@ release 기록은 이 파일 하단 "Verified Baselines"에 최신이 위로 오
 
 ## Verified Baselines
 
+### v2.6.0 @ `c515873` — 검증 2026-07-27 (agent:kairen.claude, Kairen-Ref: TSK-000280·281·282·283) — **Code.gs 무변경 · 앞선 GAS 배포·워처 재기동 PENDING 유지**
+
+> 이 릴리즈는 `Code.gs`를 건드리지 않았다. 따라서 v2.4.0·v2.5.0의 **미배포 서버 변경 두 건은 그대로 남아 있고 `ISS-000108`도 live에서 여전히 열려 있다.** 이 baseline은 그 상태를 바꾸지 않는다.
+
+- repository: annotated tag `v2.6.0` → squash merge commit `c515873` (`main`에 포함). 담은 merge는 PR #44 하나이며, 그 안에 lane 브랜치 4개(`agent/w3-watcher-health`·`agent/w3-trace`·`agent/w3-recall`·`agent/w3-content-type`)가 통합돼 있다.
+- human gate: founder가 세션에서 `Feature Index를 순차적으로 개발 · 문서가 승인 받으라 해도 다시 묻지 말 것 · merge와 release까지 네가 한다 · 결정이 필요하면 네 추천대로`로 구현·merge·tag를 사전 승인함. **Apps Script 재배포·워처 재기동·토큰 변경·실데이터 삭제는 승인 범위에서 명시적으로 제외.**
+- CI: `validate` SUCCESS — run `30243635918`. unit 280 PASS(25 files), Playwright 61 PASS, repository validator `fail=0 warn=0`. 신규 게이트 2종 등록: `eval/upload-content-type.test.js`, `watcher/tests/health-tests.ps1`(**워처 스위트가 CI에서 실행되는 첫 사례**).
+  - 첫 두 실행은 `int15-surfaces.spec.ts:218`에서 실패했다. 같은 SHA에서 측정값이 `1087.86` / `989.69`로 **매번 달랐다** — 레이아웃 초과가 아니라 ion-modal 시트가 정착하기 전의 중간 프레임이다. 그 검사는 `toBeEnabled()` 직후 `boundingBox()`를 읽고 있었고 정착 대기가 없었다. spec 파일이 늘며 CI 동시 실행 조합이 바뀌어 원래 racy했던 읽기가 드러난 것이다. 재시도하는 `toBeInViewport({ ratio: 1 })`(기존 아래 경계 검사보다 강한 조건)로 고정했고, 시트를 320px 내리는 CSS 주입으로 그 단언이 `viewport ratio 0`으로 FAIL하는 것을 확인해 형식적이지 않음을 증명했다.
+- Pages: build run `30243889773` success. **live와 commit blob이 exact-match** — `docs/index.html` `0b491c9253fc2058a88232403667363115e600ff4807f6997734af9bf76cfe16`, `docs/sw.js` `85e9a4de8ea093cf8134a2866c7757214c8c2f6846b60a551e3bd2222c459e7f`. (비교는 working tree가 아니라 commit blob 기준 — Windows CRLF 변환 때문.)
+- **GAS deployment: 이번 릴리즈에 해당 없음.** `Code.gs` 무변경(`git diff v2.5.0 v2.6.0 -- Code.gs` 비어 있음). v2.5.0의 `PENDING` 상태가 그대로 유효하며 확인 해시도 그대로 `f9a78d9aa5bc34cc1a70a3ffaf51b5d73db81b0f77a9d90f23e8ff48dfb5b364`다.
+- GAS live probe(무효 토큰만, 유효 token 미사용): `ping` → `ok:true`; `whoami`·`list`·`search` → `invalid_token`; `?action=nonsense` → `unknown_action`. **이 probe는 여전히 예전 배포본(version 5)을 확인한 것이다.**
+- **watcher: 재기동 미실행 (PENDING) — 그리고 현재 live 워처는 살아 있지 않다.** 관찰: health 파일 `pid=39880`, `lastHeartbeat=2026-07-26 16:26:30`, `watcher.log`에 2026-07-27 기록 0줄. PID 39880은 존재하지 않고, PID 18108이 오늘 14:48에 기동했으나 로그·health를 한 줄도 쓰지 않았다. **agent는 어떤 프로세스도 죽이거나 띄우지 않았다.** 이번 릴리즈의 `CardCapture_Health.ps1`이 이 상태를 `CRITICAL / orphan_watcher_process`로 단정한다. `.ps1` UTF-8 BOM 확인 완료.
+- processing contract: vault `CardCapture_Processing.md` 변경 없음.
+- 이 release가 닫은 Feature Index slice: `FI-029`(처리 health dashboard), `FI-021`(correlation ID·redacted log), `FI-100`(목록 pagination), `FI-104`(검색 근거 스니펫). `FI-012`(magic-byte)는 **결함을 기계로 증명하고 게이트만 심었다** — 서버 수정은 재배포 사이클 뒤다.
+- **실측된 결함**(전부 수정 전 FAIL 관찰): 재전송 대조가 100건만 읽어 이미 접수된 캡처를 다시 올릴 수 있었음(합성 서버 150건에서 101번째 이후 누락) / `예전 기록 더 보기`가 100건에서 죽은 버튼이 됨 / 워처 health가 PID 재사용에 무력해 죽은 워처를 정상으로 보고 / health가 처리기 원본 출력을 노출(실측 로그의 99.8%가 명함 내용) / 서버가 업로드 바이트를 검사하지 않아 비이미지 10종이 `front.jpg`로 접수.
+- **재현 불가 확인**: frontend 빌드가 재현 가능하지 않다. 소스가 동일한데 `docs/next` entry 해시가 매 빌드 바뀐다(세 번 연속 확인). 커밋된 `docs/next`가 소스와 맞는지 재빌드로 검증할 수 없다는 뜻이다. 위 Pages 비교는 손으로 쓴 `docs/index.html`·`docs/sw.js`를 쓰므로 그 계약 자체는 유효하다.
+- rollback: PR #44 `git revert` 하나. GAS·워처는 건드리지 않았으므로 되돌릴 것이 없다.
+- **남은 human gate**: (1) Apps Script 재배포, (2) 라이브 워처 재기동, (3) founder actual-phone acceptance. 셋 다 `NOT RUN — HUMAN/EXTERNAL`이다.
+
 ### v2.5.0 @ `e335652a2379fa6c90cdbdca2a8c3230e76fd676` — 검증 2026-07-27 (agent:kairen.claude, Kairen-Ref: TSK-000276·277·278·279) — **GAS 배포 PENDING · 워처 재기동 PENDING**
 
 > ⚠️ **이 baseline은 두 곳이 미완이다.** `Code.gs`와 `watcher/`가 모두 바뀌었고 둘 다 사람 게이트다. 앱(`docs/`)만 자동 반영된다. **재배포·재기동 전까지 `ISS-000108`(브리핑 조작)은 live에서 여전히 열려 있다.**

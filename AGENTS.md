@@ -11,7 +11,7 @@
 
 1. **Branch + draft PR로만 작업한다.** `main` 직접 push와 release tag 생성은 하지 않는다. PR merge 권한은 아래 Risk-Based Merge Lanes를 따르고, release·GAS deployment는 사람 승인 단계다.
 2. 모든 커밋/PR에 Kairen Task 참조를 남긴다: `Kairen-Ref: TSK-XXXXXX`.
-3. **secret 금지.** 토큰 값, `TOKENS` JSON, Drive folder ID, 실캡처 데이터(이미지·capture.json·brief), Person 개인정보를 이 저장소에 넣지 않는다. `docs/index.html`의 `DEFAULT_API`(GAS exec URL)만 예외로 허용된 공개값이다.
+3. **secret 금지.** 토큰 값, `TOKENS` JSON, Drive folder ID, 실캡처 데이터(이미지·capture.json·brief), Person 개인정보를 이 저장소에 넣지 않는다. `docs/legacy.html`의 `DEFAULT_API`(GAS exec URL)만 예외로 허용된 공개값이다 — `docs/index.html`이 아니다. 그 한 줄이 `frontend/vite.config.ts`가 읽어 React 앱의 pinned endpoint로 주입하는 **유일한 원본**이므로, 옮기거나 지우면 빌드가 `legacy_default_api_missing`으로 실패한다.
 4. PR 전에 `scripts/validate.ps1`을 실행하고 PASS를 확인한다(secret scan, 필수 파일, .ps1 BOM, eval fixture 검사 포함).
 5. **.ps1 인코딩:** 한글 경로를 다루는 PowerShell 파일은 반드시 UTF-8 **BOM** 으로 저장한다. BOM이 없으면 Windows PowerShell 5.1이 CP949로 읽어 `내 드라이브` 경로가 깨지고 워처가 시작 직후 죽는다(2026-07-23 실장애 원인). 편집 도구가 BOM을 지우면 저장 후 재적용한다.
 6. PowerShell은 5.1 호환으로 작성한다(`&&`/`||`, 삼항, `??` 금지).

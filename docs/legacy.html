@@ -2,6 +2,9 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
+<!-- 개인 링크(?k=토큰)가 Referer로 새어 나가지 않게 한다. <head> 안에 있어야 문서 파싱 중
+     나가는 자산 요청에도 적용된다 — 그 구간은 주소창 정리(replaceState)보다 앞선다. -->
+<meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#071a2f">
 <title>명함 캡처 — 이전 앱</title>
@@ -388,17 +391,43 @@ var DEFAULT_API = 'https://script.google.com/macros/s/AKfycbw1pWR3G6bj_S1gq5KT1P
 var $ = function (id) { return document.getElementById(id); };
 var store = {
   get: function (k) { try { return localStorage.getItem('cc_' + k); } catch (e) { return null; } },
-  set: function (k, v) { try { localStorage.setItem('cc_' + k, v); } catch (e) {} }
+  set: function (k, v) { try { localStorage.setItem('cc_' + k, v); } catch (e) {} },
+  del: function (k) { try { localStorage.removeItem('cc_' + k); } catch (e) {} }
 };
 
-/* URL 파라미터(?k=토큰&api=주소)를 저장해 두면 홈 화면 실행 때도 유지됩니다 */
+/* 링크에서 받는 것은 개인 링크 코드(?k=)뿐이다. 서버 주소는 빌드에 박힌 DEFAULT_API 하나이며
+   URL도 localStorage도 이 값을 넓히지 못한다 (FI-004, Kairen-Ref: TSK-000286).
+   예전 이 화면은 ?api= 를 무검증으로 저장했다 — 그런 링크를 한 번만 열면 이후 모든 업로드·조회가
+   그 주소로 갔고, React 앱과 같은 저장 키(cc_api)라 새 앱까지 함께 오염됐다.
+   그래서 이미 저장돼 있던 주소도 지금 계약으로 다시 판정해 폐기한다. */
+var API = DEFAULT_API.indexOf('http') === 0 ? DEFAULT_API : '';
+var TOKEN = '';
+var REJECTED_API = '';
 (function initParams() {
   var p = new URLSearchParams(location.search);
+  var linkedApi = (p.get('api') || '').trim();
+  /* 거부한 주소는 저장하지 않는다 — 저장되면 다음 실행에서 조용히 되살아난다 */
+  if (linkedApi && linkedApi !== API) REJECTED_API = linkedApi;
   if (p.get('k')) store.set('token', p.get('k'));
-  if (p.get('api')) store.set('api', p.get('api'));
+  TOKEN = store.get('token') || '';
+
+  var storedApi = store.get('api');
+  if (storedApi !== null && storedApi !== API) {
+    if (!REJECTED_API) REJECTED_API = storedApi;
+    store.del('api');
+  }
+
+  /* 링크 코드가 주소창·방문 기록·화면 공유에 남지 않게 즉시 지운다.
+     push가 아니라 replace여야 뒤로 가기로 코드가 실린 주소가 되살아나지 않는다. */
+  if (p.has('k') || p.has('api')) {
+    p.delete('k');
+    p.delete('api');
+    var rest = p.toString();
+    try {
+      history.replaceState(null, '', location.pathname + (rest ? '?' + rest : '') + location.hash);
+    } catch (e) {}
+  }
 })();
-var TOKEN = store.get('token') || '';
-var API = store.get('api') || (DEFAULT_API.indexOf('http') === 0 ? DEFAULT_API : '');
 
 /* ── 상태 ── */
 var front = null, back = null, flushing = false;
@@ -445,8 +474,15 @@ $('nameSave').onclick = function () {
 };
 function checkSetup() {
   var msg = '';
-  if (!API) msg = 'index.html의 DEFAULT_API에 GAS 웹 앱 주소를 넣거나, 링크에 ?api=주소 를 붙여 한 번 열어주세요.';
-  else if (!TOKEN) msg = '받으신 개인 링크(?k=토큰 포함)로 접속해 주세요. 토큰이 없으면 업로드가 거부됩니다.';
+  var title = '링크 설정이 필요해요';
+  if (REJECTED_API) {
+    title = '서버 주소를 무시했어요';
+    msg = '허용되지 않은 서버 주소라 무시했어요. 개인 링크 코드는 보내지 않았습니다. ';
+  }
+  if (!API) msg += '이 앱에 서버 주소가 들어 있지 않아요 — 관리자에게 알려주세요.';
+  else if (!TOKEN) msg += '받으신 개인 링크(?k=토큰 포함)로 접속해 주세요. 토큰이 없으면 업로드가 거부됩니다.';
+  var titleEl = $('setupBanner').querySelector('b');
+  if (titleEl) titleEl.textContent = title;
   $('setupBanner').style.display = msg ? '' : 'none';
   $('setupMsg').textContent = msg;
 }
