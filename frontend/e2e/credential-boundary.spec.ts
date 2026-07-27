@@ -69,6 +69,25 @@ async function serverOrigin(): Promise<{ server: Server; origin: string }> {
   return { server, origin: `http://127.0.0.1:${address.port}/` };
 }
 
+/**
+ * 같은 정적 서버를 **배포본으로 판정되는 origin**으로 연다 — Kairen-Ref: TSK-000302
+ *
+ * Chromium은 `*.localhost` 를 DNS 없이 loopback으로 풀고 secure context로 취급한다(배포본의
+ * https와 같은 조건 — service worker·캐시가 그대로 동작한다). 반면 앱의 개발 호스트 판정은
+ * 정확히 `localhost`·`127.0.0.1`·`[::1]` 만 담고 있어서 `app.localhost` 는 **개발 호스트가 아니다**.
+ * 그래서 이 origin으로 열면 실제 배포본과 같은 판정을 받는다.
+ * 127.0.0.1로 열면 개발 호스트라 아래 게이트는 성립하지 않는다.
+ */
+function deployedOrigin(origin: string): string {
+  return origin.replace('//127.0.0.1:', '//app.localhost:');
+}
+
+async function openSettingsAdvanced(page: import('@playwright/test').Page): Promise<void> {
+  await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '설정' }).click();
+  await page.getByRole('button', { name: '사용자·연결 정보 편집' }).click();
+  await page.getByRole('button', { name: /고급 설정/ }).click();
+}
+
 test.beforeEach(async ({ page }) => {
   await page.context().route('**/vendor/**', (route) => route.abort());
   // 실제 GAS 배포본으로는 어떤 요청도 나가지 않는다. `?api=` 를 거부하면 앱은 빌드에 박힌
@@ -262,6 +281,112 @@ test('disconnects the device without deleting captures that still need to be sen
       privateKeys: Object.keys(localStorage).filter((key) => /^cc_s[0-9a-z]+_/.test(key)),
     }));
     expect(after).toEqual({ token: null, name: null, privateKeys: [] });
+  } finally {
+    await stopStaticServer(server);
+  }
+});
+
+// D3-1 — 고급 설정의 주소 입력은 개발 호스트에서만 편집 가능하다. Kairen-Ref: TSK-000302
+//
+// v2.7.0에서 신뢰 판정을 origin + pathname으로 좁힌 뒤 배포본에서는 이 칸에 **무엇을 넣어도**
+// 거부된다. 그런데 칸은 그대로 열려 있어 사용자에게 거짓 선택지를 보여 줬다.
+// 아래 두 게이트는 **다른 것**을 확인한다 — 칸이 잠겼는가, 그리고 그 값이 채택되지 않는가.
+test('locks the advanced address field on a deployed host while still showing where it is connected', async ({ page }) => {
+  const { server, origin } = await serverOrigin();
+  const pinned = await pinnedApiEndpoint();
+
+  try {
+    await page.goto(`${deployedOrigin(origin)}next/?k=owner-token`, { waitUntil: 'networkidle' });
+    // 전제 확인: 개발 호스트로 열렸다면 이 게이트는 아무것도 증명하지 않는다.
+    expect(await page.evaluate(() => location.hostname)).toBe('app.localhost');
+
+    await openSettingsAdvanced(page);
+    const apiField = page.getByLabel('연결 주소 (GAS API)');
+
+    // 1) 숨기지 않는다 — 지금 어디에 연결돼 있는지는 계속 읽을 수 있어야 한다.
+    await expect(apiField).toBeVisible();
+    await expect(apiField).toHaveValue(pinned);
+    // 2) 배포본에서는 편집할 수 없다.
+    await expect(apiField).not.toBeEditable();
+    // 3) 왜 바꿀 수 없는지를 화면에 말하고, 그 문장이 낭독기에도 그 칸의 설명으로 연결돼 있다.
+    const describedBy = await apiField.getAttribute('aria-describedby');
+    expect(describedBy, '읽기 전용 사유가 낭독기에 연결되지 않았다').toBeTruthy();
+    await expect(page.locator(`#${describedBy}`)).toContainText('바꿀 수 없어요');
+
+    // 4) **잠긴 것과 채택되지 않는 것은 다르다.** readonly를 벗겨 내고 적대적 주소를 DOM에
+    //    직접 밀어 넣은 뒤 저장해도 저장된 주소는 그대로여야 한다 — 화면이 유일한 방어선이면
+    //    방어선이 아니다. 배포본에서 이 칸은 값 변경 경로 자체가 없어 화면에 거부 안내도 뜨지
+    //    않는다(거부할 값이 애초에 전달되지 않는다). 거부 안내 경로는 위 `?api=` 게이트들과
+    //    아래 "저장돼 있던 주소" 게이트가 따로 지킨다.
+    await apiField.evaluate((node: HTMLTextAreaElement) => { node.readOnly = false; });
+    await apiField.fill('https://attacker.invalid/exec');
+    await expect(apiField).toHaveValue('https://attacker.invalid/exec');
+    await page.getByRole('button', { name: '설정 저장' }).click();
+    await expect(page.getByRole('button', { name: '설정 저장' })).toBeHidden();
+
+    expect(await page.evaluate(() => localStorage.getItem('cc_api'))).toBe(pinned);
+    expect(await page.evaluate(() => Object.values(localStorage).map(String).join('\n'))).not.toContain('attacker.invalid');
+  } finally {
+    await stopStaticServer(server);
+  }
+});
+
+// D3-3 — 이미 성립하는 것을 게이트로 고정한다. Kairen-Ref: TSK-000302
+//
+// 주소 입력 칸을 잠갔다고 해서 "사용자가 주소를 바꿀 수 없다"가 증명되는 것은 아니다.
+// 기기에 이미 저장돼 있던 주소는 화면을 거치지 않고 다음 실행에 그대로 되살아난다.
+// 배포본 origin에서 boot 재판정이 실제로 그것을 버리는지 여기서 확인한다.
+test('never revives an address stored earlier, even on a deployed host', async ({ page }) => {
+  const { server, origin } = await serverOrigin();
+  const pinned = await pinnedApiEndpoint();
+  const hostileRequests: string[] = [];
+
+  await page.context().route('https://attacker.invalid/**', async (route) => {
+    hostileRequests.push(route.request().url());
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, items: [], seeAll: true }) });
+  });
+  // 예전 빌드가 저장해 뒀을 법한 상태를 그대로 만든다 — 링크에는 아무것도 붙지 않는다.
+  await page.addInitScript(() => {
+    localStorage.setItem('cc_api', 'https://attacker.invalid/exec');
+    localStorage.setItem('cc_token', 'owner-token');
+  });
+
+  try {
+    await page.goto(`${deployedOrigin(origin)}next/`, { waitUntil: 'networkidle' });
+    expect(await page.evaluate(() => location.hostname)).toBe('app.localhost');
+
+    // 1) 자격 정보가 실린 요청이 한 건도 나가지 않는다.
+    expect(hostileRequests).toEqual([]);
+    // 2) 저장돼 있던 주소를 버리고 빌드에 박힌 주소로 되돌아간다.
+    expect(await page.evaluate(() => localStorage.getItem('cc_api'))).toBeNull();
+    // 3) 무시했다는 사실을 화면에 말한다.
+    await expect(page.getByText('허용되지 않은 서버 주소라 무시했어요', { exact: false })).toBeVisible();
+    // 4) 고급 설정이 보여 주는 주소도 빌드에 박힌 주소다 — 화면과 실제 연결이 갈라지면 안 된다.
+    await openSettingsAdvanced(page);
+    await expect(page.getByLabel('연결 주소 (GAS API)')).toHaveValue(pinned);
+  } finally {
+    await stopStaticServer(server);
+  }
+});
+
+// 반대쪽 절반: 개발 harness에서는 계속 편집할 수 있어야 한다. 모든 곳을 잠그는 것으로
+// 위 게이트를 "통과"시키면 로컬 mock API 연결이 끊긴다.
+test('keeps the advanced address field editable on a development host', async ({ page }) => {
+  const { server, origin } = await serverOrigin();
+
+  try {
+    await page.goto(`${origin}next/?k=owner-token`, { waitUntil: 'networkidle' });
+    expect(await page.evaluate(() => location.hostname)).toBe('127.0.0.1');
+
+    await openSettingsAdvanced(page);
+    const apiField = page.getByLabel('연결 주소 (GAS API)');
+    await expect(apiField).toBeVisible();
+    await expect(apiField).toBeEditable();
+
+    // 개발 호스트에서는 harness mock 주소가 실제로 채택된다.
+    await apiField.fill('https://api.example.test/exec');
+    await page.getByRole('button', { name: '설정 저장' }).click();
+    expect(await page.evaluate(() => localStorage.getItem('cc_api'))).toBe('https://api.example.test/exec');
   } finally {
     await stopStaticServer(server);
   }
