@@ -41,6 +41,18 @@ release 기록은 이 파일 하단 "Verified Baselines"에 최신이 위로 오
 
 ## Verified Baselines
 
+### v2.14.0 @ `0380b9e` — 검증 2026-07-28 (agent:kairen.claude, Kairen-Ref: TSK-000312 / ISS-000119) — **Code.gs 무변경**
+
+- repository: annotated tag `v2.14.0` → merge commit `0380b9e`(main). 담은 merge는 PR #52(UI 변경)와 PR #54(버전 표기·CHANGELOG 구간 정리) 둘이다. lane은 둘 다 `HUMAN TEST REQUIRED`.
+- human gate: founder가 2026-07-28 세션에서 여섯 항목의 관찰을 전달하고 `PR, Merge, Release`를 지시했다. **Apps Script 재배포·워처 재기동·토큰 변경·실데이터 삭제는 승인 범위 밖이며 이 릴리즈에 필요하지도 않다.**
+- CI: `validate` SUCCESS — run `30287039169`. unit 311 PASS, Playwright 95 PASS, repository validator `fail=0 warn=0`. 신규 게이트 `frontend/e2e/surface-polish.spec.ts` 5건 등록.
+  - **정직한 경계**: 이 run은 재실행 2회 뒤 성공했다. `offline-shell.spec.ts:134`(큐 배출 5초 폴링 초과)와 `credential-boundary.spec.ts:294`(readonly를 벗기는 테스트 준비 단계가 React 재렌더와 경합)가 러너 부하에 따라 간헐 실패한다. 둘 다 로컬에서 `--repeat-each 3` 통과하고 이 릴리즈의 변경과 무관한 **테스트 쪽 타이밍 경합**이지만, 게이트가 불안정하다는 사실 자체는 기록해 둔다.
+- Pages: **live와 commit blob이 exact-match** — `docs/index.html` `0b491c9253fc2058…`, `docs/sw.js` `f171a6c6190a541a…`, `docs/next/index.html` `543bff7e3a315e1c…`, `docs/next/sw.js` `ce3e16e8f528be53…`, `docs/legacy.html` `e1a3a46c4b79639f…`. 이번 변경이 실제로 나갔는지는 앱이 부르는 스타일시트로 따로 확인했다 — `docs/next/assets/index-DQj-IU3x.css` `91ed24e52bff9de8…`, 그 안에 `--cc-accent` 두 테마 값과 `cc-ai-sweep`이 들어 있다.
+  - Windows 체크아웃에서 working copy를 그대로 해싱하면 CRLF 때문에 전부 DIFF로 보인다. 위 값은 **commit blob**(`git show HEAD:docs/...`) 기준이다.
+- **GAS deployment: 해당 없음.** `Code.gs` 무변경. 이전 baseline의 상태와 확인 해시가 그대로 유효하다.
+- Watcher: 무변경. 운영 클론 갱신·재시작 불필요.
+- 실기기 판정: **미완료.** 이 릴리즈는 시각 변경이 본체이고 machine gate는 렌더된 픽셀까지만 증명한다. founder의 실폰 확인이 남아 있다.
+
 ### v2.9.0 @ `5f90f1b` — 검증 2026-07-27 (agent:kairen.claude, Kairen-Ref: TSK-000288·289·290) — **Code.gs 무변경**
 
 - repository: annotated tag `v2.9.0` → squash merge commit `5f90f1b`. 담은 merge는 PR #47 하나이며 lane 브랜치 3개(`agent/w4-a1-queue-lock`·`agent/w4-a2-subject-ctx`·`agent/w4-a3-repro-build`)가 통합돼 있다.
