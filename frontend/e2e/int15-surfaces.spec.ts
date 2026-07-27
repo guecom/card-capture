@@ -140,16 +140,22 @@ test('the meeting-context block opens by default and its fields read as fields',
   }
 });
 
-// 001-b: 만난 자리 예시는 기록이 없어도 실무 동선으로 채워지고, 실제 기록이 있으면 그게 먼저다.
-test('the meeting-place chips start from real work situations and prefer actual past events', async ({ page }) => {
+// 001-b: 만난 상황 chip은 **특정 행사 이름이 아니라 일반적인 상황**이어야 한다
+// (founder 지시 2026-07-27). 구체적인 답은 직접 적고, 그 값은 2시간 유지된다.
+test('the meeting-situation chips offer general situations, never specific past events', async ({ page }) => {
   const harness = await boot(page);
   try {
-    const chips = page.locator('.context-block').getByRole('group', { name: '만난 자리 예시' });
-    // fixture의 실제 만난 곳이 앞에 온다.
-    await expect(chips.getByRole('button').first()).toHaveText('2026 로보월드');
-    // 뒤는 실무 예시로 채운다 — 빈 화면에서도 무엇을 적는 칸인지 보인다.
-    await expect(chips.getByRole('button', { name: '고객사 방문' })).toBeVisible();
-    await expect(chips.getByRole('button', { name: 'IR·투자 미팅' })).toBeVisible();
+    const chips = page.locator('.context-block').getByRole('group', { name: '만난 상황 예시' });
+    await expect(chips.getByRole('button').first()).toHaveText('고객사 방문 미팅');
+    await expect(chips.getByRole('button', { name: '우리 회사 방문 미팅' })).toBeVisible();
+    await expect(chips.getByRole('button', { name: '투자·IR 미팅' })).toBeVisible();
+
+    // fixture에는 '2026 로보월드'라는 실제 행사 기록이 있지만 chip으로 올라오면 안 된다.
+    await expect(chips.getByRole('button', { name: /로보월드|밋업|\d{4}/ })).toHaveCount(0);
+
+    // chip을 누르면 그 상황이 입력되고, 다시 누르면 비운다.
+    await chips.getByRole('button', { name: '고객사 방문 미팅' }).click();
+    await expect(page.getByRole('textbox', { name: '어디서 만났나요?' })).toHaveValue('고객사 방문 미팅');
   } finally {
     harness.server.close();
   }

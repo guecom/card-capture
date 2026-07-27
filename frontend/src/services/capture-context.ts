@@ -7,7 +7,6 @@
 // 반복돼, 무엇을 왜 적는지가 안 읽히고 촬영 버튼이 화면 아래로 밀렸다.
 // 그래서 (a) 안내는 영역 위에 한 번만, (b) 자주 쓰는 답은 chip으로, (c) 입력이 생기면
 // 한 줄 요약으로 접는다.
-import type { BriefItem } from '../contracts/capture';
 
 export interface CaptureContextValue {
   event: string;
@@ -20,9 +19,19 @@ export interface CaptureContextValue {
 export const KAIREN_RELATION_CHIPS = ['잠재 고객', '부품 공급사', '협력사', '투자자', '채용 후보'] as const;
 export const SELF_RELATION_CHIPS = ['오늘 처음', '소개로 만남', '예전 동료', '학교 선후배'] as const;
 
-// 기기에 최근 기록이 없을 때 쓸 만난 자리 예시. 실제 영업·조달·채용 동선 기준이다
-// (founder 지시 2026-07-27: "회사 상황상 실무로 많이 쓸만한 것들을 예시로").
-export const EVENT_FALLBACK_CHIPS = ['전시회 부스', '고객사 방문', '우리 사무실', 'IR·투자 미팅', '세미나·학회', '채용 면접'] as const;
+// 만난 상황 chip. **특정 행사 이름이 아니라 일반적인 상황**이어야 한다
+// (founder 지시 2026-07-27: "특정행사가 아니라 general한 상황으로 해줘. ex) 고객사 방문 미팅,
+// 우리 회사 방문 미팅"). 행사 이름처럼 구체적인 답은 직접 입력하면 되고, 그 값은 2시간 유지되므로
+// 같은 자리에서 여러 장을 찍을 때 chip이 없어도 다시 타이핑할 일이 없다.
+export const EVENT_SITUATION_CHIPS = [
+  '고객사 방문 미팅',
+  '우리 회사 방문 미팅',
+  '전시회·박람회',
+  '세미나·컨퍼런스',
+  '투자·IR 미팅',
+  '채용 면접',
+  '소개 자리',
+] as const;
 
 function clean(value: string | undefined): string {
   return String(value ?? '').trim();
@@ -43,28 +52,9 @@ export function captureContextSummary(value: CaptureContextValue): string {
   return parts.join(' · ');
 }
 
-// 최근에 실제로 입력한 만난 곳을 chip으로 되돌려 준다. 같은 행사에서 여러 장을 찍는 게 보통이다.
-export function recentEventChips(briefs: BriefItem[], current = '', limit = 4): string[] {
-  const seen: string[] = [];
-  for (const item of briefs ?? []) {
-    const event = clean(item.event);
-    if (!event || event === clean(current)) continue;
-    if (seen.includes(event)) continue;
-    seen.push(event);
-    if (seen.length >= limit) break;
-  }
-  return seen;
-}
-
-// 실제로 쓴 만난 곳을 먼저, 모자라면 실무 예시로 채운다. 빈 화면에서도 무엇을 적는 칸인지 보인다.
-export function eventChips(briefs: BriefItem[], current = '', limit = 6): string[] {
-  const chips = recentEventChips(briefs, current, limit);
-  for (const fallback of EVENT_FALLBACK_CHIPS) {
-    if (chips.length >= limit) break;
-    if (fallback === clean(current) || chips.includes(fallback)) continue;
-    chips.push(fallback);
-  }
-  return chips;
+// 만난 상황 chip. 이미 고른 값은 다시 제안하지 않는다.
+export function eventChips(current = ''): string[] {
+  return EVENT_SITUATION_CHIPS.filter((chip) => chip !== clean(current));
 }
 
 // chip은 켜고 끄는 토글이다 — 이미 그 값이면 비우고, 아니면 그 값으로 바꾼다.

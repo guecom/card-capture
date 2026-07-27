@@ -407,7 +407,7 @@ function App() {
   const contextValue = useMemo(() => ({ event, relKairen, relSelf, memo }), [event, memo, relKairen, relSelf]);
   const contextSummary = useMemo(() => captureContextSummary(contextValue), [contextValue]);
   const contextFilled = useMemo(() => captureContextFilled(contextValue), [contextValue]);
-  const eventChips = useMemo(() => buildEventChips(briefs, event), [briefs, event]);
+  const eventChips = useMemo(() => buildEventChips(event), [event]);
 
   // 로컬 캡처 + 서버 브리핑 통합 목록 (실폰 피드백 2): 같은 captureId는 한 항목으로.
   const feed = useMemo<FeedEntry[]>(() => {
@@ -1022,8 +1022,8 @@ function App() {
                     (founder 판정 2026-07-27: "글쓰기 박스인지 구별이 안돼는 등 총체적 난국"). */}
                 <div className="context-field">
                   <span className="context-label">어디서 만났나요?</span>
-                  <IonInput aria-label="어디서 만났나요?" placeholder="예: 스마트팩토리·자동화전 부스" value={event} onIonInput={(inputEvent) => setEvent(String(inputEvent.detail.value ?? ''))} />
-                  <div className="context-chips" role="group" aria-label="만난 자리 예시">
+                  <IonInput aria-label="어디서 만났나요?" placeholder="예: 2026 스마트팩토리전 부스 (직접 적어도 돼요)" value={event} onIonInput={(inputEvent) => setEvent(String(inputEvent.detail.value ?? ''))} />
+                  <div className="context-chips" role="group" aria-label="만난 상황 예시">
                     {eventChips.map((chip) => (
                       <button key={chip} type="button" className={event === chip ? 'on' : ''} onClick={() => setEvent(toggleChipValue(event, chip))}>{chip}</button>
                     ))}
