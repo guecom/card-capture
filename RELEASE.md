@@ -41,6 +41,24 @@ release 기록은 이 파일 하단 "Verified Baselines"에 최신이 위로 오
 
 ## Verified Baselines
 
+### v2.9.0 @ `5f90f1b` — 검증 2026-07-27 (agent:kairen.claude, Kairen-Ref: TSK-000288·289·290) — **Code.gs 무변경**
+
+- repository: annotated tag `v2.9.0` → squash merge commit `5f90f1b`. 담은 merge는 PR #47 하나이며 lane 브랜치 3개(`agent/w4-a1-queue-lock`·`agent/w4-a2-subject-ctx`·`agent/w4-a3-repro-build`)가 통합돼 있다.
+- human gate: 이전 릴리즈와 동일한 founder 사전 승인. **Apps Script 재배포·워처 재기동·토큰 변경·실데이터 삭제는 승인 범위 밖.**
+- CI: `validate` SUCCESS — run `30250321385`. unit 300 PASS, Playwright 72 PASS, repository validator `fail=0 warn=0`. 신규 게이트 `eval/build-reproducibility.test.js` 등록(~1.7s).
+- Pages: **live와 commit blob이 exact-match** — `docs/index.html` `0b491c9253fc2058…`, `docs/sw.js` `f171a6c6190a541a…`, `docs/legacy.html` `f176fef409394ee5…`.
+- **GAS deployment: 해당 없음.** `Code.gs` 무변경. v2.5.0의 `PENDING`이 그대로 유효하고 확인 해시도 `f9a78d9a…` 그대로다.
+- **watcher: 해당 없음.** 이 릴리즈는 `watcher/`를 바꾸지 않았다. 재기동 `PENDING` 유지 — 그리고 live 워처는 여전히 살아 있지 않다(하트비트 2026-07-26 16:26 이후 없음, 실제 워처 프로세스는 PID 18108 **하나**).
+- 닫은 것:
+  - `ISS-000112` — 만남 맥락(`event`·`relSelf`·`relKairen`·`research`·`stickyAt`)이 `PRIVATE_KEYS` 열거에 없어 subject 격리 밖이었다. **화면 노출로 끝나지 않았다** — `App.tsx:338→341→874` 경로로 sticky 값이 `buildQueuedCapture`에 들어가 **owner의 관계 메모가 guest의 캡처로 서버에 기록**됐다. 함께 확인된 두 번째 결함: legacy 전역 키를 현재 subject로 **이관**하던 동작. `docs/legacy.html`이 그 네 키를 지금도 쓰므로 상속 창이 계속 열리고, `App.tsx:304`가 서버 응답 전에 캐시된 owner 플래그로 UI를 켜므로 오프라인 구간 내내 guest에게 owner 화면이 뜬다. 이제 어느 subject로도 이관하지 않고 버린다.
+  - `ISS-000111` — `FI-053` fallback lease가 `localStorage` check-then-act였다(실측: 두 탭 모두 `run()` 진입). read-back 확인으로 **좁혔다. 닫지 못했다.** 남는 창 두 가지가 코드 주석에 있다. **실제로 닫는 것은 미배포 상태인 서버 멱등(`FI-010`)이다 — `FI-053`을 다시 `DELIVERED`로 선언하지 않는다.**
+  - `TSK-000290` — 빌드 비재현성. 원인은 `vite.config.ts:137`의 `new Date()`가 빌드 ID로 주입된 것이고, entry 청크 → 파일명 해시 → `index.html` → `sw.js` SHELL/캐시명으로 파급됐다. 빌드 ID를 소스 해시(`src-*`)로 바꿔 화면 값을 저장소에서 재계산해 대조할 수 있다.
+- **계약을 다시 썼다**: `SECURITY.md`의 사적 상태 격리 항목이 **닫힌 열거**였던 것이 `ISS-000112`의 원인이다. 원칙 + 예외 하나로 바꿨다 — "그 사람이 직접 적었거나 그 사람에게만 보이는 값은 모두 사적 상태이며, 촬영 대기열만 예외(유일본)".
+- **통합자 전제가 두 번 정정됐다**: (1) 목록 사각지대는 30건이 아니라 100건이었다(v2.6.0). (2) "두 번 빌드해 비교" 게이트는 타임스탬프 단위가 1분이고 빌드가 0.6초라 **결함이 있는 채로 약 92% 확률로 통과한다** — lane이 가짜 시계·타임존 주입으로 결정적으로 만들었다.
+- **미검증으로 남긴 것**: Node 22 ↔ Node 24 간 빌드 재현성. 게이트는 한 환경 안에서만 강제한다.
+- rollback: PR #47 `git revert` 하나.
+- **남은 human gate**: (1) Apps Script 재배포, (2) 라이브 워처 재기동, (3) founder actual-phone acceptance.
+
 ### v2.8.0 @ `e93fdfe` — 검증 2026-07-27 (agent:kairen.claude, Kairen-Ref: TSK-000287) — **보안 릴리즈 · Code.gs 무변경**
 
 - repository: annotated tag `v2.8.0` → squash merge commit `e93fdfe`. 담은 merge는 PR #46 하나(lane `agent/w3-sw-cache`).
