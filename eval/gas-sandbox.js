@@ -33,7 +33,23 @@ function iter(values) {
 }
 
 /* Utilities.base64Decode 대용. 실제 GAS는 잘못된 base64에서 예외를 던진다 —
-   그 예외가 서버의 fail-closed 경로(bad_image_data)를 여는 유일한 트리거라 흉내내야 한다. */
+   그 예외가 서버의 fail-closed 경로(bad_image_data)를 여는 유일한 트리거라 흉내내야 한다.
+
+   반환값은 GAS `Byte[]` 대역이다. 지켜야 하는 성질 세 가지:
+
+   1. **부호 있는 바이트.** Java byte는 -128..127이라 0xFF는 -1로 온다. 부호 없는 값을 주면
+      `bytes[0] === 0xFF` 같은 잘못된 검사가 하네스에서만 통과하고 실제 GAS에서 조용히
+      깨진다. magic-byte 검사는 반드시 `bytes[0] & 0xFF` 꼴로 써야 하며, 그 규율을 이
+      대역이 강제한다.
+   2. **인덱스와 length만 있다.** `slice`·`map` 같은 Array.prototype 메서드는 GAS 런타임에
+      따라 있을 수도 없을 수도 있으므로 여기서 주지 않는다. 그 위에 기대는 서버 패치는
+      하네스에서 먼저 터진다(운영에서 터지는 것보다 낫다).
+   3. **b64를 들고 다닌다.** Drive는 올라온 바이트를 그대로 보관하고 getDataAsString으로
+      다시 읽을 수 있다. 바이트를 불투명하게 두면 "업로드된 내용이 어떤 파일 슬롯으로
+      읽히는가"를 검사할 수 없다.
+
+   바이트 실체화는 지연시킨다 — 8MB 초과 케이스는 길이만 보고 거절되므로 그 경로에서
+   버퍼를 만들면 게이트가 느려진다. */
 function decodeBase64(value) {
   if (typeof value !== 'string' || !value) throw new Error('Invalid argument: empty base64');
   if (value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
@@ -41,9 +57,23 @@ function decodeBase64(value) {
   }
   var pad = 0;
   if (value.charAt(value.length - 1) === '=') pad = value.charAt(value.length - 2) === '=' ? 2 : 1;
-  /* b64를 들고 다닌다: Drive는 올라온 바이트를 그대로 보관하고 getDataAsString으로 다시 읽을 수 있다.
-     바이트를 불투명하게 두면 "업로드된 내용이 어떤 파일 슬롯으로 읽히는가"를 검사할 수 없다. */
-  return { length: (value.length / 4) * 3 - pad, b64: value };
+  var byteLength = (value.length / 4) * 3 - pad;
+  var buf = null;
+  function signedByteAt(index) {
+    if (index < 0 || index >= byteLength) return undefined;
+    if (buf === null) buf = Buffer.from(value, 'base64');
+    return (buf[index] << 24) >> 24;
+  }
+  return new Proxy({ length: byteLength, b64: value }, {
+    get: function (target, prop) {
+      if (typeof prop === 'string' && /^(?:0|[1-9][0-9]*)$/.test(prop)) return signedByteAt(Number(prop));
+      return target[prop];
+    },
+    has: function (target, prop) {
+      if (typeof prop === 'string' && /^(?:0|[1-9][0-9]*)$/.test(prop)) return Number(prop) < byteLength;
+      return prop in target;
+    }
+  });
 }
 
 function createServer(options) {
@@ -196,7 +226,11 @@ function createServer(options) {
   };
 
   vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(SERVER_SOURCE, 'utf8'), sandbox, { filename: 'Code.gs' });
+  /* opts.source: Code.gs 대신 실행할 원본 문자열. 회귀 주입(게이트가 형식적이지 않음을
+     증명하려고 서버를 일부러 깨는 것)과 아직 배포되지 않은 제안 패치의 예행에만 쓴다.
+     디스크의 Code.gs는 절대 건드리지 않는다 — 기본값은 예전과 같다. */
+  vm.runInContext(typeof opts.source === 'string' ? opts.source : fs.readFileSync(SERVER_SOURCE, 'utf8'),
+    sandbox, { filename: 'Code.gs' });
 
   var api = {
     sandbox: sandbox,
@@ -280,7 +314,13 @@ function createServer(options) {
   return api;
 }
 
+/* 디스크의 Code.gs 원본. 테스트가 이것을 변형해 createServer({source: ...})로 넣는다. */
+function serverSource() {
+  return fs.readFileSync(SERVER_SOURCE, 'utf8');
+}
+
 module.exports = {
   createServer: createServer,
+  serverSource: serverSource,
   BINARY_TEXT: BINARY_TEXT
 };
