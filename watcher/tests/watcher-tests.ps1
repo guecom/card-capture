@@ -1,6 +1,7 @@
 ﻿# watcher-tests.ps1 — 워처 recovery·idempotency·health fixture 테스트
-# Kairen-Ref: TSK-000142
-# 실제 vault·codex를 건드리지 않는다: 임시 inbox + stub codex(.cmd)로 검증.
+# Kairen-Ref: TSK-000142, TSK-000276 (commit 판정 도입에 맞춘 stub·fixture 갱신)
+# claim·lease·staging·격리 프로토콜 테스트는 watcher\tests\watcher-protocol-tests.ps1 에 있다.
+# 실제 vault·codex를 건드리지 않는다: 임시 inbox + 합성 stub 처리기로 검증.
 # 사용: powershell -NoProfile -ExecutionPolicy Bypass -File watcher\tests\watcher-tests.ps1
 # 주의: UTF-8 BOM 유지.
 
@@ -17,11 +18,29 @@ $sbInbox = Join-Path $sandbox 'inbox'
 $sbLog = Join-Path $sandbox 'log'
 New-Item -ItemType Directory -Force -Path $sbInbox, $sbLog | Out-Null
 
-# stub codex: 인자 무시, marker 기록, 지정된 exit code 반환
+# stub codex: marker 기록 + 지정된 exit code 반환. exit 0이면 워처가 지정한 TARGET-CAPTURE-ID
+# 캡처를 계약대로 완결한다(status=processed + person + brief.md) — 워처의 commit 판정이 요구하는 산출물이다.
 $stubExit = Join-Path $sandbox 'stub-exit.txt'
 '0' | Out-File -Encoding ascii $stubExit
-$stub = Join-Path $sandbox 'codex-stub.cmd'
-"@echo off`r`necho stub-ran >> `"$sandbox\stub-marker.txt`"`r`nset /p X=<`"$stubExit`"`r`nexit /b %X%" | Out-File -Encoding ascii $stub
+$stub = Join-Path $sandbox 'codex-stub.ps1'
+@"
+Add-Content -Path '$sandbox\stub-marker.txt' -Value 'stub-ran'
+`$code = [int]((Get-Content '$stubExit' -Raw).Trim())
+if (`$code -ne 0) { exit `$code }
+`$prompt = ''
+if (`$args.Count -gt 0) { `$prompt = [string]`$args[`$args.Count - 1] }
+if (`$prompt -notmatch 'TARGET-CAPTURE-ID:\s*([A-Za-z0-9_.\-]+)') { exit 0 }   # quick-pass: 대상 지정 없음
+`$target = `$Matches[1]
+`$dir = Join-Path '$sbInbox' `$target
+`$p = Join-Path `$dir 'capture.json'
+`$m = Get-Content `$p -Raw -Encoding UTF8 | ConvertFrom-Json
+`$m.status = 'processed'
+`$m | Add-Member -NotePropertyName person -NotePropertyValue ('PER-' + `$target) -Force
+`$m | Add-Member -NotePropertyName processedAt -NotePropertyValue ((Get-Date).ToString('yyyy-MM-ddTHH:mm:ssZ')) -Force
+(`$m | ConvertTo-Json) | Out-File -Encoding utf8 `$p
+'stub brief' | Out-File -Encoding utf8 (Join-Path `$dir 'brief.md')
+exit 0
+"@ | Out-File -Encoding utf8 $stub
 
 # ---- load watcher functions in test mode with overridden globals ----
 $CardCaptureWatcherTestMode = $true
@@ -34,6 +53,9 @@ $LogFile = Join-Path $sbLog 'watcher.log'
 $HealthFile = Join-Path $sbLog 'watcher-health.json'
 $NotifyConf = Join-Path $sbLog 'notify.conf'
 $Lock = Join-Path $sbInbox 'processing.lock'
+# 실행 중인 실제 워처의 %LOCALAPPDATA%\CardCapture\state 를 절대 건드리지 않도록 반드시 override한다.
+$StateDir = Join-Path $sandbox 'state'
+$WorkerId = 'test-worker'
 
 function New-Capture($id, $status, $receivedAt, $processedAt) {
     $d = Join-Path $sbInbox $id
@@ -85,18 +107,21 @@ Invoke-Processing
 T (-not (Test-Path (Join-Path $sandbox 'stub-marker.txt'))) 'fresh lock: processing skipped'
 T ((Get-Content $LogFile -Raw) -match 'lock exists') 'fresh lock: logged'
 
-# 8. stale lock -> removed and processing proceeds
+# 8. stale lock -> removed and processing proceeds (대기 캡처를 계약대로 완결하며 소진)
 (Get-Item $Lock).LastWriteTime = (Get-Date).AddMinutes(-45)
 Invoke-Processing
 T (Test-Path (Join-Path $sandbox 'stub-marker.txt')) 'stale lock: removed, processing ran'
 T (-not (Test-Path $Lock)) 'lock cleaned up after run'
 T ($script:ConsecutiveFailures -eq 0) 'success run: failures reset'
+T ((Get-Backlog).Count -eq 0) 'stale lock run: backlog drained'
 
 # 9. failure run -> captures stay received, consecutiveFailures increments
+# (테스트 8이 큐를 비웠으므로 실패 관찰용 캡처를 새로 만든다)
 '1' | Out-File -Encoding ascii $stubExit
+$null = New-Capture 'T0010-failing' 'received' $null $null
 Invoke-Processing
 T ($script:ConsecutiveFailures -eq 1) 'failure: consecutiveFailures=1'
-$meta = Get-Content (Join-Path (Join-Path $sbInbox 'T0001-received') 'capture.json') -Raw | ConvertFrom-Json
+$meta = Get-Content (Join-Path (Join-Path $sbInbox 'T0010-failing') 'capture.json') -Raw | ConvertFrom-Json
 T ($meta.status -eq 'received') 'failure: capture stays received (no loss)'
 Invoke-Processing; Invoke-Processing
 T ($script:ConsecutiveFailures -eq 3) 'failure: consecutive count reaches 3'
@@ -107,6 +132,7 @@ T ($h2.lastExitCode -eq 1) 'health: lastExitCode surfaced'
 
 # 10. recovery -> success resets and notify skipped gracefully without conf
 '0' | Out-File -Encoding ascii $stubExit
+$null = New-Capture 'T0011-recovery' 'received' $null $null
 Invoke-Processing
 T ($script:ConsecutiveFailures -eq 0) 'recovery: failures reset after success'
 T (-not (Test-Path $NotifyConf)) 'notify.conf absent'
@@ -128,6 +154,7 @@ if (`$d) {
   `$m.status = 'processed'
   `$m | Add-Member -NotePropertyName person -NotePropertyValue ('PER-' + `$d.Name) -Force
   `$m | ConvertTo-Json | Out-File -Encoding utf8 `$p
+  'stub brief' | Out-File -Encoding utf8 (Join-Path `$d.FullName 'brief.md')
   Add-Content -Path '$callLog' -Value `$d.Name
 }
 "@ | Out-File -Encoding utf8 $smartPs
