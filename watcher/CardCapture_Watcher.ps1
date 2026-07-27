@@ -36,6 +36,7 @@ $script:LastRunEnd = $null
 $script:LastExitCode = $null
 $script:ConsecutiveFailures = 0
 $script:UnsafeNames = @{}
+$script:QuarantineHoldLogged = @{}
 # 소유자 식별자: PID만 쓰면 재사용된 PID가 남의 lease를 갱신할 수 있다.
 $WorkerId = ([string]$PID + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 
@@ -156,10 +157,25 @@ function Clear-CaptureQuarantine($captureId, $reason) {
 
 # 격리 해제는 폴더 이름 조작이 아니라 기존 requeue 계약으로만 일어난다:
 # 서버가 receivedAt을 갱신하고 requeueRequested를 남기면 입력 fingerprint가 달라진다.
+# 사람이 내용을 고쳐 다시 보낸 것에 새 시도 예산을 주는 것은 설계다(서버가 똑같은 재전송은
+# dedup해 receivedAt을 갱신하지 않으므로 blind 재전송으로는 재충전되지 않는다).
+# 반대로 '사람 개입 없이' 예산이 재충전되면 bounded retry 계약이 무너진다 — 아래가 그 경계다.
 function Test-CaptureQuarantined($captureId, $fingerprint) {
     $s = Get-CaptureState $captureId
     if ($s.quarantined -ne $true) { return $false }
+    # 빈 fingerprint는 '입력이 달라졌다'가 아니라 '지금은 알 수 없다'다 (동기화 중 부분 기록,
+    # 파싱 실패, 파일 잠김). 이걸 새 입력으로 취급하면 capture.json을 한 번 못 읽을 때마다
+    # MaxAttempts가 사람 개입 없이 재충전된다. Get-Backlog는 분당 여러 번 돌기 때문에
+    # 읽기 실패 한 번이 곧바로 시도 3회로 증폭된다. 알 수 없으면 격리를 유지한다(fail-closed).
+    if ([string]::IsNullOrEmpty([string]$fingerprint)) {
+        if (-not $script:QuarantineHoldLogged.ContainsKey([string]$captureId)) {
+            $script:QuarantineHoldLogged[[string]$captureId] = $true
+            Write-Log ("quarantine hold " + $captureId + " — 입력 fingerprint를 읽지 못했다(unknown), 격리를 유지한다")
+        }
+        return $true
+    }
     if ([string]$s.quarantineFingerprint -ne [string]$fingerprint) {
+        $script:QuarantineHoldLogged.Remove([string]$captureId)
         Clear-CaptureQuarantine $captureId 'new input fingerprint (재전송/requeue)'
         return $false
     }
