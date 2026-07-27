@@ -108,6 +108,12 @@ if (Test-Path $fixDir) {
   if ($bad.Count -gt 0) { $bad | ForEach-Object { Fail "fixture: $_" } } else { Pass ("eval fixtures valid (" + $fixtures.Count + ")") }
 } else { Warn 'eval/fixtures directory missing' }
 
+# ---------- 5b. eval harness 자체 검증 ----------
+# run-eval.ps1은 지금까지 표준 검증 경로에서 한 번도 실행되지 않았다.
+# -Validate가 reviewStatus 상한 판정의 self-test를 품고 있다 (TSK-000297).
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'eval\run-eval.ps1') -Validate | Out-Null
+if ($LASTEXITCODE -ne 0) { Fail 'eval harness self-test / fixture schema check failed (eval\run-eval.ps1 -Validate)' } else { Pass 'eval harness self-test + fixture schema check passed' }
+
 # ---------- 6. PWA sanity ----------
 $idx = Get-Content (Join-Path $root 'docs\index.html') -Raw
 $legacy = Get-Content (Join-Path $root 'docs\legacy.html') -Raw
