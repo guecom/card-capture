@@ -5,7 +5,10 @@
 #       즉시 Codex(codex exec)로 명함 처리 절차를 실행한다.
 #       시작 시 1회 스윕 + 파일 이벤트 + 60초 폴백 폴링.
 # 자동시작: 시작프로그램 폴더의 CardCaptureWatcher.bat (로그온 시)
-# 로그: %LOCALAPPDATA%\CardCapture\watcher.log
+# 로그: %LOCALAPPDATA%\CardCapture\watcher.log  — 워처가 쓴 구조화 이벤트만. 캡처 내용은 넣지 않는다.
+# 처리기 로그: %LOCALAPPDATA%\CardCapture\processor\<captureId>-<attempt>.log
+#       codex 처리기의 raw stdout/stderr(= 명함 내용·이름·연락처)는 전부 여기로 간다.
+#       보존 기간 90분(= MaxAttempts 3 x lease 30분) 뒤 워처가 삭제한다.
 # 헬스: %LOCALAPPDATA%\CardCapture\watcher-health.json  (CardCapture_Health.ps1로 조회)
 # 상태: %LOCALAPPDATA%\CardCapture\state\  — 워처 소유 durable 상태 (claim/lease, attempt·격리, staging marker).
 #       canonical capture.json 스키마와 status 값(received/processing/processed/skipped)은 건드리지 않는다.
@@ -26,6 +29,12 @@ $StateDir = Join-Path $LogDir 'state'
 # 새 정책 수치를 발명하지 않는다.
 $LeaseMinutes = 30
 $MaxAttempts = 3
+# 처리기 로그 보존 시간. 여기서도 새 수치를 발명하지 않는다 — 기존 두 임계값에서 유도한다.
+# 한 캡처의 재시도 예산은 유한하다: 시도 상한 $MaxAttempts(3)회 × 시도당 lease 상한
+# $LeaseMinutes(30분) = 90분이 워처가 한 캡처를 놓고 움직일 수 있는 최대 구간이고,
+# 그 뒤로는 commit이거나 격리다(사람이 requeue하기 전에는 같은 attempt를 다시 시도하지 않는다).
+# 그 구간이 지난 처리기 로그는 진단 가치가 끝났고 명함 내용만 남는다 — 그래서 지운다.
+$ProcessorLogRetentionMinutes = ($LeaseMinutes * $MaxAttempts)
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
@@ -40,14 +49,172 @@ $script:QuarantineHoldLogged = @{}
 # 소유자 식별자: PID만 쓰면 재사용된 PID가 남의 lease를 갱신할 수 있다.
 $WorkerId = ([string]$PID + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 
+# ---------------------------------------------------------------------------
+# 로깅 — 실패를 조용히 삼키지 않는다
+#   예전 Write-Log는 Out-File을 try/catch 없이 호출했다. Out-File은 파일을 열지 못하면
+#   statement-terminating 오류를 던지는데(PowerShell 5.1 실측: $ErrorActionPreference가
+#   기본값 Continue여도 던진다), 잡히지 않으면 그 statement만 중단되고 스크립트는 다음 줄로
+#   넘어간다. 즉 워처는 멀쩡히 돌면서 로그만 한 줄도 남기지 않는다. -WindowStyle Hidden으로
+#   뜨는 워처에서는 error stream을 읽는 사람도 없어 흔적이 전혀 없다.
+#   (2026-07-27 실측: 살아서 캡처를 처리하는 워처가 watcher.log·watcher-health.json에
+#    한 줄도 쓰지 못한 채 state\ 쓰기만 정상이었다. 그 사실을 알아낼 방법이 없었다.)
+#   이제 두 갈래로 흔적을 남긴다:
+#     (a) 다음 성공한 쓰기에서 '그동안 N줄을 잃었다'를 먼저 기록한다.
+#     (b) watcher.log 자체를 못 쓰는 동안에도 state\logging\log-write-failure.json 에 남긴다.
+#         실측 장애에서 state\ 쓰기는 정상이었으므로 이 경로가 실제로 관측 가능한 흔적이다.
+# ---------------------------------------------------------------------------
+$script:LogPendingDrops = 0     # 아직 watcher.log에 보고하지 못한 손실 줄 수
+$script:LogDroppedTotal = 0     # 이 프로세스 생애 누적 손실 줄 수
+$script:LogDropFirstAt = ''
+$script:LogDropLastAt = ''
+$script:LogDropLastError = ''
+
+# 파일에 손대는 유일한 지점. 성공하면 $true.
+function Write-LogLineRaw($line) {
+    try {
+        $line | Out-File -Append -Encoding utf8 $LogFile -ErrorAction Stop
+        return $true
+    } catch {
+        $script:LogDropLastError = [string]$_.Exception.Message
+        return $false
+    }
+}
+
+# watcher.log를 못 쓰는 동안의 유일한 관측 지점. 여기서도 실패하면 더 할 수 있는 일이 없다.
+function Write-LogFailureBreadcrumb($recoveredAt) {
+    try {
+        $p = Resolve-StatePath 'logging' 'log-write-failure.json'
+        $o = [PSCustomObject]@{
+            workerPid = $PID
+            workerId = [string]$WorkerId
+            pendingDroppedLines = [int]$script:LogPendingDrops
+            droppedTotal = [int]$script:LogDroppedTotal
+            firstFailureAt = [string]$script:LogDropFirstAt
+            lastFailureAt = [string]$script:LogDropLastAt
+            recoveredAt = [string]$recoveredAt
+            lastError = [string]$script:LogDropLastError
+            logFile = [string]$LogFile
+        }
+        ($o | ConvertTo-Json) | Out-File -Encoding utf8 $p
+    } catch {}
+}
+
 function Write-Log($m) {
-    "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $m" | Out-File -Append -Encoding utf8 $LogFile
+    $stamp = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+    # 밀린 손실이 있으면 먼저 알린다 — 복구 후 첫 줄보다 앞에 와야 운영자가 공백의 크기를 읽는다.
+    if ($script:LogPendingDrops -gt 0) {
+        $notice = ($stamp + ' LOG WRITE RECOVERED — 로그 쓰기 실패로 ' + $script:LogPendingDrops +
+            '줄을 잃었다 (' + $script:LogDropFirstAt + ' ~ ' + $script:LogDropLastAt +
+            ', 이 프로세스 누적 ' + $script:LogDroppedTotal + '줄): ' + $script:LogDropLastError)
+        if (Write-LogLineRaw $notice) {
+            $script:LogPendingDrops = 0
+            $script:LogDropFirstAt = ''
+            $script:LogDropLastAt = ''
+            Write-LogFailureBreadcrumb $stamp
+        }
+    }
+    if (-not (Write-LogLineRaw ($stamp + ' ' + $m))) {
+        if ($script:LogPendingDrops -eq 0) { $script:LogDropFirstAt = $stamp }
+        $script:LogPendingDrops++
+        $script:LogDroppedTotal++
+        $script:LogDropLastAt = $stamp
+        Write-LogFailureBreadcrumb ''
+        return
+    }
     try {
         if ((Get-Item $LogFile).Length -gt 5MB) {
             $lines = Get-Content $LogFile
             $lines[[int]($lines.Count / 2)..($lines.Count - 1)] | Out-File -Encoding utf8 $LogFile
         }
     } catch {}
+}
+
+# ---------------------------------------------------------------------------
+# 처리기 로그 — codex exec의 raw stdout/stderr는 watcher.log에 넣지 않는다
+#   처리기 출력에는 명함 내용·사람 이름·연락처가 그대로 담긴다. 예전에는 그것을 watcher.log에
+#   이어 붙였다(2026-07-27 실측: 48,252줄 중 48,169줄 = 99.8%가 처리기 출력). 그래서
+#   watcher.log 자체가 평문 PII 저장소였다. 이제 캡처별·시도별 파일로 분리하고,
+#   watcher.log에는 '어디에 있는지'만 구조화 이벤트로 남긴다 — 운영자의 추적 능력은 유지한다.
+#   디렉터리는 watcher.log 옆에서 유도한다. 테스트가 $LogFile을 sandbox로 돌리면 처리기 로그도
+#   따라가므로 실제 %LOCALAPPDATA%\CardCapture가 테스트로 오염되지 않는다.
+# ---------------------------------------------------------------------------
+function Resolve-ProcessorLogDir {
+    $d = Join-Path (Split-Path -Parent $LogFile) 'processor'
+    if (-not (Test-Path $d)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
+    return $d
+}
+
+# 파일 이름에는 Get-SafeCaptureId를 통과한 값만 들어간다 (경로 이탈·주입 차단).
+function Resolve-ProcessorLogPath($name) {
+    $safe = Get-SafeCaptureId $name
+    if (-not $safe) { $safe = 'unsafe' }
+    return (Join-Path (Resolve-ProcessorLogDir) ($safe + '.log'))
+}
+
+# 같은 이름이 다시 쓰일 수 있으므로(격리 해제로 attempt가 1부터 다시 시작) append + 구분 머리줄.
+# 성공 여부를 돌려준다 — 쓸 수 없는데 watcher.log가 그 파일을 가리키면 운영자를 없는 파일로 보낸다.
+function Add-ProcessorLogHeader($path, $header) {
+    try {
+        ('=== ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' ' + $header + ' ===') |
+            Out-File -Append -Encoding utf8 $path -ErrorAction Stop
+        return $true
+    } catch { return $false }
+}
+
+# 처리기 출력을 한 줄씩 처리기 로그로 흘려 넣는 sink.
+# Out-File을 직접 파이프로 쓰면 파일을 못 여는 순간 statement-terminating 오류가 나서
+# `& $Codex ... | Out-File` 파이프라인 전체가 끊긴다 — 그러면 $exit이 -1로 남아
+# '로그를 못 썼다'는 이유만으로 캡처가 실패·격리된다. 로깅은 처리를 막지 않는다.
+# 쓰기가 막히면 출력을 버리고(PII이므로 유실 자체는 안전 문제가 아니다) 파이프라인은 끝까지 간다.
+# 처리기 호출부는 phase(quick/deep)당 정확히 하나여야 한다 — eval/prompt-injection.test.js의
+# prompt-composition 게이트가 처리기 호출 수와 프롬프트 인자 집합을 정확히 고정한다.
+# 그래서 sink를 분기하려고 호출부를 복제하면 안 된다(그 게이트가 FAIL한다). 분기는 여기서 한다.
+function Write-ProcessorOutput {
+    param(
+        [Parameter(ValueFromPipeline = $true)] $InputLine,
+        [Parameter(Position = 0)] [string] $Path
+    )
+    begin {
+        $sink = $null
+        try {
+            $sink = New-Object System.IO.StreamWriter($Path, $true, (New-Object System.Text.UTF8Encoding($false)))
+        } catch { $sink = $null }
+    }
+    process {
+        if ($null -eq $sink) { return }
+        try { $sink.WriteLine([string]$InputLine) }
+        catch {
+            try { $sink.Close() } catch {}
+            $sink = $null
+        }
+    }
+    end {
+        if ($null -ne $sink) {
+            try { $sink.Flush(); $sink.Close() } catch {}
+            $sink = $null
+        }
+    }
+}
+
+# 보존 기간이 지난 처리기 로그만 지운다.
+# 대상은 처리기 로그 디렉터리 **바로 아래의 *.log 파일**뿐이다 — watcher.log, state\,
+# vault 데이터는 이 함수가 절대 건드리지 않는다.
+function Remove-ExpiredProcessorLogs {
+    $d = $null
+    try { $d = Resolve-ProcessorLogDir } catch { return 0 }
+    if (-not $d) { return 0 }
+    if (-not (Test-Path $d)) { return 0 }
+    $cutoff = (Get-Date).AddMinutes(-1 * [int]$ProcessorLogRetentionMinutes)
+    $removed = 0
+    foreach ($f in (Get-ChildItem $d -Filter '*.log' -File -ErrorAction SilentlyContinue)) {
+        if ($f.LastWriteTime -ge $cutoff) { continue }
+        try { Remove-Item $f.FullName -Force -ErrorAction Stop; $removed++ } catch {}
+    }
+    if ($removed -gt 0) {
+        Write-Log ('processor logs expired — ' + $removed + '개 삭제 (보존 ' + $ProcessorLogRetentionMinutes +
+            '분 = MaxAttempts ' + $MaxAttempts + ' x lease ' + $LeaseMinutes + '분)')
+    }
+    return $removed
 }
 
 # ---------------------------------------------------------------------------
@@ -469,6 +636,10 @@ function Write-Health {
         activeClaims = $claims
         quarantinedCount = $quarantined
         interruptedCount = @(Get-InterruptedCaptures).Count
+        # 로그 쓰기 실패 가시성: health가 살아 있으면 여기서, health마저 못 쓰면
+        # state\logging\log-write-failure.json 에서 관측한다.
+        logDroppedPending = [int]$script:LogPendingDrops
+        logDroppedTotal = [int]$script:LogDroppedTotal
         inbox = $Inbox
     }
     try { $h | ConvertTo-Json | Out-File -Encoding utf8 $HealthFile } catch {}
@@ -536,12 +707,19 @@ TARGET-CAPTURE-ID: $safe
 
 function Invoke-QuickExtract {
     if (-not (Test-Path $Codex)) { return }
-    Write-Log 'quick-pass start (fast name extract, no web search)'
+    # 처리기 출력은 watcher.log가 아니라 전용 파일로 간다. watcher.log에는 그 파일 이름만 남긴다.
+    $procLog = Resolve-ProcessorLogPath ('quickpass-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    $procName = Split-Path -Leaf $procLog
+    Write-Log ('quick-pass start (fast name extract, no web search) log=' + $procName)
+    $procOk = Add-ProcessorLogHeader $procLog 'quick-pass'
+    if (-not $procOk) {
+        Write-Log ('processor log unavailable ' + $procName + ' — 이번 실행의 처리기 출력은 남지 않는다')
+    }
     try {
         Set-Location $Vault
         & $Codex exec -C $Vault -s workspace-write -c 'windows.sandbox="unelevated"' $QuickPrompt 2>&1 |
-            Out-File -Append -Encoding utf8 $LogFile
-        Write-Log ("quick-pass done, exit=" + $LASTEXITCODE)
+            Write-ProcessorOutput $procLog
+        Write-Log ('quick-pass done, exit=' + $LASTEXITCODE + ' log=' + $procName)
     } catch { Write-Log ("quick-pass error: " + $_.Exception.Message) }
 }
 
@@ -556,6 +734,7 @@ function Invoke-Processing {
     'watcher' | Out-File -Encoding ascii $Lock
     $script:LastRunStart = Get-Date
     Write-Health
+    $null = Remove-ExpiredProcessorLogs   # 새 처리기 로그를 만들기 전에 만료분을 먼저 치운다
     # 이전 생에서 commit 전에 죽은 attempt를 먼저 기록한다. lease 만료 후 회수되어 bounded retry로 이어진다.
     $interrupted = @(Get-InterruptedCaptures)
     if ($interrupted.Count -gt 0) {
@@ -585,16 +764,27 @@ function Invoke-Processing {
             $null = Start-CaptureStaging $itemId $claim.attempt $item.fingerprint $claim.owner
             Write-Log ("processing card (deep) " + $itemId + " attempt=" + $claim.attempt + "/" + $MaxAttempts +
                 " — 남은 대기 " + (Get-Backlog).Count)
+            # 처리기 raw 출력(명함 내용)은 캡처별·시도별 파일로 분리한다. watcher.log에는 위치만 남긴다.
+            $procLog = Resolve-ProcessorLogPath ([string]$itemId + '-' + [string]$claim.attempt)
+            $procName = Split-Path -Leaf $procLog
+            $procOk = Add-ProcessorLogHeader $procLog ('deep ' + $itemId + ' attempt=' + $claim.attempt + ' owner=' + $claim.owner)
+            if (-not $procOk) {
+                Write-Log ('processor log unavailable ' + $procName + ' — 이번 실행의 처리기 출력은 남지 않는다')
+            }
+            Write-Log ('processor start ' + $itemId + ' attempt=' + $claim.attempt + ' phase=deep log=' + $procName)
             $exit = -1
             try {
                 # 프롬프트는 인자로 전달 (stdin은 PS5.1이 CP949로 인코딩해 한글이 깨짐).
                 # windows.sandbox=unelevated: headless에서는 elevated 샌드박스 헬퍼가 못 떠서 셸 실행이 전부 실패함.
+                # 출력은 Write-ProcessorOutput이 받는다 — 처리기 로그를 못 써도 파이프라인이 끊기지 않는다.
                 & $Codex exec -C $Vault -s workspace-write -c 'tools.web_search=true' -c 'windows.sandbox="unelevated"' $targeted 2>&1 |
-                    Out-File -Append -Encoding utf8 $LogFile
+                    Write-ProcessorOutput $procLog
                 $exit = $LASTEXITCODE
             } catch {
                 Write-Log ("processor error for " + $itemId + ": " + $_.Exception.Message)
             }
+            Write-Log ('processor end ' + $itemId + ' attempt=' + $claim.attempt + ' phase=deep exit=' + $exit +
+                ' log=' + $procName)
             $script:LastExitCode = $exit
             $script:LastRunEnd = Get-Date
             # fencing: 실행 중 lease를 잃었으면 다른 소유자가 권위를 가진다 — commit으로 확정하지 않는다.
@@ -666,6 +856,7 @@ if (-not $mtx.WaitOne(0)) { Write-Log "another instance running, exit (PID=$PID)
 
 Write-Log "=== watcher started ($Version, codex engine) PID=$PID ==="
 Write-Health
+$null = Remove-ExpiredProcessorLogs
 
 try {
     # 시작 스윕: 꺼져 있는 동안 도착한 캡처 처리
@@ -700,6 +891,8 @@ try {
             if (((Get-Date) - $lastBeat).TotalMinutes -ge 10) {
                 Write-Log "heartbeat (PID=$PID, loop alive)"
                 $lastBeat = Get-Date
+                # 캡처가 오래 없어도 만료된 처리기 로그는 사라져야 한다 (보존 기간은 유휴와 무관).
+                $null = Remove-ExpiredProcessorLogs
             }
             Write-Health
         } catch {
