@@ -9,9 +9,11 @@
 # redaction 계약: capturer·person 이름, quickName, 메모, brief 내용, 토큰, Drive folder ID,
 #   워처가 기록한 자유 문자열(lastError, quarantineReason, claim owner, inbox 경로),
 #   그리고 watcher.log의 처리기(codex) raw 출력은 사람용·기계용 어느 출력에도 넣지 않는다.
-#   watcher.log는 99% 이상이 처리기 raw 출력이므로 원문 tail을 절대 되풀이하지 않고,
 #   워처 자신이 쓴 타임스탬프 줄만 allowlist 이벤트 라벨로 환원해 보여준다.
 #   출력이 허용하는 식별자는 captureId(서버 발급 형식)와 pid·카운트·시각뿐이다.
+#   TSK-000300부터 처리기 raw 출력은 watcher.log가 아니라 <Root>\processor\ 로 간다.
+#   그 파일들은 **열지 않는다** — 건수와 나이만 세고 경로를 알려준다(내용은 명함 원문이다).
+#   과거 watcher.log에는 처리기 출력이 그대로 섞여 있으므로 skippedLines 집계는 그대로 둔다.
 #
 # 주의: UTF-8 BOM 유지 (한글 경로).
 
@@ -31,6 +33,8 @@ if (-not $Root) { $Root = Join-Path $env:LOCALAPPDATA 'CardCapture' }
 $HealthFile = Join-Path $Root 'watcher-health.json'
 $LogFile = Join-Path $Root 'watcher.log'
 $StateDir = Join-Path $Root 'state'
+# 처리기 raw 출력이 격리돼 있는 곳. 내용은 절대 읽지 않는다 — 건수와 나이만 센다.
+$ProcessorDir = Join-Path $Root 'processor'
 
 # 임계값은 기존 계약값만 재사용한다 — 새 정책 수치를 발명하지 않는다.
 #   15분: 기존 health heartbeat 임계값.  30분: 기존 stale lock / lease 임계값.  3회: 항목별 시도 상한.
@@ -174,8 +178,50 @@ function Get-ObservedState {
         }
     }
 
+    # 로그 쓰기 실패 흔적. watcher.log·watcher-health.json을 못 쓰는 동안에도 워처는 state\에
+    # 이것을 남긴다 (2026-07-27 실측 장애에서 state\ 쓰기는 정상이었다). 그래서 이 값은
+    # health 파일이 낡았거나 아예 갱신되지 않는 상황에서도 지금의 사실을 말한다.
+    # 자유 문자열(lastError·logFile)은 읽지 않는다 — 파생값만 낸다.
+    $logFailure = $null
+    $lfPath = Join-Path (Join-Path $StateDir 'logging') 'log-write-failure.json'
+    if (Test-Path $lfPath) {
+        $lf = Read-JsonFile $lfPath
+        $pending = 0
+        $total = 0
+        if ($null -ne $lf) {
+            try { $pending = [int](Get-Prop $lf 'pendingDroppedLines') } catch { $pending = 0 }
+            try { $total = [int](Get-Prop $lf 'droppedTotal') } catch { $total = 0 }
+        }
+        $logFailure = [PSCustomObject]@{
+            readable = ($null -ne $lf)
+            pendingDroppedLines = $pending
+            droppedTotal = $total
+            firstFailureAgeMin = (Get-AgeMin (ConvertTo-Stamp (Get-Prop $lf 'firstFailureAt')))
+            lastFailureAgeMin = (Get-AgeMin (ConvertTo-Stamp (Get-Prop $lf 'lastFailureAt')))
+            recovered = ($null -ne (ConvertTo-Stamp (Get-Prop $lf 'recoveredAt')))
+        }
+    }
+
+    # 처리기 raw 출력 보관 현황. 파일 내용은 절대 읽지 않는다 (명함 내용이 담긴다).
+    $procCount = 0
+    $procOldest = $null
+    $procPresent = (Test-Path $ProcessorDir)
+    if ($procPresent) {
+        $pf = @(Get-ChildItem $ProcessorDir -Filter '*.log' -File -ErrorAction SilentlyContinue)
+        $procCount = $pf.Count
+        if ($procCount -gt 0) {
+            $procOldest = Get-AgeMin (($pf | Sort-Object LastWriteTime | Select-Object -First 1).LastWriteTime)
+        }
+    }
+
     return [PSCustomObject]@{
         stateDir = (Test-Path $StateDir)
+        logWriteFailure = $logFailure
+        processorLogs = [PSCustomObject]@{
+            present = $procPresent
+            count = $procCount
+            oldestAgeMin = $procOldest
+        }
         claims = @($claims.ToArray())
         activeClaims = $claims.Count
         expiredLeases = $expiredLeases
@@ -202,6 +248,15 @@ $LogEventPatterns = @(
     @{ label = 'singleton_blocked';   re = '^another instance running' },
     @{ label = 'quick_pass';          re = '^quick-pass (start|done|error)' },
     @{ label = 'card_start';          re = '^processing card \(deep\)' },
+    # 처리기 실행 표시. 이 줄이 있어야 운영자가 raw 출력이 어느 파일에 있는지 찾아간다.
+    # 파일 이름은 captureId + attempt 뿐이라 출력 allowlist(captureId·숫자·시각) 안에 있다.
+    @{ label = 'processor_run';       re = '^processor (start|end) ' },
+    @{ label = 'processor_retention'; re = '^processor logs expired' },
+    # 별도 라벨이어야 한다. '^WARNING: ' 는 이미 unsafe_capture_name 이 잡고 있어서
+    # WARNING 접두사를 쓰면 운영자가 '캡처 이름이 이상하다'로 잘못 읽는다.
+    @{ label = 'processor_log_unavailable'; re = '^processor log unavailable' },
+    # 로그 쓰기가 실패했다가 복구된 구간. 이 라벨이 없으면 공백의 존재 자체가 진단에서 사라진다.
+    @{ label = 'log_write_recovered'; re = '^LOG WRITE RECOVERED' },
     @{ label = 'card_done';           re = '^card done' },
     @{ label = 'card_failed';         re = '^card FAILED' },
     @{ label = 'quarantine';          re = '^QUARANTINE ' },
@@ -391,6 +446,18 @@ if ($observed.interruptedCount -gt 0) { Sev 1 'interrupted_attempt' }
 if ($observed.unreadableItemFiles -gt 0) { Sev 1 'unreadable_state_file' }
 if (-not $log.present) { Sev 1 'log_missing' }
 
+# 로그 쓰기 실패는 '진단 표면 자체가 눈이 먼 상태'다 — 지금 밀려 있으면 critical,
+# 지나간 구간이면 warn. 흔적 파일이 있는데 읽히지 않는 것도 그 자체로 신호다.
+if ($null -ne $observed.logWriteFailure) {
+    if (-not $observed.logWriteFailure.readable) {
+        Sev 1 'log_write_failure_record_unreadable'
+    } elseif ($observed.logWriteFailure.pendingDroppedLines -gt 0) {
+        Sev 2 'log_write_failing'
+    } elseif ($observed.logWriteFailure.droppedTotal -gt 0) {
+        Sev 1 'log_write_failed_earlier'
+    }
+}
+
 $statusText = 'healthy'
 if ($script:exit -eq 1) { $statusText = 'warn' }
 if ($script:exit -eq 2) { $statusText = 'critical' }
@@ -490,6 +557,21 @@ if (-not $observed.stateDir) {
     if ($observed.interruptedCount -gt 0) { $iLine = $iLine + "  [" + ((@($observed.interrupted)) -join ', ') + "]" }
     Write-Host ("interrupted        : " + $iLine + "  (commit marker 없는 attempt)")
 }
+if ($null -eq $observed.logWriteFailure) {
+    Write-Host ("log write          : ok  (쓰기 실패 흔적 없음)")
+} elseif (-not $observed.logWriteFailure.readable) {
+    Write-Host ("log write          : UNREADABLE RECORD  (실패 흔적 파일을 읽지 못했다)")
+} else {
+    $lwLine = ("유실 누적 " + $observed.logWriteFailure.droppedTotal + "줄, 밀린 유실 " +
+        $observed.logWriteFailure.pendingDroppedLines + "줄")
+    if ($observed.logWriteFailure.pendingDroppedLines -gt 0) {
+        $lwLine = "FAILING NOW  " + $lwLine + "  [워처는 살아 있어도 로그가 남지 않는 상태다]"
+    } else {
+        $lwLine = "recovered  " + $lwLine
+    }
+    Write-Host ("log write          : " + $lwLine + "  (마지막 실패 " +
+        (Show $observed.logWriteFailure.lastFailureAgeMin) + " min 전)")
+}
 
 Write-Host ''
 Write-Host '--- watcher.log 이벤트 (처리기 출력은 redaction으로 제외) ---'
@@ -505,6 +587,14 @@ if (-not $log.present) {
     Write-Host ("event counts       : " + $countText)
     Write-Host ("suppressed lines   : " + $log.skippedLines + "  (처리기 raw 출력 — 명함 내용이 담기므로 출력하지 않는다)")
     foreach ($e in @($log.events)) { Write-Host ("  " + $e.at + "  " + $e.event) }
+}
+# 처리기 raw 출력은 별도 파일에 격리돼 있다. 어디를 봐야 하는지만 알려주고 내용은 읽지 않는다.
+if (-not $observed.processorLogs.present) {
+    Write-Host ("processor logs     : none  (처리기 로그 디렉터리 없음)")
+} else {
+    Write-Host ("processor logs     : " + $observed.processorLogs.count + "개  (가장 오래된 것 " +
+        (Show $observed.processorLogs.oldestAgeMin) + " min)  경로 " + $ProcessorDir +
+        "  — 명함 내용이 담긴 파일이다, 공유 전에 마스킹한다")
 }
 
 Write-Host ''
