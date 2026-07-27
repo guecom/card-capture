@@ -24,7 +24,7 @@ $required = @(
   'docs/vendor/paddleocr/PP-OCRv5_mobile_det_infer.onnx','docs/vendor/paddleocr/korean_PP-OCRv5_mobile_rec_infer.onnx',
   'docs/vendor/paddleocr/ppocrv5_korean_dict.txt','docs/vendor/ort/ort-wasm-simd-threaded.wasm','docs/vendor/ort/ort-wasm-simd-threaded.mjs',
   'watcher/CardCapture_Watcher.ps1','watcher/CardCapture_Health.ps1','watcher/tests/watcher-tests.ps1','watcher/tests/watcher-protocol-tests.ps1','watcher/tests/health-tests.ps1',
-  'eval/README.md','eval/run-eval.ps1','eval/upload-idempotency.test.js','eval/upload-filename-allowlist.test.js','eval/upload-content-type.test.js','eval/legacy-credential.test.js','eval/gas-sandbox.js','eval/golden-capture.test.js','eval/adversarial-capture.test.js','eval/camera-quality.test.js','eval/page-syntax.test.js','eval/server-syntax.test.js','eval/ocr-browser-smoke.html','scripts/validate.ps1'
+  'eval/README.md','eval/run-eval.ps1','eval/upload-idempotency.test.js','eval/upload-filename-allowlist.test.js','eval/upload-content-type.test.js','eval/legacy-credential.test.js','eval/build-reproducibility.test.js','eval/gas-sandbox.js','eval/golden-capture.test.js','eval/adversarial-capture.test.js','eval/camera-quality.test.js','eval/page-syntax.test.js','eval/server-syntax.test.js','eval/ocr-browser-smoke.html','scripts/validate.ps1'
 )
 $missing = @($required | Where-Object { -not (Test-Path (Join-Path $root $_)) })
 if ($missing.Count -gt 0) { Fail ("required files missing: " + ($missing -join ', ')) } else { Pass 'required files present' }
@@ -142,6 +142,13 @@ if ($null -eq $node) {
   if ($LASTEXITCODE -ne 0) { Fail 'adversarial capture corpus failed' } else { Pass 'adversarial capture negative corpus passed' }
   & $node.Source (Join-Path $root 'eval\upload-content-type.test.js')
   if ($LASTEXITCODE -ne 0) { Fail 'upload content-type / magic-byte gate failed' } else { Pass 'upload content-type deterministic tests passed' }
+  # 두 번 빌드해 바이트 비교한다. frontend 의존성이 있어야만 의미가 있다.
+  if (Test-Path (Join-Path $root 'frontend\node_modules\vite\bin\vite.js')) {
+    & $node.Source (Join-Path $root 'eval\build-reproducibility.test.js')
+    if ($LASTEXITCODE -ne 0) { Fail 'build reproducibility gate failed' } else { Pass 'build reproducibility deterministic gate passed' }
+  } else {
+    Warn 'frontend deps not installed; build reproducibility gate skipped (npm ci --prefix frontend)'
+  }
 }
 
 # ---------- 8. pinned on-device OCR assets ----------
