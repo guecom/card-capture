@@ -17,7 +17,7 @@ export const THEME_CHOICES: ReadonlyArray<{ value: ThemePreference; label: strin
 ];
 
 /** 브라우저 주소창·작업 전환기에 쓰이는 색. 화면 맨 위 배경과 같아야 이질감이 없다. */
-const THEME_COLOR: Record<ResolvedTheme, string> = { light: '#f6f8fb', dark: '#111823' };
+const THEME_COLOR: Record<ResolvedTheme, string> = { light: '#f6f8fb', dark: '#141020' };
 
 const DARK_QUERY = '(prefers-color-scheme: dark)';
 

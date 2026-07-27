@@ -1606,7 +1606,7 @@ function App() {
     const searchingNow = searching || recallSyncing;
     const progress = searchingNow && (
       // 진행 표면도 `AI 조사 요청`과 같은 문법을 쓴다 — 처리 중에는 움직임이 분명해진다 (INT-000016 항목 002).
-      <AiSurface className="recall-progress" tone="teal" state="active">
+      <AiSurface className="recall-progress" state="active">
         <AiStageRail stages={recallStages(recallStage, briefs.length)} label="AI 사람 찾기 진행 단계" />
         <div className="recall-progress-foot">
           <span>{recallStartedAt === null ? '' : `${elapsedLabel(clockTick - recallStartedAt)} 경과`}</span>
@@ -1730,7 +1730,7 @@ function App() {
         {/* AI 사람 찾기는 조사 요청과 같은 AI 표면 문법을 쓴다. 실제로 찾는 중이 아니어도 표면은
             은은하게 살아 있고, 찾는 동안 그 움직임이 분명해진다 (INT-000016 항목 002). */}
         {recall ? (
-          <AiSurface className="recall-request" tone="teal" state={searching || recallSyncing ? 'active' : 'idle'}>
+          <AiSurface className="recall-request" state={searching || recallSyncing ? 'active' : 'idle'}>
             <AiSurfaceHead title="AI 사람 찾기" badge="기기 안에서 대조" helper="이름이 기억나지 않아도 괜찮아요. 언제·어디서·어떤 사람이었는지 문장으로 적어 주세요." />
             {searchForm}
           </AiSurface>
