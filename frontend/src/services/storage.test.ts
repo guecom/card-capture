@@ -200,25 +200,65 @@ describe('private state is namespaced per subject (FI-006)', () => {
     expect(store.getItem(ownerKey)).toBeNull();
   });
 
-  it('moves pre-namespace private data to the current link code, then removes the shared copy', () => {
+  /**
+   * 계약 변경 — Kairen-Ref: TSK-000289.
+   *
+   * 예전 단언은 `moves pre-namespace private data to the current link code`, 즉 전역 사적 키를
+   * **현재 링크 코드로 옮긴다**였다. 근거는 "이 기기에서 그 값을 쓴 주체는 지금 저장된 token뿐"이었고,
+   * 그 전제가 틀렸다:
+   *
+   * 1. 이 정리가 도는 시점의 "지금 저장된 token"은 이번 boot에 들어온 링크가 **방금** 써 넣은 값이다.
+   *    이전 subject가 남긴 값에 대해 새 subject의 토큰을 증거로 삼는 구조라, 토큰이 바뀌는 경우
+   *    — 곧 FI-006이 막으려던 바로 그 경우 — 에 반드시 틀린다.
+   * 2. 전역 자리는 잔재가 아니라 이전 앱(`docs/legacy.html`)이 지금도 쓰는 자리라 창이 계속 열린다.
+   *
+   * 그래서 계약을 "귀속을 추정하지 않고 버린다"로 바꿨다. 이 검사는 **owner 자신의 링크로 열어도**
+   * 옮기지 않는다는 것까지 단언한다 — 우리는 owner인지 아닌지를 구별할 수 없고, 구별할 수 있는
+   * 척하는 것이 예전 계약의 결함이었다.
+   */
+  it('drops pre-namespace private data instead of adopting it into the current link code', () => {
     store.setItem('cc_briefs', JSON.stringify([{ captureId: 'CAP-0', status: 'processed' }]));
     store.setItem('cc_briefSeeAll', '1');
 
     loadRuntimeConfig(ownerLink);
 
-    expect(loadCachedBriefs()).toEqual([{ captureId: 'CAP-0', status: 'processed' }]);
-    expect(loadOwnerFlags().seeAll).toBe(true);
+    expect(loadCachedBriefs()).toEqual([]);
+    expect(loadOwnerFlags().seeAll).toBe(false);
     expect(store.getItem('cc_briefs')).toBeNull();
     expect(store.getItem('cc_briefSeeAll')).toBeNull();
   });
 
-  it('removes pre-namespace private data that cannot be attributed to any link code', () => {
+  it('removes pre-namespace private data on an anonymous boot too', () => {
     store.setItem('cc_briefs', JSON.stringify([{ captureId: 'CAP-0', status: 'processed' }]));
 
     loadRuntimeConfig('');
 
     expect(store.getItem('cc_briefs')).toBeNull();
     expect(loadCachedBriefs()).toEqual([]);
+  });
+
+  /**
+   * 판정 게이트 — Kairen-Ref: TSK-000289
+   *
+   * 전역 사적 키는 "namespace 도입 전 잔재"가 아니라 같은 Pages 루트의 이전 앱
+   * (`docs/legacy.html`)이 **지금도 쓰는 자리**다 — `briefSeeAll`·`researchInstructionEnabled`·
+   * `briefs`·`recentSearches` 모두 그 앱이 계속 다시 채운다. 그 값을 다음에 boot한 링크 코드가
+   * 상속하면 owner의 브리핑 전문(Private 포함)과 owner 게이트가 guest namespace로 들어간다.
+   */
+  it('never adopts an unattributable shared cache into whichever link code boots first', () => {
+    // owner 세션이 이전 앱에 남긴 전역 사적 키.
+    store.setItem('cc_briefs', JSON.stringify([{ captureId: 'CAP-0', status: 'processed', brief: '# Owner only' }]));
+    store.setItem('cc_briefSeeAll', '1');
+    store.setItem('cc_researchInstructionEnabled', '1');
+    store.setItem('cc_recentSearches', JSON.stringify(['한화 구매팀장']));
+
+    // 그 기기를 guest 링크로 **먼저** 연다.
+    loadRuntimeConfig(guestLink);
+
+    expect({ briefs: loadCachedBriefs(), flags: loadOwnerFlags(), searches: loadRecentSearches() }).toEqual({
+      briefs: [], flags: { seeAll: false, researchInstructionEnabled: false }, searches: [],
+    });
+    expect(JSON.stringify(store.snapshot())).not.toContain('Owner only');
   });
 });
 
