@@ -139,6 +139,19 @@ ion-toolbar {
 .boundary-note { display: flex; gap: 12px; padding: 16px; border-radius: 18px; background: #edf7f5; color: #1c7168; }
 .boundary-note strong { font-size: 12px; }
 .boundary-note p { margin: 3px 0 0; color: #527a76; font-size: 11px; line-height: 1.55; }
+.boundary-note .boundary-origin { margin-top: 6px; word-break: break-word; }
+.boundary-note .boundary-origin b { color: #16584f; font-weight: 760; }
+/* 연결 해제 (FI-007) — 되돌릴 수 없는 정리라 위험색을 쓰되, 촬영 대기열은 남는다고 못 박는다. */
+.signout-card { display: grid; gap: 11px; }
+.signout-head strong { color: var(--cc-ink); font-size: 13.5px; font-weight: 780; }
+.signout-card > p { margin: 0; color: var(--cc-muted); font-size: 12.5px; line-height: 1.6; word-break: keep-all; }
+.signout-card b { color: var(--cc-ink); font-weight: 760; }
+.signout-modal { --width: min(100%, 560px); --border-radius: 24px 24px 0 0; }
+.signout-confirm { display: grid; gap: 11px; padding: 2px 2px 20px; }
+.signout-confirm p { margin: 0; color: var(--cc-muted); font-size: 12.5px; line-height: 1.6; word-break: keep-all; }
+.signout-confirm b { color: var(--cc-ink); font-weight: 760; }
+.signout-warning { padding: 11px 12px; border: 1px solid #f2c9c2; border-radius: 13px; background: #fff4f2; color: #a8483a; }
+.signout-warning b { color: #8c3729; }
 .legacy-link { display: inline-flex; align-items: center; justify-content: center; gap: 5px; color: var(--cc-blue); font-size: 12px; font-weight: 700; text-decoration: none; }
 .modal-copy { margin: 4px 8px 14px; color: var(--cc-muted); font-size: 12px; line-height: 1.55; }
 .person-action-modal { --width: min(100%, 560px); --border-radius: 24px 24px 0 0; }
