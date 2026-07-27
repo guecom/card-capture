@@ -35,10 +35,21 @@ MVP build/testability gate comes before customer proof.
 node eval\camera-quality.test.js
 node eval\page-syntax.test.js
 node eval\server-syntax.test.js
+node eval\golden-capture.test.js
+node eval\adversarial-capture.test.js
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\validate.ps1
 ```
 
 `camera-quality.test.js`는 안정 감지, 흔들림 reset, 흐림, 심한 과노출, 한국어·영어 이름 후보, 회사·연락처 오인을 검증한다. `server-syntax.test.js`는 GAS 문법 뒤 `research-policy.test.js`, `gas-research-policy.test.js`, `status-consistency.test.js`를 실행한다. 마지막 테스트는 목록 cache-busting·`no-store`, POST requeue, 완료·건너뜀 상태 비후퇴, 최신 `receivedAt` 기준 경과 시간을 고정한다. 조사 지시 테스트는 owner/guest, feature flag, target mismatch, initial/existing Person, prompt injection과 금지 effect 9개 fixture를 검증한다. `research-ui-smoke.html`은 390×844 owner 화면에서 최초 등록 tab과 기존 Person action·modal을 확인한다. `ocr-browser-smoke.html`은 로컬 HTTP 서버에서 자체 호스팅 한국어+영어 WASM OCR을 실제로 기동하는 브라우저 smoke다. 실제 명함 감지·자동 촬영·owner/guest live receipt는 `device-acceptance.md`의 Android Chrome/iOS Safari gate를 별도로 통과해야 한다.
+
+### 결정적 API 게이트 (사람·LLM 없이 도는 부분)
+
+`golden-capture.test.js`와 `adversarial-capture.test.js`는 `gas-sandbox.js`(공용 합성 하네스)로 `Code.gs`를 고정 시계·합성 Drive·합성 Mail 위에서 실행한다. 실제 Drive·GAS·메일·토큰은 쓰지 않고, 스텁이 없으면 PASS가 아니라 예외로 끝난다.
+
+- `golden-capture.test.js` — `fixtures/*.json` 전부를 업로드 → `capture.json` receipt → 처리 마감 형태 → 목록 재조회까지 한 번에 고정한다. receipt의 정확한 key 집합과 값, 서버 소유 필드(`capturer`·`status`·`person`·`personAction`·`processedAt`·`contact`·`type`·`files`·`uploadFingerprint`)의 클라이언트 위조 차단, 명함·메모 원문 보존, 계약대로 쓴 마감 receipt의 terminal 인정, list API의 `contact`·`brief` 통과, 촬영자 scope를 검사한다. corpus 정합성(기대값이 합성 출처에 실제로 있는지, `allowed_unknown`과 모순되지 않는지, secret 유사 문자열이 없는지)도 같이 본다. fixture가 10개 미만이면 실패한다 — corpus를 지워서 green을 만들 수 없다.
+- `adversarial-capture.test.js` — 부정 corpus 17 케이스. 망가진 본문·이미지 없음·`images` 비배열·base64 파괴·8MB 초과·부분 실패는 **처리 가능한 산출물을 남기지 않는다**. captureId·파일 이름으로 경로를 벗어날 수 없고, `quickName`은 신뢰 입력이 아니며, Drive 중복 receipt는 최신본이 진실이고 최신본이 깨졌으면 상태를 지어내지 않는다. 업로드·requeue·correction·addnote·notify·researchinstruction **모든** 변경 경로가 남의 캡처를 거절하고 바이트를 바꾸지 않으며(본인 성공 대조군 포함), 알림 메일은 처리 완료 캡처에만 1통 나가고 본문에 메모·토큰이 없다.
+
+두 게이트는 각각 0.1초 안에 끝나고 파일을 쓰지 않는다(`.work/` 미사용).
 
 ## 조사 지시 Fixture (`research-fixtures/*.json`)
 
