@@ -118,8 +118,22 @@ self.addEventListener('fetch', (event) => {
   ];
   const isSharedRuntime = sharedRuntimePaths.some((path) => url.pathname.startsWith(path));
   if (!url.pathname.startsWith(scopePath) && !isSharedRuntime) return;
+  /* 화면(navigate)은 **네트워크 우선**이다 (founder 2026-07-28: 컴퓨터는 되는데 폰만 흰 화면).
+     예전에는 화면도 캐시 우선이라, 기기에 남아 있던 예전 껍데기가 항상 먼저 나왔다. 그 껍데기가
+     가리키는 asset 파일명은 배포마다 바뀌므로, 캐시에서 그 파일이 사라진 기기에서는 스크립트가
+     404가 되고 화면이 **하얗게** 남는다. 사용자가 되돌릴 방법도 없다.
+     루트 워커는 처음부터 네트워크 우선이었는데 후보 워커만 반대였다 — 그 비대칭이 원인이다.
+     이제 화면은 항상 지금 배포본을 먼저 받고, 네트워크가 없을 때만 캐시로 떨어진다.
+     **화면 응답은 캐시에 쓰지 않는다** — 초대 링크의 ?k=코드가 키에 박히기 때문이다(ISS-000110).
+     내용 해시가 붙은 asset은 불변이라 지금처럼 캐시 우선을 유지한다. */
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request).catch(() => caches.match('./index.html', { ignoreSearch: true }))
+    );
+    return;
+  }
   event.respondWith(
-    caches.match(event.request, { ignoreSearch: event.request.mode === 'navigate' }).then((cached) => {
+    caches.match(event.request).then((cached) => {
       if (cached) return cached;
       return fetch(event.request).then((response) => {
         /* 주의: 이 런타임 캐시 쓰기는 실제로는 아무것도 저장하지 않는다. clone()이
@@ -133,7 +147,7 @@ self.addEventListener('fetch', (event) => {
            마지막 케이스가 이 계약을 미리 지키고 있다. (Kairen-Ref: TSK-000287) */
         if (response.ok) caches.open(CACHE).then((cache) => cache.put(event.request, response.clone()));
         return response;
-      }).catch(() => event.request.mode === 'navigate' ? caches.match('./index.html') : undefined);
+      }).catch(() => undefined);
     })
   );
 });

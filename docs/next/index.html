@@ -9,7 +9,43 @@
     <meta name="referrer" content="no-referrer" />
     <link rel="manifest" href="./manifest.webmanifest" />
     <title>Kairen Card Capture</title>
-    <script type="module" crossorigin src="./assets/index-BJsXDObH.js"></script>
+    <!--
+      부팅 실패 화면 (founder 2026-07-28: "컴퓨터에서는 들어가지는데, 핸드폰에서는 흰 화면만 보여").
+
+      지금까지 이 파일은 빈 `<div id="root">` 하나였다. 그래서 스크립트가 한 줄이라도 못 뜨면
+      화면에 **아무것도** 남지 않았다 — 무엇이 잘못됐는지도, 어떻게 빠져나오는지도 없다.
+      원인이 무엇이든 그건 결함이다. 남의 기기 상태는 재현할 수 없어도 이 자리는 고칠 수 있다.
+
+      규칙:
+        - 이 스크립트와 스타일은 **인라인**이다. 번들이 못 떠도 이 화면만은 뜬다.
+        - 앱이 정상적으로 뜨면 아무것도 보이지 않는다(감시 타이머만 취소된다).
+        - 사용자가 직접 빠져나올 수 있다: 서비스 워커 등록 해제 + 캐시 비우기 + 새로 받기.
+          촬영 대기열은 IndexedDB에 있고 여기서 건드리지 않으므로 **보낼 촬영은 지워지지 않는다.**
+        - 무슨 일이 있었는지 화면에 적는다. 그 줄이 다음 진단의 출발점이 된다.
+    -->
+    <style>
+      #cc-boot-failure { position: fixed; inset: 0; z-index: 2147483647; display: none; overflow-y: auto;
+        padding: 28px 22px; background: #f5f7fb; color: #162333;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; -webkit-text-size-adjust: 100%; }
+      #cc-boot-failure[data-open="1"] { display: block; }
+      #cc-boot-failure .cc-box { max-width: 460px; margin: 8vh auto 0; }
+      #cc-boot-failure h1 { margin: 0 0 10px; font-size: 20px; line-height: 1.3; letter-spacing: -0.03em; }
+      #cc-boot-failure p { margin: 0 0 14px; font-size: 14px; line-height: 1.65; color: #4a5769; word-break: keep-all; }
+      #cc-boot-failure button { display: block; width: 100%; min-height: 52px; margin-bottom: 10px;
+        border: 0; border-radius: 10px; background: #2368d8; color: #fff; font-size: 15px; font-weight: 700; }
+      #cc-boot-failure a { display: block; min-height: 44px; line-height: 44px; text-align: center;
+        color: #4a5769; font-size: 13px; font-weight: 600; text-decoration: none; }
+      #cc-boot-failure pre { margin: 16px 0 0; padding: 11px 12px; border-radius: 8px; background: #eef2f7;
+        color: #66758a; font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; }
+      @media (prefers-color-scheme: dark) {
+        #cc-boot-failure { background: #141020; color: #eae6f8; }
+        #cc-boot-failure p { color: #a8a0bd; }
+        #cc-boot-failure button { background: #a98bf5; color: #16112a; }
+        #cc-boot-failure a { color: #a8a0bd; }
+        #cc-boot-failure pre { background: #221c33; color: #a8a0bd; }
+      }
+    </style>
+    <script type="module" crossorigin src="./assets/index-BCgIbubg.js"></script>
     <link rel="modulepreload" crossorigin href="./assets/rolldown-runtime-BgaNhQyE.js">
     <link rel="modulepreload" crossorigin href="./assets/react-vendor-CoIdssN8.js">
     <link rel="modulepreload" crossorigin href="./assets/react-vendor-BSh_wd36.js">
@@ -31,6 +67,103 @@
     <link rel="stylesheet" crossorigin href="./assets/index-BPNJ0KgC.css">
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"></div>
+
+    <div id="cc-boot-failure" role="alertdialog" aria-labelledby="cc-boot-title" aria-describedby="cc-boot-desc">
+      <div class="cc-box">
+        <h1 id="cc-boot-title">앱을 여는 데 실패했어요</h1>
+        <p id="cc-boot-desc">
+          이 기기에 남아 있던 예전 버전이 걸려 있을 때 생길 수 있어요.
+          아래 버튼을 누르면 저장된 화면을 비우고 최신 버전을 새로 받습니다.
+          <b>보내야 할 촬영은 지워지지 않아요.</b>
+        </p>
+        <button type="button" id="cc-boot-reset">앱 새로 받기</button>
+        <a href="../legacy.html" id="cc-boot-legacy">그래도 안 되면 이전 앱 열기</a>
+        <pre id="cc-boot-detail" aria-label="문제 상세"></pre>
+      </div>
+    </div>
+
+    <noscript>
+      <div style="padding:28px 22px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+        <h1 style="font-size:20px">자바스크립트가 꺼져 있어요</h1>
+        <p style="font-size:14px;line-height:1.65">브라우저 설정에서 자바스크립트를 켠 뒤 다시 열어 주세요.</p>
+      </div>
+    </noscript>
+
+    <script>
+      (function () {
+        var panel = document.getElementById('cc-boot-failure');
+        var detail = document.getElementById('cc-boot-detail');
+        var notes = [];
+        var shown = false;
+
+        // **화면이 비어 있을 때만** 실패로 판정한다.
+        // 이 판정을 느슨하게 잡으면 멀쩡히 뜬 앱 위에 전면 패널이 덮여 조작을 가로막는다 —
+        // 실제로 처음 판에서 그렇게 만들었고 회귀 스위트가 잡아냈다. 자산 하나가 못 떠도
+        // 앱이 그려졌으면 그건 실패가 아니다(예: OCR 런타임은 없어도 앱은 동작한다).
+        function booted() {
+          var root = document.getElementById('root');
+          return !!root && root.childElementCount > 0;
+        }
+
+        function show(reason) {
+          if (shown || booted()) return;
+          shown = true;
+          notes.unshift(reason);
+          var script = document.querySelector('script[type="module"][src]');
+          notes.push('build: ' + (script ? script.getAttribute('src') : '(script 태그 없음)'));
+          notes.push('ua: ' + navigator.userAgent);
+          detail.textContent = notes.join('\n');
+          panel.setAttribute('data-open', '1');
+        }
+
+        var timer = setTimeout(function () { show('화면이 12초 안에 뜨지 않았어요.'); }, 12000);
+
+        window.addEventListener('error', function (event) {
+          var target = event.target;
+          var isResource = target && (target.tagName === 'SCRIPT' || target.tagName === 'LINK');
+          if (!isResource) {
+            if (event.message) notes.push('error: ' + event.message);
+            return;
+          }
+          var address = target.src || target.href || '';
+          notes.push('resource: ' + address);
+          // 앱의 진입 스크립트가 못 뜬 경우에만 12초를 기다리지 않는다. 이때는 앱이 뜰 길이 없다.
+          // 그래도 곧바로 덮지는 않는다 — 다른 경로로 이미 그려졌을 수 있으므로 한 박자 두고 다시 본다.
+          if (target === document.querySelector('script[type="module"][src]')) {
+            clearTimeout(timer);
+            setTimeout(function () { show('앱 파일을 받지 못했어요: ' + (address || '(주소 없음)')); }, 1200);
+          }
+        }, true);
+
+        window.addEventListener('unhandledrejection', function (event) {
+          notes.push('rejection: ' + String(event.reason).slice(0, 200));
+        });
+
+        document.getElementById('cc-boot-reset').addEventListener('click', function () {
+          var button = document.getElementById('cc-boot-reset');
+          button.disabled = true;
+          button.textContent = '비우는 중…';
+          var jobs = [];
+          if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+            jobs.push(navigator.serviceWorker.getRegistrations().then(function (all) {
+              return Promise.all(all.map(function (registration) { return registration.unregister(); }));
+            }).catch(function () {}));
+          }
+          if (window.caches && caches.keys) {
+            jobs.push(caches.keys().then(function (keys) {
+              return Promise.all(keys.map(function (key) { return caches.delete(key); }));
+            }).catch(function () {}));
+          }
+          Promise.all(jobs).then(function () {
+            // 주소는 그대로 둔다(개인 링크 코드 포함). 캐시만 우회해 다시 받는다.
+            var url = new URL(location.href);
+            url.searchParams.set('cc_fresh', String(Date.now()));
+            location.replace(url.href);
+          });
+        });
+      }());
+    </script>
+
   </body>
 </html>
