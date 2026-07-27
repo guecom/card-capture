@@ -222,6 +222,77 @@ describe('private state is namespaced per subject (FI-006)', () => {
   });
 });
 
+/**
+ * FI-006 확장 — Kairen-Ref: TSK-000289
+ *
+ * FI-006이 `DELIVERED`가 된 뒤에도 만남 맥락(`event`·`relSelf`·`relKairen`·`research`·`stickyAt`)은
+ * 전역 `cc_` 키로 남아 있었다. 계약 문장이 "브리핑 캐시·owner 게이트·검색 기록"이라는 **닫힌 목록**이라
+ * 게이트도 그 세 가지만 지켰기 때문이다.
+ *
+ * 만남 맥락은 캐시가 아니라 **사람에 대해 그 subject가 직접 적은 메모**이고, 화면에 보이는 데서
+ * 끝나지 않는다 — `App.tsx`가 이 값을 다음 촬영에 그대로 붙여 올린다. 즉 owner가 적은 관계 메모가
+ * guest의 캡처에 guest의 것으로 실려 서버까지 간다.
+ */
+describe('meeting context is private to a subject (FI-006 확장)', () => {
+  const ownerLink = `?api=${encodeURIComponent(PINNED_API)}&k=owner-token`;
+  const guestLink = `?api=${encodeURIComponent(PINNED_API)}&k=guest-token`;
+  const ownerContext = { event: '고객사 방문 미팅', relSelf: '대학 선배', relKairen: '잠재 고객', research: '최근 경력 위주' };
+  const empty = { event: '', relSelf: '', relKairen: '', research: '' };
+
+  it('never shows one link code the meeting context another wrote', () => {
+    loadRuntimeConfig(ownerLink);
+    saveStickyCaptureContext(ownerContext);
+
+    loadRuntimeConfig(guestLink);
+    expect(loadStickyCaptureContext()).toEqual(empty);
+  });
+
+  it('removes the meeting context of a link code that no longer opens the app', () => {
+    loadRuntimeConfig(ownerLink);
+    saveStickyCaptureContext(ownerContext);
+
+    loadRuntimeConfig(guestLink);
+    expect(JSON.stringify(store.snapshot())).not.toContain('대학 선배');
+    expect(JSON.stringify(store.snapshot())).not.toContain('고객사 방문 미팅');
+    // `research`는 `researchInstructionEnabled`의 접두사다 — 정리 패턴이 둘을 모두 잡는지 함께 본다.
+    expect(JSON.stringify(store.snapshot())).not.toContain('최근 경력 위주');
+    expect(Object.keys(store.snapshot()).filter((key) => key.startsWith(`cc_${subjectIdOf(PINNED_API, 'owner-token')}_`))).toEqual([]);
+  });
+
+  it('renders and stores no meeting context before a link code is known', () => {
+    loadRuntimeConfig(ownerLink);
+    saveStickyCaptureContext(ownerContext);
+
+    // 링크 코드가 회수된(또는 아직 받지 못한) 기기에서 다시 여는 상황.
+    store.removeItem('cc_token');
+    loadRuntimeConfig('');
+    expect(activeSubject()).toBe(ANONYMOUS_SUBJECT);
+    expect(loadStickyCaptureContext()).toEqual(empty);
+
+    saveStickyCaptureContext({ ...empty, event: '익명 상태 입력' });
+    expect(JSON.stringify(store.snapshot())).not.toContain('익명 상태 입력');
+  });
+
+  /**
+   * 이관하지 않고 **버리는** 것이 계약이다. 기기에 남은 전역 값이 지금 링크 코드의 주인이 적은
+   * 것이라는 증거는 없고, subject가 바뀌는 boot가 바로 이 정리가 도는 boot다.
+   */
+  it('drops a pre-namespace meeting context instead of adopting it into the current link code', () => {
+    store.setItem('cc_event', '고객사 방문 미팅');
+    store.setItem('cc_relSelf', '대학 선배');
+    store.setItem('cc_relKairen', '잠재 고객');
+    store.setItem('cc_research', '최근 경력 위주');
+    store.setItem('cc_stickyAt', String(Date.now()));
+
+    loadRuntimeConfig(guestLink);
+
+    expect(loadStickyCaptureContext()).toEqual(empty);
+    expect(store.getItem('cc_event')).toBeNull();
+    expect(store.getItem('cc_stickyAt')).toBeNull();
+    expect(JSON.stringify(store.snapshot())).not.toContain('대학 선배');
+  });
+});
+
 describe('device disconnect (FI-007)', () => {
   it('clears the link code, private caches and meeting context but keeps device preferences', () => {
     loadRuntimeConfig(`?api=${encodeURIComponent(PINNED_API)}&k=owner-token`);
@@ -247,6 +318,44 @@ describe('device disconnect (FI-007)', () => {
     // 기기 취향 설정은 사적 기록이 아니므로 남는다.
     expect(store.getItem('cc_galleryFree')).toBe('off');
     expect(loadSectionCollapsed('briefs')).toBe(true);
+  });
+
+  /**
+   * 위 검사의 `loadStickyCaptureContext()`만으로는 부족하다 — `연결 해제` 뒤에는 subject가
+   * 익명이라 사적 키를 **읽지 않으므로** 값이 기기에 남아 있어도 빈 값으로 보인다.
+   * 실제로 지워졌는지는 저장소 내용과 재연결로만 판정할 수 있다.
+   */
+  it('erases the meeting context from the device, not just from view', () => {
+    loadRuntimeConfig(`?api=${encodeURIComponent(PINNED_API)}&k=owner-token`);
+    saveStickyCaptureContext({ event: '고객사 방문 미팅', relSelf: '대학 선배', relKairen: '잠재 고객', research: '최근 경력 위주' });
+
+    signOutDevice();
+
+    expect(JSON.stringify(store.snapshot())).not.toContain('대학 선배');
+    expect(JSON.stringify(store.snapshot())).not.toContain('고객사 방문 미팅');
+
+    // 같은 링크로 다시 연결해도 되살아나지 않는다.
+    loadRuntimeConfig(`?api=${encodeURIComponent(PINNED_API)}&k=owner-token`);
+    expect(loadStickyCaptureContext()).toEqual({ event: '', relSelf: '', relKairen: '', research: '' });
+  });
+
+  /**
+   * 촬영 대기열(IndexedDB)은 유일본이라 격리·삭제 대상이 **아니다** (FI-007 계약).
+   * subject 정리 경로가 넓어질 때 실수로 대기열까지 손대는 것을 막는 회귀 잠금이다.
+   */
+  it('never reaches the capture queue storage while isolating or disconnecting', () => {
+    const indexedDb = { open: vi.fn(), deleteDatabase: vi.fn(), databases: vi.fn(), cmp: vi.fn() };
+    vi.stubGlobal('indexedDB', indexedDb);
+
+    loadRuntimeConfig(`?api=${encodeURIComponent(PINNED_API)}&k=owner-token`);
+    saveCachedBriefs([{ captureId: 'CAP-1', status: 'processed', brief: '# Owner only' }]);
+    saveStickyCaptureContext({ event: '고객사 방문 미팅', relSelf: '대학 선배', relKairen: '잠재 고객', research: '최근 경력 위주' });
+    loadRuntimeConfig(`?api=${encodeURIComponent(PINNED_API)}&k=guest-token`);
+    signOutDevice();
+
+    expect(indexedDb.open).not.toHaveBeenCalled();
+    expect(indexedDb.deleteDatabase).not.toHaveBeenCalled();
+    expect(indexedDb.databases).not.toHaveBeenCalled();
   });
 });
 
