@@ -163,7 +163,7 @@ if ($null -eq $node) {
   }
 }
 
-# ---------- 8. pinned on-device OCR assets ----------
+# ---------- 8. pinned on-device OCR assets + self-hosted font ----------
 $ocrHashes = @{
   'docs/vendor/tesseract/tesseract.min.js' = 'a8e29918d098b2b06e1012bdaeffb4aec0445c5d5654709023e0bd1f442a80e8'
   'docs/vendor/tesseract/worker.min.js' = 'aca1229639fc9907d86f96e825955a2b7c5716d17f3bc3acd71f9c7ab66181fc'
@@ -176,6 +176,9 @@ $ocrHashes = @{
   'docs/vendor/paddleocr/ppocrv5_korean_dict.txt' = 'a3792cbb41215a43e555e16ff4a7f7b18db5dd80cd058637098f0d872f2dd9d6'
   'docs/vendor/ort/ort-wasm-simd-threaded.wasm' = 'd1ab1b94b16a65b29d710d0b587b29e7bed336827577623913479b8afe8113e6'
   'docs/vendor/ort/ort-wasm-simd-threaded.mjs' = '0a1e718d99c41b22c21f2520ff4f9e883a6b5533856e398d21816ee8eb8185d3'
+  # Pretendard Variable subset (founder 2026-07-28) - self-hosted, SIL OFL 1.1.
+  # Sub-setting recipe and the reason for every choice live in frontend/src/fonts/README.md.
+  'frontend/src/fonts/pretendard-variable-korean.woff2' = '58f28b65661548386dc69f78d65ebad51baca1ce133d6b7647444f4579babb2b'
 }
 $badOcrHash = @()
 foreach ($rel in $ocrHashes.Keys) {
@@ -184,7 +187,7 @@ foreach ($rel in $ocrHashes.Keys) {
   $actual = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
   if ($actual -ne $ocrHashes[$rel]) { $badOcrHash += "$rel hash mismatch" }
 }
-if ($badOcrHash.Count -gt 0) { $badOcrHash | ForEach-Object { Fail "ocr-asset: $_" } } else { Pass 'pinned OCR asset hashes match' }
+if ($badOcrHash.Count -gt 0) { $badOcrHash | ForEach-Object { Fail "ocr-asset: $_" } } else { Pass 'pinned OCR/font asset hashes match' }
 
 # ---------- 9. watcher 스위트 ----------
 # 반드시 -File 로 호출한다 — identity·다중 orphan 게이트가 실행 프로세스 자신의 command line을 읽는다.

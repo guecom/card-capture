@@ -6,3 +6,8 @@ docs/vendor/tesseract/*.gz binary
 docs/vendor/paddleocr/** -text
 docs/vendor/ort/** -text
 docs/vendor/tesseract/** -text
+
+# 자체 호스팅 서체도 해시로 고정된 자산이다 (founder 2026-07-28).
+# Windows 체크아웃(core.autocrlf=true)에서 EOL 변환이 한 번이라도 닿으면 파일이 깨지고
+# validate.ps1의 pinned hash와 Pages blob 비교가 동시에 무너진다. 절대 텍스트로 다루지 않는다.
+*.woff2 -text

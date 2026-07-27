@@ -105,6 +105,7 @@ import {
   loadRuntimeConfigDetailed,
   loadSectionCollapsed,
   loadStickyCaptureContext,
+  loadMotionPreference,
   loadThemePreference,
   saveCachedBriefs,
   saveGalleryFree,
@@ -113,11 +114,14 @@ import {
   saveRuntimeConfig,
   saveSectionCollapsed,
   saveStickyCaptureContext,
+  saveMotionPreference,
   saveThemePreference,
   signOutDevice,
+  type MotionPreference,
   type ThemePreference,
 } from './services/storage';
 import { applyTheme, resolveTheme, systemPrefersDark, THEME_CHOICES, watchSystemTheme } from './services/theme';
+import { applyMotion, MOTION_CHOICES, resolveMotion, systemPrefersReducedMotion, watchSystemMotion } from './services/motion';
 import { holdSafeAreaInset } from './services/viewport-shell';
 import { apiRejectionMessage, canEditApiEndpoint } from './services/api-origin';
 import { scrubCredentialParams } from './services/url-credentials';
@@ -312,6 +316,12 @@ function App() {
   const [theme, setTheme] = useState<ThemePreference>(loadThemePreference);
   const [osPrefersDark, setOsPrefersDark] = useState(systemPrefersDark);
   const resolvedTheme = resolveTheme(theme, osPrefersDark);
+  // 화면 움직임 (founder 판정 2026-07-28). 폰의 `움직임 최소화`가 켜져 있으면 AI 표면의 빛이
+  // 하나도 그려지지 않는다 — 그건 결함이 아니라 존중이지만, **왜 안 보이는지 말해 주고 직접 켤 수도**
+  // 있어야 한다. 그래서 OS 설정은 기본값이지 잠금장치가 아니다.
+  const [motion, setMotion] = useState<MotionPreference>(loadMotionPreference);
+  const [osPrefersReducedMotion, setOsPrefersReducedMotion] = useState(systemPrefersReducedMotion);
+  const resolvedMotion = resolveMotion(motion, osPrefersReducedMotion);
   /**
    * 지금 **실제로 서버에 올리고 있는** captureId. 없으면 보내는 중이 아니다 (FI-034).
    *
@@ -564,6 +574,12 @@ function App() {
   }, [osPrefersDark, theme]);
 
   useEffect(() => watchSystemTheme(setOsPrefersDark), []);
+
+  useEffect(() => {
+    applyMotion(resolveMotion(motion, osPrefersReducedMotion));
+  }, [motion, osPrefersReducedMotion]);
+
+  useEffect(() => watchSystemMotion(setOsPrefersReducedMotion), []);
 
   // 탭 바가 스크롤 중에 오르내리지 않도록 아래 safe-area 여백을 고정한다 (INT-000016 항목 001).
   useEffect(() => holdSafeAreaInset(), []);
@@ -1795,6 +1811,36 @@ function App() {
           </div>
           <small className="theme-foot">
             지금 보이는 화면은 <b>{resolvedTheme === 'dark' ? '다크' : '라이트'}</b>예요{theme === 'system' ? ' — 폰 설정을 따라갑니다.' : '.'}
+          </small>
+        </section>
+        {/* founder 판정 2026-07-28: "여전히 하이라이팅이 안 나옴".
+            폰이 `움직임 최소화`를 켜고 있으면 AI 표면의 빛은 한 픽셀도 그려지지 않는다(실측 확인).
+            그건 존중이지만 **말없이 사라지면 고장으로 읽힌다** — 지금 상태를 적고, 직접 켤 수 있게 한다. */}
+        <section className="surface-card theme-card">
+          <div className="theme-head"><Waves aria-hidden="true" size={17} /><strong>화면 움직임</strong></div>
+          <p>AI가 맡은 자리(<b>AI 조사 요청</b>·<b>AI 사람 찾기</b>)는 평소에도 은은한 빛이 지나갑니다. 고른 값은 이 기기에 저장돼요.</p>
+          <div className="theme-choice" role="radiogroup" aria-label="화면 움직임">
+            {MOTION_CHOICES.map((choice) => (
+              <button
+                key={choice.value}
+                type="button"
+                role="radio"
+                aria-checked={motion === choice.value}
+                className={motion === choice.value ? 'on' : ''}
+                onClick={() => { setMotion(choice.value); saveMotionPreference(choice.value); }}
+              >
+                <strong>{choice.label}</strong>
+                <small>{choice.hint}</small>
+              </button>
+            ))}
+          </div>
+          <small className="theme-foot">
+            지금은 <b>{resolvedMotion === 'on' ? '움직이는 중' : '멈춰 있음'}</b>이에요
+            {motion === 'system'
+              ? (osPrefersReducedMotion
+                ? ' — 이 폰이 움직임 최소화를 켜 두어서 빛이 멈춰 있습니다. 여기서 켜기를 고르면 앱에서만 다시 움직여요.'
+                : ' — 폰 설정을 따라갑니다.')
+              : '.'}
           </small>
         </section>
         {/* ISS-000102: 갤러리 사본은 OS 기본 카메라 앱만 만든다. 지울 수 없는 것을 지운다고 말하지 않는다. */}

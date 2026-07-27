@@ -139,9 +139,19 @@ test('keeps the personal link code out of root service-worker cache keys', async
     // 1) 초대 링크 형태: …/?k=CODE (index.html이 next/로 넘긴다)
     await page.goto(`${origin}?k=${FAKE_LINK_CODE}`, { waitUntil: 'domcontentloaded' });
     await page.waitForURL(/\/next\//, { timeout: 20_000 });
+    // 후보 앱이 부팅을 끝내고 주소창에서 링크 코드를 지울 때까지 기다린다.
+    // 그 정리는 `history.replaceState`인데 Playwright는 이것도 navigation으로 센다 —
+    // 기다리지 않고 다음 `goto`를 시작하면 그 goto가 "interrupted by another navigation"으로 끊긴다.
+    // 부팅 타이밍이 조금만 달라져도(예: 서체 요청이 하나 늘어) 열리는, 원래부터 있던 경합이다.
+    // 기다림을 넣으면 경합이 사라질 뿐 아니라 **주소창 정리가 실제로 끝났음**까지 함께 증명한다.
+    await page.waitForFunction(() => !new URL(location.href).searchParams.has('k'), undefined, { timeout: 20_000 });
 
+    // 코드를 실은 주소는 착지 직후 그 페이지가 주소창을 정리한다(legacy.html · url-credentials.ts).
+    // 그 정리는 same-document `replaceState`인데 Playwright는 navigation으로 세서, `domcontentloaded`를
+    // 기다리는 `goto`를 끊는다(ERR_ABORTED). 이 게이트의 실제 동기화 지점은 아래 SW controller 대기와
+    // `settleCacheWrites`이므로 `commit`까지만 기다린다 — 그러면 경합이 성립하지 않는다.
     // 2) legacy 링크 형태: …/legacy.html?api=…&k=CODE
-    await page.goto(`${origin}legacy.html?api=${encodeURIComponent(FAKE_API)}&k=${FAKE_LINK_CODE}`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${origin}legacy.html?api=${encodeURIComponent(FAKE_API)}&k=${FAKE_LINK_CODE}`, { waitUntil: 'commit' });
     await page.waitForFunction(() => navigator.serviceWorker.controller !== null, undefined, { timeout: 20_000 });
 
     // 캐시 쓰기가 정착할 때까지 기다린다 — 링크 코드를 실은 probe라 수정 전에는 이 키 자체가 증거다.
@@ -221,9 +231,9 @@ test('keeps the personal link code out of the candidate (next/) cache keys', asy
 
   try {
     // 실제 사용 흐름: 사용자가 코드가 실린 링크로 후보 앱을 연 뒤 계속 쓴다.
-    await page.goto(`${origin}next/?api=${encodeURIComponent(FAKE_API)}&k=${FAKE_LINK_CODE}`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${origin}next/?api=${encodeURIComponent(FAKE_API)}&k=${FAKE_LINK_CODE}`, { waitUntil: 'commit' });
     await page.waitForFunction(() => navigator.serviceWorker.controller !== null, undefined, { timeout: 20_000 });
-    await page.goto(`${origin}next/?api=${encodeURIComponent(FAKE_API)}&k=${FAKE_LINK_CODE}`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${origin}next/?api=${encodeURIComponent(FAKE_API)}&k=${FAKE_LINK_CODE}`, { waitUntil: 'commit' });
     await page.waitForFunction(() => navigator.serviceWorker.controller !== null, undefined, { timeout: 20_000 });
 
     // 후보 worker도 루트와 똑같이 **전체 URL**을 캐시 키로 쓴다. 오늘 코드가 새지 않는 이유는
