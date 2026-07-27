@@ -125,6 +125,24 @@ test('the meeting-context block opens by default and its fields read as fields',
     expect(parseFloat(field.border)).toBeGreaterThanOrEqual(1);
     expect(field.height).toBeGreaterThanOrEqual(44);
 
+    // placeholder가 칸을 넘겨 잘리면 안 된다 — 잘린 안내문은 그 자체로 미완성으로 읽힌다.
+    // input의 scrollWidth는 placeholder가 아니라 value 기준이라 쓸 수 없다. 실제 글꼴로 재야 한다.
+    // (textarea는 줄바꿈되므로 한 줄짜리 input만 본다.)
+    const clipped = await block.locator('ion-input input').evaluateAll((nodes) => {
+      const context = document.createElement('canvas').getContext('2d')!;
+      return nodes.map((node) => {
+        const field = node as HTMLInputElement;
+        const style = getComputedStyle(field);
+        context.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+        return {
+          text: field.placeholder,
+          needs: Math.round(context.measureText(field.placeholder).width),
+          has: Math.round(field.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)),
+        };
+      }).filter((entry) => entry.needs > entry.has);
+    });
+    expect(clipped, `placeholder가 잘림: ${JSON.stringify(clipped)}`).toEqual([]);
+
     // `2시간 유지` 안내는 칸마다 반복하지 않고 영역 위에 한 번만 나온다.
     await expect(block.getByText(/2시간/)).toHaveCount(1);
 
