@@ -35,6 +35,8 @@ Kairen Ref: `TSK-000141` (credential·access baseline), `TSK-000153` (processing
 | 대용량/오염 업로드 | images | 4장 제한, 8MB/장, base64 검증, DAILY_LIMIT(기본 100/일) | 구현됨 |
 | Pages 공급망 | 외부 CDN 스크립트 | OpenCV.js self-hosted(`docs/vendor/`), 외부 CDN 미사용 | 구현됨 |
 | 재전송 위·변조 | 같은 captureId 재업로드 | 토큰 소유자만 자기 captureId 폴더 갱신, 최신 파일 우선 규칙 | 구현됨 |
+| 남의 captureId 덮어쓰기 | 다른 사람의 captureId를 알아내 그 폴더에 업로드 | 업로드 시 기존 `capture.json`의 `capturer`를 확인하고 불일치면 `capture_conflict`로 거절(owner는 예외). 거절 시 파일·메타 무변경 | 구현됨, eval 회귀(`upload-idempotency.test.js`) |
+| 처리 상태 되돌림 | 같은 촬영을 다시 올리면 `capture.json`이 `status:'received'`로 덮어써져 이미 `processed`인 캡처가 처음부터 재처리 | 업로드 내용 지문(`uploadFingerprint`)으로 같은 업로드를 멱등 처리해 아무것도 쓰지 않음. 지문 이전 캡처는 `capturedAt`·`event`·`note`·파일 목록으로 판정. 내용이 실제로 달라진 재업로드만 받아들이며 `requeueRequested`·`previousStatus`·`previousProcessedAt`·`previousPerson`으로 명시적 감사 흔적을 남김 | 구현됨, eval 회귀 |
 
 ## Token Lifecycle Runbook
 

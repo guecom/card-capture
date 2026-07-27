@@ -83,12 +83,8 @@ function requeue_(token, captureId) {
   var meta = readJsonFile_(folder);
   if (!meta) return json_({ ok: false, error: 'no_capture_json' });
   if (meta.capturer !== name && !isOwner_(name)) return json_({ ok: false, error: 'not_your_capture' });
-  var receivedMs = Date.parse(String(meta.receivedAt || ''));
-  var processedMs = Date.parse(String(meta.processedAt || ''));
-  var hasNewerReceipt = isFinite(receivedMs) && isFinite(processedMs) && receivedMs > processedMs;
-  var terminal = (isFinite(processedMs) && (!isFinite(receivedMs) || processedMs >= receivedMs)) ||
-    (!hasNewerReceipt && (meta.status === 'processed' || meta.status === 'skipped'));
-  if (terminal) {
+  /* 업로드 경로와 같은 판정을 쓴다 — 두 경로가 갈리면 한쪽만 되돌림을 막게 된다 (FI-015). */
+  if (isTerminalMeta_(meta)) {
     return json_({
       ok: true,
       captureId: cid,
@@ -372,11 +368,36 @@ function doPost(e) {
     var lock = LockService.getScriptLock();
     lock.waitLock(10000);
     var folder;
+    var existed;
     try {
       var it = inbox.getFoldersByName(captureId);
-      folder = it.hasNext() ? it.next() : inbox.createFolder(captureId);
+      existed = it.hasNext();
+      folder = existed ? it.next() : inbox.createFolder(captureId);
     } finally {
       lock.releaseLock();
+    }
+
+    /* 같은 captureId가 이미 있으면 소유자·내용·처리 상태를 먼저 판정한다
+       (FI-009 ownership / FI-010 idempotency / FI-015 lifecycle monotonicity). */
+    var prior = existed ? readJsonFile_(folder) : null;
+    if (prior && prior.capturer && prior.capturer !== name && !isOwner_(name)) {
+      /* 남의 캡처 폴더에 덮어쓸 수 없다. 파일·메타는 하나도 건드리지 않는다. */
+      return json_({ ok: false, error: 'capture_conflict' });
+    }
+
+    var fingerprint = uploadFingerprint_(req, images);
+    if (sameAsStoredUpload_(prior, req, images, fingerprint)) {
+      /* 완전히 같은 업로드가 다시 왔다 — 응답만 유실된 재전송이다.
+         파일도 capture.json도 다시 쓰지 않는다. 다시 쓰면 status가 received로
+         되돌아가 이미 끝난 처리가 처음부터 다시 돈다. */
+      return json_({
+        ok: true,
+        captureId: captureId,
+        files: prior.files || [],
+        deduped: true,
+        status: prior.status || 'received',
+        processedAt: prior.processedAt || ''
+      });
     }
 
     var saved = [];
@@ -404,8 +425,17 @@ function doPost(e) {
       note: String(req.note || '').slice(0, 2000),
       quickName: sanitizeQuickName_(req.quickName),
       files: saved,
+      uploadFingerprint: fingerprint,
       status: 'received'
     };
+    if (prior && isTerminalMeta_(prior)) {
+      /* 내용이 실제로 달라진 재업로드다(수정·다시 찍기). 처리를 다시 돌리는 것은 맞지만
+         조용한 되돌림으로 남기지 않는다 — requeue와 같은 명시적 표식과 이전 결과를 함께 남긴다. */
+      meta.requeueRequested = true;
+      meta.previousStatus = prior.status || '';
+      meta.previousProcessedAt = prior.processedAt || '';
+      if (prior.person) meta.previousPerson = prior.person;
+    }
     if (researchRaw) {
       meta.researchInstruction = researchEnvelope_(researchRaw, name, {
         captureId: captureId
@@ -632,6 +662,62 @@ function upsertFile_(folder, fname, blob) {
   var it = folder.getFilesByName(fname);
   while (it.hasNext()) it.next().setTrashed(true);
   folder.createFile(blob);
+}
+
+/* 업로드 내용 지문 (FI-010).
+   같은 촬영을 다시 보낸 것인지, 내용이 실제로 달라진 재업로드인지 구분하는 유일한 근거다.
+   이미지 바이트 전체를 해시하지 않고 이름·길이만 쓴다 — Apps Script에서 수 MB를 해시하면
+   업로드마다 초 단위 비용이 붙는다. 이름+길이+맥락이 모두 같은 다른 사진은 실무상 없다. */
+function uploadFingerprint_(req, images) {
+  var parts = [];
+  for (var i = 0; i < images.length; i++) {
+    var img = images[i] || {};
+    var data = String(img.dataB64 || '');
+    parts.push((sanitizeName_(img.name) || ('image' + i)) + ':' + data.length);
+  }
+  parts.sort();
+  return [
+    parts.join('|'),
+    String(req.capturedAt || ''),
+    String(req.event || '').slice(0, 200),
+    String(req.note || '').slice(0, 2000)
+  ].join('#');
+}
+
+/* 이미 저장된 캡처와 같은 업로드인가 (FI-010).
+
+   지문(`uploadFingerprint`)이 있으면 그것으로 판정한다. 없으면 **지문 도입 이전에 접수된
+   캡처**다 — 배포 시점의 모든 운영 캡처가 여기에 해당하므로 이 경로가 없으면 첫날부터
+   보호가 없다. 그때는 저장된 메타로 비교할 수 있는 것(촬영 시각·만난 곳·메모·파일 이름)만
+   비교한다. blind 재전송은 이 네 가지를 똑같이 재현하므로 잡힌다.
+
+   한계: 지문 이전 캡처는 이미지 바이트 길이를 저장하지 않아, 같은 면을 다시 찍어 올리면서
+   맥락을 하나도 바꾸지 않은 경우는 구분할 수 없다. 처리가 끝난 캡처의 다시 찍기는 클라이언트
+   경로에 없고(수정은 correction), 앞으로 접수되는 캡처는 지문으로 정확히 판정된다. */
+function sameAsStoredUpload_(prior, req, images, fingerprint) {
+  if (!prior) return false;
+  if (prior.uploadFingerprint) return prior.uploadFingerprint === fingerprint;
+  if (String(prior.capturedAt || '') !== String(req.capturedAt || '')) return false;
+  if (String(prior.event || '') !== String(req.event || '').slice(0, 200)) return false;
+  if (String(prior.note || '') !== String(req.note || '').slice(0, 2000)) return false;
+  var priorFiles = (prior.files || []).slice().sort().join('|');
+  if (!priorFiles) return false;
+  var names = [];
+  for (var i = 0; i < images.length; i++) {
+    names.push(sanitizeName_(images[i].name) || ('image' + i + '.jpg'));
+  }
+  return priorFiles === names.sort().join('|');
+}
+
+/* 처리가 이미 끝난 상태인가 (FI-015).
+   requeue_와 같은 판정을 쓴다 — receivedAt이 processedAt보다 새로우면 아직 처리 대기다. */
+function isTerminalMeta_(meta) {
+  if (!meta) return false;
+  var receivedMs = Date.parse(String(meta.receivedAt || ''));
+  var processedMs = Date.parse(String(meta.processedAt || ''));
+  var hasNewerReceipt = isFinite(receivedMs) && isFinite(processedMs) && receivedMs > processedMs;
+  return (isFinite(processedMs) && (!isFinite(receivedMs) || processedMs >= receivedMs)) ||
+    (!hasNewerReceipt && (meta.status === 'processed' || meta.status === 'skipped'));
 }
 
 function newId_() {
