@@ -361,6 +361,29 @@ function doPost(e) {
     var images = (req.images || []).slice(0, 4);
     if (!images.length) return json_({ ok: false, error: 'no_images' });
 
+    /* 업로드 전체를 먼저 검증하고, 전부 통과한 뒤에만 쓴다 (FI-011 / FI-012 / FI-013).
+       예전에는 루프 안에서 바로 써서 (a) 뒤쪽 이미지가 실패하면 앞쪽만 남는 부분 커밋이 생기고,
+       (b) 클라이언트가 준 파일 이름이 그대로 저장 이름이 됐다. (b)는 `brief.md`·`capture.json`처럼
+       **처리 파이프라인이 소유한 산출물 슬롯을 업로드로 덮어쓸 수 있다는 뜻**이었다. */
+    var planned = [];
+    var usedSlots = {};
+    for (var i = 0; i < images.length; i++) {
+      var img = images[i] || {};
+      var slot = captureSlotName_(img.name);
+      if (!slot) return json_({ ok: false, error: 'bad_image_name' });
+      if (usedSlots[slot]) return json_({ ok: false, error: 'duplicate_image_slot', file: slot });
+      usedSlots[slot] = true;
+      var bytes;
+      try {
+        bytes = Utilities.base64Decode(img.dataB64);
+      } catch (decodeErr) {
+        return json_({ ok: false, error: 'bad_image_data', file: slot });
+      }
+      if (!bytes || !bytes.length) return json_({ ok: false, error: 'empty_image', file: slot });
+      if (bytes.length > 8 * 1024 * 1024) return json_({ ok: false, error: 'image_too_large', file: slot });
+      planned.push({ slot: slot, bytes: bytes, mime: img.mime || 'image/jpeg' });
+    }
+
     var inboxId = CONF.getProperty('INBOX_FOLDER_ID');
     if (!inboxId) return json_({ ok: false, error: 'not_configured' });
     var inbox = DriveApp.getFolderById(inboxId);
@@ -401,19 +424,10 @@ function doPost(e) {
     }
 
     var saved = [];
-    for (var i = 0; i < images.length; i++) {
-      var img = images[i];
-      var fname = sanitizeName_(img.name) || ('image' + i + '.jpg');
-      var bytes;
-      try {
-        bytes = Utilities.base64Decode(img.dataB64);
-      } catch (decodeErr) {
-        return json_({ ok: false, error: 'bad_image_data', file: fname });
-      }
-      if (bytes.length > 8 * 1024 * 1024) return json_({ ok: false, error: 'image_too_large', file: fname });
-      var blob = Utilities.newBlob(bytes, img.mime || 'image/jpeg', fname);
-      upsertFile_(folder, fname, blob);
-      saved.push(fname);
+    for (var p = 0; p < planned.length; p++) {
+      upsertFile_(folder, planned[p].slot,
+        Utilities.newBlob(planned[p].bytes, planned[p].mime, planned[p].slot));
+      saved.push(planned[p].slot);
     }
 
     var meta = {
@@ -605,6 +619,25 @@ function sanitizeName_(name) {
   return s.slice(0, 64);
 }
 
+/* 명함 이미지가 들어갈 수 있는 캡처 폴더 슬롯. 이 목록이 전부다 (FI-013).
+
+   이름을 **서버가 소유한다.** 클라이언트가 준 이름은 슬롯 지정 힌트일 뿐이고,
+   목록에 없으면 업로드를 거절한다. `sanitizeName_`으로 문자만 걸러 쓰던 예전 방식은
+   `brief.md`·`capture.json`·`correction*.json`처럼 **처리 파이프라인이 소유한 산출물 이름**을
+   통과시켰다. 그러면 유효 토큰 보유자가 owner의 브리핑 목록에 임의 텍스트를 시스템 생성
+   브리핑으로 띄울 수 있다(`listCaptures_`가 `brief*.md` 최신본을 `item.brief`로 내려주기 때문).
+   슬롯 allowlist는 그 표면을 통째로 없앤다. */
+var CAPTURE_IMAGE_SLOTS = ['front.jpg', 'back.jpg'];
+
+function captureSlotName_(name) {
+  if (name === null || name === undefined) return null;
+  var wanted = String(name).toLowerCase();
+  for (var i = 0; i < CAPTURE_IMAGE_SLOTS.length; i++) {
+    if (wanted === CAPTURE_IMAGE_SLOTS[i]) return CAPTURE_IMAGE_SLOTS[i];
+  }
+  return null;
+}
+
 /* 기기 OCR 결과는 표시·검증용 힌트일 뿐 Person 식별의 권위 있는 값이 아니다. */
 function sanitizeQuickName_(value) {
   if (!value || typeof value !== 'object') return null;
@@ -673,7 +706,7 @@ function uploadFingerprint_(req, images) {
   for (var i = 0; i < images.length; i++) {
     var img = images[i] || {};
     var data = String(img.dataB64 || '');
-    parts.push((sanitizeName_(img.name) || ('image' + i)) + ':' + data.length);
+    parts.push((captureSlotName_(img.name) || ('image' + i)) + ':' + data.length);
   }
   parts.sort();
   return [
@@ -704,7 +737,7 @@ function sameAsStoredUpload_(prior, req, images, fingerprint) {
   if (!priorFiles) return false;
   var names = [];
   for (var i = 0; i < images.length; i++) {
-    names.push(sanitizeName_(images[i].name) || ('image' + i + '.jpg'));
+    names.push(captureSlotName_(images[i].name) || ('image' + i + '.jpg'));
   }
   return priorFiles === names.sort().join('|');
 }

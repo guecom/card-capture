@@ -31,7 +31,9 @@ Kairen Ref: `TSK-000141` (credential·access baseline), `TSK-000153` (processing
 | 조사 지시 prompt injection | owner raw instruction이 system·schema·write gate를 덮어씀 | 별도 field·receipt, fixed policy snapshot, raw/system prompt 분리, bounded-plan fixture | fail-closed 계약·회귀 구현 |
 | 사생활·외부 effect | private login·credential·민감 특성·doxxing·send/write·paid API 요청 | public-lawful-only plan, external effect false, source·confidence·unknown receipt | 금지 계약·adversarial fixture |
 | 경계 밖 write | 처리 agent의 vault 전체 쓰기 권한 | allowlist 계약 + 워처 프롬프트 강제 + eval 회귀 | 계약 수준(OS 강제는 없음 — RELEASE.md known limitation) |
-| Path traversal | captureId·파일명 | `sanitizeId_`(`[A-Za-z0-9_-]{4,64}`), `sanitizeName_` | 구현됨 |
+| Path traversal | captureId·파일명 | `sanitizeId_`(`[A-Za-z0-9_-]{4,64}`), 업로드 파일명은 서버 소유 슬롯 allowlist | 구현됨 |
+| **산출물 슬롯 탈취** | 업로드 파일 이름을 `brief.md`·`brief-zzz.md`·`capture.json`으로 지정 → `listCaptures_`가 `brief*.md` 최신본을 `item.brief`로 내려주므로 **유효 토큰 보유자(초대 게스트 포함)가 owner의 브리핑 목록에 임의 텍스트를 시스템 생성 브리핑으로 띄움**. 처리 완료 후 올리면 최신본 우선 규칙 때문에 진짜 브리핑을 영구 대체 | 이미지 슬롯을 `front.jpg`·`back.jpg` 두 개로 고정하고 **서버가 이름을 소유**한다(`captureSlotName_`). 그 밖의 이름은 `bad_image_name`으로 거절하고 폴더·파일을 만들지 않는다. 같은 슬롯 중복은 `duplicate_image_slot`으로 거절 | 구현됨(`TSK-000279`), eval 회귀(`upload-filename-allowlist.test.js` + `adversarial-capture.test.js`). **재배포 전까지 live에는 미적용** |
+| 부분 커밋 | 여러 장 중 하나가 실패하면 앞쪽만 저장돼 처리 가능한 반쪽 캡처가 남음 | 업로드 전체 검증을 Drive 접근보다 앞으로 이동 — 하나라도 틀리면 폴더 생성도 파일 쓰기도 없음 | 구현됨, eval 회귀 |
 | 대용량/오염 업로드 | images | 4장 제한, 8MB/장, base64 검증, DAILY_LIMIT(기본 100/일) | 구현됨 |
 | Pages 공급망 | 외부 CDN 스크립트 | OpenCV.js self-hosted(`docs/vendor/`), 외부 CDN 미사용 | 구현됨 |
 | 재전송 위·변조 | 같은 captureId 재업로드 | 토큰 소유자만 자기 captureId 폴더 갱신, 최신 파일 우선 규칙 | 구현됨 |

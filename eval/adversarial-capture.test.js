@@ -74,8 +74,13 @@ function noProcessableItem(srv, id, why) {
   check(list.items.filter(function (it) { return it.captureId === id; }).length === 0,
     why + ' — 목록에 나타났다(사용자에게 접수된 것으로 보인다)');
   var rq = srv.post({ action: 'requeue', k: OWNER_TOKEN, captureId: id });
-  check(rq.ok === false && rq.error === 'no_capture_json',
-    why + ' — requeue가 receipt 없는 캡처를 명시적으로 거절하지 않았다: ' + JSON.stringify(rq));
+  /* 두 거절 이유가 모두 "처리 가능한 것이 없다"의 참된 표현이다: 폴더 자체가 없거나
+     (`not_found`), 폴더는 있어도 receipt가 없거나(`no_capture_json`).
+     TSK-000279에서 검증을 Drive 접근보다 앞으로 옮긴 뒤로는 거절된 업로드가 폴더조차
+     만들지 않아 `not_found`가 정상이다 — litter 폴더가 없는 쪽이 더 강한 보장이다.
+     요구는 "명시적 거절"이지 특정 문자열이 아니다. */
+  check(rq.ok === false && (rq.error === 'no_capture_json' || rq.error === 'not_found'),
+    why + ' — requeue가 처리 가능한 것이 없다는 사실을 명시적 거절로 알리지 않았다: ' + JSON.stringify(rq));
 }
 
 /* ── 1. 본문 자체가 망가진 요청 ── */
@@ -131,8 +136,11 @@ runCase('partial-multi-upload', '여러 장 중 하나가 실패하면 처리 �
     images: [frontImage(), { name: 'back.jpg', mime: 'image/jpeg', dataB64: 'zzz' }]
   });
   check(res.ok === false, '뒷면이 깨졌는데 업로드가 성공으로 응답했다: ' + JSON.stringify(res));
-  check(srv.fileNames('cap-partial').indexOf('front.jpg') >= 0, '앞면 저장 자체가 안 됐다면 이 케이스는 부분 실패를 검사하지 못한다');
-  noProcessableItem(srv, 'cap-partial', '앞면만 저장되고 뒷면이 실패한 요청');
+  /* TSK-000279 이후: 전체 검증이 쓰기보다 앞이므로 앞면조차 저장되지 않는다.
+     예전에는 앞면이 먼저 써진 뒤 뒷면에서 실패해 반쪽 캡처가 남았다 — 그 반쪽이
+     남지 않는 것이 이 케이스의 요구이고, "아무것도 안 써짐"이 그것의 최대 충족이다. */
+  eq(srv.fileNames('cap-partial'), [], '뒷면이 실패했는데 앞면이 저장돼 반쪽 캡처가 남았다');
+  noProcessableItem(srv, 'cap-partial', '여러 장 중 하나가 실패한 요청');
 });
 
 runCase('invalid-token', '무효 토큰은 폴더도 만들지 못하고 남의 일일 한도도 소모하지 않는다', function () {
@@ -160,28 +168,46 @@ runCase('captureId-traversal', '클라이언트 captureId로는 폴더 이름을
     '클라이언트가 보낸 경로가 폴더 이름·응답 ID로 쓰였다');
 });
 
-runCase('filename-traversal', '이미지 파일 이름으로 경로를 벗어날 수 없고, receipt files가 실제 파일과 정확히 일치한다', function () {
-  var srv = newServer();
-  var res = srv.post({
-    k: OWNER_TOKEN, captureId: 'cap-names', capturedAt: CAPTURED_AT,
-    images: [
-      image('../../evil.jpg', 'a'),
-      image('C:\\Windows\\System32\\evil.jpg', 'b'),
-      image('....//x.jpg', 'c'),
-      image('앞면 사진.jpg', 'd')
-    ]
+/* 계약 변경 (TSK-000279): 파일 이름은 **정규화 대상이 아니라 거절 대상**이다.
+   예전 계약("이름을 문자만 걸러 통과")은 `brief.md`·`capture.json`처럼 처리 파이프라인이
+   소유한 산출물 슬롯을 업로드가 차지할 수 있게 했다 — 유효 토큰 보유자가 owner의 브리핑
+   목록에 임의 텍스트를 시스템 생성 브리핑으로 띄울 수 있었다(독립 재현됨).
+   이제 슬롯은 front.jpg / back.jpg 두 개뿐이고 서버가 소유한다. */
+runCase('filename-rejection', '이미지 파일 이름은 서버 소유 슬롯만 허용되고, 그 밖은 아무것도 쓰지 않고 거절된다', function () {
+  var hostile = ['../../evil.jpg', 'C:\\Windows\\System32\\evil.jpg', '....//x.jpg', '앞면 사진.jpg',
+    'brief.md', 'brief-zzz.md', 'capture.json', 'correction-1.json', 'front.jpeg', 'front.png', 'image0.jpg'];
+  hostile.forEach(function (name, index) {
+    var srv = newServer();
+    var id = 'cap-name-' + index;
+    var res = srv.post({ k: OWNER_TOKEN, captureId: id, capturedAt: CAPTURED_AT, images: [image(name, 'x')] });
+    check(res.ok === false, '허용되지 않은 파일 이름이 접수됐다: "' + name + '" → ' + JSON.stringify(res));
+    check(res.error === 'bad_image_name', '거절 이유가 이름 문제로 드러나지 않았다: "' + name + '" → ' + JSON.stringify(res));
+    eq(srv.fileNames(id), [], '거절했는데 파일이 남았다: "' + name + '"');
+    noProcessableItem(srv, id, '허용되지 않은 파일 이름 "' + name + '"');
   });
-  check(res.ok === true, '이름이 험한 업로드가 거절됐다(이름은 정규화 대상이지 거절 대상이 아니다): ' + JSON.stringify(res));
-  var receipt = srv.receipt('cap-names');
-  var stored = srv.fileNames('cap-names').filter(function (n) { return n !== 'capture.json'; });
-  receipt.files.forEach(function (name) {
-    check(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name), '저장 이름이 허용 문자·길이를 벗어났다: "' + name + '"');
-    check(name.indexOf('/') < 0 && name.indexOf('\\') < 0 && name.charAt(0) !== '.',
-      '저장 이름에 경로 구분자나 선행 점이 남았다: "' + name + '"');
+
+  /* 정상 두 슬롯은 그대로 받고, receipt가 실제 파일과 정확히 일치한다. */
+  var ok = newServer();
+  var good = ok.post({
+    k: OWNER_TOKEN, captureId: 'cap-slots', capturedAt: CAPTURED_AT,
+    images: [image('front.jpg', 'a'), image('back.jpg', 'b')]
   });
+  check(good.ok === true, '정상 두 슬롯 업로드가 거절됐다: ' + JSON.stringify(good));
+  var receipt = ok.receipt('cap-slots');
+  var stored = ok.fileNames('cap-slots').filter(function (n) { return n !== 'capture.json'; });
   eq(receipt.files.slice().sort(), stored,
     'receipt의 files가 실제 저장 파일과 다르다 — 워처가 없는 파일을 찾거나 있는 파일을 놓친다');
-  check(receipt.files.length === 4, '4장을 보냈는데 receipt files가 ' + receipt.files.length + '개다(이름 충돌로 덮어써졌을 수 있다)');
+  eq(receipt.files.slice().sort(), ['back.jpg', 'front.jpg'], 'receipt files가 서버 소유 슬롯 이름이 아니다');
+
+  /* 같은 슬롯 두 장은 거절한다 — 통과하면 receipt가 실제 파일 수와 달라진다. */
+  var dup = newServer();
+  var dupRes = dup.post({
+    k: OWNER_TOKEN, captureId: 'cap-dup', capturedAt: CAPTURED_AT,
+    images: [image('front.jpg', 'a'), image('front.jpg', 'b')]
+  });
+  check(dupRes.ok === false && dupRes.error === 'duplicate_image_slot',
+    '같은 슬롯 두 장이 통과해 receipt가 거짓이 된다: ' + JSON.stringify(dupRes));
+  eq(dup.fileNames('cap-dup'), [], '중복 슬롯을 거절했는데 파일이 남았다');
 });
 
 /* ── 3. 기기 OCR 힌트는 신뢰 입력이 아니다 ── */
