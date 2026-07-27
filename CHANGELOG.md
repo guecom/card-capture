@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## v2.15.0 — 2026-07-28 — `00e7b0c` (Kairen-Ref: TSK-000326 · TSK-000325; ISS-000129)
+
 **멈춘 이유를 말하고 다시 켤 수 있게 한다 · 서체를 실제로 싣는다** (branch `agent/tsk-motion-font`, Kairen-Ref: TSK-000326; ISS-000129)
 
 founder가 실기기 캡처와 함께 두 가지를 보고했다. 하나는 지난 수정이 듣지 않은 것이고, 하나는 지난 회차에 미뤄 둔 것이다.
