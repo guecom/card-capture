@@ -500,6 +500,11 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(35,104,216,0.34)
 
 .advanced-toggle { display: block; margin: 6px 10px 4px; border: 0; background: transparent; color: var(--cc-muted); font-size: 12.5px; font-weight: 700; }
 .modal-copy code { font-size: 11px; background: rgba(42,63,89,0.08); border-radius: 4px; padding: 1px 4px; }
+/* 배포본에서는 연결 주소를 바꿀 수 없다 (TSK-000302). 입력 표면과 같은 sunken 배경을 쓰되
+   커서와 리사이즈 손잡이를 없애 "여기 타이핑하세요"로 읽히지 않게 한다.
+   값의 글자색은 그대로 둔다 — 지금 어디에 연결됐는지 읽으라고 남긴 값이라 흐려지면 안 된다. */
+.api-endpoint-locked { --background: var(--cc-sunken); }
+.api-endpoint-locked .native-textarea { cursor: default; resize: none; }
 
 .camera-choice { display: grid; gap: 8px; margin-top: 14px; }
 .camera-choice p { margin: 0 0 2px; color: #dfe9f6; font-size: 13px; text-align: center; }

@@ -115,7 +115,7 @@ import {
 } from './services/storage';
 import { applyTheme, resolveTheme, systemPrefersDark, THEME_CHOICES, watchSystemTheme } from './services/theme';
 import { holdSafeAreaInset } from './services/viewport-shell';
-import { apiRejectionMessage } from './services/api-origin';
+import { apiRejectionMessage, canEditApiEndpoint } from './services/api-origin';
 import { scrubCredentialParams } from './services/url-credentials';
 
 setupIonicReact({ mode: 'ios' });
@@ -258,6 +258,12 @@ const damageLabels: Record<DamagedQueueEntry['damage'][number], string> = {
 // 사적 캐시를 읽는 useState 초기값보다 반드시 먼저 끝나야 한다.
 const boot = loadRuntimeConfigDetailed();
 if (boot.scrubUrl) scrubCredentialParams();
+
+// 고급 설정의 연결 주소를 편집할 수 있는가 (founder 결정 — Kairen-Ref: TSK-000302).
+// 배포본에서는 무엇을 넣어도 신뢰 판정이 거부하므로 편집 가능한 칸은 거짓 선택지다.
+// 페이지 origin은 한 세션 동안 바뀌지 않으므로 boot에서 한 번만 정한다.
+const apiEndpointEditable = canEditApiEndpoint();
+const API_ENDPOINT_LOCK_NOTE = '이 앱은 배포본에 박힌 주소 한 곳으로만 연결해요. 그래서 여기서는 바꿀 수 없어요 — 다른 주소로 옮기려면 새 배포본이 필요합니다.';
 
 function App() {
   const [tab, setTab] = useState<Tab>(initialTab);
@@ -1794,7 +1800,18 @@ function App() {
             <button className="advanced-toggle" type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((value) => !value)}>{advancedOpen ? '▾' : '▸'} 고급 설정</button>
             {advancedOpen && (
               <IonList inset>
-                <IonItem><IonInput label="연결 주소 (GAS API)" labelPlacement="stacked" type="url" value={draftConfig.apiUrl} onIonInput={(inputEvent) => setDraftConfig((value) => ({ ...value, apiUrl: String(inputEvent.detail.value ?? '') }))} /></IonItem>
+                {apiEndpointEditable ? (
+                  <IonItem><IonInput label="연결 주소 (GAS API)" labelPlacement="stacked" type="url" value={draftConfig.apiUrl} onIonInput={(inputEvent) => setDraftConfig((value) => ({ ...value, apiUrl: String(inputEvent.detail.value ?? '') }))} /></IonItem>
+                ) : (
+                  // 배포본에서는 읽기 전용이다 — 숨기지는 않는다. "지금 어디에 연결돼 있는가"는
+                  // 사용자가 알 권리다 (Kairen-Ref: TSK-000302).
+                  // `IonInput`(한 줄 <input>)이 아니라 `IonTextarea`를 쓰는 이유: Apps Script 배포본
+                  // 주소는 100자가 넘어 한 줄 칸에는 앞 1/3만 보이고, 읽기 전용 칸에서 나머지를
+                  // 확인하려면 폰에서 칸 안을 문질러 스크롤해야 한다. 그러면 "계속 보여 준다"가 거짓이 된다.
+                  // `readonly` + `helperText`는 두 컴포넌트가 같은 방식으로 처리한다 — 낭독기는 읽기 전용
+                  // 상태를 읽고, `helperText`는 Ionic이 `aria-describedby`로 이어 준다.
+                  <IonItem className="api-endpoint-locked"><IonTextarea label="연결 주소 (GAS API)" labelPlacement="stacked" readonly autoGrow rows={1} value={draftConfig.apiUrl} helperText={API_ENDPOINT_LOCK_NOTE} /></IonItem>
+                )}
                 <IonItem><IonInput label="개인 링크 코드 (?k= 값)" labelPlacement="stacked" type="password" value={draftConfig.token} onIonInput={(inputEvent) => setDraftConfig((value) => ({ ...value, token: String(inputEvent.detail.value ?? '') }))} /></IonItem>
               </IonList>
             )}
