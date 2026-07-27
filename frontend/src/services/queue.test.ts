@@ -371,7 +371,75 @@ describe('one tab owns the send — Web Locks path (FI-053)', () => {
     await expect(withQueueLock(async () => { throw new Error('offline'); })).rejects.toThrow('offline');
     expect(await withQueueLock(async () => 'next')).toBe('next');
   });
+
+  // Web Locks는 진짜 상호배제이고 storage lease는 그렇지 않다 (아래 fallback 계약 참고).
+  // 순서가 뒤집혀 modern 브라우저가 조용히 약한 경로로 내려가면 안 된다.
+  // 쓰기를 **기록**해서 본다 — 마지막에 남은 값만 보면 쓰고 지운 흔적을 놓친다.
+  it('claims the browser lock and never writes the weaker storage lease', async () => {
+    const store = new FakeStorage();
+    const writes: string[] = [];
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => store.getItem(key),
+      setItem: (key: string, value: string) => { writes.push(key); store.setItem(key, value); },
+      removeItem: (key: string) => store.removeItem(key),
+    });
+
+    expect(await withQueueLock(async () => 'sent')).toBe('sent');
+    expect(writes).toEqual([]);
+  });
 });
+
+const FLUSH_LOCK_KEY = 'cc_queue_flush_lock';
+
+/**
+ * 두 탭이 같은 origin의 localStorage lease를 두고 겹치는 순간을 한 스레드에서 재현한다 (FI-053).
+ *
+ * 실제 두 탭은 별개 프로세스라 "읽고 → 판단하고 → 쓴다"가 진짜로 겹친다. 한 스레드에서는 그
+ * 겹침을 명시적 스케줄로 고정할 수밖에 없다.
+ *
+ * - `whenLeaseWritten(step)`: 첫 탭의 lease 쓰기가 저장소에 닿는 순간 `step`(= 다른 탭)이 끼어든다.
+ * - 끼어든 탭의 **첫 lease 읽기**는 그 쓰기 직전 값을 본다. 두 탭이 같은 순간에 읽어 둘 다
+ *   "비어 있음"을 본 상태 — check-then-act 창 그 자체다.
+ *
+ * 나머지 읽기·쓰기는 전부 공유 저장소 그대로다. 스케줄만 고정하고 값은 꾸미지 않는다.
+ */
+function racingTabs() {
+  const shared = new FakeStorage();
+  let interrupt: (() => void) | null = null;
+  let leaseBeforeWrite: string | null = null;
+  let staleReads = 0;
+
+  return {
+    shared,
+    /** 첫 탭의 lease 쓰기가 닿는 순간 다른 탭을 끼워 넣는다. 한 번만 발동한다. */
+    whenLeaseWritten(step: () => void): void {
+      interrupt = step;
+    },
+    storage: {
+      getItem(key: string): string | null {
+        if (key === FLUSH_LOCK_KEY && staleReads > 0) {
+          staleReads -= 1;
+          return leaseBeforeWrite;
+        }
+        return shared.getItem(key);
+      },
+      setItem(key: string, value: string): void {
+        const before = shared.getItem(key);
+        shared.setItem(key, value);
+        if (key !== FLUSH_LOCK_KEY || !interrupt) return;
+        const step = interrupt;
+        interrupt = null;
+        leaseBeforeWrite = before;
+        staleReads = 1;
+        step();
+        staleReads = 0;
+      },
+      removeItem(key: string): void {
+        shared.removeItem(key);
+      },
+    },
+  };
+}
 
 describe('one tab owns the send — storage lease fallback (FI-053)', () => {
   // Web Locks가 없는 브라우저에서도 같은 계약이 성립해야 한다.
@@ -402,6 +470,50 @@ describe('one tab owns the send — storage lease fallback (FI-053)', () => {
   it('still sends when the browser gives no usable storage at all', async () => {
     vi.stubGlobal('localStorage', undefined);
     expect(await withQueueLock(async () => 'sent-anyway')).toBe('sent-anyway');
+  });
+
+  // localStorage에는 compare-and-swap이 없다. 읽고 나서 쓰는 사이에 다른 탭이 끼어들면
+  // 두 탭 다 "비어 있다"를 보고 둘 다 전송한다 — 같은 명함이 서버에 두 번 올라간다.
+  it('lets only one tab send when both started from the same empty lease', async () => {
+    const tabs = racingTabs();
+    vi.stubGlobal('localStorage', tabs.storage);
+    const sending: string[] = [];
+    const running: Promise<unknown>[] = [];
+
+    // 두 번째 탭은 첫 탭의 쓰기와 겹쳐 출발한다 — 자기 읽기에서는 lease가 아직 비어 있다.
+    tabs.whenLeaseWritten(() => {
+      running.push(withQueueLock(async () => { sending.push('second'); }, 1_000));
+    });
+
+    running.push(withQueueLock(async () => { sending.push('first'); }, 1_000));
+    await Promise.all(running);
+
+    expect(sending).toHaveLength(1);
+  });
+
+  // 좁힌 창에 남는 경우: 두 탭이 모두 전송에 들어갔다. 먼저 끝난 탭이 lease를 자기 것인 양
+  // 지워 버리면 아직 보내고 있는 탭 위로 세 번째 탭이 들어온다.
+  it('does not release a lease that another tab has since taken over', async () => {
+    const store = new FakeStorage();
+    vi.stubGlobal('localStorage', store);
+    const otherTabLease = JSON.stringify({ owner: 'other-tab', expiresAt: 61_000 });
+
+    await withQueueLock(async () => { store.setItem(FLUSH_LOCK_KEY, otherTabLease); }, 1_000);
+
+    expect(store.getItem(FLUSH_LOCK_KEY)).toBe(otherTabLease);
+  });
+
+  it('gives up without sending when another tab overwrote the lease it just wrote', async () => {
+    const tabs = racingTabs();
+    vi.stubGlobal('localStorage', tabs.storage);
+    const sending: string[] = [];
+    const otherTabLease = JSON.stringify({ owner: 'other-tab', expiresAt: 61_000 });
+    tabs.whenLeaseWritten(() => tabs.shared.setItem(FLUSH_LOCK_KEY, otherTabLease));
+
+    expect(await withQueueLock(async () => { sending.push('me'); }, 1_000)).toBeNull();
+    expect(sending).toEqual([]);
+    // 진 탭이 이긴 탭의 lease를 지워 버리면 세 번째 탭까지 들어온다.
+    expect(tabs.shared.getItem(FLUSH_LOCK_KEY)).toBe(otherTabLease);
   });
 });
 
