@@ -176,11 +176,20 @@ const LOCK_NAME = 'cardcapture-queue-flush';
 const LOCK_KEY = 'cc_queue_flush_lock';
 const LOCK_TTL_MS = 60_000;
 
+/** 저장된 lease를 지금 들고 있는 탭. 값이 없거나 형식이 깨졌으면 `undefined`. 저장소 오류는 그대로 던진다. */
+function leaseOwner(): string | undefined {
+  const raw = localStorage.getItem(LOCK_KEY);
+  return (raw ? JSON.parse(raw) as { owner?: string } : null)?.owner;
+}
+
 /**
  * 탭 하나만 대기열을 전송한다 (FI-053).
  * 두 탭이 동시에 flush하면 같은 captureId가 두 번 올라가고, 한쪽의 `sent` 표시를
  * 다른 쪽이 예전 상태로 덮어쓴다. Web Locks가 있으면 그것을, 없으면 만료가 있는
  * localStorage lease를 쓴다.
+ *
+ * 두 경로의 세기는 같지 않다. Web Locks는 브라우저가 보장하는 상호배제이고,
+ * localStorage lease는 **확률을 낮춘 것**이다 (아래 한계 주석).
  */
 export async function withQueueLock<T>(run: () => Promise<T>, now = Date.now()): Promise<T | null> {
   const locks = (globalThis.navigator as Navigator & { locks?: LockManager } | undefined)?.locks;
@@ -201,13 +210,28 @@ export async function withQueueLock<T>(run: () => Promise<T>, now = Date.now()):
     return run();
   }
 
+  // 위의 "읽고 → 판단하고 → 쓴다"는 원자적이지 않다. 두 탭이 같은 순간에 읽으면 둘 다
+  // "비어 있음"을 보고 둘 다 쓴다. 쓴 직후 다시 읽어, lease가 아직 우리 것일 때만 전송한다 —
+  // 저장소가 쓰기를 직렬화하므로 마지막에 쓴 탭만 자기 owner를 되읽는다. 진 탭은 조용히 물러난다.
+  //
+  // **이것은 상호배제가 아니다.** localStorage에는 compare-and-swap이 없으므로 창을 없앨 수는
+  // 없고 좁힐 수만 있다. 남는 창:
+  //   1. 다른 탭의 쓰기가 우리의 쓰기와 이 확인 **사이**가 아니라 확인 **뒤**에 도착하면 둘 다 통과한다.
+  //   2. 다른 탭의 쓰기가 이 탭 프로세스에 언제 보이는지는 브라우저 구현에 달렸다. 탭마다
+  //      캐시된 사본을 되읽으면 이 확인은 아무것도 걸러내지 못한다.
+  // 창을 실제로 닫는 것은 서버 멱등(FI-010)이다. 여기서는 중복 업로드 확률만 낮춘다.
+  try {
+    if (leaseOwner() !== held) return null;
+  } catch {
+    // 확인할 수 없으면 이미 쓴 lease를 우리 것으로 보고 정상 경로로 간다 — 해제까지 책임진다.
+  }
+
   try {
     return await run();
   } finally {
     try {
-      const raw = localStorage.getItem(LOCK_KEY);
-      const lease = raw ? JSON.parse(raw) as { owner?: string } : null;
-      if (lease?.owner === held) localStorage.removeItem(LOCK_KEY);
+      // 우리 것일 때만 지운다. 우리를 밀어낸 탭의 lease를 지우면 세 번째 탭까지 들어온다.
+      if (leaseOwner() === held) localStorage.removeItem(LOCK_KEY);
     } catch {
       // 해제 실패는 TTL이 정리한다.
     }

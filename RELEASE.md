@@ -41,6 +41,22 @@ release 기록은 이 파일 하단 "Verified Baselines"에 최신이 위로 오
 
 ## Verified Baselines
 
+### v2.8.0 @ `e93fdfe` — 검증 2026-07-27 (agent:kairen.claude, Kairen-Ref: TSK-000287) — **보안 릴리즈 · Code.gs 무변경**
+
+- repository: annotated tag `v2.8.0` → squash merge commit `e93fdfe`. 담은 merge는 PR #46 하나(lane `agent/w3-sw-cache`).
+- human gate: v2.6.0·v2.7.0과 동일한 founder 사전 승인. **Apps Script 재배포·워처 재기동·토큰 변경·실데이터 삭제는 승인 범위 밖.**
+- CI: `validate` SUCCESS — run `30244898163`. unit 293 PASS, Playwright 72 PASS, repository validator `fail=0 warn=0`.
+- Pages: build 성공 후 **live와 commit blob이 exact-match** — `docs/sw.js` `f171a6c6190a541a…`, `docs/legacy.html` `f176fef409394ee5…`. (비교는 commit blob 기준 — Windows CRLF 변환 때문.)
+- **GAS deployment: 해당 없음.** `Code.gs` 무변경. v2.5.0의 `PENDING`이 그대로 유효하고 확인 해시도 `f9a78d9a…` 그대로다.
+- **watcher: 해당 없음.** `watcher/` 무변경. 재기동 `PENDING` 유지.
+- 닫은 것: `ISS-000110`의 두 번째 결함 — `docs/sw.js`가 같은 origin GET을 query string 포함 전체 URL을 키로 캐시해, 초대 링크를 **한 번만 열어도** 개인 링크 코드가 Cache Storage 키에 영구 저장됐고 `연결 해제`가 지우지 않았다. 읽기 경로가 `ignoreSearch: true`라 그 토큰은 기능상 필요조차 없었다. 키에서 query를 떼고 `CACHE` 버전을 올려 오염된 기존 캐시가 activate에서 지워지게 했다.
+- **왜 게이트가 못 잡았나**: `credential-boundary.spec.ts:204`가 **이미** "캐시 키에 링크 코드가 없다"를 단언하고 있었다. 그러나 `docs/index.html`·`docs/legacy.html`은 Service Worker를 `location.protocol === 'https:'`일 때만 등록하고 e2e harness는 `http://127.0.0.1`로 서빙한다 — **루트 워커는 어떤 테스트에서도 등록된 적이 없었다.** 신규 게이트가 명시적으로 등록해서 연다.
+- 함정 경고를 남겼다: 후보 앱(`next/`) 워커도 전체 URL로 키를 만든다. 누출이 없는 이유는 계약이 아니라 사고다 — `response.clone()`이 `caches.open()` 이후에 평가돼 매번 던진다(실측: 성공 fetch 4회 후 SHELL 밖 항목 0건). **그 순서를 "고치면" 같은 누출이 생긴다.** `frontend/vite.config.ts`에 경고 주석과 선제 게이트가 있다.
+- **사용자 영향(실측)**: 캐시 버전 올림으로 앱 셸 0.30MB 즉시 재다운로드, 이전 앱 OCR 사용자는 다음 사용 때 최대 18.53MB. `cardcapture-next-*` 후보 캐시는 영향 없음.
+- **남는 한계**: 연결을 끊고 이 주소를 다시 열지 않는 기기는 예전 캐시를 그대로 들고 있다. Service Worker 생애주기상 클라이언트 해결책이 없다 — 코드가 실제 유출됐다면 **서버에서 코드를 회수하는 것이 진짜 대응**이다.
+- rollback: PR #46 `git revert` 하나. 되돌리면 캐시 버전이 `v19`로 돌아가 셸을 한 번 더 받는다.
+- **남은 human gate**: (1) Apps Script 재배포, (2) 라이브 워처 재기동, (3) founder actual-phone acceptance.
+
 ### v2.7.0 @ `35192bd` — 검증 2026-07-27 (agent:kairen.claude, Kairen-Ref: TSK-000285·286) — **보안 릴리즈 · Code.gs 무변경**
 
 > 이 릴리즈는 **`FI-004`·`FI-005`의 v2.1.0 `DELIVERED` 선언이 사실이 아니었음을 고친 것**이다. 독립 보안 평가(`TSK-000284` / `RSL-000152`)가 뒤집었고 통합자가 lane 하네스를 쓰지 않고 소스로 재현했다.

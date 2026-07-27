@@ -17,7 +17,9 @@ Kairen Ref: `TSK-000141` (credential·access baseline), `TSK-000153` (processing
   - **origin만 비교하면 부족했다.** `script.google.com`은 누구나 자기 Apps Script 웹앱을 배포할 수 있는 multi-tenant 호스트다. origin만 맞추면 `?api=https://script.google.com/macros/s/<공격자 배포 ID>/exec`가 통과해 저장된 링크 코드가 그대로 공격자 배포본으로 나갔다(`ISS-000109`).
   - 채택하는 주소에서는 **query와 fragment를 버린다.** 저장되는 주소에 자격 정보가 섞일 자리를 없앤다. `연결 해제`는 저장된 연결 주소까지 지운다.
 - **같은 Pages 루트에 함께 서빙되는 이전 앱(`docs/legacy.html`)도 같은 경계를 따른다.** 이전 앱은 빌드에 박힌 `DEFAULT_API` 하나만 쓰고 링크의 `?api=`를 아예 받지 않으며, 저장돼 있던 `cc_api`가 그 값과 정확히 같지 않으면 실행할 때 폐기한다. 두 앱이 같은 저장 키를 쓰므로 이 정리는 React 앱의 저장 상태에도 함께 적용된다(`ISS-000110`).
-- **사적 브라우저 상태는 subject(= API origin + token) 별로 격리된다.** owner 링크로 쓰던 기기를 guest 링크로 열면 이전 subject의 브리핑 캐시·owner 게이트·검색 기록이 보이지 않고, 그 namespace는 기기에서 제거된다. 촬영 대기열(IndexedDB)은 유일본이라 이 정리 대상이 아니다.
+- **사적 브라우저 상태는 subject(= API origin + token) 별로 격리된다.** 기준은 **목록이 아니라 원칙**이다 — **그 사람이 직접 적었거나 그 사람에게만 보이는 값은 모두 사적 상태다.** 브리핑 캐시·owner 게이트·검색 기록과 **만남 맥락(만난 상황·관계 메모·조사 지시 초안과 그 유지 시각)**이 여기 해당한다. owner 링크로 쓰던 기기를 guest 링크로 열면 이전 subject의 것이 보이지 않고, 그 namespace는 기기에서 제거된다. 촬영 대기열(IndexedDB)은 유일본이라 이 정리 대상이 아니다 — **유일한 예외다.**
+  - 이 항목이 닫힌 열거로 쓰여 있던 것이 `ISS-000112`의 원인이다. 만남 맥락이 목록에 없어 격리되지 않았고, 그것은 화면 노출로 끝나지 않았다 — sticky 값이 다음 촬영에 붙어 **owner의 관계 메모가 guest의 캡처로 서버에 기록**됐다.
+  - **namespace 없는 전역 자리에 남아 있던 사적 상태는 어느 subject로도 이관하지 않고 버린다.** 누가 적었는지 증거가 없고, 그 자리는 같은 Pages 루트의 이전 앱(`docs/legacy.html`)이 **지금도 쓰는 자리**라 상속 창이 한 번 닫히지 않고 계속 열린다. 브리핑은 다음 조회에서, owner 게이트는 서버 응답에서 다시 얻는다.
 
 ## Threat Model (현재 완화 상태)
 
