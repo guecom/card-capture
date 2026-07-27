@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { buildQueuedCapture, createCaptureId, restoredDraftOf } from './capture-item';
+import { clearTrace, traceOf } from './trace';
 
 describe('captured-image queue contract', () => {
   const now = new Date(2026, 6, 25, 22, 45, 9);
@@ -118,5 +119,45 @@ describe('restoring a taken-back capture into the camera draft (FI-049)', () => 
       relKairen: '',
       memo: '',
     }).front).toBe('');
+  });
+});
+
+// 캡처의 여정은 촬영이 대기열에 들어가는 순간 시작된다 (FI-021).
+// correlationId는 클라이언트 진단 전용이며 서버로 전송되지 않는다.
+describe('a new capture starts its own traceable journey (FI-021)', () => {
+  beforeEach(() => { clearTrace(); });
+
+  it('mints a correlation id that carries no capture content', () => {
+    const item = buildQueuedCapture({ dataUrl: 'data:image/jpeg;base64,front', width: 1600, height: 900 }, {
+      now: new Date(2026, 6, 27, 9, 0, 0),
+      random: () => 0.5,
+      event: '2026 로보월드 부스 A-12',
+      memo: '공장장 직속, 다음 주 자료 보내기',
+      quickName: { name: '김민서', source: 'user_corrected', confidence: 0, confirmed: true, recognizedAt: '2026-07-27T00:00:00.000Z' },
+    });
+
+    expect(item.correlationId).toMatch(/^cc-[0-9a-z]+$/);
+    expect(item.correlationId).not.toContain('김민서');
+    expect(item.correlationId).not.toContain('로보월드');
+    // 같은 시각·같은 난수여도 캡처마다 다른 값을 받아야 여정이 뒤섞이지 않는다.
+    expect(item.correlationId).not.toBe(item.captureId);
+  });
+
+  it('records the creation step so the journey has a beginning', () => {
+    const item = buildQueuedCapture({ dataUrl: 'data:image/jpeg;base64,front', width: 1600, height: 900 }, {
+      event: '2026 로보월드 부스 A-12',
+      relSelf: '예전 동료',
+      memo: '공장장 직속, 다음 주 자료 보내기',
+      quickName: { name: '김민서', source: 'user_corrected', confidence: 0, confirmed: true, recognizedAt: '2026-07-27T00:00:00.000Z' },
+    });
+
+    const journey = traceOf(item.correlationId as string);
+    expect(journey.map((record) => record.event)).toEqual(['created']);
+    expect(journey[0].captureId).toBe(item.captureId);
+
+    const serialized = JSON.stringify(journey);
+    for (const value of ['김민서', '2026 로보월드 부스 A-12', '예전 동료', '공장장 직속, 다음 주 자료 보내기', 'front']) {
+      expect(serialized).not.toContain(value);
+    }
   });
 });

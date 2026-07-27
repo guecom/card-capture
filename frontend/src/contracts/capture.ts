@@ -47,6 +47,13 @@ export interface CaptureQueueItem {
   reconciledAt?: string;
   /** 서버가 성공 receipt를 준 시각. 이 시각 이후에만 기기에 남은 원본을 정리한다 (ISS-000102). */
   sentAt?: string;
+  /**
+   * 이 캡처의 여정을 잇는 상관관계 ID (FI-021). **클라이언트 진단 전용**이다.
+   * 재시도·대조·재전송을 거쳐도 값이 바뀌지 않아, 진단 로그에서 한 명함의 생애를 이어 볼 수 있다.
+   * `UploadPayload`에는 일부러 넣지 않는다 — 서버(`Code.gs`)가 저장하지 않는 필드라
+   * 전송하면 "서버에서도 추적된다"는 거짓 인상만 남는다.
+   */
+  correlationId?: string;
 }
 
 export interface UploadPayload {

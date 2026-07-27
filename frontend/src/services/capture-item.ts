@@ -1,5 +1,6 @@
 import type { CaptureQueueItem, QuickName, ResearchInstruction } from '../contracts/capture';
 import type { CapturedCameraFrame } from './camera';
+import { createCorrelationId, traceCapture } from './trace';
 
 function twoDigits(value: number): string {
   return String(value).padStart(2, '0');
@@ -97,7 +98,7 @@ export function buildQueuedCapture(
   const images: CaptureQueueItem['images'] = [{ name: 'front.jpg', mime: 'image/jpeg', dataB64: match[1] }];
   if (backMatch?.[1]) images.push({ name: 'back.jpg', mime: 'image/jpeg', dataB64: backMatch[1] });
 
-  return {
+  const item: CaptureQueueItem = {
     captureId: createCaptureId(now, random),
     capturedAt: now.toISOString(),
     event,
@@ -112,5 +113,10 @@ export function buildQueuedCapture(
     state: 'queued',
     tries: 0,
     thumb: '',
+    // 여정은 여기서 시작한다 (FI-021). 클라이언트 진단 전용이라 업로드 payload에는 들어가지 않는다.
+    correlationId: createCorrelationId(random),
   };
+  // 기록되는 것은 식별자와 단계뿐이다 — 위의 자유 입력 값은 어느 것도 로그로 가지 않는다.
+  traceCapture(item, 'created');
+  return item;
 }

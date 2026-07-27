@@ -16,6 +16,7 @@ import {
   withQueueLock,
 } from './queue';
 import { FakeStorage } from './test-storage';
+import { clearTrace, REDACTED, traceOf } from './trace';
 
 Object.defineProperty(globalThis, 'indexedDB', { configurable: true, value: indexedDB });
 Object.defineProperty(globalThis, 'IDBKeyRange', { configurable: true, value: IDBKeyRange });
@@ -455,5 +456,59 @@ describe('taking a just-taken capture back out of the queue (FI-049)', () => {
 
     expect(await takeBackQueueItem('20260727-120005-e')).toEqual({ refusal: 'missing' });
     expect(await readQueue()).toEqual([]);
+  });
+});
+
+// 한 캡처의 여정을 PII 없이 추적한다 (FI-021).
+// correlationId는 **클라이언트 진단 전용**이다 — 업로드 payload에는 들어가지 않는다.
+describe('correlation id survives retry, reconcile and send (FI-021)', () => {
+  it('keeps the same correlation id through fail -> reconcile -> sent', async () => {
+    await putQueueItem({ ...item('20260727-130001-a'), correlationId: 'cc-journey01' });
+
+    await flushQueue(async () => { throw new Error('http_503'); });
+    const afterFailure = (await readQueue())[0];
+    expect(afterFailure.correlationId).toBe('cc-journey01');
+    expect(afterFailure.state).toBe('failed');
+
+    await flushQueue(async () => { throw new Error('unreachable'); }, async () => new Set(['20260727-130001-a']));
+    const afterReconcile = (await readQueue())[0];
+    expect(afterReconcile.correlationId).toBe('cc-journey01');
+    expect(afterReconcile.state).toBe('sent');
+  });
+
+  it('keeps the correlation id when the original images are pruned', async () => {
+    await putQueueItem({
+      ...item('20260727-130002-b', 'sent'),
+      correlationId: 'cc-journey02',
+      sentAt: '2026-07-27T00:00:00.000Z',
+    });
+
+    expect(await pruneSentQueue(Date.parse('2026-07-27T05:00:00.000Z'))).toBe(1);
+    expect((await readQueue())[0].correlationId).toBe('cc-journey02');
+  });
+
+  it('backfills a stable correlation id onto a row saved before this contract', async () => {
+    await putQueueItem(item('20260727-130003-c'));
+
+    await flushQueue(async () => { throw new Error('http_503'); });
+    const first = (await readQueue())[0].correlationId;
+    expect(first).toMatch(/^cc-[0-9a-z]+$/);
+
+    await flushQueue(async () => { throw new Error('http_503'); });
+    expect((await readQueue())[0].correlationId).toBe(first);
+  });
+
+  it('never writes the raw failure text into the diagnostic log', async () => {
+    clearTrace();
+    await putQueueItem({ ...item('20260727-130004-d'), correlationId: 'cc-journey04' });
+    await flushQueue(async () => { throw new Error('김민서 010-1234-5678 hong@example.com'); });
+
+    // 큐 항목의 err는 화면 문구를 위해 기존 계약 그대로 둔다 — 로그만 걸러진다.
+    expect((await readQueue())[0].err).toBe('김민서 010-1234-5678 hong@example.com');
+    const journey = traceOf('cc-journey04');
+    expect(journey.map((record) => record.event)).toEqual(['attempt', 'failed']);
+    expect(journey.at(-1)?.reason).toBe(REDACTED);
+    expect(JSON.stringify(journey)).not.toContain('김민서');
+    expect(JSON.stringify(journey)).not.toContain('hong@example.com');
   });
 });

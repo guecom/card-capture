@@ -1,4 +1,5 @@
 import type { CaptureQueueItem } from '../contracts/capture';
+import { correlationIdOf, traceCapture } from './trace';
 
 const DATABASE = 'cardcapture';
 const VERSION = 1;
@@ -301,13 +302,18 @@ export async function flushQueue(send: QueueSender, reconcile?: QueueReconciler)
   // `undefined`=아직 안 물어봄, `null`=물어봤지만 알 수 없음.
   let serverIds: Set<string> | null | undefined;
 
-  for (const item of items) {
+  for (const original of items) {
+    // 이 계약 이전에 저장된 항목에는 상관관계 ID가 없다. 여기서 한 번 확정해 두면
+    // 아래의 모든 쓰기가 같은 값을 이어서 저장한다 (FI-021).
+    const item: CaptureQueueItem = { ...original, correlationId: correlationIdOf(original) };
+
     // reconciler가 없으면 호출자가 대조를 쓰지 않기로 한 것이다 — 기존대로 그냥 보낸다.
     if (reconcile && needsReconcile(item)) {
       if (serverIds === undefined) serverIds = await reconcile();
       if (serverIds === null) {
         // 서버에 물어볼 수 없다. 모르는 채로 덮어쓰지 않고 다음 flush로 미룬다
         // (대개 오프라인이라 재전송해도 어차피 실패한다).
+        traceCapture(item, 'deferred');
         continue;
       }
       if (serverIds.has(item.captureId)) {
@@ -320,25 +326,34 @@ export async function flushQueue(send: QueueSender, reconcile?: QueueReconciler)
           reconciledAt: new Date().toISOString(),
           sentAt: item.sentAt ?? new Date().toISOString(),
         });
+        traceCapture(item, 'reconciled');
         result.reconciled += 1;
         continue;
       }
     }
 
     result.attempted += 1;
+    traceCapture(item, 'attempt');
     try {
       await send(item);
       await putQueueItem({ ...item, state: 'sent', err: undefined, errKind: undefined, sentAt: new Date().toISOString() });
+      traceCapture(item, 'sent');
       result.sent += 1;
     } catch (error) {
       const kind = (error as { kind?: CaptureQueueItem['errKind'] })?.kind;
+      const errKind = kind === 'ambiguous' || kind === 'rejected' ? kind : 'ambiguous';
+      const tries = (item.tries ?? 0) + 1;
+      // `err`는 화면 문구를 만들기 위해 원문 그대로 둔다(기존 계약). 진단 로그로는
+      // 걸러진 코드만 넘긴다 — 이 문자열은 서버가 보낸 임의의 텍스트일 수 있고,
+      // 런타임 오류일 때는 개인 링크 코드가 들어간 주소 전체가 담길 수 있다 (FI-021).
       await putQueueItem({
         ...item,
         state: 'failed',
-        tries: (item.tries ?? 0) + 1,
+        tries,
         err: error instanceof Error ? error.message : String(error),
-        errKind: kind === 'ambiguous' || kind === 'rejected' ? kind : 'ambiguous',
+        errKind,
       });
+      traceCapture(item, 'failed', { errKind, tries, reason: error instanceof Error ? error.message : error });
       result.failed += 1;
     }
   }
