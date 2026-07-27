@@ -6,12 +6,22 @@ import { Sparkles } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { AiStage } from '../services/ai-stages';
 
-export function AiSurface({ tone = 'blue', className = '', children }: {
+// 표면의 상태. 장식이 아니라 실제 lifecycle에 붙는다 (INT-000016 항목 002):
+// `idle`은 평소, `active`는 지금 처리 중, `done`·`error`는 끝난 뒤다.
+// idle에도 표면은 은은하게 살아 있고, active에서 그 움직임이 분명해진다 (CSS가 소유).
+export type AiSurfaceState = 'idle' | 'active' | 'done' | 'error';
+
+export function AiSurface({ tone = 'blue', state = 'idle', className = '', children }: {
   tone?: 'blue' | 'teal';
+  state?: AiSurfaceState;
   className?: string;
   children: ReactNode;
 }) {
-  return <section className={`ai-surface tone-${tone} ${className}`.trim()}>{children}</section>;
+  return (
+    <section className={`ai-surface tone-${tone} is-${state} ${className}`.trim()} data-ai-state={state}>
+      {children}
+    </section>
+  );
 }
 
 export function AiSurfaceHead({ title, badge, helper }: { title: string; badge?: string; helper?: string }) {

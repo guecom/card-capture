@@ -16,7 +16,7 @@ import {
   IonToolbar,
   setupIonicReact,
 } from '@ionic/react';
-import { ArrowUpRight, Camera, ChevronRight, FileText, ImageOff, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, Waves } from 'lucide-react';
+import { ArrowUpRight, Camera, ChevronRight, FileText, ImageOff, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, Waves } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { BriefItem, CaptureQueueItem, PersonTarget, QuickName, RuntimeConfig, SearchItem } from './contracts/capture';
@@ -85,6 +85,7 @@ import {
   loadRuntimeConfigDetailed,
   loadSectionCollapsed,
   loadStickyCaptureContext,
+  loadThemePreference,
   saveCachedBriefs,
   saveGalleryFree,
   saveOwnerFlags,
@@ -92,8 +93,12 @@ import {
   saveRuntimeConfig,
   saveSectionCollapsed,
   saveStickyCaptureContext,
+  saveThemePreference,
   signOutDevice,
+  type ThemePreference,
 } from './services/storage';
+import { applyTheme, resolveTheme, systemPrefersDark, THEME_CHOICES, watchSystemTheme } from './services/theme';
+import { holdSafeAreaInset } from './services/viewport-shell';
 import { apiRejectionMessage } from './services/api-origin';
 import { scrubCredentialParams } from './services/url-credentials';
 
@@ -264,6 +269,11 @@ function App() {
   const [recallLimit, setRecallLimit] = useState(15);
   const recallRunRef = useRef(0);
   const [galleryFree, setGalleryFree] = useState(loadGalleryFree);
+  // 화면 테마 (INT-000016 항목 003). 저장된 건 사용자가 고른 preference이고,
+  // 실제로 칠하는 값은 `시스템`일 때만 OS 설정에 따라 달라진다.
+  const [theme, setTheme] = useState<ThemePreference>(loadThemePreference);
+  const [osPrefersDark, setOsPrefersDark] = useState(systemPrefersDark);
+  const resolvedTheme = resolveTheme(theme, osPrefersDark);
   const [sending, setSending] = useState(false);
   // owner 게이트는 legacy처럼 localStorage 캐시로 시작해 서버 응답으로 갱신한다 — 오프라인에도 유지.
   const [ownerCanSeeAll, setOwnerCanSeeAll] = useState(() => loadOwnerFlags().seeAll);
@@ -434,6 +444,16 @@ function App() {
   useEffect(() => {
     if (!config.capturer) setNameOnboardOpen(true);
   }, [config.capturer]);
+
+  // 고른 테마를 문서에 적용하고, `시스템`을 고른 사람은 폰 설정 변경을 그대로 따라간다.
+  useEffect(() => {
+    applyTheme(resolveTheme(theme, osPrefersDark));
+  }, [osPrefersDark, theme]);
+
+  useEffect(() => watchSystemTheme(setOsPrefersDark), []);
+
+  // 탭 바가 스크롤 중에 오르내리지 않도록 아래 safe-area 여백을 고정한다 (INT-000016 항목 001).
+  useEffect(() => holdSafeAreaInset(), []);
 
   // 신뢰하지 않는 연결 주소를 무시했다면 그 사실을 첫 화면에서 알린다 (FI-004).
   useEffect(() => {
@@ -1134,7 +1154,7 @@ function App() {
           {/* 조사 지시는 메모가 아니라 AI에게 맡기는 일이다 — 표면·표식·단계를 그렇게 보이게 한다
               (INT-000015 Feedback item 002). 권한은 기존 owner-only public-research-v1 그대로다. */}
           {researchInstructionEnabled && (
-            <AiSurface className="research-request">
+            <AiSurface className="research-request" state={queueing ? 'active' : 'idle'}>
               <AiSurfaceHead title="AI 조사 요청" badge="소유자 전용" helper="묻기 껄끄럽지만 알아야 하는 것까지 맡기세요. 공개된 근거로 판단하고 확신도를 함께 적습니다." />
               <IonTextarea
                 aria-label="AI 조사 요청"
@@ -1227,14 +1247,15 @@ function App() {
   function renderRecall() {
     const searchingNow = searching || recallSyncing;
     const progress = searchingNow && (
-      <section className="recall-progress">
+      // 진행 표면도 `AI 조사 요청`과 같은 문법을 쓴다 — 처리 중에는 움직임이 분명해진다 (INT-000016 항목 002).
+      <AiSurface className="recall-progress" tone="teal" state="active">
         <AiStageRail stages={recallStages(recallStage, briefs.length)} label="AI 사람 찾기 진행 단계" />
         <div className="recall-progress-foot">
           <span>{recallStartedAt === null ? '' : `${elapsedLabel(clockTick - recallStartedAt)} 경과`}</span>
           {recallSyncing && <span className="recall-sync">최신 기록 확인 중</span>}
           <button type="button" onClick={cancelRecall}>중단</button>
         </div>
-      </section>
+      </AiSurface>
     );
 
     if (!recallResult) {
@@ -1330,22 +1351,32 @@ function App() {
 
   function renderPeople() {
     const recall = searchMode === 'recall';
+    const searchForm = (
+      <form className="search-shell" onSubmit={submitSearch}>
+        <Search aria-hidden="true" size={19} />
+        <input
+          value={query}
+          onChange={(changeEvent) => setQuery(changeEvent.target.value)}
+          placeholder={recall ? '예: 지난주쯤 만난 한화 다니던 사람' : '이름·회사·만난 곳으로 검색'}
+          aria-label={recall ? '기억나는 대로 문장으로 찾기' : '이름·회사·만난 곳으로 검색'}
+        />
+        <button type="submit" disabled={!configured || !ownerCanSeeAll || searching}>{searching ? '찾는 중' : '찾기'}</button>
+      </form>
+    );
     return (
       <div className="cc-stack">
         <div className="mode-switch" role="tablist" aria-label="검색 방식">
           <button type="button" role="tab" aria-selected={!recall} className={recall ? '' : 'active'} onClick={() => setSearchMode('quick')}><Search aria-hidden="true" size={14} />빠른 검색</button>
           <button type="button" role="tab" aria-selected={recall} className={recall ? 'active' : ''} onClick={() => setSearchMode('recall')}><Sparkles aria-hidden="true" size={14} />AI 사람 찾기</button>
         </div>
-        <form className="search-shell" onSubmit={submitSearch}>
-          <Search aria-hidden="true" size={19} />
-          <input
-            value={query}
-            onChange={(changeEvent) => setQuery(changeEvent.target.value)}
-            placeholder={recall ? '예: 지난주쯤 만난 한화 다니던 사람' : '이름·회사·만난 곳으로 검색'}
-            aria-label={recall ? '기억나는 대로 문장으로 찾기' : '이름·회사·만난 곳으로 검색'}
-          />
-          <button type="submit" disabled={!configured || !ownerCanSeeAll || searching}>{searching ? '찾는 중' : '찾기'}</button>
-        </form>
+        {/* AI 사람 찾기는 조사 요청과 같은 AI 표면 문법을 쓴다. 실제로 찾는 중이 아니어도 표면은
+            은은하게 살아 있고, 찾는 동안 그 움직임이 분명해진다 (INT-000016 항목 002). */}
+        {recall ? (
+          <AiSurface className="recall-request" tone="teal" state={searching || recallSyncing ? 'active' : 'idle'}>
+            <AiSurfaceHead title="AI 사람 찾기" badge="기기 안에서 대조" helper="이름이 기억나지 않아도 괜찮아요. 언제·어디서·어떤 사람이었는지 문장으로 적어 주세요." />
+            {searchForm}
+          </AiSurface>
+        ) : searchForm}
         {recentSearches.length > 0 && (
           <div className="recent-searches" aria-label="최근 검색">
             {recentSearches.map((value) => (
@@ -1369,6 +1400,29 @@ function App() {
           <div><span>명함 연결</span><strong>{configured ? '연결됨' : (config.token ? '연결 주소 확인 필요' : '개인 링크로 접속해 주세요')}</strong></div>
           <div><span>개인 링크</span><strong>{config.token ? '이 기기에 저장됨' : '아직 저장되지 않음'}</strong></div>
           <IonButton fill="outline" expand="block" onClick={() => { setDraftConfig(config); setAdvancedOpen(false); setSettingsOpen(true); }}>사용자·연결 정보 편집</IonButton>
+        </section>
+        {/* INT-000016 항목 003: 시스템 자동 추종만으로는 부족하다 — 직접 고르고, 고른 값은 이 기기에 남는다. */}
+        <section className="surface-card theme-card">
+          <div className="theme-head"><SunMoon aria-hidden="true" size={17} /><strong>화면 테마</strong></div>
+          <p>어두운 곳에서는 다크로 바꿔 보세요. 고른 값은 이 기기에 저장돼요.</p>
+          <div className="theme-choice" role="radiogroup" aria-label="화면 테마">
+            {THEME_CHOICES.map((choice) => (
+              <button
+                key={choice.value}
+                type="button"
+                role="radio"
+                aria-checked={theme === choice.value}
+                className={theme === choice.value ? 'on' : ''}
+                onClick={() => { setTheme(choice.value); saveThemePreference(choice.value); }}
+              >
+                <strong>{choice.label}</strong>
+                <small>{choice.hint}</small>
+              </button>
+            ))}
+          </div>
+          <small className="theme-foot">
+            지금 보이는 화면은 <b>{resolvedTheme === 'dark' ? '다크' : '라이트'}</b>예요{theme === 'system' ? ' — 폰 설정을 따라갑니다.' : '.'}
+          </small>
         </section>
         {/* ISS-000102: 갤러리 사본은 OS 기본 카메라 앱만 만든다. 지울 수 없는 것을 지운다고 말하지 않는다. */}
         <section className="surface-card gallery-card">
@@ -1504,7 +1558,7 @@ function App() {
                 <div className="person-action-composer">
                   {personActionComposer.kind === 'research' ? (
                     // 같은 AI 표면·표식·단계를 캡처 화면과 인물 카드에서 그대로 쓴다 (INT-000015 항목 002).
-                    <AiSurface className="research-request">
+                    <AiSurface className="research-request" state={personActionSubmitting ? 'active' : 'idle'}>
                       <AiSurfaceHead title="AI 조사 요청" badge="소유자 전용" helper={personActionCopy.research.helper} />
                       <IonTextarea aria-label="AI 조사 요청" autofocus autoGrow maxlength={2000} placeholder={personActionCopy.research.placeholder} value={personActionText} onIonInput={(inputEvent) => setPersonActionText(String(inputEvent.detail.value ?? ''))} />
                       <AiExampleChips examples={RESEARCH_EXAMPLE_CHIPS} onPick={(value) => setPersonActionText((current) => (current.trim() ? (current.includes(value) ? current : `${current.trim()}, ${value}`) : value))} label="조사 요청 예시" />
