@@ -21,7 +21,14 @@ import {
 } from './storage';
 import { FakeStorage } from './test-storage';
 
-const PINNED_API = 'https://script.google.com/macros/s/deployment/exec';
+/**
+ * 빌드에 실제로 박힌 배포본 주소. 신뢰 판정의 기준은 origin이 아니라 **이 주소 전체**다 —
+ * 이전 판은 `https://script.google.com/macros/s/deployment/exec` 처럼 origin만 같은 가짜 경로를
+ * 정답으로 굳혔고, 그것이 FI-004가 잘못 DELIVERED로 선언된 이유다 (재검증 TSK-000285).
+ */
+const PINNED_API = __CARD_CAPTURE_DEFAULT_API__;
+/** 같은 origin, 다른 배포 ID. 존재하지 않는 명백한 가짜 값이다. */
+const OTHER_DEPLOYMENT = 'https://script.google.com/macros/s/AKfycb-not-our-deployment-000/exec';
 let store: FakeStorage;
 
 beforeEach(() => {
@@ -79,6 +86,69 @@ describe('runtime config trusts only the pinned API origin (FI-004)', () => {
   it('reports that the address bar must be scrubbed only when it carried credentials', () => {
     expect(loadRuntimeConfigDetailed('?k=owner-token').scrubUrl).toBe(true);
     expect(loadRuntimeConfigDetailed('?view=search').scrubUrl).toBe(false);
+  });
+});
+
+// FI-004 / FI-007 재검증 — Kairen-Ref: TSK-000285
+//
+// 1) `script.google.com` 은 multi-tenant 호스트다. origin만 맞으면 통과시키면 공격자 배포본이
+//    저장되고, 그 뒤 저장된 개인 링크 코드가 그쪽으로 나간다.
+// 2) 채택한 주소에 query가 남으면 `?api=<우리 배포본>?k=TOKEN` 형태로 자격 정보가
+//    `cc_api` 안에 저장되고, `연결 해제`가 `cc_api`를 지우지 않아 그대로 남는다.
+describe('the stored API address is a pinned endpoint and never carries a credential', () => {
+  it('refuses another deployment on the pinned origin and falls back to the build default', () => {
+    const loaded = loadRuntimeConfigDetailed(`?api=${encodeURIComponent(OTHER_DEPLOYMENT)}&k=owner-token`);
+
+    expect(loaded.config.apiUrl).toBe(__CARD_CAPTURE_DEFAULT_API__);
+    expect(loaded.rejectedApi).toEqual({ value: OTHER_DEPLOYMENT, reason: 'untrusted_endpoint' });
+    expect(store.getItem('cc_api')).toBeNull();
+  });
+
+  it('drops a same-origin deployment that an earlier build already persisted', () => {
+    store.setItem('cc_api', OTHER_DEPLOYMENT);
+    store.setItem('cc_token', 'owner-token');
+
+    const loaded = loadRuntimeConfigDetailed('');
+
+    expect(loaded.config.apiUrl).toBe(__CARD_CAPTURE_DEFAULT_API__);
+    expect(loaded.rejectedApi?.reason).toBe('untrusted_endpoint');
+    expect(store.getItem('cc_api')).toBeNull();
+  });
+
+  it('never persists a link code hidden inside the api parameter', () => {
+    const hidden = `${PINNED_API}?k=hidden-token`;
+    const loaded = loadRuntimeConfigDetailed(`?api=${encodeURIComponent(hidden)}&k=owner-token`);
+
+    expect(loaded.config.apiUrl).toBe(PINNED_API);
+    expect(store.getItem('cc_api')).toBe(PINNED_API);
+    expect(JSON.stringify(store.snapshot())).not.toContain('hidden-token');
+  });
+
+  it('re-normalises an address an earlier build stored with a credential query', () => {
+    store.setItem('cc_api', `${PINNED_API}?k=hidden-token`);
+
+    const loaded = loadRuntimeConfigDetailed('');
+
+    expect(loaded.config.apiUrl).toBe(PINNED_API);
+    expect(store.getItem('cc_api')).toBe(PINNED_API);
+  });
+
+  it('refuses a hidden link code typed into advanced settings', () => {
+    const saved = saveRuntimeConfig({ apiUrl: `${PINNED_API}?k=hidden-token`, token: 'owner-token', capturer: 'Kang' });
+
+    expect(saved.config.apiUrl).toBe(PINNED_API);
+    expect(store.getItem('cc_api')).toBe(PINNED_API);
+    expect(JSON.stringify(store.snapshot())).not.toContain('hidden-token');
+  });
+
+  it('clears the stored address on disconnect and comes back on the build default', () => {
+    loadRuntimeConfigDetailed(`?api=${encodeURIComponent(PINNED_API)}&k=owner-token`);
+    expect(store.getItem('cc_api')).toBe(PINNED_API);
+
+    signOutDevice();
+
+    expect(store.getItem('cc_api')).toBeNull();
+    expect(loadRuntimeConfig('')).toEqual({ apiUrl: __CARD_CAPTURE_DEFAULT_API__, token: '', capturer: '' });
   });
 });
 
