@@ -228,6 +228,16 @@ test('the research composer keeps its submit button reachable however tall the s
     await expect(submit).toBeEnabled();
 
     // 스크롤하지 않아도 버튼 전체가 화면 안에 있어야 한다.
+    //
+    // `toBeEnabled()`는 버튼이 존재하고 눌리는 순간 통과한다 — ion-modal 시트는 그때 아직
+    // 아래에서 올라오는 중이다. 정착 전에 기하를 재면 시트가 화면 밖으로 읽혀 **없는 결함이
+    // 만들어진다.** CI 실측(같은 SHA, 두 번 실행): y+height가 1087.86 / 989.69 로 매번 달랐고
+    // 로컬에서는 통과했다. 값이 매번 다르다는 것이 레이아웃 초과가 아니라 중간 프레임이라는 증거다.
+    //
+    // 그래서 먼저 **재시도하는** 단언으로 정착을 기다린다. `ratio: 1`은 버튼 전체가 뷰포트 안에
+    // 있어야 한다는 뜻이라 아래 경계 검사보다 오히려 강하다 — 완화가 아니다.
+    await expect(submit, '접수 버튼이 화면 밖으로 잘린다').toBeInViewport({ ratio: 1 });
+
     const box = await submit.boundingBox();
     const viewport = page.viewportSize();
     expect(box, '접수 버튼이 화면에 없다').not.toBeNull();
