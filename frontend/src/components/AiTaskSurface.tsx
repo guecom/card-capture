@@ -11,14 +11,16 @@ import type { AiStage } from '../services/ai-stages';
 // idle에도 표면은 은은하게 살아 있고, active에서 그 움직임이 분명해진다 (CSS가 소유).
 export type AiSurfaceState = 'idle' | 'active' | 'done' | 'error';
 
-export function AiSurface({ tone = 'blue', state = 'idle', className = '', children }: {
-  tone?: 'blue' | 'teal';
+// 색 갈래(`tone`)는 없다 (founder 판정 2026-07-28 항목 4). AI가 일하는 자리는 언제나 같은 색이다 —
+// `AI 사람 찾기`만 teal이던 예전 화면은 두 표면을 다른 기능처럼 보이게 했다. "기기 안에서 대조한다"는
+// 경계는 배지 글자가 말하고, teal은 이 앱에서 계속 기기 경계 안내(boundary-note 계열)의 색으로 남는다.
+export function AiSurface({ state = 'idle', className = '', children }: {
   state?: AiSurfaceState;
   className?: string;
   children: ReactNode;
 }) {
   return (
-    <section className={`ai-surface tone-${tone} is-${state} ${className}`.trim()} data-ai-state={state}>
+    <section className={`ai-surface is-${state} ${className}`.trim()} data-ai-state={state}>
       {children}
     </section>
   );

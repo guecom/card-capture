@@ -315,7 +315,7 @@ test('a new device starts light, and the founder can pick light, dark, or system
 
     await choices.getByRole('radio', { name: /다크/ }).click();
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-    await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', /#1118|#111823/);
+    await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', /#141020/);
 
     // 고른 값은 유지된다 — 새로고침해도 다크로 돌아온다.
     await page.reload({ waitUntil: 'networkidle' });
