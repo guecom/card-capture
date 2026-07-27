@@ -41,6 +41,26 @@ release 기록은 이 파일 하단 "Verified Baselines"에 최신이 위로 오
 
 ## Verified Baselines
 
+### v2.4.0 @ `ba307992b29198442196f33bde11866bd72aaba3` — 검증 2026-07-27 (agent:kairen.claude, Kairen-Ref: TSK-000275) — **GAS 배포 PENDING**
+
+> ⚠️ **이 baseline은 불완전하다.** `Code.gs`가 바뀐 첫 릴리즈이고 **Apps Script 재배포가 아직 실행되지 않았다.** 따라서 이 태그는 "repository와 회귀 게이트가 확정됐다"까지만 증명하며, **live 서버는 여전히 v2.0.0에서 배포한 version 5의 예전 동작**이다. 재배포와 그 후의 live probe가 끝날 때까지 이 릴리즈를 "서버가 보호된다"로 읽지 마라.
+
+- repository: annotated tag `v2.4.0` → squash merge commit `ba307992b29198442196f33bde11866bd72aaba3` (`main`에 포함). 담은 merge는 PR #37 하나다.
+- human gate: founder가 세션에서 `순차적으로 개발 진행. 내 승인 없이 그냥 쭉 진행. 결정 필요사항이 있는 경우 너의 추천대로 진행. 적절한 시점마다 merge 및 릴리즈`로 구현·merge·tag를 사전 승인함. **Apps Script 재배포는 Google 로그인이 필요한 사람 전용 작업이라 agent가 실행하지 않았다.**
+- CI: GitHub Actions `validate` run `30236320998` SUCCESS. 같은 head에서 repository validator fail=0 warn=0(신규 `eval/upload-idempotency.test.js` 10건 포함), unit 215 PASS, Playwright 52 PASS.
+- Pages: **콘텐츠 변경 없음.** 이 릴리즈는 `docs/`를 건드리지 않았다(`git diff --quiet v2.3.0 ba30799 -- docs/`). live 산출물은 v2.3.0 baseline과 동일하다.
+- **GAS deployment: 미실행 (PENDING — 사람 게이트).**
+  - repository `Code.gs` 정규화(EOL LF) sha256 = `ee7075038c61f0192b3f8d9f678574d4a8828b83fda63d1676c8f967adfd6f56`.
+  - live deployment는 v2.0.0에서 배포한 **version 5**이며 그 Code.gs 상태는 `990487a7f09dcc2c0247b2a0e9013ab2dfedbd033560be143fbee7ea19206fb1`(v2.0.0 baseline 기록)이다. **두 해시가 다르다 = live와 repository가 의도적으로 어긋나 있다.**
+  - 재배포 절차는 vault `01_Company/00_Company_Operations/05_Tools_and_Systems/CardCapture_Setup.md`의 클릭 단위 절차를 따른다. 재배포 후 Apps Script editor의 Code.gs 정규화 sha256이 위 값과 일치하는지 확인하고, 이 항목을 갱신해야 한다.
+- GAS live probe: 2026-07-27 13:16 KST `ping` → `{"ok":true,"service":"card-capture"}`. **이 probe는 예전 배포본을 확인한 것이며 이번 변경을 검증하지 않는다.** 유효 token은 사용하지 않았다.
+- watcher: **재기동하지 않았다.** 이 릴리즈는 `watcher/`를 건드리지 않았다(`git diff --quiet v2.3.0 ba30799 -- watcher/`).
+- processing contract: vault `CardCapture_Processing.md`를 변경 없이 사용함. `MVP build/testability gate comes before customer proof.`
+- 이 release가 소스에서 닫은 Feature Index slice: `FI-009`(captureId ownership), `FI-010`(upload idempotency), `FI-015`(lifecycle monotonicity). **live에서 닫히는 것은 재배포 후다.**
+- 재배포 후 달라지는 외부 계약: 업로드 응답에 `deduped`·`status`·`processedAt`가 추가되고, 다른 사람의 captureId로 업로드하면 `capture_conflict`로 거절된다. 현재 클라이언트는 `ok:true`만 읽으므로 **하위 호환**이다.
+- rollback: 이 PR `git revert` 하나. 재배포를 했다면 Apps Script 배포 관리에서 이전 version(5)으로 전환하고 probe를 재실행한다.
+- **남은 human gate**: (1) Apps Script 재배포, (2) 재배포 후 live probe와 실폰 확인. 둘 다 `NOT RUN — HUMAN/EXTERNAL`이다.
+
 ### v2.3.0 @ `85254a059886d827e490c2e6e28d9b200f809616` — 검증 2026-07-27 (agent:kairen.claude, Kairen-Ref: TSK-000273)
 
 - repository: annotated tag `v2.3.0` → squash merge commit `85254a059886d827e490c2e6e28d9b200f809616` (`main`에 포함). 이 release가 담은 merge는 PR #34 하나다.
