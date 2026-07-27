@@ -72,7 +72,7 @@ import {
   loadGalleryFree,
   loadOwnerFlags,
   loadRecentSearches,
-  loadRuntimeConfig,
+  loadRuntimeConfigDetailed,
   loadSectionCollapsed,
   loadStickyCaptureContext,
   saveCachedBriefs,
@@ -82,7 +82,10 @@ import {
   saveRuntimeConfig,
   saveSectionCollapsed,
   saveStickyCaptureContext,
+  signOutDevice,
 } from './services/storage';
+import { apiRejectionMessage } from './services/api-origin';
+import { scrubCredentialParams } from './services/url-credentials';
 
 setupIonicReact({ mode: 'ios' });
 
@@ -208,10 +211,16 @@ const personActionCopy = {
   },
 } as const;
 
+// boot에서 딱 한 번: 신뢰 판정 → subject namespace 결정 → 주소창 정리 (FI-004·005·006).
+// 사적 캐시를 읽는 useState 초기값보다 반드시 먼저 끝나야 한다.
+const boot = loadRuntimeConfigDetailed();
+if (boot.scrubUrl) scrubCredentialParams();
+
 function App() {
   const [tab, setTab] = useState<Tab>(initialTab);
-  const [config, setConfig] = useState<RuntimeConfig>(() => loadRuntimeConfig());
+  const [config, setConfig] = useState<RuntimeConfig>(boot.config);
   const [draftConfig, setDraftConfig] = useState<RuntimeConfig>(config);
+  const [signOutOpen, setSignOutOpen] = useState(false);
   const [briefs, setBriefs] = useState<BriefItem[]>(loadCachedBriefs);
   const [queue, setQueue] = useState<CaptureQueueItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -400,6 +409,20 @@ function App() {
     if (!config.capturer) setNameOnboardOpen(true);
   }, [config.capturer]);
 
+  // 신뢰하지 않는 연결 주소를 무시했다면 그 사실을 첫 화면에서 알린다 (FI-004).
+  useEffect(() => {
+    if (boot.rejectedApi) setMessage(apiRejectionMessage[boot.rejectedApi.reason]);
+  }, []);
+
+  // "어디로 보내지는가"를 사람이 읽는 형태로. 신뢰 목록은 빌드에 박혀 있어 런타임에 늘지 않는다.
+  const trustedApiHost = useMemo(() => {
+    try {
+      return new URL(config.apiUrl).host;
+    } catch {
+      return '연결 주소 없음';
+    }
+  }, [config.apiUrl]);
+
   // 처리 완료 브리핑의 이름을 로컬 캡처 행에 반영한다 (legacy briefNameMap).
   const processedNames = useMemo(() => briefNameMap(briefs), [briefs]);
 
@@ -543,23 +566,44 @@ function App() {
   }
 
   function commitSettings() {
-    saveRuntimeConfig(draftConfig);
-    setConfig({
-      apiUrl: draftConfig.apiUrl.trim(),
-      token: draftConfig.token.trim(),
-      capturer: draftConfig.capturer.trim(),
-    });
+    const saved = saveRuntimeConfig(draftConfig);
+    setConfig(saved.config);
+    setDraftConfig(saved.config);
     setSettingsOpen(false);
-    setMessage('기존 Card Capture 설정과 같은 local storage에 저장했어요.');
+    // 거부한 주소는 조용히 무시하지 않는다 — 무엇이 왜 반영되지 않았는지 그대로 말한다.
+    setMessage(saved.rejectedApi
+      ? apiRejectionMessage[saved.rejectedApi.reason]
+      : '기존 Card Capture 설정과 같은 local storage에 저장했어요.');
   }
 
   function commitOnboardName() {
     const name = nameDraft.trim();
     if (!name) return;
     const next = { ...config, capturer: name };
-    saveRuntimeConfig(next);
-    setConfig(next);
+    setConfig(saveRuntimeConfig(next).config);
     setNameOnboardOpen(false);
+  }
+
+  // 이 기기에서 개인 링크와 사적 캐시를 끊는다 (FI-007). 대기 중인 촬영은 지우지 않는다.
+  const unsentCount = useMemo(() => queue.filter((item) => item.state !== 'sent').length, [queue]);
+
+  function commitSignOut() {
+    signOutDevice();
+    const next: RuntimeConfig = { apiUrl: config.apiUrl, token: '', capturer: '' };
+    setConfig(next);
+    setDraftConfig(next);
+    setBriefs([]);
+    setSearchResults([]);
+    setRecentSearches([]);
+    setRecallResult(null);
+    setOwnerCanSeeAll(false);
+    setResearchInstructionEnabled(false);
+    setEvent('');
+    setRelSelf('');
+    setRelKairen('');
+    setResearchText('');
+    setSignOutOpen(false);
+    setMessage('이 기기에서 개인 링크와 저장된 기록 사본을 지웠어요.');
   }
 
   // ── 촬영 흐름: 모달은 촬영만, 결과는 메인 화면으로 돌아온다 ──
@@ -1302,7 +1346,19 @@ function App() {
         </section>
         <section className="boundary-note">
           <ShieldCheck aria-hidden="true" size={20} />
-          <div><strong>개인 링크 정보는 이 기기에만 저장돼요.</strong><p>연결 정보는 저장소나 로그에 넣지 않습니다. 연결에 문제가 있을 때만 고급 설정에서 직접 확인하세요.</p></div>
+          <div>
+            <strong>개인 링크 정보는 이 기기에만 저장돼요.</strong>
+            <p>연결 정보는 저장소나 로그에 넣지 않습니다. 연결에 문제가 있을 때만 고급 설정에서 직접 확인하세요.</p>
+            {/* FI-004·005: 어디로 보내지는지와, 주소창에서 코드를 지웠다는 사실을 그대로 말한다. */}
+            <p className="boundary-origin">명함과 개인 링크 코드는 <b>{trustedApiHost}</b> 로만 전송돼요. 다른 주소를 붙인 링크는 무시합니다.</p>
+            <p className="boundary-origin">개인 링크로 열면 주소창의 코드를 <b>즉시 지웁니다</b> — 방문 기록·화면 공유에 남지 않아요.</p>
+          </div>
+        </section>
+        {/* FI-007: 폰을 넘기거나 링크를 회수할 때 이 기기의 사본을 끊는 경로. */}
+        <section className="surface-card signout-card">
+          <div className="signout-head"><strong>이 기기에서 연결 해제</strong></div>
+          <p>개인 링크 코드와 이 기기에 저장된 브리핑 사본·검색 기록·만남 맥락을 지웁니다. <b>전송을 기다리는 촬영은 지우지 않아요.</b></p>
+          <IonButton fill="outline" color="danger" expand="block" disabled={!config.token} onClick={() => setSignOutOpen(true)}>연결 해제</IonButton>
         </section>
         <a className="legacy-link" href="../legacy.html">문제가 있을 때 이전 앱 열기 <ArrowUpRight aria-hidden="true" size={16} /></a>
         <p className="build-line">빌드 {__CARD_CAPTURE_BUILD_ID__}</p>
@@ -1356,6 +1412,24 @@ function App() {
               <p>캡처한 명함에 "누가 찍었는지"를 남기기 위해 이름이 필요해요. 한 번만 입력하면 기억합니다.</p>
               <IonInput aria-label="이름" placeholder="이름" autocomplete="name" value={nameDraft} onIonInput={(inputEvent) => setNameDraft(String(inputEvent.detail.value ?? ''))} />
               <IonButton expand="block" disabled={!nameDraft.trim()} onClick={commitOnboardName}>시작하기</IonButton>
+            </div>
+          </IonContent>
+        </IonModal>
+
+        {/* FI-007: 되돌릴 수 없는 정리 전에 무엇이 지워지고 무엇이 남는지 정확히 보여 준다. */}
+        <IonModal className="signout-modal" isOpen={signOutOpen} onDidDismiss={() => setSignOutOpen(false)} initialBreakpoint={0.55} breakpoints={[0, 0.55]}>
+          <IonHeader><IonToolbar><IonTitle>이 기기에서 연결 해제</IonTitle><IonButton slot="end" fill="clear" onClick={() => setSignOutOpen(false)}>취소</IonButton></IonToolbar></IonHeader>
+          <IonContent className="ion-padding">
+            <div className="signout-confirm">
+              <p><b>지웁니다</b> — 개인 링크 코드, 촬영자 이름, 이 기기에 저장된 브리핑 사본, 최근 검색어, 만남 맥락.</p>
+              <p><b>남깁니다</b> — 전송을 기다리는 촬영 원본. 서버에 이미 접수된 기록.</p>
+              {unsentCount > 0 && (
+                <p className="signout-warning" role="alert">
+                  아직 전송되지 않은 촬영이 <b>{unsentCount}건</b> 있어요. 연결을 해제하면 이 기기에서 전송할 수 없으니, 먼저 전송을 끝내는 걸 권합니다.
+                </p>
+              )}
+              <IonButton expand="block" color="danger" onClick={commitSignOut}>연결 해제하기</IonButton>
+              <IonButton expand="block" fill="clear" onClick={() => setSignOutOpen(false)}>그대로 두기</IonButton>
             </div>
           </IonContent>
         </IonModal>

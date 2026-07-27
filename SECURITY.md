@@ -13,12 +13,18 @@ Kairen Ref: `TSK-000141` (credential·access baseline), `TSK-000153` (processing
 
 - token은 **bearer credential**이다. URL 파라미터로 전달되고 폰 브라우저 localStorage에 저장된다 — 링크를 아는 사람이 곧 그 사용자다.
 - GAS 웹앱은 소유자 계정 권한으로 실행된다("실행: 나, 액세스: 모든 사용자"). 코드가 곧 권한 경계다.
+- **credential은 빌드에 박힌 신뢰 origin으로만 나간다** (`frontend/src/services/api-origin.ts`). 신뢰 집합은 `docs/legacy.html`의 `DEFAULT_API` origin과 앱 자신의 origin뿐이며, URL·localStorage·캐시·서버 응답 어느 것도 이 집합을 넓히지 못한다. 로컬 harness(`localhost`/`127.0.0.1`에서 서비스될 때)에 한해 RFC 6761 `.test`·RFC 8375 `.localhost` 이름을 mock API로 허용한다.
+- **사적 브라우저 상태는 subject(= API origin + token) 별로 격리된다.** owner 링크로 쓰던 기기를 guest 링크로 열면 이전 subject의 브리핑 캐시·owner 게이트·검색 기록이 보이지 않고, 그 namespace는 기기에서 제거된다. 촬영 대기열(IndexedDB)은 유일본이라 이 정리 대상이 아니다.
 
 ## Threat Model (현재 완화 상태)
 
 | 위협 | 경로 | 완화 | 상태 |
 | --- | --- | --- | --- |
 | 토큰 유출 | 공유 링크 전달·스크린샷·브라우저 이력 | 개인별 토큰 분리, 회수/rotation 절차, DAILY_LIMIT | 절차 문서화됨, rotation은 human gate |
+| 토큰 탈취 (악성 API 주소) | `?api=https://attacker.example/`가 붙은 링크를 한 번 열면 그 주소가 저장되고 이후 모든 업로드·조회가 그리로 감 | build-time origin pinning + fail-closed 판정, 거부한 주소는 저장하지 않음, 저장돼 있던 신뢰 밖 주소도 boot에서 폐기, 고급 설정 입력도 동일 판정 | 구현됨, e2e 회귀(`credential-boundary.spec.ts` — 적대적 origin 요청 0건) |
+| 토큰 잔류 (주소창·이력·Referer) | 개인 링크의 `?k=`가 주소창·방문 기록·화면 공유·외부 링크 Referer에 남음 | 저장 직후 `history.replaceState`로 `k`·`api` 제거(push 아님), `<meta name="referrer" content="no-referrer">` | 구현됨, e2e 회귀 |
+| 기기 내 subject 교차 노출 | 한 폰을 owner 링크 → guest 링크로 열 때 이전 사람의 캐시가 그대로 렌더 | 사적 키를 subject namespace로 분리, 링크 코드 없으면 사적 캐시를 읽지도 쓰지도 않음, 다른 subject namespace는 boot에서 제거 | 구현됨, e2e 회귀(서버 침묵 상태에서 이전 기록 0건) |
+| 기기 양도·링크 회수 후 잔류 | 폰을 넘기거나 토큰을 회수해도 기기에 브리핑 사본이 남음 | 설정의 `연결 해제`가 토큰·이름·사적 캐시·만남 맥락을 제거(대기 중 촬영은 보존하고 건수를 먼저 경고) | 구현됨, e2e 회귀 |
 | Owner 토큰 유출 | 위와 동일 | persondoc·search는 OWNER_NAMES 한정, Private 포함이므로 owner 토큰은 고민감 취급 | 경계 구현됨 |
 | Prompt injection | 명함 인쇄 문구·note·웹 검색 결과 → 처리 agent | 처리 계약의 untrusted-input 규칙 + write allowlist + `eval/` adversarial fixture | 계약·fixture 존재, 회귀로 검증 |
 | 조사 지시 권한 상승 | guest가 숨겨진 UI/API를 직접 호출 | UI capability + `researchInstruction_` server-side OWNER_NAMES 재검증 | owner-only, negative fixture |
