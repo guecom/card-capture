@@ -8,7 +8,11 @@ var policy = require('../docs/research-policy.js');
 var root = path.join(__dirname, '..');
 var fixtureDir = path.join(__dirname, 'research-fixtures');
 var server = fs.readFileSync(path.join(root, 'Code.gs'), 'utf8');
-var page = fs.readFileSync(path.join(root, 'docs', 'legacy.html'), 'utf8');
+// 조사 지시 접수 UI와 owner action은 React 앱이 소유한다. 이전 앱(`docs/legacy.html`)은
+// 촬영·업로드·전송 상태로 축소돼 이 action들을 더 이상 갖지 않는다 (TSK-000301).
+// 세 단언은 약화되지 않았다 — 같은 문자열을 실제 소유자에게서 찾는다.
+var page = fs.readFileSync(path.join(root, 'frontend', 'src', 'services', 'api.ts'), 'utf8')
+  + fs.readFileSync(path.join(root, 'frontend', 'src', 'App.tsx'), 'utf8');
 var processing = fs.readFileSync(path.join(root, 'PROCESSING_CONTRACT.md'), 'utf8');
 var fixtures = fs.readdirSync(fixtureDir).filter(function (name) { return /\.json$/.test(name); })
   .map(function (name) { return JSON.parse(fs.readFileSync(path.join(fixtureDir, name), 'utf8')); });
@@ -50,7 +54,7 @@ assert(/note:\s*String\(req\.note/.test(server), 'note remains a separate field'
 assert(!/note:\s*[^\n]*researchInstruction/.test(server), 'research instruction must never be concatenated into note');
 assert(/action:\s*'researchinstruction'/.test(page), 'existing Person action missing from page');
 assert(/action:\s*'correction'/.test(page), 'correction must remain a separate action');
-assert(/id="researchInstructionInput"/.test(page), 'initial capture research tab missing');
+assert(/aria-label="AI 조사 요청"/.test(page), 'initial capture research input missing');
 assert(/raw instruction.*system prompt/i.test(processing), 'processing contract must keep raw input out of system prompt');
 assert(/source.*confidence.*unknown/i.test(processing), 'processing receipt contract must require source/confidence/unknown');
 

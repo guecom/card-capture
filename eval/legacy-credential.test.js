@@ -66,4 +66,44 @@ if (/(^|[^.\w$])let\s+[A-Za-z_$]/.test(inline)) es5Violations.push('let');
 if (/(^|[^.\w$])const\s+[A-Za-z_$]/.test(inline)) es5Violations.push('const');
 assert.strictEqual(es5Violations.join(', '), '', 'legacy 인라인 스크립트에 ES5 밖 문법이 들어왔다');
 
-console.log('PASS legacy credential boundary: pinned API, no stored api, scrubbed link code, no-referrer, ES5 inline');
+/* 7. 화면 범위: 촬영·업로드·전송 상태뿐이다 (founder 결정, Kairen-Ref: TSK-000301).
+ *
+ * 행위 검증은 frontend/e2e/legacy-scope.spec.ts 가 담당한다. 여기서 소스 불변식을 함께 고정하는 이유는
+ * 브라우저 없이 도는 scripts/validate.ps1 이 이 파일을 실행하기 때문이다 — 축소가 무너지면 CI 이전에 잡힌다.
+ *
+ * "버튼을 숨겼다"로는 통과할 수 없는 형태로 쓴다: 진입점 함수 선언과 action 문자열 자체를 금지한다.
+ * 함수가 남아 있으면 전역이라 콘솔 한 줄로 그대로 호출되고, action 문자열이 남아 있으면
+ * 인라인 핸들러로 우회할 수 있다.
+ */
+var removedActions = ['researchinstruction', 'persondoc', 'doc', 'search', 'addnote', 'correction'];
+var presentActions = removedActions.filter(function (action) {
+  return inline.indexOf("'" + action + "'") >= 0 || inline.indexOf('"' + action + '"') >= 0;
+});
+assert.strictEqual(presentActions.join(', '), '', '제거된 owner action 문자열이 legacy 소스에 남아 있다');
+
+var removedEntryPoints = [
+  'addNoteFlow', 'requestCorrection', 'openPersonDoc', 'openPersonDocById', 'runSearch',
+  'researchInstructionFlow', 'canUseResearchInstruction', 'renderBriefs', 'renderPersonMd',
+  'prepCardOf', 'contactRow', 'vcardDownload', 'briefNameMap', 'toggleSearchUI'
+];
+var presentEntryPoints = removedEntryPoints.filter(function (name) {
+  return new RegExp('function\\s+' + name + '\\s*\\(').test(inline);
+});
+assert.strictEqual(presentEntryPoints.join(', '), '', 'owner 기능 진입점이 legacy에 함수로 남아 있다 — 전역이라 그대로 호출된다');
+
+/* 조사 지시 정책 모듈을 싣지 않는다 — 실려 있으면 제출 경로를 다시 세울 수 있다. */
+assert.ok(!/<script[^>]*src="research-policy\.js"/.test(html), 'legacy가 아직 research-policy.js를 싣는다');
+
+/* 남겨야 하는 것: 전송·처리 상태 확인과 다시 처리 요청. 축소가 여기까지 먹으면 화면이 쓸모를 잃는다. */
+assert.ok(/action=list/.test(inline), '전송·처리 상태 조회(list)가 사라졌다');
+assert.ok(/action:\s*'requeue'/.test(inline), '다시 처리 요청(requeue)이 사라졌다');
+
+/* 브리핑 전문·owner 게이트·검색 기록을 namespace 없는 전역 자리에 쓰지 않는다 (SECURITY.md 사적 상태 격리). */
+['briefs', 'briefSeeAll', 'researchInstructionEnabled', 'recentSearches'].forEach(function (key) {
+  assert.ok(
+    !new RegExp("store\\.set\\(\\s*'" + key + "'").test(inline),
+    'legacy가 제거된 기능의 사적 상태(' + key + ')를 아직 저장한다'
+  );
+});
+
+console.log('PASS legacy credential boundary: pinned API, no stored api, scrubbed link code, no-referrer, ES5 inline, capture-only scope');

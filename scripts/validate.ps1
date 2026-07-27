@@ -23,7 +23,7 @@ $required = @(
   'docs/vendor/tesseract/kor.traineddata.gz','docs/vendor/tesseract/eng.traineddata.gz','docs/vendor/tesseract/README.md',
   'docs/vendor/paddleocr/PP-OCRv5_mobile_det_infer.onnx','docs/vendor/paddleocr/korean_PP-OCRv5_mobile_rec_infer.onnx',
   'docs/vendor/paddleocr/ppocrv5_korean_dict.txt','docs/vendor/ort/ort-wasm-simd-threaded.wasm','docs/vendor/ort/ort-wasm-simd-threaded.mjs',
-  'watcher/CardCapture_Watcher.ps1','watcher/CardCapture_Health.ps1','watcher/tests/watcher-tests.ps1','watcher/tests/watcher-protocol-tests.ps1','watcher/tests/health-tests.ps1',
+  'watcher/CardCapture_Watcher.ps1','watcher/CardCapture_Health.ps1','watcher/tests/watcher-tests.ps1','watcher/tests/watcher-protocol-tests.ps1','watcher/tests/health-tests.ps1','watcher/tests/log-pii-tests.ps1',
   'eval/README.md','eval/run-eval.ps1','eval/upload-idempotency.test.js','eval/upload-filename-allowlist.test.js','eval/upload-content-type.test.js','eval/legacy-credential.test.js','eval/build-reproducibility.test.js','eval/persondoc-owner.test.js','eval/prompt-injection.test.js','eval/gas-sandbox.js','eval/golden-capture.test.js','eval/adversarial-capture.test.js','eval/camera-quality.test.js','eval/page-syntax.test.js','eval/server-syntax.test.js','eval/ocr-browser-smoke.html','scripts/validate.ps1'
 )
 $missing = @($required | Where-Object { -not (Test-Path (Join-Path $root $_)) })
@@ -192,6 +192,8 @@ if ($LASTEXITCODE -ne 0) { Fail 'watcher health dashboard tests failed' } else {
 if ($LASTEXITCODE -ne 0) { Fail 'watcher recovery/idempotency tests failed' } else { Pass 'watcher recovery/idempotency deterministic tests passed' }
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'watcher\tests\watcher-protocol-tests.ps1') | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail 'watcher claim/lease/quarantine protocol tests failed' } else { Pass 'watcher claim/lease/quarantine protocol deterministic tests passed' }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'watcher\tests\log-pii-tests.ps1') | Out-Null
+if ($LASTEXITCODE -ne 0) { Fail 'watcher log PII separation/retention tests failed' } else { Pass 'watcher log PII separation/retention deterministic tests passed' }
 
 # ---------- summary ----------
 Write-Host ''

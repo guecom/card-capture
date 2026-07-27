@@ -211,8 +211,10 @@ test('keeps the legacy invitation link working with only the personal code', asy
 
     // 설정 안내 배너가 뜨지 않는다 = 앱이 스스로를 "연결됨"으로 판정한다.
     await expect(page.locator('#setupBanner')).toBeHidden();
-    // 서버가 준 브리핑이 실제로 렌더된다.
-    await expect(page.getByText('합성 담당자 — 이런 분이에요')).toBeVisible();
+    // 연결된 화면은 촬영 표면이다. 브리핑 본문은 이 화면의 범위가 아니라 렌더되지 않는다
+    // (축소 범위 회귀는 legacy-scope.spec.ts 가 소유한다 — Kairen-Ref: TSK-000301).
+    await expect(page.getByRole('button', { name: '명함 앞면 촬영' })).toBeVisible();
+    await expect(page.getByText('합성 fixture 문장.')).toHaveCount(0);
   } finally {
     await stopStaticServer(server);
   }
