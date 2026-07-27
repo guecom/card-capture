@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## v2.16.0 — 2026-07-28 — `3fdcd4d` (Kairen-Ref: TSK-000328; ISS-000130)
+
 **흰 화면에 갇히지 않게 한다** (branch `agent/iss-white-screen`, Kairen-Ref: TSK-000328; ISS-000130)
 
 founder 보고: "컴퓨터에서는 들어가지는데, 핸드폰에서는 흰 화면만 보여."
