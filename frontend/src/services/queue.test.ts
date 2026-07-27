@@ -61,11 +61,11 @@ describe('offline queue contract', () => {
     const sender = vi.fn(async (value: CaptureQueueItem) => { order.push(value.captureId); });
 
     const result = await flushQueue(sender);
-    expect(result).toEqual({ attempted: 2, sent: 2, failed: 0, quarantined: 0 });
+    expect(result).toEqual({ attempted: 2, sent: 2, failed: 0, quarantined: 0, reconciled: 0 });
     expect(order).toEqual(['20260725-120002-b', '20260725-120003-c']);
 
     const second = await flushQueue(sender);
-    expect(second).toEqual({ attempted: 0, sent: 0, failed: 0, quarantined: 0 });
+    expect(second).toEqual({ attempted: 0, sent: 0, failed: 0, quarantined: 0, reconciled: 0 });
     expect(sender).toHaveBeenCalledTimes(2);
   });
 
@@ -73,13 +73,13 @@ describe('offline queue contract', () => {
     await putQueueItem(item('20260725-120004-d'));
     const firstSender = vi.fn(async () => { throw new Error('offline'); });
 
-    expect(await flushQueue(firstSender)).toEqual({ attempted: 1, sent: 0, failed: 1, quarantined: 0 });
+    expect(await flushQueue(firstSender)).toEqual({ attempted: 1, sent: 0, failed: 1, quarantined: 0, reconciled: 0 });
     const [failed] = await readQueue();
     expect(failed).toMatchObject({ state: 'failed', tries: 1, err: 'offline' });
     expect(failed.images[0].dataB64).toBe('20260725-120004-d-image');
 
     const retrySender = vi.fn(async () => undefined);
-    expect(await flushQueue(retrySender)).toEqual({ attempted: 1, sent: 1, failed: 0, quarantined: 0 });
+    expect(await flushQueue(retrySender)).toEqual({ attempted: 1, sent: 1, failed: 0, quarantined: 0, reconciled: 0 });
     const [sent] = await readQueue();
     expect(sent.state).toBe('sent');
     expect(sent.tries).toBe(1);
@@ -232,7 +232,7 @@ describe('queue integrity is isolated, never repaired in place (FI-025)', () => 
 
     const result = await flushQueue(async (value) => { sent.push(value.captureId); });
 
-    expect(result).toEqual({ attempted: 1, sent: 1, failed: 0, quarantined: 1 });
+    expect(result).toEqual({ attempted: 1, sent: 1, failed: 0, quarantined: 1, reconciled: 0 });
     expect(sent).toEqual(['20260727-140000-good']);
 
     // 손상 항목은 지워지지 않고 그대로 남아 사람이 판단할 수 있다.
@@ -258,6 +258,93 @@ function fakeLockManager() {
     },
   };
 }
+
+describe('an unanswered upload is reconciled, never blindly resent (FI-016)', () => {
+  /** 응답을 못 받아 `ambiguous`로 실패한 항목을 만든다. */
+  async function ambiguouslyFailed(captureId: string): Promise<void> {
+    await putQueueItem(item(captureId));
+    await flushQueue(async () => {
+      throw Object.assign(new Error('network_failed'), { kind: 'ambiguous' });
+    });
+  }
+
+  it('marks the last failure as ambiguous when no answer came back', async () => {
+    await ambiguouslyFailed('20260727-180000-a');
+    const [failed] = await readQueue();
+    expect(failed).toMatchObject({ state: 'failed', errKind: 'ambiguous', tries: 1 });
+  });
+
+  it('marks an explicit server refusal as rejected so it is not reconciled', async () => {
+    await putQueueItem(item('20260727-180001-b'));
+    await flushQueue(async () => {
+      throw Object.assign(new Error('daily_limit'), { kind: 'rejected' });
+    });
+
+    const [failed] = await readQueue();
+    expect(failed.errKind).toBe('rejected');
+
+    // 거절은 서버에 아무것도 남기지 않았으므로 대조 없이 그대로 재전송한다.
+    const sent: string[] = [];
+    const reconcile = vi.fn(async () => new Set<string>());
+    await flushQueue(async (value) => { sent.push(value.captureId); }, reconcile);
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(sent).toEqual(['20260727-180001-b']);
+  });
+
+  it('does not resend a capture the server already has — that would restart its processing', async () => {
+    await ambiguouslyFailed('20260727-180002-c');
+    const sent: string[] = [];
+
+    const result = await flushQueue(
+      async (value) => { sent.push(value.captureId); },
+      async () => new Set(['20260727-180002-c']),
+    );
+
+    expect(sent).toEqual([]);
+    expect(result).toMatchObject({ attempted: 0, sent: 0, failed: 0, reconciled: 1 });
+    const [reconciled] = await readQueue();
+    expect(reconciled.state).toBe('sent');
+    expect(reconciled.errKind).toBeUndefined();
+    expect(Number.isNaN(Date.parse(String(reconciled.reconciledAt)))).toBe(false);
+  });
+
+  it('resends when the server turns out not to have it', async () => {
+    await ambiguouslyFailed('20260727-180003-d');
+    const sent: string[] = [];
+
+    const result = await flushQueue(
+      async (value) => { sent.push(value.captureId); },
+      async () => new Set(['20260727-999999-other']),
+    );
+
+    expect(sent).toEqual(['20260727-180003-d']);
+    expect(result).toMatchObject({ attempted: 1, sent: 1, reconciled: 0 });
+  });
+
+  it('waits rather than guessing when the server cannot be asked', async () => {
+    await ambiguouslyFailed('20260727-180004-e');
+    const sent: string[] = [];
+
+    const result = await flushQueue(async (value) => { sent.push(value.captureId); }, async () => null);
+
+    expect(sent).toEqual([]);
+    expect(result).toMatchObject({ attempted: 0, sent: 0, failed: 0, reconciled: 0 });
+    // 항목은 그대로 남아 다음 연결에서 다시 판정된다.
+    const [waiting] = await readQueue();
+    expect(waiting).toMatchObject({ state: 'failed', errKind: 'ambiguous' });
+  });
+
+  it('asks the server only once per flush no matter how many captures are waiting', async () => {
+    await ambiguouslyFailed('20260727-180005-f');
+    await ambiguouslyFailed('20260727-180006-g');
+    const reconcile = vi.fn(async () => new Set(['20260727-180005-f', '20260727-180006-g']));
+
+    const result = await flushQueue(async () => undefined, reconcile);
+
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(result.reconciled).toBe(2);
+  });
+});
 
 describe('one tab owns the send — Web Locks path (FI-053)', () => {
   beforeEach(() => vi.stubGlobal('navigator', { locks: fakeLockManager() }));

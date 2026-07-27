@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CaptureQueueItem, RuntimeConfig } from '../contracts/capture';
-import { addPersonNote, buildDocumentUrl, buildListUrl, buildSearchUrl, isTerminalStatus, requestCorrection, submitResearchInstruction, toUploadPayload } from './api';
+import { addPersonNote, buildDocumentUrl, buildListUrl, buildSearchUrl, fetchServerCaptureIds, isTerminalStatus, requestCorrection, submitResearchInstruction, toUploadPayload, uploadCapture, UploadError } from './api';
 
 const config: RuntimeConfig = {
   apiUrl: 'https://script.google.com/macros/s/example/exec',
@@ -77,5 +77,71 @@ describe('legacy GAS contract adapter', () => {
     expect(isTerminalStatus('skipped')).toBe(true);
     expect(isTerminalStatus('received')).toBe(false);
     expect(isTerminalStatus('processing')).toBe(false);
+  });
+});
+
+// FI-016: "서버가 거절했다"와 "답을 못 받았다"는 후속 조치가 정반대다.
+describe('upload failures separate a refusal from an unanswered request', () => {
+  const uploadConfig: RuntimeConfig = { apiUrl: 'https://api.example.test/exec', token: 'fixture-token', capturer: 'Fixture Owner' };
+  const capture: CaptureQueueItem = {
+    captureId: '20260727-190000-fixture',
+    capturedAt: '2026-07-27T10:00:00.000Z',
+    images: [{ name: 'front.jpg', mime: 'image/jpeg', dataB64: 'front-data' }],
+    state: 'queued',
+    tries: 0,
+  };
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function failureOf(fetchImpl: unknown): Promise<UploadError> {
+    vi.stubGlobal('fetch', fetchImpl);
+    return await uploadCapture(uploadConfig, capture).then(
+      () => { throw new Error('expected an upload failure'); },
+      (error: UploadError) => error,
+    );
+  }
+
+  it('treats a server refusal as rejected — nothing was stored', async () => {
+    const error = await failureOf(async () => ({ ok: true, json: async () => ({ ok: false, error: 'daily_limit' }) }));
+    expect(error.kind).toBe('rejected');
+    expect(error.reason).toBe('daily_limit');
+  });
+
+  it('treats a dropped connection as ambiguous — it may or may not have been stored', async () => {
+    const error = await failureOf(async () => { throw new TypeError('Failed to fetch'); });
+    expect(error.kind).toBe('ambiguous');
+  });
+
+  it('treats a server error status as ambiguous — the write may have half happened', async () => {
+    const error = await failureOf(async () => ({ ok: false, status: 502, json: async () => ({}) }));
+    expect(error.kind).toBe('ambiguous');
+    expect(error.reason).toBe('http_502');
+  });
+
+  it('treats an unreadable answer as ambiguous rather than assuming success', async () => {
+    const error = await failureOf(async () => ({ ok: true, json: async () => { throw new SyntaxError('bad json'); } }));
+    expect(error.kind).toBe('ambiguous');
+    expect(error.reason).toBe('unreadable_response');
+  });
+
+  it('succeeds without throwing when the server confirms', async () => {
+    vi.stubGlobal('fetch', async () => ({ ok: true, json: async () => ({ ok: true, captureId: capture.captureId }) }));
+    await expect(uploadCapture(uploadConfig, capture)).resolves.toBeUndefined();
+  });
+
+  it('reports unknown rather than empty when the capture list cannot be read', async () => {
+    vi.stubGlobal('fetch', async () => { throw new TypeError('Failed to fetch'); });
+    expect(await fetchServerCaptureIds(uploadConfig)).toBeNull();
+
+    vi.stubGlobal('fetch', async () => ({ ok: true, json: async () => ({ ok: false, error: 'invalid_token' }) }));
+    expect(await fetchServerCaptureIds(uploadConfig)).toBeNull();
+  });
+
+  it('returns the ids the server actually reported', async () => {
+    vi.stubGlobal('fetch', async () => ({
+      ok: true,
+      json: async () => ({ ok: true, items: [{ captureId: 'a' }, { captureId: 'b' }] }),
+    }));
+    expect(await fetchServerCaptureIds(uploadConfig)).toEqual(new Set(['a', 'b']));
   });
 });

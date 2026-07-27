@@ -73,13 +73,60 @@ export async function loadPersonDocument(config: RuntimeConfig, target: { id?: s
   throw new Error('missing_person_target');
 }
 
+/**
+ * 업로드 실패의 두 종류 (FI-016 / FI-021).
+ *
+ * `rejected` — 서버가 요청을 받고 명시적으로 거절했다. 서버에 아무것도 남지 않은 것이 확실하다.
+ * `ambiguous` — 응답을 못 받았다(네트워크 끊김·타임아웃·HTTP 오류·깨진 응답).
+ *   **접수됐는지 아닌지 알 수 없다.** 이 상태에서 그냥 다시 올리면 안 된다 —
+ *   서버는 같은 captureId 폴더의 `capture.json`을 덮어쓰며 `status`를 `received`로 되돌리므로,
+ *   이미 처리가 끝난 캡처가 처음부터 다시 처리된다.
+ */
+export type UploadFailureKind = 'rejected' | 'ambiguous';
+
+export class UploadError extends Error {
+  constructor(readonly kind: UploadFailureKind, readonly reason: string) {
+    super(reason);
+    this.name = 'UploadError';
+  }
+}
+
 export async function uploadCapture(config: RuntimeConfig, item: CaptureQueueItem): Promise<void> {
-  const response = await fetch(normalizedBase(config.apiUrl), {
-    method: 'POST',
-    body: JSON.stringify(toUploadPayload(item, config)),
-  });
-  const result = (await response.json()) as { ok?: boolean; error?: string };
-  if (!result.ok) throw new Error(result.error ?? 'upload_failed');
+  let response: Response;
+  try {
+    response = await fetch(normalizedBase(config.apiUrl), {
+      method: 'POST',
+      body: JSON.stringify(toUploadPayload(item, config)),
+    });
+  } catch (error) {
+    throw new UploadError('ambiguous', error instanceof Error ? error.message : 'network_failed');
+  }
+
+  // 5xx는 쓰기 도중 죽었을 수 있다 — 접수 여부를 단정하지 않는다.
+  if (!response.ok) throw new UploadError('ambiguous', `http_${response.status}`);
+
+  let result: { ok?: boolean; error?: string };
+  try {
+    result = (await response.json()) as { ok?: boolean; error?: string };
+  } catch {
+    throw new UploadError('ambiguous', 'unreadable_response');
+  }
+
+  if (!result.ok) throw new UploadError('rejected', result.error ?? 'upload_failed');
+}
+
+/**
+ * 서버가 이미 갖고 있는 captureId 집합 (FI-016 reconcile).
+ * 조회 자체가 실패하면 `null` — 그때는 판정하지 않고 재전송도 하지 않는다.
+ */
+export async function fetchServerCaptureIds(config: RuntimeConfig, limit = 100): Promise<Set<string> | null> {
+  try {
+    const response = await listBriefs(config, limit);
+    if (!response.ok) return null;
+    return new Set((response.items ?? []).map((brief) => brief.captureId));
+  } catch {
+    return null;
+  }
 }
 
 export function isTerminalStatus(status: string): boolean {

@@ -25,7 +25,7 @@ import { StatusBadge } from './components/StatusBadge';
 import { MarkdownLite } from './components/MarkdownLite';
 import { ActionSection, ContactActions, PersonDocument } from './components/PersonDocument';
 import { AiExampleChips, AiScopeNote, AiStageRail, AiSurface, AiSurfaceHead } from './components/AiTaskSurface';
-import { addPersonNote, listBriefs, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
+import { addPersonNote, fetchServerCaptureIds, listBriefs, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
 import {
   elapsedLabel,
   RECALL_SCOPE_NOTE,
@@ -376,16 +376,21 @@ function App() {
     setSending(true);
     try {
       // 탭 하나만 전송한다 — 두 탭이 동시에 올리면 같은 명함이 두 번 접수된다 (FI-053).
-      const result = await withQueueLock(() => flushQueue((item) => uploadCapture(config, item)));
+      // 응답을 못 받았던 항목은 다시 올리기 전에 서버 기록과 대조한다 (FI-016).
+      const result = await withQueueLock(() => flushQueue(
+        (item) => uploadCapture(config, item),
+        () => fetchServerCaptureIds(config),
+      ));
       if (result === null) {
         if (announce) setMessage('다른 탭에서 전송 중이라 여기서는 기다립니다 — 같은 명함을 두 번 보내지 않아요.');
         return;
       }
       await refresh().catch(() => undefined);
-      if (announce && result.attempted > 0) {
+      const reconciled = result.reconciled > 0 ? ` ${result.reconciled}건은 이미 접수돼 있어 다시 보내지 않았어요.` : '';
+      if (announce && (result.attempted > 0 || result.reconciled > 0)) {
         setMessage(result.failed > 0
-          ? `${result.sent}건 전송, ${result.failed}건은 다음 연결 때 다시 시도합니다.`
-          : `${result.sent}건을 기존 처리 대기열로 보냈습니다.`);
+          ? `${result.sent}건 전송, ${result.failed}건은 다음 연결 때 다시 시도합니다.${reconciled}`
+          : `${result.sent}건을 기존 처리 대기열로 보냈습니다.${reconciled}`);
       }
     } catch (error) {
       if (announce) setMessage(`전송 재시도 실패: ${actionErrorMessage(error)}`);
