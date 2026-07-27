@@ -53,7 +53,17 @@ import { captureProgress, refreshHint } from './services/capture-progress';
 import { contactCardFromBrief } from './services/contacts';
 import { getOpenCvWorker, prefetchOpenCv } from './services/opencv';
 import { prefetchQuickOcrAssets } from './services/paddle-quickname';
-import { flushQueue, pruneSentQueue, putQueueItem, readQueue } from './services/queue';
+import {
+  type DamagedQueueEntry,
+  flushQueue,
+  pruneSentQueue,
+  putQueueItem,
+  putQueueItemVerified,
+  QueueWriteError,
+  queueWriteMessage,
+  readQueueChecked,
+  withQueueLock,
+} from './services/queue';
 import {
   appliedClueChips,
   describeRecallQuery,
@@ -211,6 +221,14 @@ const personActionCopy = {
   },
 } as const;
 
+// 손상 사유를 사람이 읽는 말로 (FI-025).
+const damageLabels: Record<DamagedQueueEntry['damage'][number], string> = {
+  missing_id: '식별자 없음',
+  bad_state: '알 수 없는 상태',
+  no_images: '사진 목록 손상',
+  empty_payload: '사진 내용 비어 있음',
+};
+
 // boot에서 딱 한 번: 신뢰 판정 → subject namespace 결정 → 주소창 정리 (FI-004·005·006).
 // 사적 캐시를 읽는 useState 초기값보다 반드시 먼저 끝나야 한다.
 const boot = loadRuntimeConfigDetailed();
@@ -223,6 +241,7 @@ function App() {
   const [signOutOpen, setSignOutOpen] = useState(false);
   const [briefs, setBriefs] = useState<BriefItem[]>(loadCachedBriefs);
   const [queue, setQueue] = useState<CaptureQueueItem[]>([]);
+  const [damagedQueue, setDamagedQueue] = useState<DamagedQueueEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -301,8 +320,10 @@ function App() {
     setLoading(true);
     try {
       await pruneSentQueue();
-      const localQueue = await readQueue();
-      setQueue(localQueue.sort((a, b) => b.captureId.localeCompare(a.captureId)));
+      // 손상 항목은 화면·전송에서 빼되 기기에서 지우지 않는다 (FI-025).
+      const integrity = await readQueueChecked();
+      setQueue(integrity.healthy.sort((a, b) => b.captureId.localeCompare(a.captureId)));
+      setDamagedQueue(integrity.damaged);
       if (!configured) return;
       const response = await listBriefs(config, listLimit);
       if (!response.ok) throw new Error(response.error ?? 'list_failed');
@@ -344,7 +365,12 @@ function App() {
     flushingRef.current = true;
     setSending(true);
     try {
-      const result = await flushQueue((item) => uploadCapture(config, item));
+      // 탭 하나만 전송한다 — 두 탭이 동시에 올리면 같은 명함이 두 번 접수된다 (FI-053).
+      const result = await withQueueLock(() => flushQueue((item) => uploadCapture(config, item)));
+      if (result === null) {
+        if (announce) setMessage('다른 탭에서 전송 중이라 여기서는 기다립니다 — 같은 명함을 두 번 보내지 않아요.');
+        return;
+      }
       await refresh().catch(() => undefined);
       if (announce && result.attempted > 0) {
         setMessage(result.failed > 0
@@ -696,20 +722,26 @@ function App() {
       });
       // 전송 후 원본이 정리돼도 목록에 남을 104px 썸네일 (legacy thumbOf).
       item.thumb = await thumbnailOf(frontFrame.dataUrl);
-      await putQueueItem(item);
+      // 저장했다고 말하기 전에 다시 읽어 사진이 온전한지 확인한다 (FI-032).
+      // 이 확인을 통과하기 전에는 촬영 화면을 비우지 않는다 — 비우면 사진이 사라진다.
+      await putQueueItemVerified(item);
       setQueue((current) => [item, ...current].sort((a, b) => b.captureId.localeCompare(a.captureId)));
       // 즉시 초기화해서 다음 명함을 바로 찍을 수 있게 — 만난 곳·관계·조사 지시는 2시간 유지, 메모만 비운다.
       setFrontFrame(null);
       setBackFrame(null);
       setMemo('');
       resetQuickName();
+      // 기기 저장이 확인된 시점의 사실만 말한다. 서버 접수는 아직 일어나지 않았다 (FI-031).
       setMessage(configured
-        ? '업로드 시작! 다음 명함을 이어서 찍을 수 있어요'
-        : '사진을 로컬 대기열에 보관했습니다. 연결 설정 뒤 자동으로 전송합니다.');
+        ? '이 폰에 저장했어요 — 이제 폰을 넣어도 됩니다. 전송은 알아서 이어갑니다.'
+        : '이 폰에 저장했어요 — 이제 폰을 넣어도 됩니다. 연결되면 자동으로 전송합니다.');
       void contentRef.current?.scrollToTop(300);
       if (configured) void flushPendingQueue();
-    } catch {
-      setMessage('로컬 대기열에 저장하지 못했어요 — 다시 시도해 주세요.');
+    } catch (error) {
+      // 실패했을 때 촬영 화면은 그대로 남아 있다 — 다시 누르면 같은 사진으로 재시도된다.
+      setMessage(error instanceof QueueWriteError
+        ? queueWriteMessage[error.failure]
+        : queueWriteMessage.unknown);
     } finally {
       setQueueing(false);
     }
@@ -1139,6 +1171,19 @@ function App() {
     return (
       <div className="cc-stack">
         {!configured && <EmptyState title="연결 설정이 필요해요" body="받으신 개인 링크(?k=토큰 포함)로 접속하면 같은 진행 상태를 읽습니다." action="설정 열기" onAction={() => { setDraftConfig(config); setSettingsOpen(true); }} />}
+        {/* FI-025: 손상 항목을 조용히 지우지도, 큐 전체를 막게 두지도 않는다. */}
+        {damagedQueue.length > 0 && (
+          <section className="surface-card damaged-card" role="status">
+            <strong>보낼 수 없는 촬영 {damagedQueue.length}건</strong>
+            <p>기기에 저장된 기록이 온전하지 않아 전송에서 제외했어요. <b>지우지 않고 그대로 두었습니다.</b> 나머지 촬영은 정상으로 전송됩니다.</p>
+            <ul>
+              {damagedQueue.slice(0, 5).map((entry) => (
+                <li key={entry.captureId}><code>{entry.captureId}</code> <span>{entry.damage.map((reason) => damageLabels[reason]).join(' · ')}</span></li>
+              ))}
+            </ul>
+            {damagedQueue.length > 5 && <small>외 {damagedQueue.length - 5}건</small>}
+          </section>
+        )}
         <div className="records-feed">{renderFeedBody()}</div>
       </div>
     );

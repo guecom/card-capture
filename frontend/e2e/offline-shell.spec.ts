@@ -343,7 +343,8 @@ test('captures front and back with context into the legacy queue without uploadi
     await page.locator('ion-input[aria-label="Kairen과의 관계"] input').fill('잠재 고객');
     await page.locator('ion-textarea[aria-label="메모"] textarea').fill('자료 보내기');
     await page.getByRole('button', { name: '완료', exact: true }).click();
-    await expect(page.getByText('사진을 로컬 대기열에 보관했습니다. 연결 설정 뒤 자동으로 전송합니다.', { exact: false })).toBeVisible();
+    // 저장이 확인된 뒤에만, 그리고 이 기기 저장 사실만 말한다 (FI-031·032).
+    await expect(page.getByText('이 폰에 저장했어요 — 이제 폰을 넣어도 됩니다. 연결되면 자동으로 전송합니다.', { exact: false })).toBeVisible();
     await expect(page.locator('.queue-row', { hasText: '김카이렌' })).toContainText('4단계 중 1단계 · 사진 전송 중');
     const queueReceipt = await page.evaluate(async () => {
       const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {

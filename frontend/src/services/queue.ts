@@ -4,8 +4,32 @@ const DATABASE = 'cardcapture';
 const VERSION = 1;
 const STORE = 'q';
 
+/**
+ * 로컬 저장이 실패하는 **구분되는** 이유 (FI-052).
+ * 예전에는 전부 "다시 시도해 주세요"였는데, 저장 공간이 없을 때 다시 시도하는 것은 낫지 않다.
+ */
+export type QueueWriteFailure = 'quota' | 'unavailable' | 'verify' | 'unknown';
+
+export class QueueWriteError extends Error {
+  constructor(readonly failure: QueueWriteFailure, readonly detail?: unknown) {
+    super(`queue_write_${failure}`);
+    this.name = 'QueueWriteError';
+  }
+}
+
+function classifyWriteError(error: unknown): QueueWriteFailure {
+  const name = (error as { name?: string } | null)?.name ?? '';
+  if (name === 'QuotaExceededError' || name === 'NS_ERROR_DOM_QUOTA_REACHED') return 'quota';
+  if (name === 'InvalidStateError' || name === 'SecurityError' || name === 'UnknownError') return 'unavailable';
+  return 'unknown';
+}
+
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
+    if (typeof indexedDB === 'undefined' || indexedDB === null) {
+      reject(new QueueWriteError('unavailable'));
+      return;
+    }
     const request = indexedDB.open(DATABASE, VERSION);
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(STORE)) {
@@ -13,7 +37,7 @@ function openDatabase(): Promise<IDBDatabase> {
       }
     };
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error('indexeddb_open_failed'));
+    request.onerror = () => reject(new QueueWriteError('unavailable', request.error));
   });
 }
 
@@ -37,10 +61,140 @@ export async function putQueueItem(item: CaptureQueueItem): Promise<void> {
       const transaction = database.transaction(STORE, 'readwrite');
       transaction.objectStore(STORE).put(item);
       transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error ?? new Error('indexeddb_write_failed'));
+      transaction.onerror = () => reject(new QueueWriteError(classifyWriteError(transaction.error), transaction.error));
+      transaction.onabort = () => reject(new QueueWriteError(classifyWriteError(transaction.error), transaction.error));
     });
   } finally {
     database.close();
+  }
+}
+
+/** 저장된 항목이 원본과 같은 사진을 담고 있는지 (FI-032 read-back 판정 기준). */
+function storesSameImages(stored: CaptureQueueItem | undefined, item: CaptureQueueItem): boolean {
+  if (!stored || stored.captureId !== item.captureId) return false;
+  if (stored.images.length !== item.images.length) return false;
+  return item.images.every((image, index) => {
+    const persisted = stored.images[index];
+    return persisted?.name === image.name && (persisted?.dataB64?.length ?? 0) === (image.dataB64?.length ?? 0);
+  });
+}
+
+/**
+ * 쓰고 나서 **다시 읽어** 같은 사진이 들어갔는지 확인한다 (FI-032).
+ * transaction이 commit됐다는 것만으로 "폰을 넣어도 안전하다"고 말하지 않는다 —
+ * 저장 공간 압박이나 저장소 오류에서 commit 뒤 항목이 비어 있는 경우가 실제로 있다.
+ */
+export async function putQueueItemVerified(item: CaptureQueueItem): Promise<CaptureQueueItem> {
+  try {
+    await putQueueItem(item);
+  } catch (error) {
+    throw error instanceof QueueWriteError ? error : new QueueWriteError(classifyWriteError(error), error);
+  }
+
+  let stored: CaptureQueueItem | undefined;
+  try {
+    stored = (await readQueue()).find((candidate) => candidate.captureId === item.captureId);
+  } catch (error) {
+    throw new QueueWriteError('verify', error);
+  }
+  if (!storesSameImages(stored, item)) throw new QueueWriteError('verify', stored);
+  return stored as CaptureQueueItem;
+}
+
+export const queueWriteMessage: Record<QueueWriteFailure, string> = {
+  quota: '휴대폰 저장 공간이 부족해 이 촬영을 기기에 넣지 못했어요. 아직 저장되지 않았으니 화면을 닫지 마세요 — 전송이 끝난 예전 명함을 정리하거나 공간을 확보한 뒤 다시 눌러 주세요.',
+  unavailable: '이 브라우저에서 기기 저장소를 열 수 없어 촬영을 보관하지 못했어요. 아직 저장되지 않았습니다 — 시크릿 모드라면 일반 창에서 다시 열어 주세요.',
+  verify: '저장을 시도했지만 다시 읽었을 때 사진이 온전하지 않았어요. 안전하다고 말할 수 없으니 다시 촬영해 주세요.',
+  unknown: '촬영을 기기에 보관하지 못했어요. 아직 저장되지 않았으니 다시 시도해 주세요.',
+};
+
+/** 대기열 항목이 실제로 전송 가능한 상태인지 (FI-025). */
+export type QueueDamage = 'missing_id' | 'bad_state' | 'no_images' | 'empty_payload';
+
+export interface DamagedQueueEntry {
+  captureId: string;
+  damage: QueueDamage[];
+}
+
+export interface QueueIntegrity {
+  healthy: CaptureQueueItem[];
+  damaged: DamagedQueueEntry[];
+}
+
+const VALID_STATES = new Set(['queued', 'failed', 'sent']);
+
+function damageOf(value: unknown): QueueDamage[] {
+  const item = value as Partial<CaptureQueueItem> | null;
+  const damage: QueueDamage[] = [];
+  if (!item || typeof item.captureId !== 'string' || !item.captureId.trim()) damage.push('missing_id');
+  if (!item || !VALID_STATES.has(String(item.state))) damage.push('bad_state');
+  if (!item || !Array.isArray(item.images)) damage.push('no_images');
+  // 전송이 끝난 항목은 원본이 정리돼 사진이 비어 있는 것이 정상이다.
+  else if (item.state !== 'sent' && !item.images.some((image) => image?.dataB64)) damage.push('empty_payload');
+  return damage;
+}
+
+/**
+ * 손상된 항목을 **격리만** 한다 — 지우거나 고쳐 쓰지 않는다.
+ * 원본은 그대로 두고 화면과 전송 경로에서만 빼서, 한 항목이 대기열 전체를 막지 않게 한다.
+ */
+export function inspectQueueItems(items: unknown[]): QueueIntegrity {
+  const integrity: QueueIntegrity = { healthy: [], damaged: [] };
+  items.forEach((value, index) => {
+    const damage = damageOf(value);
+    if (damage.length === 0) {
+      integrity.healthy.push(value as CaptureQueueItem);
+      return;
+    }
+    const captureId = (value as { captureId?: unknown } | null)?.captureId;
+    integrity.damaged.push({ captureId: typeof captureId === 'string' && captureId ? captureId : `(식별자 없음 #${index + 1})`, damage });
+  });
+  return integrity;
+}
+
+export async function readQueueChecked(): Promise<QueueIntegrity> {
+  return inspectQueueItems(await readQueue());
+}
+
+const LOCK_NAME = 'cardcapture-queue-flush';
+const LOCK_KEY = 'cc_queue_flush_lock';
+const LOCK_TTL_MS = 60_000;
+
+/**
+ * 탭 하나만 대기열을 전송한다 (FI-053).
+ * 두 탭이 동시에 flush하면 같은 captureId가 두 번 올라가고, 한쪽의 `sent` 표시를
+ * 다른 쪽이 예전 상태로 덮어쓴다. Web Locks가 있으면 그것을, 없으면 만료가 있는
+ * localStorage lease를 쓴다.
+ */
+export async function withQueueLock<T>(run: () => Promise<T>, now = Date.now()): Promise<T | null> {
+  const locks = (globalThis.navigator as Navigator & { locks?: LockManager } | undefined)?.locks;
+  if (locks?.request) {
+    return await locks.request(LOCK_NAME, { ifAvailable: true }, async (lock) => (lock ? run() : null)) as T | null;
+  }
+
+  let held = '';
+  try {
+    const raw = localStorage.getItem(LOCK_KEY);
+    const lease = raw ? JSON.parse(raw) as { owner?: string; expiresAt?: number } : null;
+    // 만료된 lease는 크래시한 탭이 남긴 것이므로 회수한다.
+    if (lease?.expiresAt && lease.expiresAt > now) return null;
+    held = `${now}-${Math.random().toString(36).slice(2, 8)}`;
+    localStorage.setItem(LOCK_KEY, JSON.stringify({ owner: held, expiresAt: now + LOCK_TTL_MS }));
+  } catch {
+    // 저장소를 못 쓰면 잠금 없이 진행한다 — 이 탭이 유일한 탭일 가능성이 높다.
+    return run();
+  }
+
+  try {
+    return await run();
+  } finally {
+    try {
+      const raw = localStorage.getItem(LOCK_KEY);
+      const lease = raw ? JSON.parse(raw) as { owner?: string } : null;
+      if (lease?.owner === held) localStorage.removeItem(LOCK_KEY);
+    } catch {
+      // 해제 실패는 TTL이 정리한다.
+    }
   }
 }
 
@@ -50,13 +204,17 @@ export interface FlushResult {
   attempted: number;
   sent: number;
   failed: number;
+  /** 전송할 수 없어 건너뛴 손상 항목 수. 지우지 않고 남겨 둔다 (FI-025). */
+  quarantined: number;
 }
 
 export async function flushQueue(send: QueueSender): Promise<FlushResult> {
-  const items = (await readQueue())
+  const integrity = inspectQueueItems(await readQueue());
+  const items = integrity.healthy
     .filter((item) => item.state !== 'sent')
     .sort((a, b) => a.captureId.localeCompare(b.captureId));
-  const result: FlushResult = { attempted: items.length, sent: 0, failed: 0 };
+  // 손상 항목은 아무리 재시도해도 성공하지 못한다. 큐 전체를 막지 않도록 건너뛴다.
+  const result: FlushResult = { attempted: items.length, sent: 0, failed: 0, quarantined: integrity.damaged.length };
 
   for (const item of items) {
     try {

@@ -347,6 +347,17 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(35,104,216,0.34)
 .now-card li small, .now-foot { color: var(--cc-muted); font-size: 10.5px; line-height: 1.45; }
 .now-foot { padding-top: 2px; border-top: 1px solid rgba(31,143,130,0.16); }
 
+/* ── 보낼 수 없는 촬영 격리 (FI-025) — 지우지 않고 드러내기만 한다 ── */
+.damaged-card { display: grid; gap: 9px; border: 1px solid #f0d7ab; background: #fffaf0; }
+.damaged-card > strong { color: #8a5a12; font-size: 13.5px; font-weight: 780; }
+.damaged-card > p { margin: 0; color: var(--cc-muted); font-size: 12.5px; line-height: 1.6; word-break: keep-all; }
+.damaged-card b { color: var(--cc-ink); font-weight: 760; }
+.damaged-card ul { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.damaged-card li { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; font-size: 11.5px; }
+.damaged-card code { color: var(--cc-ink); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.damaged-card li span { color: #a2701f; }
+.damaged-card > small { color: var(--cc-muted); font-size: 11px; }
+
 /* ── 명함 사진과 갤러리 (ISS-000102) ── */
 .gallery-card { display: grid; gap: 12px; }
 .gallery-head { display: inline-flex; align-items: center; gap: 7px; color: var(--cc-ink); font-size: 13.5px; font-weight: 780; }
