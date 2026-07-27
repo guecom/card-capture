@@ -25,7 +25,14 @@ import { StatusBadge } from './components/StatusBadge';
 import { MarkdownLite } from './components/MarkdownLite';
 import { ActionSection, ContactActions, PersonDocument } from './components/PersonDocument';
 import { AiExampleChips, AiScopeNote, AiStageRail, AiSurface, AiSurfaceHead } from './components/AiTaskSurface';
-import { addPersonNote, fetchServerCaptureIds, listBriefs, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
+import { addPersonNote, fetchServerCaptureIds, listBriefsUpTo, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
+import {
+  contentEvidence,
+  contentLookupTargets,
+  evidenceSegments,
+  titleEvidence,
+  type SearchEvidence,
+} from './services/recall-evidence';
 import {
   elapsedLabel,
   RECALL_SCOPE_NOTE,
@@ -160,6 +167,10 @@ function queueImageSource(item: CaptureQueueItem): string {
 // 자동 새로고침 주기. 화면에 남은 시간을 그대로 보여 주므로 사용자가 주기를 알 수 있다.
 const AUTO_REFRESH_MS = 20_000;
 
+// `예전 기록 더 보기` 한 번에 늘어나는 건수. 서버 한 페이지(최대 100건)와는 별개로,
+// 화면이 요청하는 총 건수를 이만큼씩 키우고 `listBriefsUpTo`가 필요한 만큼 페이지를 이어 읽는다.
+const LIST_PAGE_STEP = 30;
+
 // 대기열 행에 보여 줄 단계 요약. 서버 응답이 아직 없으면 로컬 전송 상태만으로 계산한다.
 function queueProgressOf(item: CaptureQueueItem) {
   return captureProgress({ queue: item, elapsedMinutes: elapsedMinutesOf(item) });
@@ -265,6 +276,11 @@ function App() {
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchItem[]>([]);
+  // 검색 결과 근거 (FI-104). 서버는 `via`만 주고 어디가 맞았는지는 말하지 않는다.
+  // 제목 일치는 제목 안 매칭 구간 자체가 근거이고, 본문 일치는 문서를 읽어 주변만 잘라 온다.
+  const [searchTerm, setSearchTerm] = useState('');
+  const [searchEvidence, setSearchEvidence] = useState<Record<string, SearchEvidence | null>>({});
+  const searchRunRef = useRef(0);
   const [recentSearches, setRecentSearches] = useState<string[]>(loadRecentSearches);
   const [searchMode, setSearchMode] = useState<SearchMode>('quick');
   const [recallResult, setRecallResult] = useState<RecallResult | null>(null);
@@ -290,9 +306,16 @@ function App() {
     const flags = loadOwnerFlags();
     return flags.seeAll && flags.researchInstructionEnabled;
   });
-  const [listLimit, setListLimit] = useState(30);
+  // 화면이 서버에 요청하는 총 건수. `더 보기`를 누를 때마다 커지고 상한이 없다 —
+  // 서버 한 페이지(100건) 안에서만 움직이면 101번째부터는 앱에서 존재하지 않는 것이 된다 (FI-100).
+  const listWantedRef = useRef(LIST_PAGE_STEP);
   const [hasMoreBriefs, setHasMoreBriefs] = useState(false);
-  const [feedLimit, setFeedLimit] = useState(30);
+  const [feedLimit, setFeedLimit] = useState(LIST_PAGE_STEP);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [feedMoreStatus, setFeedMoreStatus] = useState('');
+  const loadMoreRef = useRef<HTMLButtonElement>(null);
+  const feedStatusRef = useRef<HTMLParagraphElement>(null);
+  const focusFeedStatusRef = useRef(false);
   const [expandedBriefs, setExpandedBriefs] = useState<Set<string>>(() => new Set());
   const [recordsCollapsed, setRecordsCollapsed] = useState(() => loadSectionCollapsed('briefs'));
   const [documentOpen, setDocumentOpen] = useState(false);
@@ -341,7 +364,7 @@ function App() {
   const configured = Boolean(config.apiUrl && config.token);
 
   // announce=false(배경 20초 주기·앱 복귀)는 실패를 조용히 넘긴다 — 오프라인 토스트 스팸 방지 (legacy 규칙).
-  const refresh = useCallback(async (announce = false) => {
+  const refresh = useCallback(async (announce = false): Promise<{ count: number; hasMore: boolean } | null> => {
     setLoading(true);
     try {
       await pruneSentQueue();
@@ -349,8 +372,9 @@ function App() {
       const integrity = await readQueueChecked();
       setQueue(integrity.healthy.sort((a, b) => b.captureId.localeCompare(a.captureId)));
       setDamagedQueue(integrity.damaged);
-      if (!configured) return;
-      const response = await listBriefs(config, listLimit);
+      if (!configured) return null;
+      // 화면이 요청한 건수만큼 페이지를 이어 읽는다 — 첫 페이지에서 끊으면 사각지대가 생긴다.
+      const response = await listBriefsUpTo(config, listWantedRef.current);
       if (!response.ok) throw new Error(response.error ?? 'list_failed');
       const nextBriefs = response.items ?? [];
       setBriefs(nextBriefs);
@@ -360,15 +384,17 @@ function App() {
       setOwnerCanSeeAll(seeAll);
       setResearchInstructionEnabled(seeAll && research);
       saveOwnerFlags({ seeAll, researchInstructionEnabled: research });
-      setHasMoreBriefs(response.hasMore === true);
+      const hasMore = response.hasMore === true;
+      setHasMoreBriefs(hasMore);
       setRefreshedAt(Date.now());
+      return { count: nextBriefs.length, hasMore };
     } catch (error) {
       if (announce) setMessage(`새로고침 실패: ${actionErrorMessage(error)}`);
       throw error;
     } finally {
       setLoading(false);
     }
-  }, [config, configured, listLimit]);
+  }, [config, configured]);
 
   const silentRefresh = useCallback(() => {
     void refresh().catch(() => undefined);
@@ -384,6 +410,36 @@ function App() {
       // 실패 문구는 refresh(true)가 이미 띄웠다.
     }
   }, [refresh]);
+
+  // `예전 기록 더 보기` (FI-100). 서버가 offset·hasMore로 과거 기록 전체를 줄 수 있으므로
+  // 화면도 끝까지 갈 수 있어야 한다. 무엇이 일어났는지는 낭독기에도 들리게 알린다.
+  const loadMoreBriefs = useCallback(async () => {
+    if (loadingMore) return;
+    setLoadingMore(true);
+    const before = briefs.length;
+    listWantedRef.current += LIST_PAGE_STEP;
+    setFeedLimit((current) => current + LIST_PAGE_STEP);
+    try {
+      const outcome = await refresh();
+      if (!outcome) return;
+      const added = Math.max(outcome.count - before, 0);
+      setFeedMoreStatus(outcome.hasMore
+        ? `예전 기록 ${added}건을 더 불러왔어요 · 지금까지 ${outcome.count}건`
+        : `예전 기록을 모두 불러왔어요 · 총 ${outcome.count}건`);
+      // 더 볼 것이 없으면 버튼이 사라진다 — 포커스가 문서 처음으로 튕기지 않게 안내문으로 옮긴다.
+      if (!outcome.hasMore && document.activeElement === loadMoreRef.current) focusFeedStatusRef.current = true;
+    } catch {
+      setFeedMoreStatus('예전 기록을 불러오지 못했어요 — 연결을 확인하고 다시 눌러 주세요.');
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [briefs.length, loadingMore, refresh]);
+
+  useEffect(() => {
+    if (!focusFeedStatusRef.current) return;
+    focusFeedStatusRef.current = false;
+    feedStatusRef.current?.focus();
+  }, [feedMoreStatus, hasMoreBriefs]);
 
   const flushPendingQueue = useCallback(async (announce = false) => {
     if (!configured || flushingRef.current) return;
@@ -541,15 +597,40 @@ function App() {
       ? '받으신 개인 링크(?k=토큰 포함)로 접속해 주세요. 토큰이 없으면 업로드가 거부됩니다.'
       : '';
 
+  /**
+   * 본문 일치의 근거를 뒤늦게 채운다 (FI-104). 결과는 이미 화면에 있고, 근거만 뒤따라온다.
+   * 유계 계약: 본문 일치에만, 상한 건수까지만, 하나가 실패해도 검색 결과는 그대로 둔다.
+   */
+  const loadSearchEvidence = useCallback(async (items: SearchItem[], term: string, run: number) => {
+    for (const id of contentLookupTargets(items)) {
+      if (run !== searchRunRef.current) return;
+      try {
+        const response = await loadPersonDocument(config, { id });
+        if (run !== searchRunRef.current) return;
+        if (!response.ok || !response.markdown) continue;
+        // 매칭 위치 주변만 남긴다 — 프런트매터 내부 필드·자격증명·비공개 구획은 근거에서 제외된다.
+        const evidence = contentEvidence(response.markdown, term);
+        setSearchEvidence((current) => ({ ...current, [id]: evidence }));
+      } catch {
+        // 근거를 못 읽어도 검색 결과 자체는 유지한다.
+      }
+    }
+  }, [config]);
+
   const runSearch = useCallback(async (value: string) => {
     const normalized = value.trim();
     if (!normalized || !configured || !ownerCanSeeAll) return;
+    const run = ++searchRunRef.current;
     setSearching(true);
+    setSearchEvidence({});
+    setSearchTerm(normalized);
     try {
       const response = await searchPeople(config, normalized);
       if (!response.ok) throw new Error(response.error ?? 'search_failed');
-      setSearchResults(response.items ?? []);
+      const items = response.items ?? [];
+      setSearchResults(items);
       setRecentSearches(saveRecentSearch(normalized));
+      void loadSearchEvidence(items, normalized, run);
     } catch (error) {
       const code = error instanceof Error ? error.message : '';
       setMessage(code === 'owner_only' ? '소유자 토큰만 검색할 수 있어요'
@@ -604,11 +685,14 @@ function App() {
       setRecallSyncing(true);
       setRecallStage('match');
       try {
-        const response = await listBriefs(config, 100);
+        // 목록 화면이 이미 더 많이 받아 뒀다면 그만큼 읽는다 — 여기서 100건으로 줄이면
+        // `더 보기`로 불러 온 과거 기록이 화면에서 도로 사라진다 (FI-100).
+        const response = await listBriefsUpTo(config, Math.max(listWantedRef.current, 100));
         if (!alive()) return;
         if (response.ok && response.items) {
           setBriefs(response.items);
           saveCachedBriefs(response.items);
+          setHasMoreBriefs(response.hasMore === true);
           result = runRecallSearch(response.items, text);
           setRecallResult(result);
         }
@@ -627,12 +711,20 @@ function App() {
     if (result.candidates.length === 0 && fallback && configured && ownerCanSeeAll) {
       try {
         const response = await searchPeople(config, fallback);
-        if (alive() && response.ok) setRecallServerItems(response.items ?? []);
+        if (alive() && response.ok) {
+          const items = response.items ?? [];
+          setRecallServerItems(items);
+          // 전체 기록 검색 결과에도 왜 맞았는지를 붙인다 (FI-104).
+          const evidenceRun = ++searchRunRef.current;
+          setSearchEvidence({});
+          setSearchTerm(fallback);
+          void loadSearchEvidence(items, fallback, evidenceRun);
+        }
       } catch {
         // 서버 보조 검색 실패는 회상 결과 자체를 막지 않는다.
       }
     }
-  }, [briefs, config, configured, ownerCanSeeAll]);
+  }, [briefs, config, configured, loadSearchEvidence, ownerCanSeeAll]);
 
   function submitSearch(formEvent: FormEvent) {
     formEvent.preventDefault();
@@ -1138,10 +1230,18 @@ function App() {
         {feed.length === 0 && !(loading && configured) && <p className="section-empty">아직 명함 기록이 없어요. 명함을 찍으면 여기에 쌓여요.</p>}
         {visible.map(renderFeedEntry)}
         {(feed.length > feedLimit || hasMoreBriefs) && (
-          <button className="load-more" type="button" onClick={() => { setFeedLimit((current) => current + 30); setListLimit((current) => Math.min(current + 30, 100)); }}>
-            예전 기록 더 보기
+          <button
+            className="load-more"
+            type="button"
+            ref={loadMoreRef}
+            aria-busy={loadingMore}
+            onClick={() => void loadMoreBriefs()}
+          >
+            {loadingMore ? '예전 기록 더 보기 — 불러오는 중…' : '예전 기록 더 보기'}
           </button>
         )}
+        {/* 더 보기 결과를 낭독기에 알리고, 버튼이 사라질 때 포커스를 받아 준다. */}
+        <p className="feed-more-status" role="status" tabIndex={-1} ref={feedStatusRef}>{feedMoreStatus}</p>
       </>
     );
   }
@@ -1333,13 +1433,40 @@ function App() {
     );
   }
 
+  // 근거 스니펫의 하이라이트. 이어 붙이면 원래 스니펫과 정확히 같다 — 글자를 더하거나 빼지 않는다.
+  function renderEvidenceText(evidence: SearchEvidence) {
+    return evidenceSegments(evidence).map((segment, index) => (
+      segment.marked
+        ? <mark key={`${index}-mark`}>{segment.text}</mark>
+        : <span key={`${index}-plain`} className="evidence-plain">{segment.text}</span>
+    ));
+  }
+
+  // 검색 결과 한 줄. "왜 이 사람이 나왔는지"를 함께 보여 준다 (FI-104).
+  // 제목 일치는 이름 안의 맞은 구간을 그대로 표시하고, 본문 일치는 매칭 주변 짧은 스니펫을 붙인다.
   function renderPersonSearchRow(item: SearchItem) {
     const personId = (/PER-\d{6}/.exec(item.title) ?? [null])[0];
     const displayName = item.title.replace(/^PER-\d+\s*/, '');
+    const nameEvidence = item.via === 'content' ? null : titleEvidence(displayName, searchTerm);
+    const bodyEvidence = item.via === 'content' ? searchEvidence[item.id] ?? null : null;
+    const looked = item.via === 'content' && Object.prototype.hasOwnProperty.call(searchEvidence, item.id);
     return (
       <button className="person-row" type="button" key={item.id} onClick={() => void openDocument(displayName, { id: item.id }, personId ? { person: personId } : null)}>
         <div className="avatar" aria-hidden="true">{displayName.slice(0, 1)}</div>
-        <div className="row-copy"><strong>{displayName}</strong><span>{item.title.split(' ')[0]}{item.via === 'content' ? ' · 본문 일치' : ''}</span></div>
+        <div className="row-copy">
+          <strong>{nameEvidence ? renderEvidenceText(nameEvidence) : displayName}</strong>
+          <span>{item.title.split(' ')[0]}{item.via === 'content' ? ' · 본문 일치' : ''}</span>
+          {bodyEvidence && (
+            <span className="search-evidence">
+              {bodyEvidence.leadingGap ? '…' : ''}{renderEvidenceText(bodyEvidence)}{bodyEvidence.trailingGap ? '…' : ''}
+            </span>
+          )}
+          {item.via === 'content' && !bodyEvidence && (
+            <span className="search-evidence-note">
+              {looked ? '근거로 보여 줄 수 있는 구간이 없어요 — 열어서 확인해 주세요' : '왜 맞았는지 확인하는 중…'}
+            </span>
+          )}
+        </div>
         <ChevronRight aria-hidden="true" size={18} />
       </button>
     );
