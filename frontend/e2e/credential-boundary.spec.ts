@@ -318,8 +318,16 @@ test('locks the advanced address field on a deployed host while still showing wh
     //    방어선이 아니다. 배포본에서 이 칸은 값 변경 경로 자체가 없어 화면에 거부 안내도 뜨지
     //    않는다(거부할 값이 애초에 전달되지 않는다). 거부 안내 경로는 위 `?api=` 게이트들과
     //    아래 "저장돼 있던 주소" 게이트가 따로 지킨다.
-    await apiField.evaluate((node: HTMLTextAreaElement) => { node.readOnly = false; });
-    await apiField.fill('https://attacker.invalid/exec');
+    //    주입은 **한 번의 evaluate 안에서 한꺼번에** 한다. `readOnly`를 벗기는 호출과 값을 넣는
+    //    호출을 나누면 그 사이에 React가 `readonly`를 다시 붙여 값이 들어가지 않는다 — 앱이 옳게
+    //    동작하는 것이고, 갈라 놓은 테스트가 부하에 따라 실패하던 원인이었다(릴리즈마다 재현).
+    //    같은 tick 안에서 값까지 밀어 넣으면 경합이 없고, `fill()`보다 오히려 더 거친 주입이다.
+    await apiField.evaluate((node: HTMLTextAreaElement) => {
+      node.readOnly = false;
+      node.value = 'https://attacker.invalid/exec';
+      node.dispatchEvent(new Event('input', { bubbles: true }));
+      node.dispatchEvent(new Event('change', { bubbles: true }));
+    });
     await expect(apiField).toHaveValue('https://attacker.invalid/exec');
     await page.getByRole('button', { name: '설정 저장' }).click();
     await expect(page.getByRole('button', { name: '설정 저장' })).toBeHidden();

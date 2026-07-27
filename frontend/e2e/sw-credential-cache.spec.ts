@@ -146,18 +146,24 @@ test('keeps the personal link code out of root service-worker cache keys', async
     // 기다림을 넣으면 경합이 사라질 뿐 아니라 **주소창 정리가 실제로 끝났음**까지 함께 증명한다.
     await page.waitForFunction(() => !new URL(location.href).searchParams.has('k'), undefined, { timeout: 20_000 });
 
-    // 코드를 실은 주소는 착지 직후 그 페이지가 주소창을 정리한다(legacy.html · url-credentials.ts).
-    // 그 정리는 same-document `replaceState`인데 Playwright는 navigation으로 세서, `domcontentloaded`를
-    // 기다리는 `goto`를 끊는다(ERR_ABORTED). 이 게이트의 실제 동기화 지점은 아래 SW controller 대기와
-    // `settleCacheWrites`이므로 `commit`까지만 기다린다 — 그러면 경합이 성립하지 않는다.
     // 2) legacy 링크 형태: …/legacy.html?api=…&k=CODE
-    await page.goto(`${origin}legacy.html?api=${encodeURIComponent(FAKE_API)}&k=${FAKE_LINK_CODE}`, { waitUntil: 'commit' });
-    await page.waitForFunction(() => navigator.serviceWorker.controller !== null, undefined, { timeout: 20_000 });
+    //
+    // **같은 탭에서 이어서 열지 않는다.** 코드를 실은 주소는 착지 직후 그 페이지가 주소창을
+    // 정리하고(legacy.html · url-credentials.ts), 그 정리는 same-document `replaceState`인데
+    // Playwright는 이것도 navigation으로 센다. 앞 페이지에서 이어 `goto`하면 그 goto가
+    // 끊긴다(`interrupted by another navigation` / `ERR_ABORTED`) — `waitUntil`을 낮춰도
+    // commit 이전에 취소되므로 근본적으로 못 피한다. 앱은 정상이고 경합은 테스트 쪽에 있다.
+    //
+    // Cache Storage는 origin 단위라 새 탭에서 열어도 이 게이트가 보는 대상은 완전히 같다.
+    // 오히려 "나중에 legacy 링크로 다시 들어온 방문"이라는 실제 사용 흐름에 더 가깝다.
+    const legacyPage = await page.context().newPage();
+    await legacyPage.goto(`${origin}legacy.html?api=${encodeURIComponent(FAKE_API)}&k=${FAKE_LINK_CODE}`, { waitUntil: 'domcontentloaded' });
+    await legacyPage.waitForFunction(() => navigator.serviceWorker.controller !== null, undefined, { timeout: 20_000 });
 
     // 캐시 쓰기가 정착할 때까지 기다린다 — 링크 코드를 실은 probe라 수정 전에는 이 키 자체가 증거다.
-    await settleCacheWrites(page, `cache-settle-probe?k=${FAKE_LINK_CODE}`, '/cache-settle-probe');
+    await settleCacheWrites(legacyPage, `cache-settle-probe?k=${FAKE_LINK_CODE}`, '/cache-settle-probe');
 
-    const entries = await readCacheEntries(page);
+    const entries = await readCacheEntries(legacyPage);
     expect(entries.length, 'Cache Storage가 비어 있으면 이 게이트는 아무것도 증명하지 못한다').toBeGreaterThan(0);
     expect(
       entriesWithLinkCode(entries, FAKE_LINK_CODE),
