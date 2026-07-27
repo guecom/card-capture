@@ -41,6 +41,22 @@ release 기록은 이 파일 하단 "Verified Baselines"에 최신이 위로 오
 
 ## Verified Baselines
 
+### v2.3.0 @ `85254a059886d827e490c2e6e28d9b200f809616` — 검증 2026-07-27 (agent:kairen.claude, Kairen-Ref: TSK-000273)
+
+- repository: annotated tag `v2.3.0` → squash merge commit `85254a059886d827e490c2e6e28d9b200f809616` (`main`에 포함). 이 release가 담은 merge는 PR #34 하나다.
+- human gate: founder가 세션에서 `순차적으로 개발 진행. 내 승인 없이 그냥 쭉 진행. 결정 필요사항이 있는 경우 너의 추천대로 진행. 적절한 시점마다 merge 및 릴리즈`로 구현·PR merge·release tag·Pages 반영을 사전 승인함. **Script Properties·token·credential 변경과 GAS 재배포는 이 승인 범위에서 제외**했고, 실제로도 필요하지 않았다.
+- CI: GitHub Actions `validate` run `30235225046` SUCCESS. 같은 head에서 unit 215 PASS, TypeScript/Vite production build PASS, Playwright 52 PASS, repository validator fail=0 warn=0.
+- Pages: build source `main:/docs`, build commit `85254a059886d827e490c2e6e28d9b200f809616`, status `built`. live와 commit blob이 exact-match — `docs/index.html` sha256 `0b491c9253fc2058a88232403667363115e600ff4807f6997734af9bf76cfe16`; `docs/sw.js` `85e9a4de8ea093cf8134a2866c7757214c8c2f6846b60a551e3bd2222c459e7f`; `docs/legacy.html` `d1b370a9ab8ae8c8d51b10a6136487cec57c7cd798a43e45ecf9a8e02dd52ab5`; `docs/next/index.html` `7318344b839af537c01c3819c9cd4b6d6cf3574936a79a21032148ebc72a2b09`; active JS `assets/index-CTRDAOhL.js` `8afed4ac9110b6fc11ec954fb303b17e93c5b824f214c4451ae4e56e6c7344c7`; active CSS `assets/index-CURCMqBP.css` `b68968a12c12938d59b97f0d848a7596b5197392ce9694cee1bfdf491cec7d03`. (비교는 working tree가 아니라 commit blob 기준이다 — Windows 체크아웃의 CRLF 변환이 파일 해시를 바꾼다.)
+- GAS deployment: **변경 없음.** `Code.gs`는 v2.0.0(`c9036b3`) 이후 바뀌지 않았다(`git diff --quiet v2.2.0 85254a0 -- Code.gs`). Apps Script 재배포가 필요하지 않고 실행하지 않았다. live deployment는 v2.0.0에서 배포한 version 5 그대로다.
+- GAS live probe: 2026-07-27 12:46 KST `ping` → `{"ok":true,"service":"card-capture"}`; invalid token `whoami`·`list` → `invalid_token`; unknown action → `unknown_action`. **유효 token은 사용하지 않았다.**
+- watcher: **재기동하지 않았다.** 이 release는 `watcher/`를 건드리지 않았다(`git diff --quiet v2.2.0 85254a0 -- watcher/`). 실행 중 PID `34896`.
+- processing contract: vault `01_Company/00_Company_Operations/05_Tools_and_Systems/CardCapture_Processing.md`를 변경 없이 사용함. `MVP build/testability gate comes before customer proof.`
+- 이 release가 새로 닫은 Feature Index slice: `FI-016`(응답 유실 뒤 서버 대조 후에만 재전송), `FI-021` 일부(업로드 실패를 `rejected`/`ambiguous`로 분류).
+- **드러난 서버 측 미결 사항**: `Code.gs`의 업로드 경로는 `captureId` 폴더를 upsert하고 `capture.json`을 `status: 'received'`로 덮어쓴다. 지금은 **클라이언트가 재전송하지 않게** 막았을 뿐, 서버 자체의 idempotency(`FI-010`)와 lifecycle monotonicity(`FI-015`)는 없다. `Code.gs` lane에서 함께 다뤄야 한다.
+- 병렬 작업: 구현 중 다른 세션이 PR #33·#35를 merge하고 v2.2.0을 릴리즈했다. 그 위로 rebase하고 `docs/next`를 재빌드했으며, 위 52 PASS에는 v2.2.0의 다크 모드·하단 바 게이트가 모두 포함된다.
+- rollback: Pages는 `legacy.html` 또는 PR #34 `git revert` 하나. GAS·watcher·데이터 rollback은 이 release 범위에 없다.
+- **남은 human gate**: founder actual-phone acceptance (`V7` = `NOT RUN — HUMAN/EXTERNAL`). merge와 Pages 반영을 actual-phone PASS나 customer proof로 승격하지 않는다.
+
 ### v2.2.0 @ `76ce78c8940a22e7cc69e64cea592517110f9426` — 검증 2026-07-27 (agent:kairen.claude, Kairen-Ref: INT-000016, TSK-000272)
 
 - repository: annotated tag `v2.2.0` → squash merge commit `76ce78c8940a22e7cc69e64cea592517110f9426` (`main`에 포함). 이 release가 담은 merge는 PR #33 하나이고, PR의 exact head는 `9083e483eacc4965580488b7f9d8cf44c09ec86a`다.
