@@ -1022,7 +1022,7 @@ function App() {
                     (founder 판정 2026-07-27: "글쓰기 박스인지 구별이 안돼는 등 총체적 난국"). */}
                 <div className="context-field">
                   <span className="context-label">어디서 만났나요?</span>
-                  <IonInput aria-label="어디서 만났나요?" placeholder="예: 2026 스마트팩토리전 부스 (직접 적어도 돼요)" value={event} onIonInput={(inputEvent) => setEvent(String(inputEvent.detail.value ?? ''))} />
+                  <IonInput aria-label="어디서 만났나요?" placeholder="예: 2026 스마트팩토리전 부스" value={event} onIonInput={(inputEvent) => setEvent(String(inputEvent.detail.value ?? ''))} />
                   <div className="context-chips" role="group" aria-label="만난 상황 예시">
                     {eventChips.map((chip) => (
                       <button key={chip} type="button" className={event === chip ? 'on' : ''} onClick={() => setEvent(toggleChipValue(event, chip))}>{chip}</button>
