@@ -1,6 +1,6 @@
 # Card Capture Regression Eval
 
-Kairen-Ref: `TSK-000143` (extraction·enrichment regression), `TSK-000153` (untrusted 입력 방어), `TSK-000161` (처리 상태 정합성), `TSK-000218` (owner 조사 지시)
+Kairen-Ref: `TSK-000143` (extraction·enrichment regression), `TSK-000153` (untrusted 입력 방어), `TSK-000161` (처리 상태 정합성), `TSK-000218` (owner 조사 지시), `TSK-000283` (업로드 내용·MIME 실검증)
 
 MVP build/testability gate comes before customer proof.
 
@@ -37,6 +37,7 @@ node eval\page-syntax.test.js
 node eval\server-syntax.test.js
 node eval\golden-capture.test.js
 node eval\adversarial-capture.test.js
+node eval\upload-content-type.test.js
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\validate.ps1
 ```
 
@@ -49,7 +50,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\validate.ps1
 - `golden-capture.test.js` — `fixtures/*.json` 전부를 업로드 → `capture.json` receipt → 처리 마감 형태 → 목록 재조회까지 한 번에 고정한다. receipt의 정확한 key 집합과 값, 서버 소유 필드(`capturer`·`status`·`person`·`personAction`·`processedAt`·`contact`·`type`·`files`·`uploadFingerprint`)의 클라이언트 위조 차단, 명함·메모 원문 보존, 계약대로 쓴 마감 receipt의 terminal 인정, list API의 `contact`·`brief` 통과, 촬영자 scope를 검사한다. corpus 정합성(기대값이 합성 출처에 실제로 있는지, `allowed_unknown`과 모순되지 않는지, secret 유사 문자열이 없는지)도 같이 본다. fixture가 10개 미만이면 실패한다 — corpus를 지워서 green을 만들 수 없다.
 - `adversarial-capture.test.js` — 부정 corpus 17 케이스. 망가진 본문·이미지 없음·`images` 비배열·base64 파괴·8MB 초과·부분 실패는 **처리 가능한 산출물을 남기지 않는다**. captureId·파일 이름으로 경로를 벗어날 수 없고, `quickName`은 신뢰 입력이 아니며, Drive 중복 receipt는 최신본이 진실이고 최신본이 깨졌으면 상태를 지어내지 않는다. 업로드·requeue·correction·addnote·notify·researchinstruction **모든** 변경 경로가 남의 캡처를 거절하고 바이트를 바꾸지 않으며(본인 성공 대조군 포함), 알림 메일은 처리 완료 캡처에만 1통 나가고 본문에 메모·토큰이 없다.
 
-두 게이트는 각각 0.1초 안에 끝나고 파일을 쓰지 않는다(`.work/` 미사용).
+- `upload-content-type.test.js` — 업로드된 **바이트**가 실제로 계약된 이미지인가(FI-012 나머지). 파일 상단 `MAGIC_BYTE_ENFORCED` 상수가 두 모드를 가른다. `false`(현재 기본값)에서는 "서버가 이 바이트를 받아들인다"는 **관찰된 현재 사실**을 단언해 CI를 green으로 유지하고 결함 대장 역할을 한다. `true`에서는 PNG·GIF·PDF·ZIP·순수 텍스트·SVG·HTML·WebP·폴리글롯 corpus가 전부 `bad_image_content`로 거절되고 Drive MIME을 서버가 소유해야 한다 — 지금 `Code.gs`에서는 FAIL하며, 그 FAIL이 결함이 실재한다는 증명이다. **서버가 magic-byte/MIME 실검증을 얻으면 `false` 쪽 단언들이 깨진다. 그때 단언을 완화하지 말고 상수를 `true`로 뒤집어라.** 같은 파일이 이미 성립하는 방어(슬롯 allowlist·중복 슬롯·크기 상한·base64 실패·빈 바이트)를 게이트로 고정하고, `Code.gs` **메모리 사본**을 일부러 깨는 회귀 주입 4건으로 그 게이트가 형식적이지 않음을 매 실행마다 확인한다. `proposed-patch-rehearsal` 케이스는 다음 배포 사이클에 들어갈 패치의 정확한 텍스트를 들고 있고, 그 패치가 corpus를 실제로 막고 정상 JPEG·기존 방어를 깨지 않는지 예행한다. 디스크의 `Code.gs`는 어느 경로에서도 수정되지 않는다.
+
+세 게이트는 각각 0.2초 안에 끝나고 파일을 쓰지 않는다(`.work/` 미사용).
 
 ## 조사 지시 Fixture (`research-fixtures/*.json`)
 

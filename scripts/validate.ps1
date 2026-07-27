@@ -23,8 +23,8 @@ $required = @(
   'docs/vendor/tesseract/kor.traineddata.gz','docs/vendor/tesseract/eng.traineddata.gz','docs/vendor/tesseract/README.md',
   'docs/vendor/paddleocr/PP-OCRv5_mobile_det_infer.onnx','docs/vendor/paddleocr/korean_PP-OCRv5_mobile_rec_infer.onnx',
   'docs/vendor/paddleocr/ppocrv5_korean_dict.txt','docs/vendor/ort/ort-wasm-simd-threaded.wasm','docs/vendor/ort/ort-wasm-simd-threaded.mjs',
-  'watcher/CardCapture_Watcher.ps1','watcher/CardCapture_Health.ps1','watcher/tests/watcher-tests.ps1','watcher/tests/watcher-protocol-tests.ps1',
-  'eval/README.md','eval/run-eval.ps1','eval/upload-idempotency.test.js','eval/upload-filename-allowlist.test.js','eval/gas-sandbox.js','eval/golden-capture.test.js','eval/adversarial-capture.test.js','eval/camera-quality.test.js','eval/page-syntax.test.js','eval/server-syntax.test.js','eval/ocr-browser-smoke.html','scripts/validate.ps1'
+  'watcher/CardCapture_Watcher.ps1','watcher/CardCapture_Health.ps1','watcher/tests/watcher-tests.ps1','watcher/tests/watcher-protocol-tests.ps1','watcher/tests/health-tests.ps1',
+  'eval/README.md','eval/run-eval.ps1','eval/upload-idempotency.test.js','eval/upload-filename-allowlist.test.js','eval/upload-content-type.test.js','eval/gas-sandbox.js','eval/golden-capture.test.js','eval/adversarial-capture.test.js','eval/camera-quality.test.js','eval/page-syntax.test.js','eval/server-syntax.test.js','eval/ocr-browser-smoke.html','scripts/validate.ps1'
 )
 $missing = @($required | Where-Object { -not (Test-Path (Join-Path $root $_)) })
 if ($missing.Count -gt 0) { Fail ("required files missing: " + ($missing -join ', ')) } else { Pass 'required files present' }
@@ -138,6 +138,8 @@ if ($null -eq $node) {
   if ($LASTEXITCODE -ne 0) { Fail 'golden capture suite failed' } else { Pass 'golden capture deterministic tests passed' }
   & $node.Source (Join-Path $root 'eval\adversarial-capture.test.js')
   if ($LASTEXITCODE -ne 0) { Fail 'adversarial capture corpus failed' } else { Pass 'adversarial capture negative corpus passed' }
+  & $node.Source (Join-Path $root 'eval\upload-content-type.test.js')
+  if ($LASTEXITCODE -ne 0) { Fail 'upload content-type / magic-byte gate failed' } else { Pass 'upload content-type deterministic tests passed' }
 }
 
 # ---------- 8. pinned on-device OCR assets ----------
@@ -162,6 +164,11 @@ foreach ($rel in $ocrHashes.Keys) {
   if ($actual -ne $ocrHashes[$rel]) { $badOcrHash += "$rel hash mismatch" }
 }
 if ($badOcrHash.Count -gt 0) { $badOcrHash | ForEach-Object { Fail "ocr-asset: $_" } } else { Pass 'pinned OCR asset hashes match' }
+
+# ---------- 9. watcher health dashboard ----------
+# 반드시 -File 로 호출한다 — identity 게이트가 실행 프로세스 자신의 command line을 읽는다.
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'watcher\tests\health-tests.ps1') | Out-Null
+if ($LASTEXITCODE -ne 0) { Fail 'watcher health dashboard tests failed' } else { Pass 'watcher health dashboard deterministic tests passed' }
 
 # ---------- summary ----------
 Write-Host ''

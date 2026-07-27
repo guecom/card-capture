@@ -241,6 +241,18 @@ ion-toolbar {
 .row-copy span { overflow: hidden; color: var(--cc-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .row-copy small { color: var(--cc-danger); font-size: 10px; line-height: 1.35; }
 
+/* FI-104 검색 근거: 매칭 주변 짧은 구간만 보여 준다. 한 줄 요약과 달리 줄바꿈이 필요하다. */
+.row-copy .search-evidence, .row-copy .search-evidence-note { overflow: hidden; margin-top: 2px; color: var(--cc-muted); font-size: 11px; line-height: 1.45; text-overflow: clip; white-space: normal; word-break: break-word; }
+.row-copy .search-evidence { padding-left: 8px; border-left: 2px solid var(--cc-line); }
+.row-copy .search-evidence-note { color: rgba(102,117,138,0.85); font-size: 10px; }
+.person-row mark { padding: 0 1px; border-radius: 4px; background: rgba(35,104,216,0.16); color: var(--cc-blue-ink); font-weight: 700; }
+.person-row .evidence-plain { display: inline; overflow: visible; font-size: inherit; text-overflow: clip; white-space: inherit; }
+
+/* FI-100 `더 보기` 안내. 낭독기용 live region이자, 버튼이 사라질 때 포커스를 받는 자리다. */
+.feed-more-status { margin: 0; color: var(--cc-muted); font-size: 11px; line-height: 1.45; text-align: center; word-break: keep-all; }
+.feed-more-status:empty { display: none; }
+.feed-more-status:focus-visible { border-radius: 8px; outline: 2px solid var(--cc-blue); outline-offset: 3px; }
+
 .queue-surface { display: grid; gap: 14px; }
 .queue-list { display: grid; gap: 9px; }
 .queue-row { display: flex; min-height: 66px; align-items: center; gap: 11px; padding: 10px; border: 1px solid var(--cc-line); border-radius: 16px; background: var(--cc-soft); }
