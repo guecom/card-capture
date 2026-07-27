@@ -41,6 +41,20 @@ release 기록은 이 파일 하단 "Verified Baselines"에 최신이 위로 오
 
 ## Verified Baselines
 
+### v2.1.0 @ `6bcb664803db04ac7770574acc31c882e1a18f4b` — 검증 2026-07-27 (agent:kairen.claude, Kairen-Ref: TSK-000269, TSK-000270, TSK-000271)
+
+- repository: annotated tag `v2.1.0` → merge commit `6bcb664803db04ac7770574acc31c882e1a18f4b` (`main`에 포함). 이 release가 담은 merge는 PR #29 `f591b79`, PR #30 `e1e8ea5`, PR #31 `6bcb664`이며, v2.0.0 이후 누적된 PR #19~#28도 함께 처음 릴리즈된다.
+- human gate: founder가 세션에서 `내 승인 없이(글에 승인 받으라고 했음에도 불구하고) 그냥 쭉 해서 머지 및 릴리즈까지 해줬으면 좋겠어`로 PR merge·release tag·Pages 반영을 사전 승인함. **Script Properties·token·credential 변경과 GAS 재배포는 이 승인 범위에서 제외**했고, 실제로도 필요하지 않았다(아래 참조).
+- CI: GitHub Actions `validate` SUCCESS — PR #29 run `30231826796`, PR #30 run `30233443826`, PR #31 run `30233827541`. 최종 head 기준 unit 197 PASS, TypeScript/Vite production build PASS, Playwright 43 PASS, repository validator fail=0 warn=0.
+- Pages: build source `main:/docs`, status `built`. live와 commit 콘텐츠가 exact-match — `docs/index.html` sha256 `0b491c9253fc2058a88232403667363115e600ff4807f6997734af9bf76cfe16`; `docs/sw.js` `85e9a4de8ea093cf8134a2866c7757214c8c2f6846b60a551e3bd2222c459e7f`; `docs/legacy.html` `d1b370a9ab8ae8c8d51b10a6136487cec57c7cd798a43e45ecf9a8e02dd52ab5`; `docs/next/index.html` `1b71e099a5ed602932a1a32d38e9527c8a13f28eb41c7620ad146dd9b7b22ead`; active JS `assets/index-BuaW3bsz.js` `5e8a9d4d1c0da998b59d0400e326a43640a5616596f32e569580697ebf9ab522`.
+- GAS deployment: **변경 없음.** `Code.gs`는 v2.0.0(`c9036b3`) 이후 한 줄도 바뀌지 않았다(`git diff --quiet v2.0.0 6bcb664 -- Code.gs`). 따라서 이 release에 Apps Script 재배포가 필요하지 않고, 실행하지 않았다. live deployment는 v2.0.0에서 배포한 version 5 그대로다.
+- GAS live probe: 2026-07-27 12:04 KST `ping` → `{"ok":true,"service":"card-capture"}`; invalid token `whoami`·`list` → `invalid_token`; unknown action → `unknown_action`. **유효 token은 사용하지 않았다** — 운영 데이터 쓰기와 token 노출을 피하기 위함이며, owner-token 실동작은 다음 실제 폰 사용이 담당한다.
+- watcher: **재기동하지 않았다.** 실행 중 PID `34896`(2026-07-27 10:06 시작), 스크립트 경로 `card-capture/watcher/CardCapture_Watcher.ps1`. 이 release의 세 PR은 `watcher/`를 건드리지 않았고, 실행 중 워처가 로드한 스크립트(`8de6316`)와 release commit의 워처 스크립트가 **바이트 동일**함을 확인했다.
+- processing contract: vault `01_Company/00_Company_Operations/05_Tools_and_Systems/CardCapture_Processing.md`를 변경 없이 사용함. `MVP build/testability gate comes before customer proof.`
+- 이 release가 새로 닫은 Feature Index slice: `FI-004`·`FI-005`·`FI-006`·`FI-007`(credential 전송 경계와 기기 내 subject 격리), `FI-025`·`FI-031`·`FI-032`·`FI-052`·`FI-053`(촬영 저장 진실과 대기열 무결성), `FI-164`(좁은 화면·접근성 회귀 게이트).
+- rollback: Pages는 `legacy.html` 또는 해당 PR `git revert`(각 PR이 revert 하나로 되돌아간다). GAS·watcher·데이터 rollback은 이 release 범위에 없다.
+- **남은 human gate**: founder actual-phone acceptance. 이 release의 machine evidence는 `V0`~`V6` 수준이며, `V7`(실기기·실사용)은 `NOT RUN — HUMAN/EXTERNAL`이다. merge와 Pages 반영을 actual-phone PASS나 customer proof로 승격하지 않는다.
+
 ### v2.0.0 @ `c9036b3982adf5fbb5fdf108aca3656dc56b3ffd` — 검증 2026-07-26 (Codex, Kairen-Ref: TSK-000221)
 
 - repository: annotated tag `v2.0.0` → merge commit `c9036b3982adf5fbb5fdf108aca3656dc56b3ffd`; PR #8의 exact head는 `b2343d4afc814bff31d72c6b12618c7e7292bbf7`이고 `main`에 포함됨.
