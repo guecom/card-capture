@@ -41,6 +41,21 @@ release 기록은 이 파일 하단 "Verified Baselines"에 최신이 위로 오
 
 ## Verified Baselines
 
+### v2.2.0 @ `76ce78c8940a22e7cc69e64cea592517110f9426` — 검증 2026-07-27 (agent:kairen.claude, Kairen-Ref: INT-000016, TSK-000272)
+
+- repository: annotated tag `v2.2.0` → squash merge commit `76ce78c8940a22e7cc69e64cea592517110f9426` (`main`에 포함). 이 release가 담은 merge는 PR #33 하나이고, PR의 exact head는 `9083e483eacc4965580488b7f9d8cf44c09ec86a`다.
+- human gate: founder가 세션에서 `이거 보고 merge 및 release해줘` → `내 말은 개발하고 merge, release까지 해달라는거 였어`로 구현·PR merge·release tag·Pages 반영을 사전 승인함. **Script Properties·token·credential 변경과 GAS 재배포는 이 승인 범위에서 제외**했고, 실제로도 필요하지 않았다.
+- CI: GitHub Actions `validate` run `30234506135` SUCCESS, exact head `9083e48`. 같은 head에서 unit 202 PASS, TypeScript/Vite production build PASS, Playwright 50 PASS(기존 43 + INT-000016 신규 7), repository validator fail=0 warn=0.
+- Pages: build source `main:/docs`, build commit `76ce78c8940a22e7cc69e64cea592517110f9426`, status `built`. live와 commit 콘텐츠가 exact-match — `docs/index.html` sha256 `0b491c9253fc2058a88232403667363115e600ff4807f6997734af9bf76cfe16`; `docs/sw.js` `85e9a4de8ea093cf8134a2866c7757214c8c2f6846b60a551e3bd2222c459e7f`; `docs/legacy.html` `d1b370a9ab8ae8c8d51b10a6136487cec57c7cd798a43e45ecf9a8e02dd52ab5`; `docs/next/index.html` `e98e0fc7c8a05a793fa986187fc9178df99dc962e37946eac2a0e5372a401852`; active JS `assets/index-CFg5TftA.js` `33ccfea66e9752d080430b43fe853a43fc2cd5ac64b9adec37be805bfccc5555`; active CSS `assets/index-CURCMqBP.css` `b68968a12c12938d59b97f0d848a7596b5197392ce9694cee1bfdf491cec7d03`. (비교는 working tree가 아니라 commit blob 기준이다 — Windows 체크아웃의 CRLF 변환이 파일 해시를 바꾼다.)
+- Pages behavior: live `https://guecom.github.io/card-capture/next/`에서 `--cc-app-height`가 `100dvh`, `--cc-safe-bottom`이 고정 `0px`로 계산되고, 설정의 `화면 테마`에서 `다크`를 고르면 `data-theme="dark"` · 배경 `rgb(15,21,30)` · `theme-color` `#111823`으로 즉시 바뀌며 선택값이 저장되는 것을 확인함. 표시된 빌드 식별자는 `2026-07-27 03:22Z`다.
+- GAS deployment: **변경 없음.** `Code.gs`는 v2.0.0(`c9036b3`) 이후 바뀌지 않았다(`git diff --quiet v2.1.0 76ce78c -- Code.gs`). Apps Script 재배포가 필요하지 않고 실행하지 않았다. live deployment는 v2.0.0에서 배포한 version 5 그대로다.
+- GAS live probe: 2026-07-27 12:30 KST `ping` → `{"ok":true,"service":"card-capture"}`; invalid token `whoami`·`list` → `invalid_token`; unknown action → `unknown_action`. **유효 token은 사용하지 않았다** — 운영 데이터 쓰기와 token 노출을 피하기 위함이며, owner-token 실동작은 다음 실제 폰 사용이 담당한다.
+- watcher: **재기동하지 않았다.** 실행 중 PID `34896`(2026-07-27 10:06 시작), 스크립트 경로 `card-capture/watcher/CardCapture_Watcher.ps1`. 이 release는 `watcher/`를 건드리지 않았고(`git diff --quiet v2.1.0 76ce78c -- watcher/`), 실행 중 워처가 로드한 스크립트와 release commit의 워처 스크립트가 EOL 정규화 기준 sha256 `5b689d1d43c865af3276e51a6ab178e53cdcde2d01c5725829056ba203557e0d`으로 동일함을 확인했다.
+- processing contract: vault `01_Company/00_Company_Operations/05_Tools_and_Systems/CardCapture_Processing.md`를 변경 없이 사용함. `MVP build/testability gate comes before customer proof.`
+- 병렬 작업: 구현 중 PR #30·#31·#32가 `main`에 들어와 그 위로 rebase하고 `docs/next`를 재빌드했다. 위 50 PASS에는 #30의 queue-truth 게이트와 #31의 접근성 게이트가 모두 포함된다.
+- **남은 human gate**: founder actual-phone acceptance. 특히 **하단 탭 바 항목의 최종 판정은 실제 폰이다** — headless Chrome에는 접히는 주소창이 없어, CI가 잠근 것은 원인 조건(껍데기 높이·여백 고정·스크롤 불변)이지 현상 재현이 아니다. merge와 Pages 반영을 actual-phone PASS나 customer proof로 승격하지 않는다.
+- rollback: Pages는 `legacy.html` 또는 PR #33 `git revert` 하나. GAS·watcher·데이터 rollback은 이 release 범위에 없다.
+
 ### v2.1.0 @ `6bcb664803db04ac7770574acc31c882e1a18f4b` — 검증 2026-07-27 (agent:kairen.claude, Kairen-Ref: TSK-000269, TSK-000270, TSK-000271)
 
 - repository: annotated tag `v2.1.0` → merge commit `6bcb664803db04ac7770574acc31c882e1a18f4b` (`main`에 포함). 이 release가 담은 merge는 PR #29 `f591b79`, PR #30 `e1e8ea5`, PR #31 `6bcb664`이며, v2.0.0 이후 누적된 PR #19~#28도 함께 처음 릴리즈된다.
