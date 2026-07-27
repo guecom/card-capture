@@ -42,6 +42,20 @@ release 기록은 이 파일 하단 "Verified Baselines"에 최신이 위로 오
 
 ## Verified Baselines
 
+### v2.15.0 @ `49017d2` — 검증 2026-07-28 (agent:kairen.claude, Kairen-Ref: TSK-000326 / ISS-000129) — **Code.gs 무변경**
+
+- repository: annotated tag `v2.15.0` → merge commit `49017d2`(main). 담은 merge는 PR #58(움직임 설정·서체)·#59(Kairen-Ref 정정·캐시 게이트 안정화)·#60(버전 확정)이다.
+- human gate: founder가 2026-07-28 세션에서 실기기 캡처와 함께 두 항목을 지시하고 `PR, Merge, Release`를 승인했다. **Apps Script 재배포·워처 재기동은 승인 범위 밖이며 이 릴리즈에 필요하지도 않다.**
+- CI: `validate` SUCCESS — run `30297004229`(release PR), `30296480719`(기능 PR, **첫 시도 통과**). unit 311 PASS, Playwright 97 PASS, repository validator `fail=0 warn=0`.
+- Pages: **live와 commit blob이 exact-match** — `docs/index.html` `0b491c9253fc2058…`, `docs/sw.js` `f171a6c6190a541a…`, `docs/next/index.html` `69792e702eb6a07e…`, `docs/next/sw.js` `0f3fa9393759784c…`, `docs/legacy.html` `e1a3a46c4b79639f…`.
+- 이번 변경이 실제로 나갔는지는 **배포본을 열어** 확인했다(정적 해시만으로는 동작을 증명하지 못한다):
+  - 폰이 움직임을 줄이지 않는 상태 → `data-motion="on"`, 줄이는 상태 → `data-motion="off"`. 두 경우 모두 서체 `Pretendard Variable`이 `loaded`.
+  - 설정 화면이 멈춘 이유를 문장으로 말한다("이 폰이 움직임 최소화를 켜 두어서 …").
+  - 서체 자산 `next/assets/pretendard-variable-korean-DXHPKs4Y.woff2`(sha256 `58f28b6566154838…`)가 live에서 200으로 응답한다. **SHELL에는 없다** — 의도된 제외이고, 못 받으면 시스템 서체로 그려질 뿐이다.
+- **GAS deployment: 해당 없음.** `Code.gs` 무변경. Watcher: 무변경.
+- 실기기 판정: **미완료.** 이번 1번 항목은 founder의 폰이 실제로 움직임 최소화를 켜고 있는지에 따라 체감이 갈린다 — 설정의 `화면 움직임` 카드가 그 답을 바로 보여 준다.
+- 정직한 경계: 이 저장소 e2e는 부하에 따라 간헐 실패하는 성질이 있다. `main`에서 전체 스윕을 연속 두 번 돌려 1회차 `queue-truth:172` 실패·2회차 통과를 실측했다 — **이 릴리즈가 만든 성질이 아니다.** 이번에 원인이 특정된 `sw-credential-cache` 경합(주소창 정리 `replaceState`가 진행 중인 `goto`를 끊음)은 고쳤다.
+
 > **기록 공백 (정직한 경계):** `v2.10.0`·`v2.11.0`·`v2.12.0`·`v2.13.0`은 tag가 존재하지만 여기에 baseline이 없다. 절차 6단계가 실행되지 않았다. **사후에 지어내지 않는다** — 그때의 Pages live 콘텐츠·워처 상태·사람 게이트 시점을 지금은 확인할 수 없기 때문이다. 각 릴리즈의 내용은 `CHANGELOG.md`와 vault Task에 남아 있다. 이 공백은 `ISS-000123`(배포된 앱이 자기 버전을 틀리게 말함)과 같은 뿌리다 — **릴리즈 기록과 실제 상태가 따로 놀았다.**
 
 ### v2.14.0 @ `0380b9e` — 검증 2026-07-28 (agent:kairen.claude, Kairen-Ref: TSK-000312 / ISS-000119) — **Code.gs 무변경**
