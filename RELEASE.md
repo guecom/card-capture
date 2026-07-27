@@ -41,6 +41,26 @@ release 기록은 이 파일 하단 "Verified Baselines"에 최신이 위로 오
 
 ## Verified Baselines
 
+### v2.7.0 @ `35192bd` — 검증 2026-07-27 (agent:kairen.claude, Kairen-Ref: TSK-000285·286) — **보안 릴리즈 · Code.gs 무변경**
+
+> 이 릴리즈는 **`FI-004`·`FI-005`의 v2.1.0 `DELIVERED` 선언이 사실이 아니었음을 고친 것**이다. 독립 보안 평가(`TSK-000284` / `RSL-000152`)가 뒤집었고 통합자가 lane 하네스를 쓰지 않고 소스로 재현했다.
+
+- repository: annotated tag `v2.7.0` → squash merge commit `35192bd`. 담은 merge는 PR #45 하나이며 lane 브랜치 2개(`agent/w3-origin-pin`·`agent/w3-legacy-boundary`)가 통합돼 있다.
+- human gate: v2.6.0과 동일한 founder 사전 승인. **Apps Script 재배포·워처 재기동·토큰 변경·실데이터 삭제는 승인 범위 밖.**
+- CI: `validate` SUCCESS — run `30244321016`. unit 293 PASS, Playwright 68 PASS, repository validator `fail=0 warn=0`. 신규 게이트 `eval/legacy-credential.test.js` 등록.
+- Pages: build run `30244572074` success. **live와 commit blob이 exact-match** — `docs/index.html` `0b491c9253fc2058…`, `docs/legacy.html` `f176fef409394ee5…`, `docs/sw.js` `85e9a4de8ea093cf…`.
+- **GAS deployment: 해당 없음.** `Code.gs` 무변경. v2.5.0의 `PENDING`이 그대로 유효하고 확인 해시도 `f9a78d9a…` 그대로다.
+- **watcher: 해당 없음.** `watcher/` 무변경. 재기동 `PENDING` 유지.
+- 닫은 것:
+  - `ISS-000109` — 신뢰 판정을 origin에서 **origin + pathname**으로 좁혔다. `script.google.com`은 누구나 자기 Apps Script를 배포할 수 있는 multi-tenant 호스트라 origin 일치가 "우리 백엔드"를 뜻하지 않았다. `?k=` 없이 `?api=`만으로도 저장된 피해자 토큰이 공격자 배포본으로 나갔다(lane이 실제 요청으로 재현). pinned origin 판정을 page-origin 규칙보다 **먼저** 둬서 경로 판정이 느슨해질 수 없게 했다. 채택 주소에서 query·fragment를 버리고 `연결 해제`가 `api` 키까지 정리한다.
+  - `ISS-000110` — `docs/legacy.html`이 `?api=`를 무검증 저장하고 `?k=`를 주소창에서 지우지 않으며 referrer 정책이 없었다. React 앱과 같은 저장 키를 써서 새 앱까지 오염됐다. **이쪽이 더 넓다 — 임의 origin이 가능했다.** 이제 빌드에 박힌 `DEFAULT_API`만 쓰고 저장돼 있던 다른 주소도 실행 시 폐기한다. `DEFAULT_API` 줄은 바이트 단위로 그대로다(확인함).
+- **왜 회귀 게이트가 통과시켰나**: 기존 `credential-boundary.spec.ts`는 적대적 주소로 **다른 origin만** 시험했고 5개 테스트가 **전부 `next/`만** 열었다. 새 게이트는 같은 origin 다른 경로를 시험하고, legacy 표면을 실제로 열며, 컨텍스트의 **모든** 요청을 가로채 "빌드에 박힌 origin 밖 요청 == []"로 판정한다.
+- 부수: **e2e가 매 실행마다 실제 GAS 배포본에 인증 요청을 보내고 있었다.** `?api=`가 거부되면 앱이 pinned 기본값으로 되돌아가 부팅 직후 실서버를 호출했다. lane F가 발견해 공유 `beforeEach` 가드로 막았다.
+- 문서 정정: `SECURITY.md`·`AGENTS.md`가 허용 공개 상수(`DEFAULT_API`) 위치를 `docs/index.html`로 적고 있었으나 그 파일에는 exec URL이 **0건**이다. 실제 상수는 `docs/legacy.html`에만 있고 `frontend/vite.config.ts`가 읽는 React 앱 pinned endpoint의 유일한 원본이다.
+- **운영 영향**: `?api=`가 production에서 사실상 무의미해진다. 기존 배포를 새 버전으로 갱신하면 exec URL이 유지되므로 일상적 재배포는 영향 없다. **새 deployment를 만들면 URL이 바뀌고** 그때는 `docs/legacy.html`의 `DEFAULT_API` 수정 → 빌드 → Pages 재배포가 필요하다. 개발 harness(`.test`·`.localhost`)는 그대로다.
+- rollback: PR #45 `git revert` 하나.
+- **남은 human gate**: (1) Apps Script 재배포, (2) 라이브 워처 재기동, (3) founder actual-phone acceptance.
+
 ### v2.6.0 @ `c515873` — 검증 2026-07-27 (agent:kairen.claude, Kairen-Ref: TSK-000280·281·282·283) — **Code.gs 무변경 · 앞선 GAS 배포·워처 재기동 PENDING 유지**
 
 > 이 릴리즈는 `Code.gs`를 건드리지 않았다. 따라서 v2.4.0·v2.5.0의 **미배포 서버 변경 두 건은 그대로 남아 있고 `ISS-000108`도 live에서 여전히 열려 있다.** 이 baseline은 그 상태를 바꾸지 않는다.

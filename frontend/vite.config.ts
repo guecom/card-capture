@@ -66,6 +66,15 @@ self.addEventListener('fetch', (event) => {
     caches.match(event.request, { ignoreSearch: event.request.mode === 'navigate' }).then((cached) => {
       if (cached) return cached;
       return fetch(event.request).then((response) => {
+        /* 주의: 이 런타임 캐시 쓰기는 실제로는 아무것도 저장하지 않는다. clone()이
+           caches.open() 이후 마이크로태스크에서 평가되는데 그때는 아래 return이 이미
+           응답을 respondWith에 넘겼기 때문에 clone()이 던진다. 실측: 성공 fetch 4회 후
+           SHELL 밖 항목 0건.
+
+           고치려거든 반드시 **키에서 query string을 떼고** 저장해라. 지금 형태를 그대로
+           살리면 초대 링크의 ?k=코드가 Cache Storage 키에 영구 저장된다 — 루트 워커에서
+           실제로 일어났던 일이다(ISS-000110). frontend/e2e/sw-credential-cache.spec.ts의
+           마지막 케이스가 이 계약을 미리 지키고 있다. (Kairen-Ref: TSK-000287) */
         if (response.ok) caches.open(CACHE).then((cache) => cache.put(event.request, response.clone()));
         return response;
       }).catch(() => event.request.mode === 'navigate' ? caches.match('./index.html') : undefined);

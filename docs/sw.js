@@ -1,5 +1,5 @@
 /* CardCapture service worker — 앱 셸 캐시 */
-var CACHE = 'cardcapture-v19';
+var CACHE = 'cardcapture-v20';
 var SHELL = [
   './', './index.html', './legacy.html', './manifest.json', './icon-192.png', './icon-512.png',
   './camera-quality.js', './research-policy.js', './vendor/tesseract/tesseract.min.js', './vendor/tesseract/worker.min.js'
@@ -17,6 +17,15 @@ self.addEventListener('activate', function (e) {
   );
 });
 
+/* 캐시 키에서 쿼리를 지운다. Cache Storage 키는 전체 URL이라, 초대 링크(?k=개인 링크 코드)를
+   한 번만 열어도 코드가 기기에 영구 저장된다. 읽기 경로가 이미 ignoreSearch라 기능에는 영향이 없다. */
+function cacheKeyFor(requestUrl) {
+  var keyUrl = new URL(requestUrl);
+  keyUrl.search = '';
+  keyUrl.hash = '';
+  return new Request(keyUrl.href);
+}
+
 /* 같은 오리진 GET만 처리: 네트워크 우선, 실패 시 캐시 (오프라인에서도 앱이 열리게) */
 self.addEventListener('fetch', function (e) {
   if (e.request.method !== 'GET') return;
@@ -27,7 +36,8 @@ self.addEventListener('fetch', function (e) {
   e.respondWith(
     fetch(e.request).then(function (res) {
       var copy = res.clone();
-      caches.open(CACHE).then(function (c) { c.put(e.request, copy); });
+      var key = cacheKeyFor(e.request.url);
+      caches.open(CACHE).then(function (c) { return c.put(key, copy); }).catch(function () {});
       return res;
     }).catch(function () {
       return caches.match(e.request, { ignoreSearch: true });
