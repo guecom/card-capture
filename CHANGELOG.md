@@ -2,8 +2,14 @@
 
 사용자에게 보이는 변화 중심으로 기록한다. 형식: 버전 — 날짜 — 커밋. 배포(GAS/Pages) 시점은 `RELEASE.md`의 release evidence가 진실이다.
 
-
 ## [Unreleased]
+
+아직 릴리즈되지 않은 변화가 여기에 쌓인다.
+
+## v2.2.0 — 2026-07-27 — `76ce78c` (Kairen-Ref: INT-000016, TSK-000272)
+
+개선 인터뷰 004에서 나온 세 가지 화면 요구를 담는다. `Code.gs`는 v2.0.0 이후 바뀌지 않았고, 이 릴리즈에도 GAS 재배포가 필요하지 않다.
+
 
 ### 하단 바 고정 · AI 표면의 동적 시인성 · 다크 모드 (branch `agent/int-000016-visual-baseline`, Kairen-Ref: INT-000016, ISS-000084, TSK-000220, TSK-000272)
 
