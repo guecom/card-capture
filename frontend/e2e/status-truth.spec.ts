@@ -440,11 +440,14 @@ test('앱이 숨겨진 동안에는 active 빠른 갱신을 멈추고 돌아오�
     await page.waitForTimeout(4_500);
     expect(harness.listRequests).toBe(hiddenAt);
 
+    const returnedAt = Date.now();
     await page.evaluate(() => {
       Reflect.deleteProperty(document, 'hidden');
       document.dispatchEvent(new Event('visibilitychange'));
     });
-    await expect.poll(() => harness.listRequests).toBeGreaterThan(hiddenAt);
+    await expect.poll(() => harness.listRequests, { timeout: 1_000, intervals: [50] }).toBeGreaterThan(hiddenAt);
+    const returnRefreshStartedAt = harness.listStartedAt.slice(hiddenAt)[0];
+    expect(returnRefreshStartedAt - returnedAt, 'foreground 복귀 즉시 조회가 1초 안에 시작되지 않았다').toBeLessThanOrEqual(1_000);
   } finally {
     await stopServer(harness.server);
   }
