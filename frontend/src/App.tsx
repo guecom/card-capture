@@ -394,14 +394,35 @@ function App() {
   const [lastSavedId, setLastSavedId] = useState('');
   const [undoing, setUndoing] = useState(false);
   const refreshInFlightRef = useRef<Promise<{ count: number; hasMore: boolean } | null> | null>(null);
+  const refreshQueuedRef = useRef(false);
+  // 연결 정보가 바뀌거나 연결을 해제하면 이전 토큰으로 시작한 응답은 화면·사적 캐시에 쓰지 않는다.
+  const refreshSessionRef = useRef(0);
+  // 이 render에서 만든 refresh callback이 어느 연결 세션에 속하는지 고정한다. 연결 해제 뒤에도
+  // 이전 callback을 들고 있던 upload/flush 작업이 늦게 호출될 수 있으므로 실행 시작부터 막는다.
+  const refreshCallbackSession = refreshSessionRef.current;
 
   const configured = Boolean(config.apiUrl && config.token);
   const refreshIntervalMs = useMemo(() => refreshCadenceMs(briefs), [briefs]);
 
-  // 자동·수동·online·visibility trigger가 겹쳐도 서버 list는 하나만 읽는다.
-  // 느린 이전 응답과 빠른 최신 응답이 동시에 달려 terminal 상태를 되돌리는 경로도 함께 없어진다.
-  const refresh = useCallback((): Promise<{ count: number; hasMore: boolean } | null> => {
-    if (refreshInFlightRef.current) return refreshInFlightRef.current;
+  // 자동 trigger끼리는 같은 요청을 공유한다. 반면 사용자의 확인이나 새 작업 직후 trigger가 이미
+  // 진행 중인 조회와 겹치면, 그 조회가 끝난 직후 한 번 더 읽는다. 그래야 작업 전 snapshot을
+  // "최신"으로 오인하지 않으면서도 list 요청은 언제나 하나씩만 실행된다.
+  const refresh = useCallback(function runRefresh(ensureFresh = false): Promise<{ count: number; hasMore: boolean } | null> {
+    if (refreshCallbackSession !== refreshSessionRef.current) return Promise.resolve(null);
+    const active = refreshInFlightRef.current;
+    if (active) {
+      if (!ensureFresh) return active;
+      refreshQueuedRef.current = true;
+      return active.catch(() => null).then(() => {
+        // 먼저 깨어난 강한 trigger가 trailing 조회를 시작했다면 나머지는 그것을 함께 기다린다.
+        if (refreshInFlightRef.current) return refreshInFlightRef.current;
+        if (!refreshQueuedRef.current) return null;
+        refreshQueuedRef.current = false;
+        return runRefresh(false);
+      });
+    }
+
+    const session = refreshCallbackSession;
 
     const request = (async (): Promise<{ count: number; hasMore: boolean } | null> => {
       setLoading(true);
@@ -414,6 +435,8 @@ function App() {
         if (!configured) return null;
         // 화면이 요청한 건수만큼 페이지를 이어 읽는다 — 첫 페이지에서 끊으면 사각지대가 생긴다.
         const response = await listBriefsUpTo(config, listWantedRef.current);
+        // 연결 해제·계정 변경 뒤 늦게 도착한 이전 응답은 개인 데이터를 되살릴 수 없다.
+        if (session !== refreshSessionRef.current) return null;
         if (!response.ok) throw new Error(response.error ?? 'list_failed');
         const nextBriefs = response.items ?? [];
         setBriefs(nextBriefs);
@@ -428,7 +451,7 @@ function App() {
         setRefreshedAt(Date.now());
         return { count: nextBriefs.length, hasMore };
       } finally {
-        setLoading(false);
+        if (session === refreshSessionRef.current) setLoading(false);
       }
     })().finally(() => {
       if (refreshInFlightRef.current === request) refreshInFlightRef.current = null;
@@ -436,18 +459,18 @@ function App() {
 
     refreshInFlightRef.current = request;
     return request;
-  }, [config, configured]);
+  }, [config, configured, refreshCallbackSession]);
 
   // 배경 갱신은 실패를 조용히 넘긴다 — 오프라인 토스트 스팸 방지 (legacy 규칙).
-  const silentRefresh = useCallback(async () => {
-    await refresh().catch(() => undefined);
+  const silentRefresh = useCallback(async (ensureFresh = false) => {
+    await refresh(ensureFresh).catch(() => undefined);
   }, [refresh]);
 
   // 수동 새로고침은 즉시 진행 토스트 → 완료/실패 토스트로 반응한다 (2026-07-26 실폰 피드백 7).
   const manualRefresh = useCallback(async () => {
     setMessage('새로고침 중…');
     try {
-      await refresh();
+      await refresh(true);
       setMessage((current) => current === '' || current === '새로고침 중…' ? '새로고침 완료 — 최신 상태예요' : current);
     } catch (error) {
       setMessage(`새로고침 실패: ${actionErrorMessage(error)}`);
@@ -463,7 +486,7 @@ function App() {
     listWantedRef.current += LIST_PAGE_STEP;
     setFeedLimit((current) => current + LIST_PAGE_STEP);
     try {
-      const outcome = await refresh();
+      const outcome = await refresh(true);
       if (!outcome) return;
       const added = Math.max(outcome.count - before, 0);
       setFeedMoreStatus(outcome.hasMore
@@ -510,7 +533,7 @@ function App() {
         if (announce) setMessage('다른 탭에서 전송 중이라 여기서는 기다립니다 — 같은 명함을 두 번 보내지 않아요.');
         return;
       }
-      await refresh().catch(() => undefined);
+      await refresh(true).catch(() => undefined);
       const reconciled = result.reconciled > 0 ? ` ${result.reconciled}건은 이미 접수돼 있어 다시 보내지 않았어요.` : '';
       if (announce && (result.attempted > 0 || result.reconciled > 0)) {
         setMessage(result.failed > 0
@@ -527,14 +550,14 @@ function App() {
   }, [config, configured, refresh]);
 
   useEffect(() => {
-    void silentRefresh();
+    void silentRefresh(true);
     void flushPendingQueue();
     const handleOnline = () => void flushPendingQueue(true);
     const handleVisibility = () => {
       if (document.hidden) return;
       // 앱 복귀 시 legacy처럼 전송 재시도·브리핑 갱신·스티키 복원을 함께 한다.
       void flushPendingQueue();
-      void silentRefresh();
+      void silentRefresh(true);
       const restored = loadStickyCaptureContext();
       setEvent((value) => value || restored.event);
       setRelSelf((value) => value || restored.relSelf);
@@ -829,6 +852,8 @@ function App() {
 
   function commitSettings() {
     const saved = saveRuntimeConfig(draftConfig);
+    refreshSessionRef.current += 1;
+    refreshQueuedRef.current = false;
     setConfig(saved.config);
     setDraftConfig(saved.config);
     setSettingsOpen(false);
@@ -842,6 +867,8 @@ function App() {
     const name = nameDraft.trim();
     if (!name) return;
     const next = { ...config, capturer: name };
+    refreshSessionRef.current += 1;
+    refreshQueuedRef.current = false;
     setConfig(saveRuntimeConfig(next).config);
     setNameOnboardOpen(false);
   }
@@ -850,6 +877,8 @@ function App() {
   const unsentCount = useMemo(() => queue.filter((item) => item.state !== 'sent').length, [queue]);
 
   function commitSignOut() {
+    refreshSessionRef.current += 1;
+    refreshQueuedRef.current = false;
     signOutDevice();
     const next: RuntimeConfig = { apiUrl: config.apiUrl, token: '', capturer: '' };
     setConfig(next);
@@ -864,6 +893,7 @@ function App() {
     setRelSelf('');
     setRelKairen('');
     setResearchText('');
+    setLoading(false);
     setSignOutOpen(false);
     setMessage('이 기기에서 개인 링크와 저장된 기록 사본을 지웠어요.');
   }
@@ -1019,7 +1049,7 @@ function App() {
       const outcome = await takeBackQueueItem(lastSavedId);
       if (!outcome.item) {
         setMessage(undoRefusalMessage[outcome.refusal ?? 'missing']);
-        await refresh().catch(() => undefined);
+        await refresh(true).catch(() => undefined);
         return;
       }
       const draft = restoredDraftOf(outcome.item);
@@ -1095,7 +1125,7 @@ function App() {
     try {
       await putQueueItem(next);
       setQueueEdit(null);
-      await refresh().catch(() => undefined);
+      await refresh(true).catch(() => undefined);
       if (configured) void flushPendingQueue(true);
       else setMessage('변경을 같은 captureId에 저장했습니다. 연결되면 다시 전송합니다.');
     } catch (error) {
@@ -1165,7 +1195,7 @@ function App() {
       const response = await request;
       if (!response.ok) throw new Error(response.error ?? 'request_failed');
       setMessage(response.receiptId ? `${success} · receipt ${response.receiptId}` : success);
-      await refresh().catch(() => undefined);
+      await refresh(true).catch(() => undefined);
       return true;
     } catch (error) {
       setMessage(`접수 실패: ${actionErrorMessage(error)}`);
@@ -1226,7 +1256,7 @@ function App() {
       setMessage(response.alreadyTerminal
         ? (response.status === 'skipped' ? '이미 건너뜀으로 마감됐어요' : '이미 처리가 끝났어요 — 최신 상태로 바꿀게요')
         : response.deduped ? '이미 다시 처리 중이에요' : '다시 처리를 요청했어요 — 몇 분 안에 처리돼요');
-      await refresh().catch(() => undefined);
+      await refresh(true).catch(() => undefined);
     } catch (error) {
       setMessage(`재처리 실패: ${actionErrorMessage(error)}`);
     } finally {
