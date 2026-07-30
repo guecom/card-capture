@@ -42,6 +42,20 @@ release 기록은 이 파일 하단 "Verified Baselines"에 최신이 위로 오
 
 ## Verified Baselines
 
+### v2.17.0 @ `09087c9` — 검증 2026-07-30 (agent:kairen.codex, Kairen-Ref: TSK-000161 / ISS-000050) — **Code.gs 무변경**
+
+- repository: annotated tag `v2.17.0` → squash merge commit `09087c96ac45beb0642b39d0904558857b257a56`(main). 담은 merge는 PR #64이고, 승인·검증된 exact PR head는 `e01c32b1f73759299d018052ea18a71651b9de52`다.
+- human gate: founder가 2026-07-30 세션에서 active card 상태를 더 빠르게 반영하는 exact proposal과 `PR, Merge, Release`를 승인했다. 이어 실제 폰 사전 검증 없이 먼저 merge·release하고 배포 직후 폰으로 검증하는 잔여 위험도 명시적으로 승인했다. **Apps Script 재배포·워처 재기동·토큰 변경·운영 데이터 쓰기는 승인·실행 범위 밖이며 이 릴리즈에 필요하지도 않다.**
+- CI: exact PR head `e01c32b…`에서 `validate` SUCCESS — run `30507448329`, unit 315 PASS, Playwright 107 PASS, repository validator `fail=0 warn=0`. 독립 code/test review도 exact head에서 PASS했다.
+  - 앞선 `04c4146…` run `30506771305`는 기존 sending UI E2E의 준비 타이밍 경합 1건을 드러냈다. 제품 코드와 `docs/next`는 그대로 둔 test-only commit `e01c32b…`에서 새 upload 시작을 명시적으로 기다리도록 고쳤고, 해당 race를 2-worker 반복 20/20과 전체 107/107로 재검증했다.
+- Pages: merge SHA의 `pages-build-deployment` run `30508457398` SUCCESS. **live와 merge commit blob이 exact-match** — `docs/index.html` `b6d7deb5e3978048…`, `docs/sw.js` `a1f531d6c4cd35a…`, `docs/next/index.html` `25744723050a01e…`, `docs/next/sw.js` `d3a41f5abf62193…`, active JS `docs/next/assets/index-BYsAm3kj.js` `52a8b625d2fe570…`. live active JS 안의 앱 버전 `2.17.0`도 확인했다.
+- 이번 릴리즈의 machine-observable behavior: 화면에 보이는 active card는 4초 cadence, active card가 없으면 20초 cadence, 숨김 상태에서는 poll 중지, foreground 복귀 시 즉시 refresh, list refresh single-flight, mutation overlap 시 trailing refresh, token/session 교체 뒤 이전 응답 차단을 회귀 게이트로 고정했다.
+- **GAS deployment: 해당 없음.** `Code.gs` 무변경. Watcher: 무변경·재기동 없음. 인증·schema·dependency·운영 데이터 migration도 없다.
+- 실기기 판정: **미완료.** founder가 사전 검증 없는 release 위험을 승인했으며, 다음 실제 폰 사용에서 active card/research가 수동 새로고침 없이 완료 상태로 바뀌는지와 background 복귀 즉시 갱신을 확인한다. 이 machine·release evidence를 customer proof로 승격하지 않는다.
+- rollback: PR #64의 squash merge commit `09087c9…` 하나를 revert하고 같은 Pages 절차로 재배포한다. 서버·watcher·data rollback은 없다.
+
+> **기록 공백 (정직한 경계):** GitHub의 `v2.16.0` tag와 Release는 존재하지만 이 파일에는 당시 Verified Baseline이 없다. 현재 상태에서 당시의 사람 게이트와 live 검증을 사후에 지어내지 않으며, 이 v2.17.0 기록은 그 공백을 메웠다고 주장하지 않는다.
+
 ### v2.15.0 @ `49017d2` — 검증 2026-07-28 (agent:kairen.claude, Kairen-Ref: TSK-000326 / ISS-000129) — **Code.gs 무변경**
 
 - repository: annotated tag `v2.15.0` → merge commit `49017d2`(main). 담은 merge는 PR #58(움직임 설정·서체)·#59(Kairen-Ref 정정·캐시 게이트 안정화)·#60(버전 확정)이다.
