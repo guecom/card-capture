@@ -103,6 +103,7 @@ interface Harness {
   readonly listStartedAt: number[];
   readonly maxListInFlight: number;
   setListResponse: (response: ReturnType<typeof listFixture>) => void;
+  setListResponseForToken: (token: string, response: ReturnType<typeof listFixture>) => void;
   snapshotListOnRequest: (enabled: boolean) => void;
   uploads: string[];
 }
@@ -128,6 +129,7 @@ async function boot(page: Page, options: {
     listStartedAt: [] as number[],
     snapshotListAtRequest: false,
     listResponse: options.listResponse ?? listFixture(),
+    listResponsesByToken: new Map<string, ReturnType<typeof listFixture>>(),
     reject: options.rejectUploads === true,
   };
   const uploads: string[] = [];
@@ -136,19 +138,22 @@ async function boot(page: Page, options: {
   await page.context().route('**/vendor/**', (route) => route.abort());
   await page.route('https://api.example.test/**', async (route) => {
     const request = route.request();
-    const action = new URL(request.url()).searchParams.get('action');
+    const requestUrl = new URL(request.url());
+    const action = requestUrl.searchParams.get('action');
     const body = request.postData() ?? '';
 
     if (action === 'list') {
+      const token = requestUrl.searchParams.get('k') ?? '';
+      const currentResponse = () => state.listResponsesByToken.get(token) ?? state.listResponse;
       // 실제 서버처럼 요청이 시작된 시점의 snapshot을 고정할 수 있어야 mutation/refresh 경합을 재현한다.
-      const responseAtStart = state.snapshotListAtRequest ? structuredClone(state.listResponse) : null;
+      const responseAtStart = state.snapshotListAtRequest ? structuredClone(currentResponse()) : null;
       state.inFlight += 1;
       state.listRequests += 1;
       state.listStartedAt.push(Date.now());
       state.maxInFlight = Math.max(state.maxInFlight, state.inFlight);
       try {
         await wait(state.list);
-        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(responseAtStart ?? state.listResponse) });
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(responseAtStart ?? currentResponse()) });
       } finally {
         state.inFlight -= 1;
       }
@@ -204,6 +209,7 @@ async function boot(page: Page, options: {
     get listStartedAt() { return [...state.listStartedAt]; },
     get maxListInFlight() { return state.maxInFlight; },
     setListResponse: (response) => { state.listResponse = response; },
+    setListResponseForToken: (token, response) => { state.listResponsesByToken.set(token, response); },
     snapshotListOnRequest: (enabled) => { state.snapshotListAtRequest = enabled; },
     delayList: (ms) => { state.list = ms; },
     delayUpload: (ms) => { state.upload = ms; },
@@ -425,6 +431,48 @@ test('연결 해제 뒤 늦게 도착한 이전 토큰 응답은 화면과 캐�
     await expect(page.locator('ion-modal.name-onboard-modal')).not.toHaveClass(/show-modal/);
     await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '진행' }).click();
     await expect(page.locator('.brief-card')).toHaveCount(0);
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+test('이전 연결 waiter가 겹쳐도 새 토큰의 즉시 상태 조회를 가로채지 않는다', async ({ page }) => {
+  const oldAccount = listFixture();
+  oldAccount.items = oldAccount.items.map((item) => ({ ...item, status: 'processed', brief: item.brief ?? '# 예전 연결 기록' }));
+  const newAccount = {
+    ...listFixture(),
+    items: [{
+      captureId: '20260730-120000-new-account',
+      receivedAt: ago(0),
+      status: 'received',
+      type: 'research_instruction',
+      targetPerson: 'PER-000999',
+    }],
+  };
+  const harness = await boot(page, { listResponse: oldAccount });
+  try {
+    await expect(headerStatus(page)).toContainText('기록 2건');
+    harness.setListResponseForToken('next-token', newAccount);
+    harness.snapshotListOnRequest(true);
+    harness.delayList(10_000);
+    const before = harness.listRequests;
+
+    // R0 뒤에 이전 session의 strong waiter를 먼저 붙인다.
+    await page.getByRole('button', { name: '최신 상태 확인' }).click();
+    await expect.poll(() => harness.listInFlight).toBe(1);
+    await page.getByRole('button', { name: '최신 상태 확인' }).click();
+
+    // R0가 끝나기 전에 token을 바꾸면 새 session effect도 같은 R0 뒤에 strong waiter를 붙인다.
+    await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '설정' }).click();
+    await page.getByRole('button', { name: '사용자·연결 정보 편집' }).click();
+    await page.getByRole('button', { name: /고급 설정/ }).click();
+    await page.getByLabel('개인 링크 코드 (?k= 값)').fill('next-token');
+    await page.getByRole('button', { name: '설정 저장' }).click();
+    harness.delayList(0);
+
+    await expect(headerStatus(page)).toContainText('1건 처리 중', { timeout: 12_000 });
+    expect(harness.listRequests).toBeGreaterThanOrEqual(before + 2);
+    expect(harness.maxListInFlight).toBe(1);
   } finally {
     await stopServer(harness.server);
   }

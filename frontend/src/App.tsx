@@ -394,7 +394,7 @@ function App() {
   const [lastSavedId, setLastSavedId] = useState('');
   const [undoing, setUndoing] = useState(false);
   const refreshInFlightRef = useRef<Promise<{ count: number; hasMore: boolean } | null> | null>(null);
-  const refreshQueuedRef = useRef(false);
+  const refreshQueuedSessionRef = useRef<number | null>(null);
   // 연결 정보가 바뀌거나 연결을 해제하면 이전 토큰으로 시작한 응답은 화면·사적 캐시에 쓰지 않는다.
   const refreshSessionRef = useRef(0);
   // 이 render에서 만든 refresh callback이 어느 연결 세션에 속하는지 고정한다. 연결 해제 뒤에도
@@ -412,12 +412,14 @@ function App() {
     const active = refreshInFlightRef.current;
     if (active) {
       if (!ensureFresh) return active;
-      refreshQueuedRef.current = true;
+      refreshQueuedSessionRef.current = refreshCallbackSession;
       return active.catch(() => null).then(() => {
+        // 이전 연결의 waiter는 새 연결이 예약한 trailing 조회를 소비할 수 없다.
+        if (refreshCallbackSession !== refreshSessionRef.current) return null;
         // 먼저 깨어난 강한 trigger가 trailing 조회를 시작했다면 나머지는 그것을 함께 기다린다.
         if (refreshInFlightRef.current) return refreshInFlightRef.current;
-        if (!refreshQueuedRef.current) return null;
-        refreshQueuedRef.current = false;
+        if (refreshQueuedSessionRef.current !== refreshCallbackSession) return null;
+        refreshQueuedSessionRef.current = null;
         return runRefresh(false);
       });
     }
@@ -853,7 +855,7 @@ function App() {
   function commitSettings() {
     const saved = saveRuntimeConfig(draftConfig);
     refreshSessionRef.current += 1;
-    refreshQueuedRef.current = false;
+    refreshQueuedSessionRef.current = null;
     setConfig(saved.config);
     setDraftConfig(saved.config);
     setSettingsOpen(false);
@@ -868,7 +870,7 @@ function App() {
     if (!name) return;
     const next = { ...config, capturer: name };
     refreshSessionRef.current += 1;
-    refreshQueuedRef.current = false;
+    refreshQueuedSessionRef.current = null;
     setConfig(saveRuntimeConfig(next).config);
     setNameOnboardOpen(false);
   }
@@ -878,7 +880,7 @@ function App() {
 
   function commitSignOut() {
     refreshSessionRef.current += 1;
-    refreshQueuedRef.current = false;
+    refreshQueuedSessionRef.current = null;
     signOutDevice();
     const next: RuntimeConfig = { apiUrl: config.apiUrl, token: '', capturer: '' };
     setConfig(next);
