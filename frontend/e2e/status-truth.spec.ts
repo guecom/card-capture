@@ -272,10 +272,23 @@ test('실제로 보내는 동안에는 어느 명함을 보내는 중인지 그 
     const row = page.locator('.queue-row', { hasText: '합성인물-대기' });
     await expect(row).toBeVisible();
     expect(harness.uploads.length, '부팅 flush가 이 촬영을 실제로 올렸어야 한다').toBeGreaterThan(0);
+    // 요청 시작만 보고 다음 online을 보내면 느린 CI에서 아직 첫 flush 잠금이 살아 있어 두 번째
+    // trigger가 의도대로 무시될 수 있다. 이번 관측은 **새 전송**이어야 하므로 첫 전송 종료를 고정한다.
+    await expect(row.locator('.row-sending')).toBeHidden();
+    const uploadsBeforeRetry = harness.uploads.length;
 
     // 이번 전송은 늦게 끝난다 — 그 사이가 사용자가 "되는 건가?" 하고 보는 구간이다.
     harness.delayUpload(2_500);
-    await goOnline(page);
+    await expect.poll(async () => {
+      // 첫 flush의 업로드 뒤 refresh tail이 아직 잠금을 쥐었다면 online은 의도대로 무시된다.
+      // 잠금이 닫힌 뒤 새 업로드가 실제 시작될 때까지만 다시 온라인 신호를 보낸다.
+      await goOnline(page);
+      return harness.uploads.length;
+    }, {
+      message: 'online 뒤 새 업로드가 시작되지 않았다',
+      timeout: 8_000,
+      intervals: [100, 200, 500],
+    }).toBeGreaterThan(uploadsBeforeRetry);
 
     // 지금 보내는 그 캡처의 행이 스스로 말한다.
     await expect(row.locator('.row-sending')).toBeVisible();
