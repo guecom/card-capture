@@ -16,7 +16,7 @@
 //     그 순간 정말로 그 구간에 있었다는 양성 증거를 함께 요구한다. 그 증거는 **화면 글자가 아니라
 //     서버 쪽 사실**(응답을 붙들고 있는 요청 수)로 잡는다 — 문구를 증거로 쓰면 그 문구가 바뀌는 순간
 //     게이트가 전제부터 무너져 무엇을 재려던 것인지 알 수 없게 된다(회귀 주입에서 실제로 그렇게 됐다).
-//   - 20초 자동 주기를 기다리지 않는다. 흔들리지 않는 즉시 트리거(`online`)만 쓴다.
+//   - 20초 기본 주기를 기다리지 않는다. active cadence 또는 흔들리지 않는 즉시 trigger(`online`)를 쓴다.
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
@@ -98,6 +98,10 @@ interface Harness {
   delaySearch: (ms: number) => void;
   /** 지금 서버가 붙들고 있는 `list` 요청 수. "앱이 갱신 주기 안에 있다"의 진실값이다. */
   readonly listInFlight: number;
+  /** 이 세션에서 시작한 list 요청 수와 최대 동시 요청 수. */
+  readonly listRequests: number;
+  readonly maxListInFlight: number;
+  setListResponse: (response: ReturnType<typeof listFixture>) => void;
   uploads: string[];
 }
 
@@ -106,12 +110,22 @@ async function boot(page: Page, options: {
   seed?: ReturnType<typeof localCapture>;
   /** 첫 flush부터 업로드를 거절한다 — 씨앗 촬영이 계속 미전송으로 남아야 하는 시나리오용. */
   rejectUploads?: boolean;
+  listResponse?: ReturnType<typeof listFixture>;
 } = {}): Promise<Harness> {
   const server = await startStaticServer();
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
 
-  const state = { list: 0, upload: 0, search: 0, inFlight: 0, reject: options.rejectUploads === true };
+  const state = {
+    list: 0,
+    upload: 0,
+    search: 0,
+    inFlight: 0,
+    maxInFlight: 0,
+    listRequests: 0,
+    listResponse: options.listResponse ?? listFixture(),
+    reject: options.rejectUploads === true,
+  };
   const uploads: string[] = [];
   const wait = (ms: number) => (ms > 0 ? new Promise((done) => setTimeout(done, ms)) : Promise.resolve());
 
@@ -123,9 +137,11 @@ async function boot(page: Page, options: {
 
     if (action === 'list') {
       state.inFlight += 1;
+      state.listRequests += 1;
+      state.maxInFlight = Math.max(state.maxInFlight, state.inFlight);
       try {
         await wait(state.list);
-        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(listFixture()) });
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(state.listResponse) });
       } finally {
         state.inFlight -= 1;
       }
@@ -177,13 +193,16 @@ async function boot(page: Page, options: {
     server,
     uploads,
     get listInFlight() { return state.inFlight; },
+    get listRequests() { return state.listRequests; },
+    get maxListInFlight() { return state.maxInFlight; },
+    setListResponse: (response) => { state.listResponse = response; },
     delayList: (ms) => { state.list = ms; },
     delayUpload: (ms) => { state.upload = ms; },
     delaySearch: (ms) => { state.search = ms; },
   };
 }
 
-/** 브라우저가 다시 온라인이 된 순간. 20초 자동 주기를 기다리지 않는 즉시 트리거다. */
+/** 브라우저가 다시 온라인이 된 순간. 자동 주기를 기다리지 않는 즉시 트리거다. */
 async function goOnline(page: Page): Promise<void> {
   await page.evaluate(() => window.dispatchEvent(new Event('online')));
 }
@@ -268,6 +287,73 @@ test('상단 상태는 전송 대기와 서버 처리 중을 각각 말한다', 
     expect(text, `상단 상태 실측: ${text}`).toMatch(/전송 대기 1건/);
     expect(text, `상단 상태 실측: ${text}`).toMatch(/1건 처리 중/);
     expect(text, `합산한 숫자 하나로 말하고 있다: ${text}`).not.toMatch(/(^|[^\d])2건 처리 중/);
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+// ── UX-2b: 사용자가 기다리는 카드만 빠르게 보고, 끝나면 다시 조용해진다 ──
+
+test('명함과 조사 카드가 끝날 때까지만 빠르게 갱신하고 terminal 뒤 기본 주기로 돌아간다', async ({ page }) => {
+  const research = {
+    captureId: '20260730-100000-research',
+    receivedAt: ago(2),
+    status: 'received',
+    type: 'research_instruction',
+    targetPerson: 'PER-000901',
+  };
+  const active = listFixture([research]);
+  const terminal = {
+    ...active,
+    items: active.items.map((item) => ({
+      ...item,
+      status: 'processed',
+      brief: item.brief ?? '# 합성 처리 완료\n합성 상태 전이입니다.',
+    })),
+  };
+  const harness = await boot(page, { listResponse: active });
+  try {
+    await expect(headerStatus(page)).toContainText('2건 처리 중');
+    const before = harness.listRequests;
+    const startedAt = Date.now();
+    harness.setListResponse(terminal);
+
+    // 기존 20초를 기다리지 않고 active cadence 안에 두 카드를 한 batch로 terminal 반영한다.
+    await expect(headerStatus(page)).toContainText('기록 3건', { timeout: 7_000 });
+    await expect(headerStatus(page)).not.toContainText('처리 중');
+    expect(Date.now() - startedAt, 'active 카드 완료 반영이 5초 cadence보다 크게 늦었다').toBeLessThan(6_500);
+    expect(harness.listRequests).toBeGreaterThan(before);
+
+    // terminal 전환 즉시 빠른 cadence가 멈춘다. 20초 기본 주기 전에는 새 요청이 없어야 한다.
+    const stoppedAt = harness.listRequests;
+    await page.waitForTimeout(5_500);
+    expect(harness.listRequests).toBe(stoppedAt);
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+test('자동·수동·online 갱신이 겹쳐도 list 요청은 하나만 실행한다', async ({ page }) => {
+  const active = listFixture();
+  const terminal = {
+    ...active,
+    items: active.items.map((item) => ({ ...item, status: 'processed', brief: item.brief ?? '# 합성 처리 완료' })),
+  };
+  const harness = await boot(page, { listResponse: active });
+  try {
+    await expect(headerStatus(page)).toContainText('1건 처리 중');
+    harness.setListResponse(terminal);
+    harness.delayList(5_500);
+
+    await goOnline(page);
+    await expect.poll(() => harness.listInFlight, { timeout: 3_000 }).toBe(1);
+    await page.getByRole('button', { name: '최신 상태 확인' }).click();
+    await goOnline(page);
+    // 이 사이 active 4초 tick도 한 번 온다. 모두 같은 in-flight promise를 공유해야 한다.
+    await page.waitForTimeout(4_500);
+    expect(harness.maxListInFlight).toBe(1);
+    await expect(headerStatus(page)).toContainText('기록 2건', { timeout: 3_000 });
+    await expect(headerStatus(page)).not.toContainText('처리 중');
   } finally {
     await stopServer(harness.server);
   }
