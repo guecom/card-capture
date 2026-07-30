@@ -16,7 +16,7 @@
 //     그 순간 정말로 그 구간에 있었다는 양성 증거를 함께 요구한다. 그 증거는 **화면 글자가 아니라
 //     서버 쪽 사실**(응답을 붙들고 있는 요청 수)로 잡는다 — 문구를 증거로 쓰면 그 문구가 바뀌는 순간
 //     게이트가 전제부터 무너져 무엇을 재려던 것인지 알 수 없게 된다(회귀 주입에서 실제로 그렇게 됐다).
-//   - 20초 자동 주기를 기다리지 않는다. 흔들리지 않는 즉시 트리거(`online`)만 쓴다.
+//   - 20초 기본 주기를 기다리지 않는다. active cadence 또는 흔들리지 않는 즉시 trigger(`online`)를 쓴다.
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
@@ -98,6 +98,13 @@ interface Harness {
   delaySearch: (ms: number) => void;
   /** 지금 서버가 붙들고 있는 `list` 요청 수. "앱이 갱신 주기 안에 있다"의 진실값이다. */
   readonly listInFlight: number;
+  /** 이 세션에서 시작한 list 요청 수와 최대 동시 요청 수. */
+  readonly listRequests: number;
+  readonly listStartedAt: number[];
+  readonly maxListInFlight: number;
+  setListResponse: (response: ReturnType<typeof listFixture>) => void;
+  setListResponseForToken: (token: string, response: ReturnType<typeof listFixture>) => void;
+  snapshotListOnRequest: (enabled: boolean) => void;
   uploads: string[];
 }
 
@@ -106,26 +113,47 @@ async function boot(page: Page, options: {
   seed?: ReturnType<typeof localCapture>;
   /** 첫 flush부터 업로드를 거절한다 — 씨앗 촬영이 계속 미전송으로 남아야 하는 시나리오용. */
   rejectUploads?: boolean;
+  listResponse?: ReturnType<typeof listFixture>;
 } = {}): Promise<Harness> {
   const server = await startStaticServer();
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
 
-  const state = { list: 0, upload: 0, search: 0, inFlight: 0, reject: options.rejectUploads === true };
+  const state = {
+    list: 0,
+    upload: 0,
+    search: 0,
+    inFlight: 0,
+    maxInFlight: 0,
+    listRequests: 0,
+    listStartedAt: [] as number[],
+    snapshotListAtRequest: false,
+    listResponse: options.listResponse ?? listFixture(),
+    listResponsesByToken: new Map<string, ReturnType<typeof listFixture>>(),
+    reject: options.rejectUploads === true,
+  };
   const uploads: string[] = [];
   const wait = (ms: number) => (ms > 0 ? new Promise((done) => setTimeout(done, ms)) : Promise.resolve());
 
   await page.context().route('**/vendor/**', (route) => route.abort());
   await page.route('https://api.example.test/**', async (route) => {
     const request = route.request();
-    const action = new URL(request.url()).searchParams.get('action');
+    const requestUrl = new URL(request.url());
+    const action = requestUrl.searchParams.get('action');
     const body = request.postData() ?? '';
 
     if (action === 'list') {
+      const token = requestUrl.searchParams.get('k') ?? '';
+      const currentResponse = () => state.listResponsesByToken.get(token) ?? state.listResponse;
+      // 실제 서버처럼 요청이 시작된 시점의 snapshot을 고정할 수 있어야 mutation/refresh 경합을 재현한다.
+      const responseAtStart = state.snapshotListAtRequest ? structuredClone(currentResponse()) : null;
       state.inFlight += 1;
+      state.listRequests += 1;
+      state.listStartedAt.push(Date.now());
+      state.maxInFlight = Math.max(state.maxInFlight, state.inFlight);
       try {
         await wait(state.list);
-        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(listFixture()) });
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(responseAtStart ?? currentResponse()) });
       } finally {
         state.inFlight -= 1;
       }
@@ -177,13 +205,19 @@ async function boot(page: Page, options: {
     server,
     uploads,
     get listInFlight() { return state.inFlight; },
+    get listRequests() { return state.listRequests; },
+    get listStartedAt() { return [...state.listStartedAt]; },
+    get maxListInFlight() { return state.maxInFlight; },
+    setListResponse: (response) => { state.listResponse = response; },
+    setListResponseForToken: (token, response) => { state.listResponsesByToken.set(token, response); },
+    snapshotListOnRequest: (enabled) => { state.snapshotListAtRequest = enabled; },
     delayList: (ms) => { state.list = ms; },
     delayUpload: (ms) => { state.upload = ms; },
     delaySearch: (ms) => { state.search = ms; },
   };
 }
 
-/** 브라우저가 다시 온라인이 된 순간. 20초 자동 주기를 기다리지 않는 즉시 트리거다. */
+/** 브라우저가 다시 온라인이 된 순간. 자동 주기를 기다리지 않는 즉시 트리거다. */
 async function goOnline(page: Page): Promise<void> {
   await page.evaluate(() => window.dispatchEvent(new Event('online')));
 }
@@ -238,10 +272,23 @@ test('실제로 보내는 동안에는 어느 명함을 보내는 중인지 그 
     const row = page.locator('.queue-row', { hasText: '합성인물-대기' });
     await expect(row).toBeVisible();
     expect(harness.uploads.length, '부팅 flush가 이 촬영을 실제로 올렸어야 한다').toBeGreaterThan(0);
+    // 요청 시작만 보고 다음 online을 보내면 느린 CI에서 아직 첫 flush 잠금이 살아 있어 두 번째
+    // trigger가 의도대로 무시될 수 있다. 이번 관측은 **새 전송**이어야 하므로 첫 전송 종료를 고정한다.
+    await expect(row.locator('.row-sending')).toBeHidden();
+    const uploadsBeforeRetry = harness.uploads.length;
 
     // 이번 전송은 늦게 끝난다 — 그 사이가 사용자가 "되는 건가?" 하고 보는 구간이다.
     harness.delayUpload(2_500);
-    await goOnline(page);
+    await expect.poll(async () => {
+      // 첫 flush의 업로드 뒤 refresh tail이 아직 잠금을 쥐었다면 online은 의도대로 무시된다.
+      // 잠금이 닫힌 뒤 새 업로드가 실제 시작될 때까지만 다시 온라인 신호를 보낸다.
+      await goOnline(page);
+      return harness.uploads.length;
+    }, {
+      message: 'online 뒤 새 업로드가 시작되지 않았다',
+      timeout: 8_000,
+      intervals: [100, 200, 500],
+    }).toBeGreaterThan(uploadsBeforeRetry);
 
     // 지금 보내는 그 캡처의 행이 스스로 말한다.
     await expect(row.locator('.row-sending')).toBeVisible();
@@ -268,6 +315,200 @@ test('상단 상태는 전송 대기와 서버 처리 중을 각각 말한다', 
     expect(text, `상단 상태 실측: ${text}`).toMatch(/전송 대기 1건/);
     expect(text, `상단 상태 실측: ${text}`).toMatch(/1건 처리 중/);
     expect(text, `합산한 숫자 하나로 말하고 있다: ${text}`).not.toMatch(/(^|[^\d])2건 처리 중/);
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+// ── UX-2b: 사용자가 기다리는 카드만 빠르게 보고, 끝나면 다시 조용해진다 ──
+
+test('명함과 조사 카드가 끝날 때까지만 빠르게 갱신하고 terminal 뒤 기본 주기로 돌아간다', async ({ page }) => {
+  const research = {
+    captureId: '20260730-100000-research',
+    receivedAt: ago(2),
+    status: 'received',
+    type: 'research_instruction',
+    targetPerson: 'PER-000901',
+  };
+  const active = listFixture([research]);
+  const terminal = {
+    ...active,
+    items: active.items.map((item) => ({
+      ...item,
+      status: 'processed',
+      brief: item.brief ?? '# 합성 처리 완료\n합성 상태 전이입니다.',
+    })),
+  };
+  const harness = await boot(page, { listResponse: active });
+  try {
+    await expect(headerStatus(page)).toContainText('2건 처리 중');
+    const before = harness.listRequests;
+    const startedAt = Date.now();
+    harness.setListResponse(terminal);
+
+    // 기존 20초를 기다리지 않고 active cadence 안에 두 카드를 한 batch로 terminal 반영한다.
+    await expect(headerStatus(page)).toContainText('기록 3건', { timeout: 7_000 });
+    await expect(headerStatus(page)).not.toContainText('처리 중');
+    const activeRequestStartedAt = harness.listStartedAt.slice(before)[0];
+    expect(activeRequestStartedAt, 'active cadence의 list 요청이 시작되지 않았다').toBeDefined();
+    expect(activeRequestStartedAt - startedAt, 'active list 요청 시작이 5초 경계를 넘었다').toBeLessThanOrEqual(5_000);
+    expect(harness.listRequests).toBeGreaterThan(before);
+
+    // terminal 전환 즉시 빠른 cadence가 멈춘다. 20초 기본 주기 전에는 새 요청이 없어야 한다.
+    const stoppedAt = harness.listRequests;
+    await page.waitForTimeout(5_500);
+    expect(harness.listRequests).toBe(stoppedAt);
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+test('자동·수동·online 갱신이 겹쳐도 list 요청은 하나만 실행한다', async ({ page }) => {
+  const active = listFixture();
+  const terminal = {
+    ...active,
+    items: active.items.map((item) => ({ ...item, status: 'processed', brief: item.brief ?? '# 합성 처리 완료' })),
+  };
+  const harness = await boot(page, { listResponse: active });
+  try {
+    await expect(headerStatus(page)).toContainText('1건 처리 중');
+    harness.setListResponse(terminal);
+    harness.delayList(5_500);
+
+    await goOnline(page);
+    await expect.poll(() => harness.listInFlight, { timeout: 3_000 }).toBe(1);
+    await page.getByRole('button', { name: '최신 상태 확인' }).click();
+    await goOnline(page);
+    // 이 사이 active 4초 tick도 한 번 온다. 모두 같은 in-flight promise를 공유해야 한다.
+    await page.waitForTimeout(4_500);
+    expect(harness.maxListInFlight).toBe(1);
+    // 첫 느린 요청 뒤 예약된 최신 조회는 정상 속도로 응답한다.
+    harness.delayList(0);
+    await expect(headerStatus(page)).toContainText('기록 2건', { timeout: 3_000 });
+    await expect(headerStatus(page)).not.toContainText('처리 중');
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+test('작업 전 조회와 수동 확인이 겹치면 직후 한 번 더 읽어 새 카드를 놓치지 않는다', async ({ page }) => {
+  const initial = listFixture();
+  initial.items = initial.items.map((item) => ({ ...item, status: 'processed', brief: item.brief ?? '# 합성 처리 완료' }));
+  const newReceipt = {
+    captureId: '20260730-110000-new',
+    receivedAt: ago(0),
+    status: 'received',
+    type: 'research_instruction',
+    targetPerson: 'PER-000901',
+  };
+  const harness = await boot(page, { listResponse: initial });
+  try {
+    await expect(headerStatus(page)).toContainText('기록 2건');
+    harness.snapshotListOnRequest(true);
+    harness.delayList(1_500);
+    const before = harness.listRequests;
+    await page.getByRole('button', { name: '최신 상태 확인' }).click();
+    await expect.poll(() => harness.listInFlight).toBe(1);
+
+    // 첫 요청이 시작된 뒤 서버에 새 receipt가 생긴다. 이때 누른 확인은 오래된 응답을 최신으로
+    // 오인하지 않고, 현재 요청 직후의 trailing 조회까지 기다려야 한다.
+    harness.setListResponse({ ...initial, items: [...initial.items, newReceipt] });
+    await page.getByRole('button', { name: '최신 상태 확인' }).click();
+    await expect(headerStatus(page)).toContainText('1건 처리 중', { timeout: 5_000 });
+    expect(harness.listRequests).toBeGreaterThanOrEqual(before + 2);
+    expect(harness.maxListInFlight).toBe(1);
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+test('연결 해제 뒤 늦게 도착한 이전 토큰 응답은 화면과 캐시를 되살리지 않는다', async ({ page }) => {
+  const harness = await boot(page);
+  try {
+    await expect(headerStatus(page)).toContainText('1건 처리 중');
+    harness.snapshotListOnRequest(true);
+    harness.delayList(1_500);
+    await goOnline(page);
+    await expect.poll(() => harness.listInFlight).toBe(1);
+
+    await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '설정' }).click();
+    await page.getByRole('button', { name: '연결 해제', exact: true }).click();
+    await page.getByRole('button', { name: '연결 해제하기' }).click();
+    await expect.poll(() => harness.listInFlight, { timeout: 4_000 }).toBe(0);
+    await expect(headerStatus(page)).toContainText('연결 필요');
+    expect(await page.evaluate(() => Object.values(localStorage).map(String).join('\n'))).not.toContain('20260720-090000-s1');
+
+    // 연결 해제 뒤 뜨는 이름 온보딩을 마친 뒤에도 이전 계정 카드가 화면에 없어야 한다.
+    await page.getByRole('textbox', { name: '이름', exact: true }).fill('합성 검증자');
+    await page.locator('ion-modal.name-onboard-modal ion-button').evaluate((button: HTMLElement) => button.click());
+    await expect(page.locator('ion-modal.name-onboard-modal')).not.toHaveClass(/show-modal/);
+    await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '진행' }).click();
+    await expect(page.locator('.brief-card')).toHaveCount(0);
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+test('이전 연결 waiter가 겹쳐도 새 토큰의 즉시 상태 조회를 가로채지 않는다', async ({ page }) => {
+  const oldAccount = listFixture();
+  oldAccount.items = oldAccount.items.map((item) => ({ ...item, status: 'processed', brief: item.brief ?? '# 예전 연결 기록' }));
+  const newAccount = {
+    ...listFixture(),
+    items: [{
+      captureId: '20260730-120000-new-account',
+      receivedAt: ago(0),
+      status: 'received',
+      type: 'research_instruction',
+      targetPerson: 'PER-000999',
+    }],
+  };
+  const harness = await boot(page, { listResponse: oldAccount });
+  try {
+    await expect(headerStatus(page)).toContainText('기록 2건');
+    harness.setListResponseForToken('next-token', newAccount);
+    harness.snapshotListOnRequest(true);
+    harness.delayList(10_000);
+    const before = harness.listRequests;
+
+    // R0 뒤에 이전 session의 strong waiter를 먼저 붙인다.
+    await page.getByRole('button', { name: '최신 상태 확인' }).click();
+    await expect.poll(() => harness.listInFlight).toBe(1);
+    await page.getByRole('button', { name: '최신 상태 확인' }).click();
+
+    // R0가 끝나기 전에 token을 바꾸면 새 session effect도 같은 R0 뒤에 strong waiter를 붙인다.
+    await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '설정' }).click();
+    await page.getByRole('button', { name: '사용자·연결 정보 편집' }).click();
+    await page.getByRole('button', { name: /고급 설정/ }).click();
+    await page.getByLabel('개인 링크 코드 (?k= 값)').fill('next-token');
+    await page.getByRole('button', { name: '설정 저장' }).click();
+    harness.delayList(0);
+
+    await expect(headerStatus(page)).toContainText('1건 처리 중', { timeout: 12_000 });
+    expect(harness.listRequests).toBeGreaterThanOrEqual(before + 2);
+    expect(harness.maxListInFlight).toBe(1);
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+test('앱이 숨겨진 동안에는 active 빠른 갱신을 멈추고 돌아오면 즉시 확인한다', async ({ page }) => {
+  const harness = await boot(page);
+  try {
+    await expect(headerStatus(page)).toContainText('1건 처리 중');
+    await page.evaluate(() => Object.defineProperty(document, 'hidden', { configurable: true, value: true }));
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    const hiddenAt = harness.listRequests;
+    await page.waitForTimeout(4_500);
+    expect(harness.listRequests).toBe(hiddenAt);
+
+    const returnedAt = Date.now();
+    await page.evaluate(() => {
+      Reflect.deleteProperty(document, 'hidden');
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await expect.poll(() => harness.listRequests, { timeout: 1_000, intervals: [50] }).toBeGreaterThan(hiddenAt);
+    const returnRefreshStartedAt = harness.listStartedAt.slice(hiddenAt)[0];
+    expect(returnRefreshStartedAt - returnedAt, 'foreground 복귀 즉시 조회가 1초 안에 시작되지 않았다').toBeLessThanOrEqual(1_000);
   } finally {
     await stopServer(harness.server);
   }
