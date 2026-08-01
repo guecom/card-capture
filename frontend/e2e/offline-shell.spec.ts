@@ -95,7 +95,9 @@ test('promotes the root entrypoint while preserving token links and legacy rollb
   const origin = `http://127.0.0.1:${address.port}/`;
 
   try {
-    await page.goto(`${origin}?view=search&k=root-token`, { waitUntil: 'networkidle' });
+    // The app intentionally prefetches on-device model assets after boot. Route readiness is
+    // proven by the URL and rendered header below, not by unrelated background network idleness.
+    await page.goto(`${origin}?view=search&k=root-token`, { waitUntil: 'domcontentloaded' });
     // root → next/ 로 넘어갈 때 링크 코드는 전달되고, 도착한 앱이 주소창에서 코드를 지운다 (FI-005).
     await expect(page).toHaveURL(`${origin}next/?view=search`);
     await expect(page.locator('ion-header .app-header b')).toHaveText('사람 찾기');
