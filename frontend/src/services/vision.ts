@@ -10,6 +10,14 @@ export interface OcrTextResult {
 
 export type OcrAttempt = () => Promise<OcrTextResult | null>;
 
+function settleWithin<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => resolve(fallback), timeoutMs);
+    promise.then((value) => { window.clearTimeout(timer); resolve(value); })
+      .catch(() => { window.clearTimeout(timer); resolve(fallback); });
+  });
+}
+
 export function nameCandidate(text: string): string {
   const lines = String(text || '').split(/\r?\n/).map((line) => line.replace(/\s+/g, ' ').trim()).filter(Boolean);
   const blocked = /주식회사|유한회사|회사|그룹|센터|연구소|대학교|병원|협회|대표이사|대표|이사|부장|차장|과장|팀장|매니저|director|manager|president|company|corporation|corp\.?|inc\.?|ltd\.?|team/i;
@@ -204,17 +212,21 @@ export async function recognizeQuickName(
   return recognizeNameFromAttempts([
     async () => {
       if (!runtime.TextDetector) return null;
-      const rows = await new runtime.TextDetector().detect(canvas);
+      const rows = await settleWithin(new runtime.TextDetector().detect(canvas), 5_000, [] as TextDetectorRow[]);
       return { text: rows.map((row) => row.rawValue ?? '').join('\n'), confidence: 80, source: 'device_text_detector' };
     },
     async () => {
-      const worker = await ensureTesseractWorker(onProgress);
-      const result = await worker.recognize(canvas);
-      return {
-        text: result.data?.text ?? '',
-        confidence: result.data?.confidence ?? 0,
-        source: 'device_tesseract',
-      };
+      // 자산 요청이 중단된 WebView에서 script.onload/onerror 둘 다 오지 않는
+      // 경우가 있다. 이름은 수동으로 확인할 수 있으니 UI를 영구히 막지 않는다.
+      return settleWithin((async (): Promise<OcrTextResult | null> => {
+        const worker = await ensureTesseractWorker(onProgress);
+        const result = await worker.recognize(canvas);
+        return {
+          text: result.data?.text ?? '',
+          confidence: result.data?.confidence ?? 0,
+          source: 'device_tesseract',
+        };
+      })(), 25_000, null);
     },
   ], now);
 }

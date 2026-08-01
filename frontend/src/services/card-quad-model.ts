@@ -94,25 +94,26 @@ export function getCardQuadModelWorker(): CardQuadModelClient {
   clientSingleton = {
     ready,
     isReady: () => readyState,
-    detect(image, timeoutMs = 2_500) {
+    detect(image, timeoutMs = 8_000) {
       if (!readyState || detectInFlight) return Promise.resolve(null);
       detectInFlight = true;
-      return withTimeout(
-        post(
-          { type: 'detect', image },
-          [image.data.buffer],
-          (reply) => {
-            const inspection = reply.quad ? inspectCardQuad(reply.quad) : null;
-            if (!inspection?.valid || (reply.confidence ?? 0) < 0.3) {
-              return { quad: null, confidence: reply.confidence ?? 0 };
-            }
-            return { quad: orderQuad(inspection.ordered), confidence: reply.confidence ?? 0 };
-          },
-          null as LearnedCardQuad | null,
-        ),
-        timeoutMs,
-        null,
-      ).finally(() => { detectInFlight = false; });
+      const request = post(
+        { type: 'detect', image },
+        [image.data.buffer],
+        (reply) => {
+          const inspection = reply.quad ? inspectCardQuad(reply.quad) : null;
+          if (!inspection?.valid || (reply.confidence ?? 0) < 0.3) {
+            return { quad: null, confidence: reply.confidence ?? 0 };
+          }
+          return { quad: orderQuad(inspection.ordered), confidence: reply.confidence ?? 0 };
+        },
+        null as LearnedCardQuad | null,
+      );
+      // If the caller's timeout wins, the worker is still processing this frame.
+      // Keep backpressure until the real reply arrives; otherwise a slow phone or a
+      // busy CI host queues overlapping ONNX runs and the gate can stay waiting forever.
+      void request.finally(() => { detectInFlight = false; }).catch(() => undefined);
+      return withTimeout(request, timeoutMs, null);
     },
   };
   return clientSingleton;

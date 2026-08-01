@@ -389,6 +389,10 @@ function App() {
   // 저장되는 값은 이름 없음(quickName: null) 그대로이고 새 필드를 만들지 않는다.
   const [nameLater, setNameLater] = useState(false);
   const ocrSessionRef = useRef(0);
+  // 카메라가 닫히기 전에 카드 감지·이름 OCR ONNX 워커를 같이 띄우면
+  // 저사양 폰에서 둘 중 하나가 WASM 로드에 멈춘다. 앞면은 바로 기억하되,
+  // 이름 인식은 스트림과 라이브 감지가 끝난 다음에 시작한다.
+  const pendingQuickNameFrameRef = useRef<CapturedCameraFrame | null>(null);
   const nameEditedRef = useRef(false);
   const [cameraSession, setCameraSession] = useState<{ side: CardSide; withChoice: boolean } | null>(null);
   // 방금 저장한 촬영의 captureId (FI-049). 되돌리기·다시 열기의 대상이다.
@@ -595,9 +599,12 @@ function App() {
       prefetchOpenCv();
       prefetchCardQuadModelAssets();
       // 두 WASM 엔진을 동시에 컴파일하면 저사양 폰에서 첫 감지 시간이 오히려 늘어난다.
-      // 가벼운 OpenCV gate를 먼저 준비하고 명함 전용 모델은 그 다음 워커에서 기동한다.
-      void getOpenCvWorker().ready.then(() => getCardQuadModelWorker().ready);
-      prefetchQuickOcrAssets();
+      // OpenCV gate → 명함 전용 모델을 순서대로 기동하고, 카메라에 필요한
+      // 두 엔진이 준비된 다음에만 이름 OCR의 큰 자산을 예열한다. 같은 ORT WASM을
+      // 중복 요청하다 카드 워커가 waiting에 멈추는 저사양 기기 경합을 막는다.
+      void getOpenCvWorker().ready
+        .then(() => getCardQuadModelWorker().ready)
+        .finally(() => prefetchQuickOcrAssets());
     }, 2_500);
     return () => window.clearTimeout(timer);
   }, []);
@@ -985,17 +992,21 @@ function App() {
     }
     if (side === 'front') {
       setFrontFrame(frame);
-      startQuickNameOcr(frame);
+      pendingQuickNameFrameRef.current = frame;
     } else {
       setBackFrame(frame);
     }
     setMessage(captureToast(side, meta));
-  }, [applyRetakeFrame, queueRetakeSide, retakeMode, startQuickNameOcr]);
+  }, [applyRetakeFrame, queueRetakeSide, retakeMode]);
 
   const closeCameraSession = useCallback(() => {
     setCameraSession(null);
     setRetakeMode(false);
-  }, []);
+    const frame = pendingQuickNameFrameRef.current;
+    pendingQuickNameFrameRef.current = null;
+    // CameraCaptureModal.stopPreview() 후 마지막 감지 추론이 반환될 시간을 준다.
+    if (frame) window.setTimeout(() => startQuickNameOcr(frame), 250);
+  }, [startQuickNameOcr]);
 
   const completeCapture = useCallback(async () => {
     if (!frontFrame || queueing) return;
