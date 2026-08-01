@@ -15,19 +15,62 @@ let cv: Cv = null;
 const workerScope = self as unknown as { importScripts: (url: string) => void; postMessage: (message: unknown) => void; cv?: Cv };
 
 function orderQuad(points: WorkerPoint[]): WorkerPoint[] {
-  const bySum = points.slice().sort((a, b) => (a.x + a.y) - (b.x + b.y));
-  const byDifference = points.slice().sort((a, b) => (a.y - a.x) - (b.y - b.x));
-  return [bySum[0], byDifference[0], bySum[3], byDifference[3]];
+  if (points.length !== 4) return points.slice();
+  const center = points.reduce((sum, point) => ({ x: sum.x + point.x / 4, y: sum.y + point.y / 4 }), { x: 0, y: 0 });
+  let ordered = points.slice().sort((a, b) => Math.atan2(a.y - center.y, a.x - center.x) - Math.atan2(b.y - center.y, b.x - center.x));
+  const area = ordered.reduce((total, point, index) => {
+    const next = ordered[(index + 1) % ordered.length];
+    return total + point.x * next.y - next.x * point.y;
+  }, 0) / 2;
+  if (area < 0) ordered = ordered.reverse();
+  const first = ordered.reduce((best, point, index) => {
+    const score = point.x + point.y;
+    const bestScore = ordered[best].x + ordered[best].y;
+    if (score !== bestScore) return score < bestScore ? index : best;
+    if (point.y !== ordered[best].y) return point.y < ordered[best].y ? index : best;
+    return point.x < ordered[best].x ? index : best;
+  }, 0);
+  return [...ordered.slice(first), ...ordered.slice(0, first)];
 }
 
 function plausibleCard(quad: WorkerPoint[]): boolean {
   if (quad.length !== 4) return false;
+  if (quad.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) return false;
+  const ordered = orderQuad(quad);
   const distance = (a: WorkerPoint, b: WorkerPoint) => Math.hypot(a.x - b.x, a.y - b.y);
-  const width = Math.max(distance(quad[0], quad[1]), distance(quad[3], quad[2]));
-  const height = Math.max(distance(quad[0], quad[3]), distance(quad[1], quad[2]));
-  if (width < 20 || height < 20) return false;
-  const ratio = width / height;
-  return (ratio >= 1.15 && ratio <= 2.7) || (ratio >= 0.37 && ratio <= 0.87);
+  for (let left = 0; left < ordered.length; left += 1) {
+    for (let right = left + 1; right < ordered.length; right += 1) {
+      if (distance(ordered[left], ordered[right]) < 8) return false;
+    }
+  }
+  let turnSign = 0;
+  for (let index = 0; index < ordered.length; index += 1) {
+    const previous = ordered[(index + 3) % 4];
+    const current = ordered[index];
+    const next = ordered[(index + 1) % 4];
+    const ax = current.x - previous.x; const ay = current.y - previous.y;
+    const bx = next.x - current.x; const by = next.y - current.y;
+    const magnitude = Math.hypot(ax, ay) * Math.hypot(bx, by);
+    if (!magnitude) return false;
+    const cross = ax * by - ay * bx;
+    if (Math.abs(cross / magnitude) < Math.sin((18 * Math.PI) / 180)) return false;
+    const sign = Math.sign(cross);
+    if (!turnSign) turnSign = sign;
+    else if (sign !== turnSign) return false;
+  }
+  const top = distance(ordered[0], ordered[1]);
+  const right = distance(ordered[1], ordered[2]);
+  const bottom = distance(ordered[2], ordered[3]);
+  const left = distance(ordered[3], ordered[0]);
+  const width = (top + bottom) / 2;
+  const height = (left + right) / 2;
+  if (Math.min(width, height) < 20) return false;
+  if (Math.max(top, bottom) / Math.min(top, bottom) > 3 || Math.max(left, right) / Math.min(left, right) > 3) return false;
+  const boxWidth = Math.max(...ordered.map((point) => point.x)) - Math.min(...ordered.map((point) => point.x));
+  const boxHeight = Math.max(...ordered.map((point) => point.y)) - Math.min(...ordered.map((point) => point.y));
+  if (!boxWidth || !boxHeight || quadArea(ordered) / (boxWidth * boxHeight) < 0.42) return false;
+  const ratio = Math.max(width, height) / Math.min(width, height);
+  return ratio >= 1.15 && ratio <= 2.7;
 }
 
 // ── 명함 사각형 감지 v2 (TSK-000244) ──────────────────────────────────────────
@@ -140,7 +183,7 @@ function edgeSupport(supportMap: Cv, quad: WorkerPoint[]): number {
 }
 
 function scoreQuad(quad: WorkerPoint[], edgeMap: Cv, minimumArea: number, maximumArea: number): number {
-  if (quad.length !== 4) return 0;
+  if (!plausibleCard(quad)) return 0;
   const area = quadArea(quad);
   if (area <= minimumArea || area >= maximumArea) return 0;
   const aspect = aspectScore(quad);

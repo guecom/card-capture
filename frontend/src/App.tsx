@@ -70,6 +70,7 @@ import { captureProgress, refreshHint } from './services/capture-progress';
 import { refreshCadenceMs } from './services/refresh-cadence';
 import { contactCardFromBrief } from './services/contacts';
 import { getOpenCvWorker, prefetchOpenCv } from './services/opencv';
+import { getCardQuadModelWorker, prefetchCardQuadModelAssets } from './services/card-quad-model';
 import { prefetchQuickOcrAssets } from './services/paddle-quickname';
 import {
   type DamagedQueueEntry,
@@ -592,7 +593,10 @@ function App() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       prefetchOpenCv();
-      void getOpenCvWorker().ready;
+      prefetchCardQuadModelAssets();
+      // 두 WASM 엔진을 동시에 컴파일하면 저사양 폰에서 첫 감지 시간이 오히려 늘어난다.
+      // 가벼운 OpenCV gate를 먼저 준비하고 명함 전용 모델은 그 다음 워커에서 기동한다.
+      void getOpenCvWorker().ready.then(() => getCardQuadModelWorker().ready);
       prefetchQuickOcrAssets();
     }, 2_500);
     return () => window.clearTimeout(timer);

@@ -22,7 +22,9 @@ import {
   stopCameraStream,
 } from '../services/camera';
 import { getOpenCvWorker, type OpenCvWorkerClient, plausibleCard, type Point } from '../services/opencv';
+import { getCardQuadModelWorker, type CardQuadModelClient } from '../services/card-quad-model';
 import { blankAutoCaptureState, nextAutoCaptureState } from '../services/auto-capture';
+import { blankQuadTrackState, nextQuadTrackState } from '../services/quad-tracker';
 import { preloadQuickNameOcr } from '../services/vision';
 import { type CoverMap, coverMapInBox, guideRectDisplay, guideRectInVideo, lerpQuad, rectToQuad, videoPointToDisplay } from '../services/stage-geometry';
 
@@ -125,7 +127,9 @@ export function CameraCaptureModal({
   const nativeInputRef = useRef<HTMLInputElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const workerRef = useRef<OpenCvWorkerClient | null>(null);
+  const modelWorkerRef = useRef<CardQuadModelClient | null>(null);
   const autoGateRef = useRef(blankAutoCaptureState());
+  const quadTrackRef = useRef(blankQuadTrackState());
   const capturingRef = useRef(false);
   const liveQuadRef = useRef<{ quad: Point[]; at: number } | null>(null);
   const displayQuadRef = useRef<Point[] | null>(null);
@@ -138,6 +142,12 @@ export function CameraCaptureModal({
   // 직전 프레임의 감지 사각형(감지용 축소 프레임 좌표). 워커가 후보를 고를 때 기준으로 써서
   // 프레임마다 다른 후보가 이기며 박스가 떠는 것을 막는다 (TSK-000244).
   const lastDetectQuadRef = useRef<Point[] | null>(null);
+  const modelGateRef = useRef<{
+    status: 'waiting' | 'positive' | 'negative' | 'unavailable';
+    quad: Point[] | null;
+    confidence: number;
+    at: number;
+  }>({ status: 'waiting', quad: null, confidence: 0, at: 0 });
   // 감지용 다운스케일 캔버스는 한 번만 만들어 재사용한다 (모바일 GC 부담 축소).
   const detectCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [phase, setPhase] = useState<PreviewPhase>('idle');
@@ -162,11 +172,13 @@ export function CameraCaptureModal({
     setTorchOn(false);
     capturingRef.current = false;
     autoGateRef.current = blankAutoCaptureState();
+    quadTrackRef.current = blankQuadTrackState();
     autoProgressRef.current = 0;
     liveQuadRef.current = null;
     displayQuadRef.current = null;
     detectedSinceRef.current = 0;
     lastDetectQuadRef.current = null;
+    modelGateRef.current = { status: 'waiting', quad: null, confidence: 0, at: 0 };
   }, []);
 
   useEffect(() => stopPreview, [stopPreview]);
@@ -176,10 +188,12 @@ export function CameraCaptureModal({
     setSide(nextSide);
     capturingRef.current = false;
     autoGateRef.current = blankAutoCaptureState();
+    quadTrackRef.current = blankQuadTrackState();
     autoProgressRef.current = 0;
     liveQuadRef.current = null;
     detectedSinceRef.current = 0;
     lastDetectQuadRef.current = null;
+    modelGateRef.current = { status: 'waiting', quad: null, confidence: 0, at: 0 };
     // 방금 찍은 장이 그대로 다시 찍히지 않도록, 명함이 한 번 화면에서 벗어난 뒤에만 자동 촬영을 재개한다.
     autoArmedRef.current = false;
     rearmAtRef.current = performance.now();
@@ -210,8 +224,22 @@ export function CameraCaptureModal({
       // 엔진은 앱 시작 직후 워커에서 미리 기동된다 — 보통 여기 도달하면 이미 준비 완료다.
       const client = getOpenCvWorker();
       workerRef.current = client;
+      const startModelClient = () => {
+        const modelClient = getCardQuadModelWorker();
+        modelWorkerRef.current = modelClient;
+        if (modelClient.isReady()) {
+          setCvState('명함 전용 AI·경계 검증 준비됨');
+        } else {
+          void modelClient.ready.then((ok) => {
+            if (phaseRef.current !== 'streaming') return;
+            if (!ok) modelGateRef.current = { status: 'unavailable', quad: null, confidence: 0, at: performance.now() };
+            setCvState(ok ? '명함 전용 AI·경계 검증 준비됨' : '경계 검증 fallback 준비됨');
+          });
+        }
+      };
       if (client.isReady()) {
         setCvState('명함 감지·자동 촬영 준비됨');
+        startModelClient();
       } else {
         const startedAt = Date.now();
         setCvState('명함 감지 엔진 준비 중… 지금도 촬영할 수 있어요');
@@ -222,6 +250,7 @@ export function CameraCaptureModal({
         void client.ready.then((ok) => {
           window.clearInterval(ticker);
           setCvState(ok ? '명함 감지·자동 촬영 준비됨' : '전체 프레임 fallback 준비됨');
+          if (ok) startModelClient();
         });
       }
       preloadQuickNameOcr();
@@ -334,6 +363,7 @@ export function CameraCaptureModal({
     const interval = window.setInterval(() => {
       const video = videoRef.current;
       const client = workerRef.current;
+      const modelClient = modelWorkerRef.current;
       if (!video || !video.videoWidth || capturingRef.current) return;
       if (!client?.isReady()) {
         setAutoHint('감지 엔진 준비 중 · 지금 찍어도 저장됩니다');
@@ -347,6 +377,24 @@ export function CameraCaptureModal({
       if (!context || typeof context.getImageData !== 'function') return;
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
       deepCounter += 1;
+      if (deepCounter % 3 === 0 && modelClient?.isReady()) {
+        try {
+          const modelImage = context.getImageData(0, 0, canvas.width, canvas.height);
+          void modelClient.detect(modelImage).then((result) => {
+            if (phaseRef.current !== 'streaming' || capturingRef.current) return;
+            // null은 busy/timeout/worker 오류다. 이를 명함 없음으로 오해하면 느린 폰에서
+            // 학습 모델이 끝나기 전에 gate가 닫힌다. 명시적인 quad:null 응답만 negative다.
+            if (result === null) return;
+            if (result.quad && plausibleCard(result.quad)) {
+              modelGateRef.current = { status: 'positive', quad: result.quad, confidence: result.confidence, at: performance.now() };
+            } else {
+              modelGateRef.current = { status: 'negative', quad: null, confidence: 0, at: performance.now() };
+            }
+          });
+        } catch {
+          // 모델 입력 복사가 불가능한 WebView에서는 OpenCV fallback만 유지한다.
+        }
+      }
       let image: ImageData;
       try {
         image = context.getImageData(0, 0, canvas.width, canvas.height);
@@ -356,11 +404,23 @@ export function CameraCaptureModal({
       const frameWidth = canvas.width;
       const frameHeight = canvas.height;
       const videoScale = video.videoWidth / frameWidth;
-      void client.analyze(image, { minAreaRatio: 0.07, fast: deepCounter % 3 !== 0, withGate: autoCapture, previousQuad: lastDetectQuadRef.current }).then((analysis) => {
+      const modelGate = modelGateRef.current;
+      const learnedSeed = modelGate.status === 'positive' && performance.now() - modelGate.at < 1_400 ? modelGate.quad : null;
+      // 명함 전용 모델은 후보를 제안하고 OpenCV가 실제 edge support를 확인한다.
+      // 모델 단독 결과는 화면 박스나 자동 촬영에 직접 사용하지 않는다.
+      const seedQuad = learnedSeed ?? lastDetectQuadRef.current;
+      void client.analyze(image, { minAreaRatio: 0.07, fast: deepCounter % 3 !== 0, withGate: autoCapture, previousQuad: seedQuad }).then((analysis) => {
         if (!analysis) return; // 이전 프레임 분석 중 — 이 프레임은 버림(자연 스로틀).
         if (phaseRef.current !== 'streaming' || capturingRef.current) return;
         const now = performance.now();
-        if (!analysis.quad || !plausibleCard(analysis.quad)) {
+        const latestModelGate = modelGateRef.current;
+        const modelPositive = latestModelGate.status === 'positive' && now - latestModelGate.at < 1_400;
+        const modelFallback = latestModelGate.status === 'unavailable';
+        // 학습 모델이 아직 명함을 확인하지 않았거나 명함 없음으로 판정한 동안에는
+        // 책상 무늬의 직사각형을 OpenCV가 잡아도 UI 박스와 자동 촬영으로 넘기지 않는다.
+        const verifiedQuad = modelPositive || modelFallback ? analysis.quad : null;
+        if (!verifiedQuad || !plausibleCard(verifiedQuad)) {
+          quadTrackRef.current = nextQuadTrackState(quadTrackRef.current, verifiedQuad, frameWidth, frameHeight);
           if (autoCapture) {
             autoGateRef.current = nextAutoCaptureState(autoGateRef.current, { detected: false }, now);
             autoProgressRef.current = 0;
@@ -368,11 +428,22 @@ export function CameraCaptureModal({
           // 명함이 화면에서 벗어났다 = 사용자가 장을 바꾸는 중. 이제 다음 장을 자동 촬영해도 된다.
           autoArmedRef.current = true;
           lastDetectQuadRef.current = null;
-          setAutoHint('명함을 화면 안에 담아 주세요');
+          setAutoHint(latestModelGate.status === 'waiting' ? '명함 여부를 확인 중… 잠시 고정해 주세요' : '명함을 화면 안에 담아 주세요');
           return;
         }
-        lastDetectQuadRef.current = analysis.quad;
-        liveQuadRef.current = { quad: analysis.quad.map((point) => ({ x: point.x * videoScale, y: point.y * videoScale })), at: now };
+        quadTrackRef.current = nextQuadTrackState(quadTrackRef.current, verifiedQuad, frameWidth, frameHeight);
+        const tracked = quadTrackRef.current;
+        if (!tracked.accepted || !tracked.locked) {
+          if (autoCapture) {
+            autoGateRef.current = nextAutoCaptureState(autoGateRef.current, { detected: false }, now);
+            autoProgressRef.current = 0;
+          }
+          lastDetectQuadRef.current = tracked.locked;
+          setAutoHint(tracked.status === 'rejected' ? '명함 네 모서리를 다시 맞춰 주세요' : '명함 경계를 확인 중 · 잠시 고정해 주세요');
+          return;
+        }
+        lastDetectQuadRef.current = tracked.locked;
+        liveQuadRef.current = { quad: tracked.locked.map((point) => ({ x: point.x * videoScale, y: point.y * videoScale })), at: now };
         if (!autoCapture) {
           setAutoHint('인식됨 · 아래 버튼으로 촬영할 수 있어요');
           return;
@@ -389,7 +460,7 @@ export function CameraCaptureModal({
         autoGateRef.current = nextAutoCaptureState(autoGateRef.current, {
           detected: true,
           plausible: true,
-          quad: analysis.quad,
+          quad: tracked.locked,
           frameWidth,
           frameHeight,
           blur: analysis.blur,

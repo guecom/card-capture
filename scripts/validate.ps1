@@ -23,6 +23,7 @@ $required = @(
   'docs/vendor/tesseract/kor.traineddata.gz','docs/vendor/tesseract/eng.traineddata.gz','docs/vendor/tesseract/README.md',
   'docs/vendor/paddleocr/PP-OCRv5_mobile_det_infer.onnx','docs/vendor/paddleocr/korean_PP-OCRv5_mobile_rec_infer.onnx',
   'docs/vendor/paddleocr/ppocrv5_korean_dict.txt','docs/vendor/ort/ort-wasm-simd-threaded.wasm','docs/vendor/ort/ort-wasm-simd-threaded.mjs',
+  'docs/vendor/cardquad/lcnet100_h_e_bifpn_256_fp32.onnx','docs/vendor/cardquad/LICENSE','docs/vendor/cardquad/README.md',
   'watcher/CardCapture_Watcher.ps1','watcher/CardCapture_Health.ps1','watcher/tests/watcher-tests.ps1','watcher/tests/watcher-protocol-tests.ps1','watcher/tests/health-tests.ps1','watcher/tests/log-pii-tests.ps1',
   'eval/README.md','eval/run-eval.ps1','eval/upload-idempotency.test.js','eval/upload-filename-allowlist.test.js','eval/upload-content-type.test.js','eval/legacy-credential.test.js','eval/build-reproducibility.test.js','eval/version-sync.test.js','eval/persondoc-owner.test.js','eval/prompt-injection.test.js','eval/gas-sandbox.js','eval/golden-capture.test.js','eval/adversarial-capture.test.js','eval/camera-quality.test.js','eval/page-syntax.test.js','eval/server-syntax.test.js','eval/ocr-browser-smoke.html','scripts/validate.ps1'
 )
@@ -176,6 +177,8 @@ $ocrHashes = @{
   'docs/vendor/paddleocr/ppocrv5_korean_dict.txt' = 'a3792cbb41215a43e555e16ff4a7f7b18db5dd80cd058637098f0d872f2dd9d6'
   'docs/vendor/ort/ort-wasm-simd-threaded.wasm' = 'd1ab1b94b16a65b29d710d0b587b29e7bed336827577623913479b8afe8113e6'
   'docs/vendor/ort/ort-wasm-simd-threaded.mjs' = '0a1e718d99c41b22c21f2520ff4f9e883a6b5533856e398d21816ee8eb8185d3'
+  # DocAligner LCNet100 corner heatmaps (TSK-000244) - self-hosted, on-device only
+  'docs/vendor/cardquad/lcnet100_h_e_bifpn_256_fp32.onnx' = 'f4117b786e3a18470f3865c93f3c2bd69d9b998edd60f385574a5c665e79594e'
   # Pretendard Variable subset (founder 2026-07-28) - self-hosted, SIL OFL 1.1.
   # Sub-setting recipe and the reason for every choice live in frontend/src/fonts/README.md.
   'frontend/src/fonts/pretendard-variable-korean.woff2' = '58f28b65661548386dc69f78d65ebad51baca1ce133d6b7647444f4579babb2b'
@@ -187,7 +190,7 @@ foreach ($rel in $ocrHashes.Keys) {
   $actual = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
   if ($actual -ne $ocrHashes[$rel]) { $badOcrHash += "$rel hash mismatch" }
 }
-if ($badOcrHash.Count -gt 0) { $badOcrHash | ForEach-Object { Fail "ocr-asset: $_" } } else { Pass 'pinned OCR/font asset hashes match' }
+if ($badOcrHash.Count -gt 0) { $badOcrHash | ForEach-Object { Fail "on-device-asset: $_" } } else { Pass 'pinned OCR/card-quad/font asset hashes match' }
 
 # ---------- 9. watcher 스위트 ----------
 # 반드시 -File 로 호출한다 — identity·다중 orphan 게이트가 실행 프로세스 자신의 command line을 읽는다.
