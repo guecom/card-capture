@@ -3,20 +3,95 @@ export interface Point {
   y: number;
 }
 
+const MIN_CORNER_DISTANCE = 8;
+const MIN_TURN_SINE = Math.sin((18 * Math.PI) / 180);
+
+function distance(a: Point, b: Point): number {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function signedArea(points: Point[]): number {
+  let total = 0;
+  for (let index = 0; index < points.length; index += 1) {
+    const current = points[index];
+    const next = points[(index + 1) % points.length];
+    total += current.x * next.y - next.x * current.y;
+  }
+  return total / 2;
+}
+
 export function orderQuad(points: Point[]): Point[] {
-  const bySum = points.slice().sort((a, b) => (a.x + a.y) - (b.x + b.y));
-  const byDifference = points.slice().sort((a, b) => (a.y - a.x) - (b.y - b.x));
-  return [bySum[0], byDifference[0], bySum[3], byDifference[3]];
+  if (points.length !== 4) return points.slice();
+  const center = points.reduce((sum, point) => ({ x: sum.x + point.x / 4, y: sum.y + point.y / 4 }), { x: 0, y: 0 });
+  let ordered = points.slice().sort((a, b) => Math.atan2(a.y - center.y, a.x - center.x) - Math.atan2(b.y - center.y, b.x - center.x));
+  if (signedArea(ordered) < 0) ordered = ordered.reverse();
+  const first = ordered.reduce((best, point, index) => {
+    const score = point.x + point.y;
+    const bestScore = ordered[best].x + ordered[best].y;
+    if (score !== bestScore) return score < bestScore ? index : best;
+    if (point.y !== ordered[best].y) return point.y < ordered[best].y ? index : best;
+    return point.x < ordered[best].x ? index : best;
+  }, 0);
+  return [...ordered.slice(first), ...ordered.slice(0, first)];
+}
+
+export type QuadInspection = {
+  valid: boolean;
+  reason: 'ok' | 'point-count' | 'non-finite' | 'duplicate-corner' | 'non-convex' | 'extreme-angle' | 'too-small' | 'shape-collapse' | 'aspect-ratio';
+  ordered: Point[];
+  aspect: number;
+};
+
+export function inspectCardQuad(quad: Point[]): QuadInspection {
+  if (quad.length !== 4) return { valid: false, reason: 'point-count', ordered: quad.slice(), aspect: 0 };
+  if (quad.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) {
+    return { valid: false, reason: 'non-finite', ordered: quad.slice(), aspect: 0 };
+  }
+  const ordered = orderQuad(quad);
+  for (let left = 0; left < ordered.length; left += 1) {
+    for (let right = left + 1; right < ordered.length; right += 1) {
+      if (distance(ordered[left], ordered[right]) < MIN_CORNER_DISTANCE) return { valid: false, reason: 'duplicate-corner', ordered, aspect: 0 };
+    }
+  }
+
+  let turnSign = 0;
+  for (let index = 0; index < ordered.length; index += 1) {
+    const previous = ordered[(index + 3) % 4];
+    const current = ordered[index];
+    const next = ordered[(index + 1) % 4];
+    const ax = current.x - previous.x; const ay = current.y - previous.y;
+    const bx = next.x - current.x; const by = next.y - current.y;
+    const magnitude = Math.hypot(ax, ay) * Math.hypot(bx, by);
+    if (!magnitude) return { valid: false, reason: 'duplicate-corner', ordered, aspect: 0 };
+    const cross = ax * by - ay * bx;
+    const sine = cross / magnitude;
+    if (Math.abs(sine) < MIN_TURN_SINE) return { valid: false, reason: 'extreme-angle', ordered, aspect: 0 };
+    const sign = Math.sign(cross);
+    if (!turnSign) turnSign = sign;
+    else if (sign !== turnSign) return { valid: false, reason: 'non-convex', ordered, aspect: 0 };
+  }
+
+  const top = distance(ordered[0], ordered[1]);
+  const right = distance(ordered[1], ordered[2]);
+  const bottom = distance(ordered[2], ordered[3]);
+  const left = distance(ordered[3], ordered[0]);
+  const width = (top + bottom) / 2;
+  const height = (left + right) / 2;
+  if (Math.min(width, height) < 20) return { valid: false, reason: 'too-small', ordered, aspect: 0 };
+  if (Math.max(top, bottom) / Math.min(top, bottom) > 3 || Math.max(left, right) / Math.min(left, right) > 3) {
+    return { valid: false, reason: 'shape-collapse', ordered, aspect: 0 };
+  }
+  const boxWidth = Math.max(...ordered.map((point) => point.x)) - Math.min(...ordered.map((point) => point.x));
+  const boxHeight = Math.max(...ordered.map((point) => point.y)) - Math.min(...ordered.map((point) => point.y));
+  const fill = boxWidth > 0 && boxHeight > 0 ? Math.abs(signedArea(ordered)) / (boxWidth * boxHeight) : 0;
+  if (fill < 0.42) return { valid: false, reason: 'shape-collapse', ordered, aspect: 0 };
+  const aspect = Math.max(width, height) / Math.min(width, height);
+  if (aspect < 1.15 || aspect > 2.7) return { valid: false, reason: 'aspect-ratio', ordered, aspect };
+  return { valid: true, reason: 'ok', ordered, aspect };
 }
 
 export function plausibleCard(quad: Point[]): boolean {
-  if (quad.length !== 4) return false;
-  const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
-  const width = Math.max(distance(quad[0], quad[1]), distance(quad[3], quad[2]));
-  const height = Math.max(distance(quad[0], quad[3]), distance(quad[1], quad[2]));
-  if (width < 20 || height < 20) return false;
-  const ratio = width / height;
-  return (ratio >= 1.15 && ratio <= 2.7) || (ratio >= 0.37 && ratio <= 0.87);
+  return inspectCardQuad(quad).valid;
 }
 
 // 파일만 미리 받아 HTTP 캐시에 넣는다 — 실행·컴파일이 아니므로 메인 스레드를 막지 않고,

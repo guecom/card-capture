@@ -115,6 +115,7 @@ self.addEventListener('fetch', (event) => {
     new URL('../vendor/opencv.js', self.registration.scope).pathname,
     new URL('../vendor/paddleocr/', self.registration.scope).pathname,
     new URL('../vendor/ort/', self.registration.scope).pathname,
+    new URL('../vendor/cardquad/', self.registration.scope).pathname,
   ];
   const isSharedRuntime = sharedRuntimePaths.some((path) => url.pathname.startsWith(path));
   if (!url.pathname.startsWith(scopePath) && !isSharedRuntime) return;
@@ -195,6 +196,9 @@ self.addEventListener('fetch', (event) => {
 export default defineConfig({
   base: './',
   resolve: {
+    // ORT는 이미 docs/vendor/ort에 해시 고정해 둔 WASM을 쓴다.
+    // extern-wasm export를 선택해 동일한 13.5MB binary가 앱 bundle에 다시 들어가지 않게 한다.
+    conditions: ['onnxruntime-web-use-extern-wasm'],
     alias: [
       // WASM 전용 ORT 번들로 고정 — 기본 번들은 WebGPU(jsep) 로더를 동적 임포트해
       // 27MB jsep 자산까지 요구한다. 우리는 vendor/ort/에 wasm 파일만 자체 호스팅한다.

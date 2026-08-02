@@ -6,6 +6,9 @@ docs/vendor/tesseract/*.gz binary
 docs/vendor/paddleocr/** -text
 docs/vendor/ort/** -text
 docs/vendor/tesseract/** -text
+docs/vendor/cardquad/*.onnx -text
+docs/vendor/cardquad/LICENSE text eol=lf
+docs/vendor/cardquad/*.md text eol=lf
 
 # 자체 호스팅 서체도 해시로 고정된 자산이다 (founder 2026-07-28).
 # Windows 체크아웃(core.autocrlf=true)에서 EOL 변환이 한 번이라도 닿으면 파일이 깨지고

@@ -41,7 +41,7 @@ function startStaticServer(): Promise<Server> {
 
 test.use({ viewport: { width: 375, height: 812 } });
 
-test('detection matrix over realistic scenes', async ({ page }) => {
+test('detection matrix over realistic scenes', async ({ page: unusedPage }) => {
   test.setTimeout(600_000);
   const server = await startStaticServer();
   const address = server.address();
@@ -49,10 +49,9 @@ test('detection matrix over realistic scenes', async ({ page }) => {
   const report: Array<Record<string, unknown>> = [];
 
   try {
-    page.on('pageerror', (error) => console.log('PAGEERROR', error.message.slice(0, 200)));
-
     for (const scenario of ['clean', 'tilted-glare', 'low-contrast', 'busy-background', 'rounded-shadowless'] as Scenario[]) {
-      await page.context().clearCookies();
+      const page = await unusedPage.context().newPage();
+      page.on('pageerror', (error) => console.log('PAGEERROR', error.message.slice(0, 200)));
       await page.addInitScript(({ frame, card, scene }) => {
         localStorage.setItem('cc_name', 'Debug');
         localStorage.setItem('cc_autoCapture', 'off');
@@ -143,7 +142,7 @@ test('detection matrix over realistic scenes', async ({ page }) => {
         });
       }, { frame: FRAME, card: CARD, scene: scenario });
 
-      await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
+      await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'domcontentloaded' });
       await page.getByRole('button', { name: '명함 앞면 촬영' }).click();
       await expect(page.locator('.camera-preview-stage')).toHaveAttribute('data-state', 'streaming', { timeout: 20_000 });
       await expect(page.locator('.camera-engine-note')).toContainText(/준비됨|fallback/, { timeout: 60_000 });
@@ -181,7 +180,7 @@ test('detection matrix over realistic scenes', async ({ page }) => {
       report.push({ scenario, verdict, centerDx, centerDy, sizeRatio, hint: probe?.hint ?? null });
       await page.locator('.camera-preview-stage').screenshot({ path: resolve(outDir, `scene-${scenario}.png`) });
       await page.getByRole('button', { name: '닫기' }).click();
-      await page.waitForTimeout(300);
+      await page.close();
     }
 
     console.log('DETECT_MATRIX', JSON.stringify(report, null, 1));
