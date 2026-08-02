@@ -56,11 +56,26 @@ describe('quad temporal consensus', () => {
     for (let index = 0; index < 3; index += 1) state = nextQuadTrackState(state, CARD, 320, 180, 0.76);
     const original = state.locked;
 
-    for (let index = 0; index < 3; index += 1) {
+    for (let index = 0; index < 12; index += 1) {
       state = nextQuadTrackState(state, shifted(24), 320, 180, 0.8);
       expect(state.accepted).toBe(false);
       expect(state.locked).toEqual(original);
       expect(state.rejection).toBe('confidence-margin');
     }
+  });
+
+  it('expires a lock only after genuinely missing frames, then reacquires from scratch', () => {
+    let state = blankQuadTrackState();
+    for (let index = 0; index < 3; index += 1) state = nextQuadTrackState(state, CARD, 320, 180, 0.76);
+
+    for (let index = 0; index < 4; index += 1) state = nextQuadTrackState(state, null, 320, 180, 0);
+    expect(state.locked).toBeNull();
+    expect(state.rejection).toBe('missing');
+
+    for (let index = 0; index < 2; index += 1) state = nextQuadTrackState(state, shifted(24), 320, 180, 0.8);
+    expect(state.locked).toBeNull();
+    state = nextQuadTrackState(state, shifted(24), 320, 180, 0.8);
+    expect(state.accepted).toBe(true);
+    expect(state.locked?.[0].x).toBeGreaterThan(35);
   });
 });

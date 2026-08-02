@@ -142,28 +142,15 @@ export function nextQuadTrackState(
   }
 
   // Geometry consensus alone must never replace a locked card. The challenger
-  // also needs a clear confidence advantage over the current lock. If the old
-  // card has genuinely disappeared, consecutive misses expire that lock and a
-  // new card starts a fresh acquisition instead of silently replacing it.
+  // also needs a clear confidence advantage over the current lock. Only actual
+  // absent verified frames may expire a lock; a persistent lower-confidence
+  // rectangle must not manufacture misses and reacquire itself through the back door.
   if (confidence < previous.lockedConfidence + config.switchConfidenceMargin) {
-    const misses = previous.misses + 1;
-    if (misses >= config.resetAfterMisses) {
-      return {
-        ...blankQuadTrackState(),
-        challenger: quad,
-        streak: 1,
-        misses,
-        status: 'acquiring',
-        drift: lockedDrift,
-        challengerConfidence: confidence,
-        rejection: 'lock-expired',
-      };
-    }
     return {
       ...previous,
       challenger: null,
       streak: 0,
-      misses,
+      misses: 0,
       status: 'rejected',
       accepted: false,
       drift: lockedDrift,
