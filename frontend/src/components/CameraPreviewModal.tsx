@@ -30,6 +30,7 @@ import {
   positiveCardQuadModelGate,
   unavailableCardQuadModelGate,
 } from '../services/card-quad-gate';
+import { agreeCardQuad } from '../services/card-quad-agreement';
 import { blankAutoCaptureState, nextAutoCaptureState } from '../services/auto-capture';
 import { blankQuadTrackState, nextQuadTrackState } from '../services/quad-tracker';
 import { type CoverMap, coverMapInBox, guideRectDisplay, guideRectInVideo, lerpQuad, rectToQuad, videoPointToDisplay } from '../services/stage-geometry';
@@ -234,7 +235,7 @@ export function CameraCaptureModal({
           void modelClient.ready.then((ok) => {
             if (phaseRef.current !== 'streaming') return;
             if (!ok) modelGateRef.current = unavailableCardQuadModelGate(performance.now());
-            setCvState(ok ? '명함 전용 AI·경계 검증 준비됨' : '경계 검증 fallback 준비됨');
+            setCvState(ok ? '명함 전용 AI·경계 검증 준비됨' : 'AI 경계 검증 불가 · 수동 안전 촬영만 가능');
           });
         }
       };
@@ -293,19 +294,6 @@ export function CameraCaptureModal({
             }
           } catch {
             // getImageData 불가 → 아래 경로로.
-          }
-        }
-        // 2순위: 촬영 프레임에서 새로 감지해 보정 (라이브 사각형이 없거나 오래됐을 때).
-        if (!result) {
-          try {
-            const image = fullContext.getImageData(0, 0, full.width, full.height);
-            const rectified = await client.rectify(image);
-            if (rectified) {
-              result = canvasFromImageData(rectified);
-              cropState = 'rectified';
-            }
-          } catch {
-            // getImageData 불가(제한된 context 등) → 아래 가이드 크롭 폴백.
           }
         }
       }
@@ -396,7 +384,7 @@ export function CameraCaptureModal({
             }
           });
         } catch {
-          // 모델 입력 복사가 불가능한 WebView에서는 OpenCV fallback만 유지한다.
+          // 모델 입력을 검증할 수 없으면 자동 경계 경로는 fail-closed로 유지한다.
         }
       }
       let image: ImageData;
@@ -418,13 +406,15 @@ export function CameraCaptureModal({
         if (phaseRef.current !== 'streaming' || capturingRef.current) return;
         const now = performance.now();
         const latestModelGate = modelGateRef.current;
-        const modelPositive = Boolean(activeCardQuadModelQuad(latestModelGate, now));
-        const modelFallback = latestModelGate.status === 'unavailable';
-        // 학습 모델이 아직 명함을 확인하지 않았거나 명함 없음으로 판정한 동안에는
-        // 책상 무늬의 직사각형을 OpenCV가 잡아도 UI 박스와 자동 촬영으로 넘기지 않는다.
-        const verifiedQuad = modelPositive || modelFallback ? analysis.quad : null;
+        const activeModelQuad = activeCardQuadModelQuad(latestModelGate, now);
+        // 학습 모델의 positive는 전역 허가가 아니다. 같은 프레임 좌표에서 OpenCV
+        // 후보와 위치·크기·꼭짓점이 일치할 때만 경계가 다음 단계로 갈 수 있다.
+        const agreement = agreeCardQuad(activeModelQuad, analysis.quad, frameWidth, frameHeight);
+        const verifiedQuad = agreement.accepted ? analysis.quad : null;
+        const verificationConfidence = Math.min(latestModelGate.confidence, agreement.confidence);
         if (!verifiedQuad || !plausibleCard(verifiedQuad)) {
-          quadTrackRef.current = nextQuadTrackState(quadTrackRef.current, verifiedQuad, frameWidth, frameHeight);
+          quadTrackRef.current = nextQuadTrackState(quadTrackRef.current, null, frameWidth, frameHeight, 0);
+          liveQuadRef.current = null;
           if (autoCapture) {
             autoGateRef.current = nextAutoCaptureState(autoGateRef.current, { detected: false }, now);
             autoProgressRef.current = 0;
@@ -434,12 +424,23 @@ export function CameraCaptureModal({
           // 자동 촬영된다. OpenCV 경계도 실제로 사라진 프레임에서만 재무장한다.
           if (!analysis.quad || !plausibleCard(analysis.quad)) autoArmedRef.current = true;
           lastDetectQuadRef.current = null;
-          setAutoHint(latestModelGate.status === 'waiting' ? '명함 여부를 확인 중… 잠시 고정해 주세요' : '명함을 화면 안에 담아 주세요');
+          setAutoHint(latestModelGate.status === 'unavailable'
+            ? 'AI 경계 검증을 사용할 수 없어요 · 아래 버튼으로 안전 촬영해 주세요'
+            : latestModelGate.status === 'waiting'
+              ? '명함 여부를 확인 중… 잠시 고정해 주세요'
+              : '명함 네 모서리를 맞추는 중… 잠시 고정해 주세요');
           return;
         }
-        quadTrackRef.current = nextQuadTrackState(quadTrackRef.current, verifiedQuad, frameWidth, frameHeight);
+        quadTrackRef.current = nextQuadTrackState(
+          quadTrackRef.current,
+          verifiedQuad,
+          frameWidth,
+          frameHeight,
+          verificationConfidence,
+        );
         const tracked = quadTrackRef.current;
         if (!tracked.accepted || !tracked.locked) {
+          liveQuadRef.current = null;
           if (autoCapture) {
             autoGateRef.current = nextAutoCaptureState(autoGateRef.current, { detected: false }, now);
             autoProgressRef.current = 0;

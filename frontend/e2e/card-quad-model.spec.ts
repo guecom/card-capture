@@ -168,26 +168,58 @@ test('on-device card model proposes stable quadrilaterals on hard scenes', async
         { name: 'warm-desk-tilted', quad: warm, draw: () => paint(warm, '#896b48', '#ece9e2', 0.24, 0.12) },
         { name: 'dark-desk-glare', quad: dark, draw: () => paint(dark, '#28292d', '#e7e4de', 0.3, 0.3) },
       ];
-      const rows: Array<Record<string, unknown>> = [];
+      const rows: Array<{
+        scene: string;
+        runs: number;
+        foundCount: number;
+        malformedCount: number;
+        minConfidence: number;
+        meanCornerErrorPx: number;
+        maxCornerErrorPx: number;
+        maxRepeatDriftPx: number;
+        maxElapsedMs: number;
+      }> = [];
       for (const scene of scenes) {
         scene.draw();
-        const image = context.getImageData(0, 0, width, height);
-        const startedAt = performance.now();
-        const reply = await call({ type: 'detect', image }, [image.data.buffer]);
-        const elapsedMs = Math.round(performance.now() - startedAt);
-        const quad = (reply.quad as Point[] | null) ?? null;
         const expected = order(scene.quad);
-        const actual = quad ? order(quad) : null;
-        const error = actual
-          ? actual.reduce((total, point, index) => total + Math.hypot(point.x - expected[index].x, point.y - expected[index].y), 0) / 4
-          : -1;
+        const attempts: Array<{ actual: Point[] | null; confidence: number; elapsedMs: number; malformed: boolean }> = [];
+        for (let repeat = 0; repeat < 4; repeat += 1) {
+          const image = context.getImageData(0, 0, width, height);
+          const startedAt = performance.now();
+          const reply = await call({ type: 'detect', image }, [image.data.buffer]);
+          const elapsedMs = Math.round(performance.now() - startedAt);
+          const quad = (reply.quad as Point[] | null) ?? null;
+          attempts.push({
+            actual: quad ? order(quad) : null,
+            confidence: Number(reply.confidence ?? 0),
+            elapsedMs,
+            malformed: malformed(quad),
+          });
+        }
+        const actuals = attempts.flatMap((attempt) => attempt.actual ? [attempt.actual] : []);
+        const cornerErrors = actuals.map((actual) => actual.reduce(
+          (total, point, index) => total + Math.hypot(point.x - expected[index].x, point.y - expected[index].y),
+          0,
+        ) / 4);
+        const baseline = actuals[0] ?? null;
+        const repeatDrifts = baseline
+          ? actuals.map((actual) => actual.reduce(
+            (total, point, index) => total + Math.hypot(point.x - baseline[index].x, point.y - baseline[index].y),
+            0,
+          ) / 4)
+          : [];
         rows.push({
           scene: scene.name,
-          found: Boolean(quad),
-          malformed: malformed(quad),
-          confidence: Number(reply.confidence ?? 0),
-          meanCornerErrorPx: Math.round(error),
-          elapsedMs,
+          runs: attempts.length,
+          foundCount: actuals.length,
+          malformedCount: attempts.filter((attempt) => attempt.malformed).length,
+          minConfidence: Math.min(...attempts.map((attempt) => attempt.confidence)),
+          meanCornerErrorPx: cornerErrors.length
+            ? Math.round(cornerErrors.reduce((sum, value) => sum + value, 0) / cornerErrors.length)
+            : -1,
+          maxCornerErrorPx: cornerErrors.length ? Math.round(Math.max(...cornerErrors)) : -1,
+          maxRepeatDriftPx: repeatDrifts.length ? Math.round(Math.max(...repeatDrifts)) : -1,
+          maxElapsedMs: Math.max(...attempts.map((attempt) => attempt.elapsedMs)),
         });
       }
       worker.terminate();
@@ -196,9 +228,11 @@ test('on-device card model proposes stable quadrilaterals on hard scenes', async
 
     console.log('CARD_QUAD_MODEL', JSON.stringify(report, null, 2));
     expect(report.ready).toBe(true);
-    expect(report.rows.filter((row) => row.found).length).toBeGreaterThanOrEqual(2);
-    expect(report.rows.filter((row) => row.malformed)).toHaveLength(0);
-    expect(Math.max(...report.rows.map((row) => row.elapsedMs))).toBeLessThan(1_500);
+    expect(report.rows.every((row) => row.foundCount === row.runs)).toBe(true);
+    expect(report.rows.every((row) => row.malformedCount === 0)).toBe(true);
+    expect(Math.max(...report.rows.map((row) => row.maxCornerErrorPx))).toBeLessThanOrEqual(12);
+    expect(Math.max(...report.rows.map((row) => row.maxRepeatDriftPx))).toBeLessThanOrEqual(2);
+    expect(Math.max(...report.rows.map((row) => row.maxElapsedMs))).toBeLessThan(1_500);
   } finally {
     await new Promise<void>((stop) => {
       server.close(() => stop());
@@ -261,6 +295,72 @@ test('desk-only camera never exposes a detected quadrilateral', async ({ page })
     const detectedHints = hints.filter((hint) => hint?.startsWith('인식됨'));
     console.log('CARD_QUAD_NEGATIVE', JSON.stringify({ finalHint: hints[hints.length - 1], detectedSamples: detectedHints.length }));
     expect(detectedHints).toHaveLength(0);
+  } finally {
+    await new Promise<void>((stop) => {
+      server.close(() => stop());
+      server.closeAllConnections();
+    });
+  }
+});
+
+test('unavailable card model disables auto-crop while manual guide capture remains available', async ({ page }) => {
+  test.setTimeout(90_000);
+  const server = await startStaticServer();
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('no port');
+  try {
+    await page.context().route(/card-quad-worker-.*\.js$/, (route) => route.abort('failed'));
+    await page.context().route(/lcnet100_h_e_bifpn_256_fp32\.onnx$/, (route) => route.abort('failed'));
+    await page.addInitScript(() => {
+      localStorage.setItem('cc_name', 'Debug');
+      localStorage.setItem('cc_autoCapture', 'on');
+      const canvas = document.createElement('canvas');
+      canvas.width = 720;
+      canvas.height = 1280;
+      const context = canvas.getContext('2d')!;
+      const draw = () => {
+        context.fillStyle = '#84613f';
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.fillStyle = 'rgba(0,0,0,0.22)';
+        context.fillRect(96, 470, 540, 324);
+        context.fillStyle = '#f1eee8';
+        context.fillRect(90, 462, 540, 324);
+        context.fillStyle = '#172338';
+        context.font = '700 54px sans-serif';
+        context.fillText('Kairen', 130, 570);
+        context.font = '400 25px sans-serif';
+        context.fillText('Business Card', 130, 630);
+      };
+      draw();
+      window.setInterval(draw, 100);
+      const stream = (canvas as HTMLCanvasElement & { captureStream: (fps: number) => MediaStream }).captureStream(30);
+      const mediaDevices = navigator.mediaDevices ?? ({} as MediaDevices);
+      Object.defineProperty(navigator, 'mediaDevices', {
+        configurable: true,
+        value: Object.assign(Object.create(Object.getPrototypeOf(mediaDevices) ?? Object.prototype), mediaDevices, {
+          getUserMedia: async () => stream,
+          enumerateDevices: async () => [{ kind: 'videoinput', deviceId: 'model-offline', label: 'model offline', groupId: 'debug' }],
+        }),
+      });
+    });
+
+    await page.goto('http://127.0.0.1:' + address.port + '/next/', { waitUntil: 'networkidle' });
+    await page.getByRole('button', { name: '명함 앞면 촬영' }).click();
+    await expect(page.locator('.camera-preview-stage')).toHaveAttribute('data-state', 'streaming', { timeout: 20_000 });
+    await expect(page.locator('.camera-engine-note')).toContainText('수동 안전 촬영만 가능', { timeout: 20_000 });
+
+    const observedHints: Array<string | null> = [];
+    for (let sample = 0; sample < 20; sample += 1) {
+      observedHints.push(await page.locator('.camera-hint-pill span').textContent());
+      await page.waitForTimeout(150);
+    }
+    expect(observedHints.some((hint) => hint?.startsWith('인식됨'))).toBe(false);
+    await expect(page.getByText('앞면 저장됨 — 뒷면도 찍을까요? (선택)')).toHaveCount(0);
+
+    await page.getByRole('button', { name: '앞면 촬영', exact: true }).click();
+    await expect(page.getByText('앞면 저장됨 — 뒷면도 찍을까요? (선택)')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText('앞면 저장', { exact: true })).toBeVisible();
+    await expect(page.getByText('앞면 저장 — 자동 크롭됨', { exact: true })).toHaveCount(0);
   } finally {
     await new Promise<void>((stop) => {
       server.close(() => stop());
