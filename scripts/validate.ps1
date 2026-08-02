@@ -24,8 +24,8 @@ $required = @(
   'docs/vendor/paddleocr/PP-OCRv5_mobile_det_infer.onnx','docs/vendor/paddleocr/korean_PP-OCRv5_mobile_rec_infer.onnx',
   'docs/vendor/paddleocr/ppocrv5_korean_dict.txt','docs/vendor/ort/ort-wasm-simd-threaded.wasm','docs/vendor/ort/ort-wasm-simd-threaded.mjs',
   'docs/vendor/cardquad/lcnet100_h_e_bifpn_256_fp32.onnx','docs/vendor/cardquad/LICENSE','docs/vendor/cardquad/README.md',
-  'watcher/CardCapture_Watcher.ps1','watcher/CardCapture_Health.ps1','watcher/tests/watcher-tests.ps1','watcher/tests/watcher-protocol-tests.ps1','watcher/tests/health-tests.ps1','watcher/tests/log-pii-tests.ps1',
-  'eval/README.md','eval/run-eval.ps1','eval/upload-idempotency.test.js','eval/upload-filename-allowlist.test.js','eval/upload-content-type.test.js','eval/public-runtime-credential.test.js','eval/build-reproducibility.test.js','eval/version-sync.test.js','eval/persondoc-owner.test.js','eval/prompt-injection.test.js','eval/gas-sandbox.js','eval/golden-capture.test.js','eval/adversarial-capture.test.js','eval/camera-quality.test.js','eval/page-syntax.test.js','eval/server-syntax.test.js','eval/ocr-browser-smoke.html','scripts/validate.ps1'
+  'watcher/CardCapture_Watcher.ps1','watcher/CardCapture_Health.ps1','watcher/push/package.json','watcher/push/package-lock.json','watcher/push/push-sender.mjs','watcher/push/Initialize-CardCapturePush.ps1','watcher/tests/watcher-tests.ps1','watcher/tests/watcher-protocol-tests.ps1','watcher/tests/health-tests.ps1','watcher/tests/log-pii-tests.ps1','watcher/tests/push-tests.ps1',
+  'eval/README.md','eval/run-eval.ps1','eval/upload-idempotency.test.js','eval/upload-filename-allowlist.test.js','eval/upload-content-type.test.js','eval/public-runtime-credential.test.js','eval/build-reproducibility.test.js','eval/version-sync.test.js','eval/persondoc-owner.test.js','eval/prompt-injection.test.js','eval/gas-sandbox.js','eval/gas-push-policy.test.js','eval/push-sender.test.js','eval/golden-capture.test.js','eval/adversarial-capture.test.js','eval/camera-quality.test.js','eval/page-syntax.test.js','eval/server-syntax.test.js','eval/ocr-browser-smoke.html','scripts/validate.ps1'
 )
 $missing = @($required | Where-Object { -not (Test-Path (Join-Path $root $_)) })
 if ($missing.Count -gt 0) { Fail ("required files missing: " + ($missing -join ', ')) } else { Pass 'required files present' }
@@ -139,6 +139,10 @@ if ($null -eq $node) {
   if ($LASTEXITCODE -ne 0) { Fail 'public runtime credential boundary test failed' } else { Pass 'public runtime credential boundary static test passed' }
   & $node.Source (Join-Path $root 'eval\server-syntax.test.js')
   if ($LASTEXITCODE -ne 0) { Fail 'Code.gs JavaScript syntax test failed' } else { Pass 'Code.gs JavaScript syntax test passed' }
+  & $node.Source (Join-Path $root 'eval\gas-push-policy.test.js')
+  if ($LASTEXITCODE -ne 0) { Fail 'GAS Web Push policy test failed' } else { Pass 'GAS Web Push policy tests passed' }
+  & $node.Source (Join-Path $root 'eval\push-sender.test.js')
+  if ($LASTEXITCODE -ne 0) { Fail 'Web Push sender boundary test failed' } else { Pass 'Web Push sender boundary tests passed' }
   & $node.Source (Join-Path $root 'eval\upload-idempotency.test.js')
   if ($LASTEXITCODE -ne 0) { Fail 'upload idempotency / lifecycle non-regression test failed' } else { Pass 'upload idempotency deterministic tests passed' }
   & $node.Source (Join-Path $root 'eval\upload-filename-allowlist.test.js')
@@ -206,6 +210,8 @@ if ($LASTEXITCODE -ne 0) { Fail 'watcher recovery/idempotency tests failed' } el
 if ($LASTEXITCODE -ne 0) { Fail 'watcher claim/lease/quarantine protocol tests failed' } else { Pass 'watcher claim/lease/quarantine protocol deterministic tests passed' }
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'watcher\tests\log-pii-tests.ps1') | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail 'watcher log PII separation/retention tests failed' } else { Pass 'watcher log PII separation/retention deterministic tests passed' }
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'watcher\tests\push-tests.ps1') | Out-Null
+if ($LASTEXITCODE -ne 0) { Fail 'watcher Web Push outbox tests failed' } else { Pass 'watcher Web Push outbox deterministic tests passed' }
 
 # ---------- summary ----------
 Write-Host ''

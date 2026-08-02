@@ -1,4 +1,4 @@
-import type { BriefItem, CaptureQueueItem } from '../contracts/capture';
+import type { BriefItem, CaptureAttention, CaptureQueueItem } from '../contracts/capture';
 
 export type StageKey = 'upload' | 'receive' | 'process' | 'complete';
 export type StageState = 'done' | 'active' | 'todo' | 'failed';
@@ -28,6 +28,21 @@ const STAGE_DEFS: ReadonlyArray<{ key: StageKey; label: string }> = [
   { key: 'process', label: '서버 처리' },
   { key: 'complete', label: '결과 준비' },
 ];
+
+const ATTENTION_DETAIL: Record<NonNullable<BriefItem['attention']>['reasonCode'], string> = {
+  unreadable_capture: '사진의 글자를 확실히 읽지 못했어요 · 더 선명한 사진이나 내용을 보완해 주세요',
+  missing_required_side: '처리에 필요한 명함 면이 없어요 · 빠진 면을 보완해 주세요',
+  identity_ambiguous: '누구의 명함인지 확정하지 못했어요 · 이름이나 회사를 확인해 주세요',
+};
+
+/** Treat list JSON as untrusted: only the bounded, user-actionable attention contract renders. */
+export function captureAttentionOf(brief?: BriefItem | null): CaptureAttention | null {
+  const attention = brief?.attention;
+  if (!attention || attention.kind !== 'input_required') return null;
+  if (!Object.prototype.hasOwnProperty.call(ATTENTION_DETAIL, attention.reasonCode)) return null;
+  if (typeof attention.requestedAt !== 'string' || !attention.requestedAt || Number.isNaN(Date.parse(attention.requestedAt))) return null;
+  return attention;
+}
 
 /** Only map states explicitly proven by the local queue or server response. */
 export function stageIndexOf(input: { brief?: BriefItem | null; queue?: CaptureQueueItem | null }): number {
@@ -79,6 +94,7 @@ export function captureProgress(input: {
   }
 
   if (done) {
+    const attention = captureAttentionOf(input.brief);
     return {
       stages,
       step: STAGE_DEFS.length + 1,
@@ -87,8 +103,10 @@ export function captureProgress(input: {
       done: true,
       failed: false,
       late: false,
-      headline: input.brief?.status === 'skipped' ? '명함이 아니어서 처리하지 않았어요' : '결과가 준비됐어요',
-      detail: input.elapsedMinutes === null || input.elapsedMinutes === undefined ? '서버가 완료 상태를 확인했습니다' : `${Math.max(0, Math.floor(input.elapsedMinutes))}분 경과 뒤 완료 상태를 확인했습니다`,
+      headline: attention ? '확인이 필요해요' : input.brief?.status === 'skipped' ? '명함이 아니어서 처리하지 않았어요' : '결과가 준비됐어요',
+      detail: attention
+        ? ATTENTION_DETAIL[attention.reasonCode]
+        : input.elapsedMinutes === null || input.elapsedMinutes === undefined ? '서버가 완료 상태를 확인했습니다' : `${Math.max(0, Math.floor(input.elapsedMinutes))}분 경과 뒤 완료 상태를 확인했습니다`,
     };
   }
 

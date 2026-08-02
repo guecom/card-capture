@@ -14,7 +14,7 @@
 - `Deep Research`는 회의 준비·실행 역량·권한/관심·평판/리스크 중 명시한 목적만 조사합니다. 사실·충돌·미확인·가설, 찬반 근거, 대안 설명, 타임라인, 남은 질문을 source·claim·person·org·project·event node와 검증된 relation으로 분리하고 한 phase씩 재개합니다. 일반 캡처와 표준 조사가 항상 먼저 처리됩니다.
 - 앱이 닫히거나 Android가 화면을 다시 만든 뒤에도 같은 Person 조사 요청은 같은 request ID로 재시도해 중복 작업을 막습니다. 서버는 생성 도중 중단된 request ID의 복구 권한도 durable하게 보존합니다. Deep watcher는 성공·실패와 무관하게 각 slice의 실제 시간을 누적하고, 12분 slice·90분 상한과 단계 순서를 강제합니다. timeout에는 처리기와 자식 프로세스를 함께 종료하며, 실패·중단 때 이미지·정정·임의 파일을 포함한 capture 폴더 전체를 이전 상태로 복구합니다.
 - `docs/legacy.html`과 관련 복구 링크·캐시를 제거하고 공개 GAS endpoint의 단일 원본을 `config/public-runtime.json`으로 옮겼습니다.
-- 닫힌 앱 알림은 Web Push 전송자와 VAPID 자격 증명이 배포되기 전에는 사용할 수 있다고 표시하지 않습니다. 앱 안 진행 상태가 현재의 authoritative 기준입니다.
+- 닫힌 앱 알림은 유료 provider 없이 표준 Web Push + VAPID로 동작합니다. 설정에서 사용자가 직접 허용하거나 끌 수 있고, 완료·사람 확인 필요·복구 필요 세 경우에만 고정된 개인정보 없는 문구를 보냅니다. 구독은 token별 private registry, 비밀 키는 Windows DPAPI에 보관하며 MailApp 알림 경로는 폐기했습니다. 기능은 release provisioning 전 기본 off이고, 실제 Android 수신·열기·해제 전에는 machine PASS만 표시합니다.
 
 MVP build/testability gate comes before customer proof.
 

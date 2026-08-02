@@ -11,6 +11,7 @@
    때문에 진짜 브리핑을 영구 대체한다. 아래 case 1이 그 시나리오다. */
 
 var assert = require('assert');
+var crypto = require('crypto');
 var fs = require('fs');
 var path = require('path');
 var vm = require('vm');
@@ -72,6 +73,12 @@ var sandbox = {
   LockService: { getScriptLock: function () { return { waitLock: function () {}, releaseLock: function () {} }; } },
   Utilities: {
     newBlob: function (value, mime, name) { return blob(value, name); },
+    DigestAlgorithm: { SHA_256: 'sha256' },
+    Charset: { UTF_8: 'utf8' },
+    computeDigest: function (_algorithm, value) {
+      return Array.prototype.slice.call(crypto.createHash('sha256').update(String(value), 'utf8').digest())
+        .map(function (byte) { return byte > 127 ? byte - 256 : byte; });
+    },
     /* 실제 GAS는 byte 배열을 준다. 길이와 내용이 살아 있는 최소 대역. */
     base64Decode: function (value) {
       if (typeof value !== 'string' || !value) throw new Error('bad base64');

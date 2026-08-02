@@ -1,6 +1,12 @@
 export type CaptureState = 'queued' | 'failed' | 'sent';
 export type ProcessingStatus = 'received' | 'processing' | 'processed' | 'skipped' | string;
 
+export interface CaptureAttention {
+  kind: 'input_required';
+  reasonCode: 'unreadable_capture' | 'missing_required_side' | 'identity_ambiguous';
+  requestedAt: string;
+}
+
 export interface CaptureImage {
   name: 'front.jpg' | 'back.jpg';
   mime?: 'image/jpeg';
@@ -164,6 +170,11 @@ export interface BriefItem {
   capturedAt?: string;
   receivedAt?: string;
   status: ProcessingStatus;
+  /**
+   * Human input is a terminal outcome without widening the long-lived status enum.
+   * Unknown/raw server reasons are never rendered; UI maps this bounded reasonCode allowlist.
+   */
+  attention?: CaptureAttention;
   person?: string;
   type?: string;
   brief?: string;

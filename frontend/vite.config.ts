@@ -96,6 +96,13 @@ function candidatePwa(): Plugin {
 const CACHE = ${JSON.stringify(cacheName)};
 const CACHE_PREFIX = 'cardcapture-next-';
 const SHELL = ${JSON.stringify(shell)};
+const PUSH_COPY = Object.freeze({
+  final_result: Object.freeze({ title: '처리가 끝났어요', body: '최종 결과를 확인할 수 있어요.', action: '결과 보기' }),
+  human_input_required: Object.freeze({ title: '내용 확인이 필요해요', body: '앱에서 필요한 내용을 보완해 주세요.', action: '내용 보완' }),
+  recovery_required: Object.freeze({ title: '처리를 이어가야 해요', body: '앱에서 문제를 확인하고 다시 시도해 주세요.', action: '문제 확인' }),
+});
+const PUSH_TARGET = /^[A-Za-z0-9_-]{4,80}$/;
+const PUSH_EVENT_ID = /^pne-[a-f0-9]{64}$/;
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -111,6 +118,63 @@ self.addEventListener('message', (event) => {
   if (event.data?.type === 'CC_PING' && event.ports?.[0]) {
     event.ports[0].postMessage({ type: 'CC_PONG', cache: CACHE });
   }
+});
+
+/* Push text and destinations are owned by this service worker, never by sender input.
+   A notification payload may select one of three kinds and optionally identify a bounded capture.
+   Names, companies, notes, quick-name results, arbitrary stages, and absolute URLs are ignored. */
+self.addEventListener('push', (event) => {
+  event.waitUntil((async () => {
+    let payload = null;
+    try { payload = event.data ? event.data.json() : null; } catch { return; }
+    if (!payload || typeof payload !== 'object' || payload.v !== 1 || !PUSH_EVENT_ID.test(payload.eventId || '')) return;
+    if (typeof payload.kind !== 'string' || !Object.prototype.hasOwnProperty.call(PUSH_COPY, payload.kind)) return;
+    const copy = PUSH_COPY[payload.kind];
+    const target = typeof payload.target === 'string' && PUSH_TARGET.test(payload.target) ? payload.target : '';
+    const notice = payload.kind === 'recovery_required' ? '&notice=recovery_required' : '';
+    const route = target
+      ? './?view=activity&focus=' + encodeURIComponent(target) + notice
+      : './?view=activity';
+    await self.registration.showNotification(copy.title, {
+      body: copy.body,
+      tag: 'cc-' + payload.eventId,
+      renotify: false,
+      requireInteraction: false,
+      icon: new URL('../icon-192.png', self.registration.scope).href,
+      badge: new URL('../icon-192.png', self.registration.scope).href,
+      data: { route: route },
+      actions: [{ action: 'open', title: copy.action }],
+    });
+  })());
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil((async () => {
+    const fallback = new URL('./?view=activity', self.registration.scope);
+    let target = fallback;
+    try {
+      const candidate = new URL(event.notification.data?.route || '', self.registration.scope);
+      const scope = new URL(self.registration.scope);
+      if (candidate.origin === self.location.origin
+          && candidate.pathname.startsWith(scope.pathname)
+          && candidate.searchParams.get('view') === 'activity'
+          && (!candidate.searchParams.has('focus') || PUSH_TARGET.test(candidate.searchParams.get('focus') || ''))) {
+        target = candidate;
+      }
+    } catch { /* use bounded fallback */ }
+
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const scope = new URL(self.registration.scope);
+    for (const client of windows) {
+      const current = new URL(client.url);
+      if (current.origin !== self.location.origin || !current.pathname.startsWith(scope.pathname)) continue;
+      try { if ('navigate' in client) await client.navigate(target.href); } catch { /* focus current client */ }
+      await client.focus();
+      return;
+    }
+    await self.clients.openWindow(target.href);
+  })());
 });
 
 self.addEventListener('fetch', (event) => {

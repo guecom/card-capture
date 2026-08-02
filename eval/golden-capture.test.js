@@ -24,6 +24,7 @@
    실행 불가는 PASS가 아니다: fixture가 없거나 10개 미만이면 예외로 끝난다. */
 
 var assert = require('assert');
+var crypto = require('crypto');
 var fs = require('fs');
 var path = require('path');
 var sandboxLib = require('./gas-sandbox.js');
@@ -35,11 +36,14 @@ var RECEIVED_AT = '2026-07-27T09:00:00.000Z';
 var PROCESSED_AT = '2026-07-27T09:12:00.000Z';
 var RECOGNIZED_AT = '2026-07-27T08:30:05.000Z';
 var GUEST_CAPTURE = 'guest-scope-capture';
+var OWNER_PUSH_SUBJECT = 'psh-' + crypto.createHash('sha256').update('card-capture-push-v1\0owner-token', 'utf8').digest('hex');
 
 /* 클라이언트가 서버 소유 필드를 정하려는 시도. 모든 fixture 업로드에 함께 보낸다 —
    하나라도 receipt에 반영되면 워처가 처리하지 않은 캡처를 '처리 완료'로 믿게 된다. */
 var FORGED = {
   capturer: '위조촬영자',
+  pushSubjectId: 'psh-' + '0'.repeat(64),
+  pushRoutingTag: 'prt-' + '0'.repeat(64),
   status: 'processed',
   person: 'PER-000001',
   personAction: 'updated',
@@ -210,6 +214,8 @@ fixtures.forEach(function (fixture, index) {
   var goldenReceipt = {
     captureId: id,
     capturer: 'Owner',
+    pushSubjectId: OWNER_PUSH_SUBJECT,
+    pushRoutingTag: '',
     capturedAt: CAPTURED_AT,
     receivedAt: RECEIVED_AT,
     event: String(fixture.capture.event).slice(0, 200),

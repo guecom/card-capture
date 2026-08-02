@@ -289,8 +289,23 @@ ion-toolbar {
 .settings-facts dd { margin: 0; color: var(--cc-ink); font-size: 11px; font-weight: 750; text-align: right; }
 .settings-danger { display: grid; gap: 6px; margin-top: 4px; padding: 12px; border: 1px solid color-mix(in srgb, var(--ion-color-danger) 24%, transparent); border-radius: var(--cc-r-md); background: color-mix(in srgb, var(--ion-color-danger) 5%, transparent); }
 .settings-danger p, .settings-explain, .notification-readiness p, .settings-job > p { margin: 0; color: var(--cc-muted); font-size: 11px; line-height: 1.55; }
-.notification-readiness { padding: 12px; border-radius: var(--cc-r-md); background: var(--cc-solid-soft); }
-.notification-readiness strong { color: var(--cc-ink); font-size: 12px; }
+.notification-readiness { display: flex; align-items: flex-start; gap: 11px; padding: 13px; border: 1px solid var(--cc-line); border-radius: var(--cc-r-md); background: var(--cc-solid-soft); transition: border-color 160ms ease, background 160ms ease; }
+.notification-readiness > div { display: grid; min-width: 0; gap: 3px; }
+.notification-readiness strong { color: var(--cc-ink); font-size: 12px; line-height: 1.4; }
+.notification-readiness.state-subscribed { border-color: color-mix(in srgb, var(--cc-teal) 45%, var(--cc-line)); background: color-mix(in srgb, var(--cc-teal) 8%, var(--cc-solid-soft)); }
+.notification-readiness.state-denied, .notification-readiness.state-error, .notification-readiness.state-stale { border-color: color-mix(in srgb, var(--ion-color-warning) 35%, var(--cc-line)); }
+.notification-state-icon { display: grid; width: 38px; height: 38px; flex: 0 0 auto; place-items: center; border-radius: var(--cc-r-sm); background: rgba(var(--cc-accent), 0.1); color: var(--cc-blue); }
+.notification-readiness.state-subscribed .notification-state-icon { background: color-mix(in srgb, var(--cc-teal) 15%, transparent); color: var(--cc-teal); }
+.notification-scope { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.notification-scope li { position: relative; display: grid; grid-template-columns: minmax(76px, auto) 1fr; gap: 10px; padding: 9px 0 9px 18px; border-bottom: 1px solid var(--cc-line); }
+.notification-scope li::before { position: absolute; top: 14px; left: 2px; width: 8px; height: 8px; border-radius: 50%; background: var(--cc-teal); box-shadow: 0 0 0 4px color-mix(in srgb, var(--cc-teal) 11%, transparent); content: ""; }
+.notification-scope strong { color: var(--cc-ink); font-size: 11px; }
+.notification-scope span { color: var(--cc-muted); font-size: 10.5px; line-height: 1.45; }
+.notification-action, .notification-retry { display: inline-flex; width: 100%; min-height: 46px; align-items: center; justify-content: center; gap: 7px; padding: 10px 12px; border: 1px solid rgba(var(--cc-accent), 0.28); border-radius: var(--cc-r-md); background: rgba(var(--cc-accent), 0.1); color: var(--cc-blue-ink); font-size: 11.5px; font-weight: 760; }
+.notification-action.is-on { border-color: var(--cc-line); background: var(--cc-solid-soft); color: var(--cc-muted); }
+.notification-action:disabled, .notification-retry:disabled { cursor: wait; opacity: 0.68; }
+.notification-action .spinning { animation: cc-spin 900ms linear infinite; }
+.notification-retry { min-height: 42px; border-color: var(--cc-line); background: transparent; }
 .settings-disabled-action { min-height: 46px; padding: 10px; border: 1px solid var(--cc-line); border-radius: var(--cc-r-md); background: var(--cc-solid-soft); color: var(--cc-muted); font-size: 11px; font-weight: 750; }
 .settings-boundary { margin: 0; }
 .help-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
@@ -364,9 +379,30 @@ ion-toolbar {
 .retry-action { flex: 0 0 auto; border: 0; border-radius: var(--cc-r-sm); background: var(--cc-danger-soft); color: var(--cc-danger); font-size: 10px; font-weight: 720; padding: 9px 10px; }
 
 .brief-card { overflow: hidden; border: 1px solid var(--cc-line); border-radius: var(--cc-r-lg); background: var(--cc-surface); box-shadow: var(--cc-elev-1); }
+.brief-card.needs-attention { border-color: color-mix(in srgb, var(--ion-color-warning) 38%, var(--cc-line)); }
 .brief-summary { display: flex; width: 100%; min-height: 76px; align-items: center; gap: 11px; padding: 12px 14px; border: 0; background: transparent; color: inherit; text-align: left; }
 .brief-summary > svg { flex: 0 0 auto; color: var(--cc-muted); transition: transform 160ms ease; }
 .brief-summary > svg.expanded { transform: rotate(90deg); }
+.status-attention { border-color: color-mix(in srgb, var(--ion-color-warning) 34%, var(--cc-line)); background: color-mix(in srgb, var(--ion-color-warning) 8%, var(--cc-solid-soft)); color: color-mix(in srgb, var(--ion-color-warning) 78%, var(--cc-ink)); }
+.attention-recovery { display: grid; grid-template-columns: auto 1fr; gap: 9px 10px; padding: 13px 14px; border-top: 1px solid color-mix(in srgb, var(--ion-color-warning) 26%, var(--cc-line)); background: color-mix(in srgb, var(--ion-color-warning) 7%, var(--cc-solid-soft)); }
+.attention-recovery > svg { margin-top: 1px; color: color-mix(in srgb, var(--ion-color-warning) 75%, var(--cc-ink)); }
+.attention-recovery > div:not(.attention-actions) { display: grid; gap: 3px; }
+.attention-recovery strong { color: var(--cc-ink); font-size: 12px; }
+.attention-recovery p { margin: 0; color: var(--cc-muted); font-size: 10.5px; line-height: 1.5; }
+.attention-actions { display: flex; grid-column: 2; flex-wrap: wrap; gap: 7px; }
+.attention-actions button { display: inline-flex; min-height: 36px; align-items: center; justify-content: center; gap: 5px; padding: 7px 10px; border: 1px solid var(--cc-line); border-radius: var(--cc-r-sm); background: var(--cc-solid); color: var(--cc-blue-ink); font-size: 10.5px; font-weight: 740; }
+.attention-actions button:first-child { border-color: rgba(var(--cc-accent), 0.28); background: rgba(var(--cc-accent), 0.08); }
+.recovery-notice { display: grid; grid-template-columns: auto 1fr; gap: 12px; border-color: color-mix(in srgb, var(--ion-color-warning) 36%, var(--cc-line)); background: linear-gradient(145deg, color-mix(in srgb, var(--ion-color-warning) 10%, var(--cc-solid)), var(--cc-solid)); }
+.recovery-notice-icon { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 12px; background: color-mix(in srgb, var(--ion-color-warning) 15%, var(--cc-solid)); color: color-mix(in srgb, var(--ion-color-warning) 78%, var(--cc-ink)); }
+.recovery-notice-copy { display: grid; gap: 5px; min-width: 0; }
+.recovery-notice-copy > span { color: var(--cc-muted); font-size: 10px; font-weight: 760; letter-spacing: .04em; text-transform: uppercase; }
+.recovery-notice-copy > strong { color: var(--cc-ink); font-size: 13px; }
+.recovery-notice-copy > p { margin: 0 0 4px; color: var(--cc-muted); font-size: 11px; line-height: 1.55; }
+@media (max-width: 360px) {
+  .attention-recovery { grid-template-columns: auto 1fr; }
+  .attention-actions { grid-column: 1 / -1; }
+  .attention-actions button { flex: 1; }
+}
 .processing-line { display: grid; gap: 7px; padding: 0 14px 12px 67px; color: var(--cc-warn); font-size: 10px; }
 .processing-line.late { color: var(--cc-danger); }
 .processing-line > div { display: flex; flex-wrap: wrap; gap: 7px; }

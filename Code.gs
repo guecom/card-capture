@@ -10,6 +10,10 @@
  *   DAILY_LIMIT      선택. 토큰당 하루 업로드 상한 (기본 100)
  *   OWNER_NAMES      선택. 쉼표 구분 이름 목록 (예: "강규") — 이 이름의 토큰은 모든 캡처의 브리핑을 봄. 그 외는 자기 캡처만.
  *   RESEARCH_INSTRUCTION_ENABLED 선택. "false"면 조사 지시 UI/API를 즉시 비활성화 (기본 true)
+ *   PUSH_NOTIFICATIONS_ENABLED 선택. 정확히 "true"일 때만 Web Push 경로 활성화 (기본 false)
+ *   PUSH_VAPID_PUBLIC_KEY / PUSH_SENDER_TOKEN 필수. private key는 watcher PC의 DPAPI에만 저장
+ *   PUSH_REGISTRY_FOLDER_ID 필수. Kairen vault 밖·Restricted Drive 폴더
+ *   PUSH_MAX_SUBSCRIPTIONS_PER_SUBJECT 선택. 1~8, 기본 4
  *
  * 클라이언트 계약 (webapp/index.html):
  *   POST body (text/plain, JSON): {
@@ -24,12 +28,18 @@
  *   GET ?action=persondoc&k=토큰&captureId=ID → Person .md 전문 (OWNER_NAMES 한정)
  *   GET ?action=search&k=토큰&q=검색어        → Person 검색 (OWNER_NAMES 한정)
  *   GET ?action=doc&k=토큰&id=파일ID          → 검색 결과 Person .md 전문 (OWNER_NAMES 한정, Person 폴더 내부만)
- *   GET ?action=notify&k=토큰&captureId=ID    → 처리 완료 알림 메일 발송 (소유자 메일로, 캡처 6시간 dedup)
+ *   GET ?action=notify                         → 구형 MailApp 알림 퇴역(항상 fail-closed)
  *   POST {action:'requeue', k, captureId}      → 재처리 요청 (자기 캡처, terminal 상태 비후퇴, 10분 dedup)
  *   GET ?action=requeue&k=토큰&captureId=ID   → 구버전 앱 호환용 재처리 요청
  *   POST {action:'correction', k, captureId, text} → 수정 요청 저장 + 재처리 대기 전환
  *   POST {action:'addnote', k, text, captureId|person} → 사후 메모 접수(-note 캡처로 파이프라인 재사용)
  *   POST {action:'researchinstruction', k, text, captureId|person} → owner-only 조사 지시 접수
+ *   POST {action:'pushsubscribe', k, keyId, subscription} → 현재 토큰 subject에 Web Push 구독 등록
+ *   POST {action:'pushunsubscribe', k, endpoint}   → 현재 토큰 subject의 구독 철회
+ *   POST {action:'pushconfig', k}                  → Web Push 사용 가능 여부와 VAPID 공개키
+ *   POST {action:'pushstatus', k, endpoint}        → 현재 토큰 subject의 registry 연결 확인
+ *   POST {action:'pushsubscriptions', senderToken, subjectId} → watcher 전용 구독 조회
+ *   POST {action:'pushretire', senderToken, subscriptionId, revisionId} → watcher 전용 stale 구독 퇴역
  */
 
 var CONF = PropertiesService.getScriptProperties();
@@ -46,7 +56,8 @@ function doGet(e) {
       name: name,
       owner: isOwner_(name),
       researchInstructionEnabled: researchInstructionEnabled_(),
-      deepResearchEnabled: deepResearchEnabled_()
+      deepResearchEnabled: deepResearchEnabled_(),
+      pushNotificationsEnabled: pushNotificationsEnabled_()
     } : { ok: false, error: 'invalid_token' });
   }
   if (action === 'list') {
@@ -62,7 +73,7 @@ function doGet(e) {
     return personDocById_(e.parameter.k, e.parameter.id);
   }
   if (action === 'notify') {
-    return notifyProcessed_(e.parameter.k, e.parameter.captureId);
+    return notifyProcessed_();
   }
   if (action === 'requeue') {
     return requeue_(e.parameter.k, e.parameter.captureId);
@@ -123,6 +134,15 @@ function deepResearchEnabled_() {
   return String(CONF.getProperty('DEEP_RESEARCH_ENABLED') || '').trim().toLowerCase() === 'true';
 }
 
+/* Web Push는 live credential·외부 발송 경계다. 정확히 true이고 필요한 공개 설정이 모두
+   유효할 때만 구독/발송 경로가 열린다. Code.gs 배포만으로는 절대 켜지지 않는다. */
+function pushNotificationsEnabled_() {
+  return String(CONF.getProperty('PUSH_NOTIFICATIONS_ENABLED') || '').trim().toLowerCase() === 'true' &&
+    /^[A-Za-z0-9_-]{80,120}$/.test(String(CONF.getProperty('PUSH_VAPID_PUBLIC_KEY') || '')) &&
+    Boolean(String(CONF.getProperty('PUSH_REGISTRY_FOLDER_ID') || '').trim()) &&
+    /^[A-Za-z0-9_-]{32,160}$/.test(String(CONF.getProperty('PUSH_SENDER_TOKEN') || ''));
+}
+
 /* vault Person 폴더 탐색: inbox → 00_Inbox → Kairen → 02_Kairen_OS/30_Instance/Person */
 function personFolder_() {
   var inbox = DriveApp.getFolderById(CONF.getProperty('INBOX_FOLDER_ID'));
@@ -176,35 +196,296 @@ function personDocById_(token, fileId) {
   return json_({ ok: true, person: f.getName().replace(/\.md$/, ''), markdown: f.getBlob().getDataAsString('UTF-8').slice(0, 60000) });
 }
 
-/* 처리 완료 알림 — 유효 토큰 필수(자기 캡처 또는 owner), 소유자 메일로 최소 정보만 발송.
-   같은 captureId는 6시간 dedup. 실패해도 처리 상태에는 영향 없음(호출측 계약). */
-function notifyProcessed_(token, captureId) {
-  var name = capturerFor_(token);
-  if (!name) return json_({ ok: false, error: 'invalid_token' });
-  var cid = sanitizeId_(captureId);
-  if (!cid) return json_({ ok: false, error: 'bad_capture_id' });
-  var inbox = DriveApp.getFolderById(CONF.getProperty('INBOX_FOLDER_ID'));
-  var it = inbox.getFoldersByName(cid);
-  if (!it.hasNext()) return json_({ ok: false, error: 'not_found' });
-  var meta = readJsonFile_(it.next());
-  if (!meta || meta.status !== 'processed') return json_({ ok: false, error: 'not_processed' });
-  if (meta.capturer !== name && !isOwner_(name)) return json_({ ok: false, error: 'not_your_capture' });
-  var cache = CacheService.getScriptCache();
-  var key = 'ntf_' + cid;
-  if (cache.get(key)) return json_({ ok: true, deduped: true });
-  cache.put(key, '1', 6 * 60 * 60);
-  var to = Session.getEffectiveUser().getEmail();
-  if (!to) return json_({ ok: false, error: 'no_owner_email' });
-  MailApp.sendEmail({
-    to: to,
-    subject: '[명함] 처리 완료: ' + (meta.person || cid),
-    body: '명함 처리가 끝났어요.\n\n' +
-      '대상: ' + (meta.person || '(미상)') + (meta.personAction ? ' (' + meta.personAction + ')' : '') + '\n' +
-      '촬영: ' + (meta.capturer || '') + (meta.event ? ' / ' + meta.event : '') + '\n\n' +
-      '브리핑 보기: https://guecom.github.io/card-capture/\n\n' +
-      '- Kairen Card Capture (자동 발송, 회신 불필요)'
+/* DEC-000092: 구형 MailApp 채널은 승인된 알림 채널이 아니다. 예전 watcher가 GET을
+   호출해도 외부 효과 없이 명시적으로 퇴역 응답만 준다. */
+function notifyProcessed_() {
+  return json_({ ok: false, error: 'notification_channel_retired' });
+}
+
+function sha256Hex_(text) {
+  var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,
+    String(text || ''), Utilities.Charset.UTF_8);
+  var hex = '';
+  for (var i = 0; i < bytes.length; i++) {
+    var value = bytes[i] < 0 ? bytes[i] + 256 : bytes[i];
+    hex += ('0' + value.toString(16)).slice(-2);
+  }
+  return hex;
+}
+
+/* 같은 표시 이름을 쓰는 서로 다른 토큰이 서로의 알림을 받지 않도록 token 자체가 아닌
+   server-derived opaque subject만 capture receipt와 registry 사이의 routing key로 쓴다. */
+function pushSubjectId_(token) {
+  if (!capturerFor_(token)) return '';
+  return 'psh-' + sha256Hex_('card-capture-push-v1\u0000' + String(token));
+}
+
+function pushRoutingTag_(captureId, subjectId) {
+  var senderToken = String(CONF.getProperty('PUSH_SENDER_TOKEN') || '');
+  if (!/^[A-Za-z0-9_-]{32,160}$/.test(senderToken) ||
+      !/^[A-Za-z0-9_-]{4,80}$/.test(String(captureId || '')) ||
+      !/^psh-[a-f0-9]{64}$/.test(String(subjectId || ''))) return '';
+  var bytes = Utilities.computeHmacSha256Signature(
+    'card-capture-push-route-v1\u0000' + String(captureId) + '\u0000' + String(subjectId), senderToken);
+  var hex = '';
+  for (var i = 0; i < bytes.length; i++) {
+    var value = bytes[i] < 0 ? bytes[i] + 256 : bytes[i];
+    hex += ('0' + value.toString(16)).slice(-2);
+  }
+  return 'prt-' + hex;
+}
+
+function pushKeyId_() {
+  var key = String(CONF.getProperty('PUSH_VAPID_PUBLIC_KEY') || '');
+  return key ? 'vpk-' + sha256Hex_(key).slice(0, 20) : '';
+}
+
+function pushMaxSubscriptions_() {
+  var value = parseInt(CONF.getProperty('PUSH_MAX_SUBSCRIPTIONS_PER_SUBJECT') || '4', 10);
+  return Math.min(Math.max(isFinite(value) ? value : 4, 1), 8);
+}
+
+function pushRegistryFolder_() {
+  var id = String(CONF.getProperty('PUSH_REGISTRY_FOLDER_ID') || '').trim();
+  var inboxId = String(CONF.getProperty('INBOX_FOLDER_ID') || '').trim();
+  if (!id || !inboxId || id === inboxId) return null;
+  try {
+    var registry = DriveApp.getFolderById(id);
+    var inbox = DriveApp.getFolderById(inboxId);
+    var inboxParent = inbox.getParents(); if (!inboxParent.hasNext()) return null;
+    var vaultParent = inboxParent.next().getParents(); if (!vaultParent.hasNext()) return null;
+    var vaultRoot = vaultParent.next();
+    /* endpoint와 encryption key는 synced vault 안에 들어가면 안 된다. BusinessCards와
+       같은 Kairen root 아래의 어느 하위 폴더도 fail-closed한다. */
+    var cursor = [registry];
+    var seen = {};
+    for (var depth = 0; cursor.length && depth < 16; depth++) {
+      var folder = cursor.shift();
+      var folderId = String(folder.getId());
+      if (seen[folderId]) continue;
+      seen[folderId] = true;
+      if (folderId === String(vaultRoot.getId())) return null;
+      var parents = folder.getParents();
+      while (parents.hasNext()) cursor.push(parents.next());
+    }
+    if (cursor.length) return null; /* ancestor graph가 경계를 넘으면 vault 밖임을 증명하지 못했다. */
+    if (typeof registry.getSharingAccess !== 'function' ||
+        registry.getSharingAccess() !== DriveApp.Access.PRIVATE) return null;
+    return registry;
+  } catch (err) { return null; }
+}
+
+function pushConfig_(token) {
+  if (!capturerFor_(token)) return json_({ ok: false, error: 'invalid_token' });
+  var enabled = pushNotificationsEnabled_() && Boolean(pushRegistryFolder_());
+  var response = {
+    ok: true,
+    enabled: enabled,
+    transport: 'direct_web_push_v1',
+    maxDevices: pushMaxSubscriptions_()
+  };
+  if (enabled) {
+    response.publicKey = String(CONF.getProperty('PUSH_VAPID_PUBLIC_KEY'));
+    response.keyId = pushKeyId_();
+  }
+  return json_(response);
+}
+
+function normalizePushSubscription_(value) {
+  if (!value || typeof value !== 'object') return null;
+  var endpoint = String(value.endpoint || '');
+  /* ISS-000045의 현재 범위는 Android Chrome이다. arbitrary URL SSRF를 막기 위해 Chrome의
+     standards-based FCM Web Push endpoint만 registry와 sender 양쪽에서 허용한다. */
+  if (endpoint.length > 2048 ||
+      !/^https:\/\/fcm\.googleapis\.com\/(?:fcm\/send|wp)\/[A-Za-z0-9._~!$&'()*+,;=:@%\/-]{20,1900}$/.test(endpoint)) return null;
+  var keys = value.keys && typeof value.keys === 'object' ? value.keys : {};
+  var p256dh = String(keys.p256dh || '');
+  var auth = String(keys.auth || '');
+  if (!/^[A-Za-z0-9_-]{80,120}$/.test(p256dh) || !/^[A-Za-z0-9_-]{20,40}$/.test(auth)) return null;
+  if (value.expirationTime !== null && value.expirationTime !== undefined &&
+      (typeof value.expirationTime !== 'number' || !isFinite(value.expirationTime))) return null;
+  return { endpoint: endpoint, expirationTime: value.expirationTime || null, keys: { p256dh: p256dh, auth: auth } };
+}
+
+function pushSubscriptionId_(endpoint) {
+  return 'psub-' + sha256Hex_('card-capture-subscription-v1\u0000' + String(endpoint));
+}
+
+function readPushRecord_(folder, subscriptionId) {
+  var files = folder.getFilesByName(subscriptionId + '.json');
+  if (!files.hasNext()) return null;
+  try { return JSON.parse(files.next().getBlob().getDataAsString('UTF-8')); } catch (err) { return null; }
+}
+
+function pushSubscribe_(req) {
+  var subjectId = pushSubjectId_(req.k);
+  if (!subjectId) return json_({ ok: false, error: 'invalid_token' });
+  if (!pushNotificationsEnabled_()) return json_({ ok: false, error: 'feature_disabled' });
+  var subscription = normalizePushSubscription_(req.subscription);
+  if (!subscription) return json_({ ok: false, error: 'bad_subscription' });
+  var folder = pushRegistryFolder_();
+  if (!folder) return json_({ ok: false, error: 'registry_unavailable' });
+  var subscriptionId = pushSubscriptionId_(subscription.endpoint);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var currentKeyId = pushKeyId_();
+    if (String(req.keyId || '') !== currentKeyId) return json_({ ok: false, error: 'key_changed' });
+    var prior = readPushRecord_(folder, subscriptionId);
+    if (prior && String(prior.endpoint || '') !== subscription.endpoint) {
+      return json_({ ok: false, error: 'subscription_hash_conflict' });
+    }
+    if (prior && String(prior.subjectId || '') !== subjectId && activePushSubject_(String(prior.subjectId || ''))) {
+      return json_({ ok: false, error: 'subscription_subject_conflict' });
+    }
+    if (!prior) {
+      var activeForSubject = 0;
+      var files = folder.getFiles();
+      while (files.hasNext()) {
+        var file = files.next();
+        if (!/^psub-[a-f0-9]{64}\.json$/.test(file.getName())) continue;
+        try {
+          var row = JSON.parse(file.getBlob().getDataAsString('UTF-8'));
+          if (row && row.status === 'active' && row.subjectId === subjectId) activeForSubject++;
+        } catch (ignoredRecordError) {}
+      }
+      if (activeForSubject >= pushMaxSubscriptions_()) return json_({ ok: false, error: 'subscription_limit' });
+    }
+    var now = new Date().toISOString();
+    var record = {
+      version: 'card-capture-push-subscription-v1',
+      subscriptionId: subscriptionId,
+      subjectId: subjectId,
+      endpoint: subscription.endpoint,
+      expirationTime: subscription.expirationTime,
+      keys: subscription.keys,
+      keyId: currentKeyId,
+      revisionId: 'prv-' + String(Utilities.getUuid()).replace(/-/g, '').toLowerCase(),
+      status: 'active',
+      createdAt: prior && prior.subjectId === subjectId && prior.createdAt ? String(prior.createdAt) : now,
+      updatedAt: now
+    };
+    upsertFile_(folder, subscriptionId + '.json',
+      Utilities.newBlob(JSON.stringify(record, null, 2), 'application/json', subscriptionId + '.json'));
+  } finally {
+    lock.releaseLock();
+  }
+  return json_({ ok: true, subscriptionId: subscriptionId, active: true });
+}
+
+function trashPushRecord_(folder, subscriptionId) {
+  var files = folder.getFilesByName(subscriptionId + '.json');
+  var removed = false;
+  while (files.hasNext()) {
+    var file = files.next();
+    if (typeof file.setTrashed === 'function') { file.setTrashed(true); removed = true; }
+  }
+  return removed;
+}
+
+function pushUnsubscribe_(req) {
+  var subjectId = pushSubjectId_(req.k);
+  if (!subjectId) return json_({ ok: false, error: 'invalid_token' });
+  var endpoint = String(req.endpoint || '');
+  if (!endpoint || endpoint.length > 2048) return json_({ ok: false, error: 'bad_subscription' });
+  var folder = pushRegistryFolder_();
+  if (!folder) return json_({ ok: true, active: false, registryUnavailable: true });
+  var subscriptionId = pushSubscriptionId_(endpoint);
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var prior = readPushRecord_(folder, subscriptionId);
+    if (!prior) return json_({ ok: true, active: false, deduped: true });
+    if (String(prior.subjectId || '') !== subjectId || String(prior.endpoint || '') !== endpoint) {
+      return json_({ ok: false, error: 'subscription_subject_conflict' });
+    }
+    trashPushRecord_(folder, subscriptionId);
+  } finally {
+    lock.releaseLock();
+  }
+  return json_({ ok: true, active: false });
+}
+
+function pushStatus_(req) {
+  var subjectId = pushSubjectId_(req.k);
+  if (!subjectId) return json_({ ok: false, error: 'invalid_token' });
+  var endpoint = String(req.endpoint || '');
+  if (!endpoint || endpoint.length > 2048) return json_({ ok: false, error: 'bad_subscription' });
+  var folder = pushRegistryFolder_();
+  if (!folder) return json_({ ok: true, active: false });
+  var record = readPushRecord_(folder, pushSubscriptionId_(endpoint));
+  return json_({
+    ok: true,
+    active: Boolean(record && record.status === 'active' && record.subjectId === subjectId &&
+      record.endpoint === endpoint && record.keyId === pushKeyId_())
   });
-  return json_({ ok: true, notified: to.replace(/^(.).*(@.*)$/, '$1***$2') });
+}
+
+function pushSenderAuthorized_(token) {
+  var expected = String(CONF.getProperty('PUSH_SENDER_TOKEN') || '');
+  return expected.length >= 32 && String(token || '') === expected;
+}
+
+function activePushSubject_(subjectId) {
+  try {
+    var tokens = JSON.parse(CONF.getProperty('TOKENS') || '{}');
+    var keys = Object.keys(tokens);
+    for (var i = 0; i < keys.length; i++) {
+      if (capturerFor_(keys[i]) && 'psh-' + sha256Hex_('card-capture-push-v1\u0000' + keys[i]) === subjectId) return true;
+    }
+  } catch (err) {}
+  return false;
+}
+
+function pushSubscriptions_(req) {
+  if (!pushSenderAuthorized_(req.senderToken)) return json_({ ok: false, error: 'sender_unauthorized' });
+  if (!pushNotificationsEnabled_()) return json_({ ok: false, error: 'feature_disabled' });
+  var subjectId = String(req.subjectId || '');
+  if (!/^psh-[a-f0-9]{64}$/.test(subjectId)) return json_({ ok: false, error: 'bad_subject' });
+  if (!activePushSubject_(subjectId)) return json_({ ok: true, keyId: pushKeyId_(), subscriptions: [], subjectInactive: true });
+  var folder = pushRegistryFolder_();
+  if (!folder) return json_({ ok: false, error: 'registry_unavailable' });
+  var currentKeyId = pushKeyId_();
+  var subscriptions = [];
+  var files = folder.getFiles();
+  while (files.hasNext() && subscriptions.length < pushMaxSubscriptions_()) {
+    var file = files.next();
+    if (!/^psub-[a-f0-9]{64}\.json$/.test(file.getName())) continue;
+    try {
+      var record = JSON.parse(file.getBlob().getDataAsString('UTF-8'));
+      if (!record || record.status !== 'active' || record.subjectId !== subjectId || record.keyId !== currentKeyId) continue;
+      var normalized = normalizePushSubscription_(record);
+      if (!normalized || record.subscriptionId !== pushSubscriptionId_(normalized.endpoint)) continue;
+      subscriptions.push({
+        subscriptionId: record.subscriptionId,
+        revisionId: record.revisionId,
+        endpoint: normalized.endpoint,
+        expirationTime: normalized.expirationTime,
+        keys: normalized.keys
+      });
+    } catch (ignoredSubscriptionError) {}
+  }
+  return json_({ ok: true, keyId: currentKeyId, subscriptions: subscriptions });
+}
+
+function pushRetire_(req) {
+  if (!pushSenderAuthorized_(req.senderToken)) return json_({ ok: false, error: 'sender_unauthorized' });
+  var subscriptionId = String(req.subscriptionId || '');
+  if (!/^psub-[a-f0-9]{64}$/.test(subscriptionId)) return json_({ ok: false, error: 'bad_subscription_id' });
+  var revisionId = String(req.revisionId || '');
+  if (!/^prv-[a-f0-9]{32}$/.test(revisionId)) return json_({ ok: false, error: 'bad_revision_id' });
+  var folder = pushRegistryFolder_();
+  if (!folder) return json_({ ok: false, error: 'registry_unavailable' });
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var prior = readPushRecord_(folder, subscriptionId);
+    if (!prior) return json_({ ok: true, retired: false, deduped: true });
+    if (String(prior.revisionId || '') !== revisionId) return json_({ ok: true, retired: false, staleRevision: true });
+    return json_({ ok: true, retired: trashPushRecord_(folder, subscriptionId) });
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 /* 수정 요청 저장 — 캡처를 찍은 본인 또는 owner. correction-*.json 기록 후 재처리 대기(received) 전환.
@@ -309,6 +590,16 @@ function listCaptures_(token, limitParam, offsetParam) {
       contact: meta.contact || null,
       quickName: meta.quickName || null
     };
+    var attentionAt = meta.attention && String(meta.attention.requestedAt || meta.processedAt || '');
+    if (meta.status === 'skipped' && meta.attention && meta.attention.kind === 'input_required' &&
+        ['unreadable_capture', 'missing_required_side', 'identity_ambiguous'].indexOf(String(meta.attention.reasonCode || '')) >= 0 &&
+        attentionAt && !isNaN(Date.parse(attentionAt))) {
+      item.attention = {
+        kind: 'input_required',
+        reasonCode: String(meta.attention.reasonCode),
+        requestedAt: attentionAt.slice(0, 40)
+      };
+    }
     if (meta.researchInstruction) {
       item.researchInstruction = {
         mode: meta.researchInstruction.mode || 'standard',
@@ -385,6 +676,12 @@ function readJsonFile_(folder) {
 function doPost(e) {
   try {
     var req = JSON.parse(e.postData.contents);
+    if (req.action === 'pushconfig') return pushConfig_(req.k);
+    if (req.action === 'pushstatus') return pushStatus_(req);
+    if (req.action === 'pushsubscribe') return pushSubscribe_(req);
+    if (req.action === 'pushunsubscribe') return pushUnsubscribe_(req);
+    if (req.action === 'pushsubscriptions') return pushSubscriptions_(req);
+    if (req.action === 'pushretire') return pushRetire_(req);
     if (req.action === 'requeue') return requeue_(req.k, req.captureId);
     if (req.action === 'correction') return correction_(req);
     if (req.action === 'addnote') return addNote_(req);
@@ -471,9 +768,12 @@ function doPost(e) {
       saved.push(planned[p].slot);
     }
 
+    var capturePushSubjectId = pushSubjectId_(req.k);
     var meta = {
       captureId: captureId,
       capturer: name,
+      pushSubjectId: capturePushSubjectId,
+      pushRoutingTag: pushRoutingTag_(captureId, capturePushSubjectId),
       capturedAt: String(req.capturedAt || ''),
       receivedAt: new Date().toISOString(),
       event: String(req.event || '').slice(0, 200),
@@ -550,10 +850,13 @@ function addNote_(req) {
   } finally {
     lock.releaseLock();
   }
+  var notePushSubjectId = pushSubjectId_(req.k);
   var noteMeta = {
     captureId: noteId,
     type: 'note',
     capturer: name,
+    pushSubjectId: notePushSubjectId,
+    pushRoutingTag: pushRoutingTag_(noteId, notePushSubjectId),
     person: person,
     relatedCaptureId: relatedCaptureId,
     note: text,
@@ -656,10 +959,13 @@ function researchInstruction_(req) {
       createdFolder = true;
     }
     instruction = researchEnvelope_(request, name, target, researchId);
+    var researchPushSubjectId = pushSubjectId_(req.k);
     researchMeta = {
       captureId: researchId,
       type: 'research_instruction',
       capturer: name,
+      pushSubjectId: researchPushSubjectId,
+      pushRoutingTag: pushRoutingTag_(researchId, researchPushSubjectId),
       person: person,
       relatedCaptureId: relatedCaptureId,
       researchRequestFingerprint: requestFingerprint,

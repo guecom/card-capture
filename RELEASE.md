@@ -11,6 +11,7 @@ Kairen-Ref: `TSK-000140` (release baseline). 이 문서는 "무엇이 하나의 
 | GAS 동작 | `ping` ok · 무효 토큰이 `whoami`/`list`/`persondoc`(·`search`·`researchinstruction`)에서 `invalid_token` · guest 조사 지시 `owner_only` · target mismatch 거부 · unknown action 거부 · (배포 직후) 유효 owner 토큰 1회 실동작은 사람이 폰에서 확인 |
 | GAS 배포 | 어떤 deployment version이 어느 Code.gs 상태인지(배포 일시·버전 메모) |
 | Watcher | 실행 중 PID·health 파일 최신성(`watcher-health.json`), 워처 스크립트 버전(commit) |
+| Web Push | 기본 off 확인 → VAPID public key·private registry·전용 sender/DPAPI 설정 → watcher safe health → 사람 승인 enable → Android opt-in·닫힌 앱 수신·same-origin 열기·해제. machine PASS와 live PASS를 구분 |
 | Processing contract | vault `CardCapture_Processing.md`의 당시 상태(vault 이력으로 식별) |
 | Human gate | merge·tag·GAS deployment를 승인한 사람·시점 |
 
@@ -22,10 +23,13 @@ release 기록은 이 파일 하단 "Verified Baselines"에 최신이 위로 오
 2. branch → draft PR → `scripts/validate.ps1` PASS → 사람 review·merge (human gate).
 3. 사람: release tag `vX.Y.Z` 생성 (human gate). 1단계에서 확정한 값과 **정확히 같은** 버전이어야 한다.
 4. `Code.gs` 변경이 있으면 사람: GAS 재배포 — vault `CardCapture_Setup.md`의 클릭 단위 절차 (human gate).
-5. 검증: 위 표의 각 항목 확인(Pages 해시 비교, GAS probe는 무효 토큰 거부까지 스크립트로, 유효 토큰 실동작은 폰에서). **배포된 앱의 설정 화면이 이 tag와 같은 버전을 말하는지 확인한다.**
-6. 이 파일에 baseline 기록 + vault Task에 exact SHA·결과 회수.
+5. Web Push 변경이 있으면 `PUSH_NOTIFICATIONS_ENABLED=false`로 Pages·GAS·watcher를 먼저 맞추고, key·registry·sender·safe health probe를 확인한 뒤 사람 승인으로만 enable한다.
+6. 검증: 위 표의 각 항목 확인(Pages 해시 비교, GAS probe는 무효 토큰 거부까지 스크립트로, 유효 토큰·Push opt-in/receive/open/revoke는 폰에서). **배포된 앱의 설정 화면이 이 tag와 같은 버전을 말하는지 확인한다.**
+7. 이 파일에 baseline 기록 + vault Task에 exact SHA·결과 회수.
 
 조사 지시를 되돌릴 때는 code rollback 전에도 Script Property `RESEARCH_INSTRUCTION_ENABLED=false`로 새 접수를 닫을 수 있다. 이 변경과 재활성화는 사람 운영 게이트다.
+
+Web Push를 되돌릴 때는 code rollback 전에도 `PUSH_NOTIFICATIONS_ENABLED=false`로 새 구독·상태 조회·발송을 닫는다. private registry와 durable outbox는 감사·복구 증거이므로 원인 확인 전에 삭제하지 않는다. 다시 enable하려면 `Initialize-CardCapturePush.ps1 -Force`로 VAPID key epoch를 회전하고 새 public key·sender token을 GAS에 반영한 뒤 Android에서 다시 opt-in한다. 이전 epoch event·subscription을 재사용하지 않는다.
 
 ## Rollback
 

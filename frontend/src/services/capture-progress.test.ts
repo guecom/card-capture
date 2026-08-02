@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { captureProgress, stageIndexOf } from './capture-progress';
+import { captureAttentionOf, captureProgress, stageIndexOf } from './capture-progress';
 import type { BriefItem, CaptureQueueItem } from '../contracts/capture';
 
 const queue = (state: CaptureQueueItem['state'], tries = 0) => ({ captureId: 'c1', state, tries, images: [] } as unknown as CaptureQueueItem);
@@ -24,6 +24,27 @@ describe('server-proven capture progress', () => {
   it('uses terminal status as the only 100% signal', () => {
     expect(captureProgress({ brief: brief({ status: 'processed' }) }).percent).toBe(1);
     expect(captureProgress({ brief: brief({ status: 'skipped' }) }).done).toBe(true);
+  });
+
+  it('keeps skipped terminal truth while presenting bounded human-input recovery', () => {
+    const progress = captureProgress({ brief: brief({
+      status: 'skipped',
+      attention: { kind: 'input_required', reasonCode: 'identity_ambiguous', requestedAt: '2026-08-02T09:00:00.000Z' },
+    }) });
+    expect(progress.done).toBe(true);
+    expect(progress.percent).toBe(1);
+    expect(progress.headline).toBe('확인이 필요해요');
+    expect(progress.detail).toContain('이름이나 회사');
+    expect(progress.detail).not.toContain('identity_ambiguous');
+  });
+
+  it('does not render an unrecognized server attention reason', () => {
+    const unsafe = brief({
+      status: 'skipped',
+      attention: { kind: 'input_required', reasonCode: 'server_raw_reason', requestedAt: 'now' } as never,
+    });
+    expect(captureAttentionOf(unsafe)).toBeNull();
+    expect(captureProgress({ brief: unsafe }).headline).toBe('명함이 아니어서 처리하지 않았어요');
   });
 
   it('keeps failed upload recovery actionable', () => {

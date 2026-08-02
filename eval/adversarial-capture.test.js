@@ -312,7 +312,7 @@ runCase('requeue-dedup', '연속 requeue는 접수 시각을 다시 밀지 않�
 });
 
 /* ── 5. 남의 캡처 (모든 변경 경로) ── */
-runCase('cross-actor-denial', '업로드·requeue·correction·addnote·notify·research 모든 경로가 남의 캡처를 거절하고 아무것도 바꾸지 않는다', function () {
+runCase('cross-actor-denial', '업로드·requeue·correction·addnote·research 모든 활성 경로가 남의 캡처를 거절하고 아무것도 바꾸지 않는다', function () {
   var srv = newServer();
   srv.seedCapture('guest-owned', {
     captureId: 'guest-owned', capturer: 'Guest', status: 'processed', person: 'PER-000222',
@@ -325,7 +325,7 @@ runCase('cross-actor-denial', '업로드·requeue·correction·addnote·notify·
     ['requeue', srv.post({ action: 'requeue', k: OTHER_TOKEN, captureId: 'guest-owned' }), 'not_your_capture'],
     ['correction', srv.post({ action: 'correction', k: OTHER_TOKEN, captureId: 'guest-owned', text: '직함이 틀렸다' }), 'not_your_capture'],
     ['addnote', srv.post({ action: 'addnote', k: OTHER_TOKEN, captureId: 'guest-owned', text: '메모 주입' }), 'not_your_capture'],
-    ['notify', srv.get({ action: 'notify', k: OTHER_TOKEN, captureId: 'guest-owned' }), 'not_your_capture'],
+    ['retired notify', srv.get({ action: 'notify', k: OTHER_TOKEN, captureId: 'guest-owned' }), 'notification_channel_retired'],
     ['researchinstruction', srv.post({ action: 'researchinstruction', k: OTHER_TOKEN, captureId: 'guest-owned', text: '공개 경력 조사' }), 'owner_only']
   ];
   attempts.forEach(function (row) {
@@ -350,41 +350,32 @@ runCase('cross-actor-denial', '업로드·requeue·correction·addnote·notify·
     '수정 요청 원문이 correction-*.json으로 남지 않았다');
 });
 
-/* ── 6. 외부 효과 (메일) ── */
-runCase('notify-fail-closed', '처리되지 않은 캡처로는 메일이 나가지 않고, 같은 캡처로 두 번 나가지 않으며, 본문에 메모·명함 내용이 없다', function () {
+/* ── 6. 퇴역한 외부 효과 (메일) ── */
+runCase('notify-retired', '구형 MailApp 알림은 어떤 캡처 상태에서도 외부 효과 없이 퇴역 응답만 준다', function () {
   var srv = newServer();
   var memo = '메모: 이 사람 아내 이름과 자녀 학교까지 조사해줘';
   srv.seedCapture('cap-pending2', {
     captureId: 'cap-pending2', capturer: 'Owner', status: 'received',
     receivedAt: '2026-07-27T08:00:00.000Z', note: memo, files: ['front.jpg']
   });
-  eq(srv.get({ action: 'notify', k: OWNER_TOKEN, captureId: 'cap-pending2' }), { ok: false, error: 'not_processed' },
-    '처리 전 캡처로 알림 발송이 허용됐다');
+  eq(srv.get({ action: 'notify', k: OWNER_TOKEN, captureId: 'cap-pending2' }), { ok: false, error: 'notification_channel_retired' },
+    '처리 전 캡처에서 구형 알림이 퇴역 응답을 주지 않았다');
   srv.seedCapture('cap-skipped', {
     captureId: 'cap-skipped', capturer: 'Owner', status: 'skipped',
     receivedAt: '2026-07-27T08:00:00.000Z', processedAt: '2026-07-27T08:05:00.000Z', files: ['front.jpg']
   });
-  eq(srv.get({ action: 'notify', k: OWNER_TOKEN, captureId: 'cap-skipped' }), { ok: false, error: 'not_processed' },
-    '건너뛴 캡처로 처리 완료 알림이 나갔다');
-  check(srv.mails.length === 0, '처리되지 않은 캡처로 메일이 발송됐다: ' + srv.mails.length + '통');
+  eq(srv.get({ action: 'notify', k: OWNER_TOKEN, captureId: 'cap-skipped' }), { ok: false, error: 'notification_channel_retired' },
+    '건너뛴 캡처에서 구형 알림이 퇴역 응답을 주지 않았다');
+  check(srv.mails.length === 0, '퇴역한 경로에서 메일이 발송됐다: ' + srv.mails.length + '통');
 
   srv.seedCapture('cap-done', {
     captureId: 'cap-done', capturer: 'Owner', status: 'processed', person: 'PER-000224', personAction: 'created',
     event: '합성 행사', note: memo, receivedAt: '2026-07-27T08:00:00.000Z', processedAt: '2026-07-27T08:20:00.000Z',
     files: ['front.jpg']
   });
-  var sent = srv.get({ action: 'notify', k: OWNER_TOKEN, captureId: 'cap-done' });
-  check(sent.ok === true, '처리 완료 캡처의 알림이 실패했다: ' + JSON.stringify(sent));
-  check(srv.mails.length === 1, '메일이 정확히 1통 나가지 않았다: ' + srv.mails.length + '통');
-  var mail = srv.mails[0];
-  var text = String(mail.subject || '') + '\n' + String(mail.body || '');
-  check(text.indexOf('PER-000224') >= 0, '메일이 대상 Person을 알려주지 않는다');
-  check(text.indexOf(memo) < 0, '메일 본문에 메모 원문이 실렸다 — 알림은 최소 정보만 담아야 한다');
-  check(text.indexOf(OWNER_TOKEN) < 0, '메일 본문에 토큰이 실렸다');
-  check(String(sent.notified || '').indexOf('synthetic-owner') < 0, '응답이 수신 주소를 마스킹하지 않았다: ' + sent.notified);
-  var again = srv.get({ action: 'notify', k: OWNER_TOKEN, captureId: 'cap-done' });
-  check(again.deduped === true, '같은 캡처의 두 번째 알림이 dedup되지 않았다: ' + JSON.stringify(again));
-  check(srv.mails.length === 1, '같은 캡처로 메일이 두 번 나갔다: ' + srv.mails.length + '통');
+  var retired = srv.get({ action: 'notify', k: OWNER_TOKEN, captureId: 'cap-done' });
+  eq(retired, { ok: false, error: 'notification_channel_retired' }, '처리 완료 캡처에서도 구형 알림이 실행됐다');
+  check(srv.mails.length === 0, '처리 완료 캡처에서 퇴역 MailApp이 실행됐다: ' + srv.mails.length + '통');
 });
 
 /* ── 7. 한도와 메모 격리 ── */

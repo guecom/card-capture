@@ -74,6 +74,7 @@
 var fs = require('fs');
 var path = require('path');
 var vm = require('vm');
+var crypto = require('crypto');
 
 var SERVER_SOURCE = path.join(__dirname, '..', 'Code.gs');
 var BINARY_TEXT = '<synthetic-image-bytes>';
@@ -382,7 +383,11 @@ function createServer(options) {
     isFinite: isFinite,
     PropertiesService: {
       getScriptProperties: function () {
-        return { getProperty: function (key) { return Object.prototype.hasOwnProperty.call(props, key) ? props[key] : null; } };
+        return {
+          getProperty: function (key) { return Object.prototype.hasOwnProperty.call(props, key) ? props[key] : null; },
+          setProperty: function (key, value) { props[key] = String(value); },
+          deleteProperty: function (key) { delete props[key]; }
+        };
       }
     },
     ContentService: {
@@ -415,6 +420,16 @@ function createServer(options) {
     Utilities: {
       newBlob: function (value, mime, name) { return makeBlob(value, mime, name); },
       base64Decode: decodeBase64,
+      DigestAlgorithm: { SHA_256: 'sha256' },
+      Charset: { UTF_8: 'utf8' },
+      computeDigest: function (_algorithm, value) {
+        return Array.prototype.slice.call(crypto.createHash('sha256').update(String(value), 'utf8').digest())
+          .map(function (byte) { return byte > 127 ? byte - 256 : byte; });
+      },
+      computeHmacSha256Signature: function (value, key) {
+        return Array.prototype.slice.call(crypto.createHmac('sha256', String(key)).update(String(value), 'utf8').digest())
+          .map(function (byte) { return byte > 127 ? byte - 256 : byte; });
+      },
       formatDate: function (date, tz, fmt) {
         var ms = (date && typeof date.getTime === 'function') ? date.getTime() : state.nowMs;
         var seoul = new Date(ms + 9 * 60 * 60 * 1000).toISOString();

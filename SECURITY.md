@@ -12,6 +12,7 @@ Kairen Ref: `TSK-000141` (credential·access baseline), `TSK-000153` (processing
 | Processing agent | 로컬 인증 세션(Codex/Claude) | vault | vault 내 allowlist 경로 쓰기 (`CardCapture_Processing.md`) |
 
 - token은 **bearer credential**이다. URL 파라미터로 전달되고 폰 브라우저 localStorage에 저장된다 — 링크를 아는 사람이 곧 그 사용자다.
+- Push 설정·상태·구독 변경은 bearer를 query string에 넣지 않고 고정 GAS endpoint의 POST-only `pushconfig`·`pushstatus`·`pushsubscribe`·`pushunsubscribe`로 보낸다. watcher 전용 `pushsubscriptions`·`pushretire`는 별도 sender credential을 요구한다. 브라우저는 Push endpoint·암호 키를 localStorage나 앱 로그에 저장하지 않는다.
 - GAS 웹앱은 소유자 계정 권한으로 실행된다("실행: 나, 액세스: 모든 사용자"). 코드가 곧 권한 경계다.
 - **credential은 빌드에 박힌 배포본 주소로만 나간다** (`frontend/src/services/api-origin.ts`). 신뢰 기준은 origin이 아니라 **origin + pathname**이다 — `config/public-runtime.json`의 `apiUrl`이 가리키는 배포본 주소 그 자체와 앱 자신의 origin뿐이며, URL·localStorage·캐시·서버 응답 어느 것도 이 집합을 넓히지 못한다. 로컬 harness(`localhost`/`127.0.0.1`에서 서비스될 때)에 한해 RFC 6761 `.test`·RFC 8375 `.localhost` 이름을 mock API로 허용한다.
   - **origin만 비교하면 부족했다.** `script.google.com`은 누구나 자기 Apps Script 웹앱을 배포할 수 있는 multi-tenant 호스트다. origin만 맞추면 `?api=https://script.google.com/macros/s/<공격자 배포 ID>/exec`가 통과해 저장된 링크 코드가 그대로 공격자 배포본으로 나갔다(`ISS-000109`).
@@ -30,6 +31,9 @@ Kairen Ref: `TSK-000141` (credential·access baseline), `TSK-000153` (processing
 | 토큰 잔류 (주소창·이력·Referer) | 개인 링크의 `?k=`가 주소창·방문 기록·화면 공유·외부 링크 Referer에 남음 | 저장 직후 `history.replaceState`로 `k`·`api` 제거(push 아님), `<meta name="referrer" content="no-referrer">` | 구현됨, 현재 root·React 앱 e2e 회귀. 폐기된 앱과 캐시도 다시 노출되지 않음을 별도 retirement gate가 검증한다 |
 | 기기 내 subject 교차 노출 | 한 폰을 owner 링크 → guest 링크로 열 때 이전 사람의 캐시가 그대로 렌더 | 사적 키를 subject namespace로 분리, 링크 코드 없으면 사적 캐시를 읽지도 쓰지도 않음, 다른 subject namespace는 boot에서 제거 | 구현됨, e2e 회귀(서버 침묵 상태에서 이전 기록 0건) |
 | 기기 양도·링크 회수 후 잔류 | 폰을 넘기거나 토큰을 회수해도 기기에 브리핑 사본이 남음 | 설정의 `연결 해제`가 토큰·이름·사적 캐시·만남 맥락을 제거(대기 중 촬영은 보존하고 건수를 먼저 경고) | 구현됨, e2e 회귀 |
+| Push 구독 교차 전송 | token을 바꾸거나 같은 endpoint를 다른 사용자가 등록해 이전 사람의 terminal event가 도착 | server-derived opaque subject, endpoint collision 거부, active token 재검증, subject별 cap, private registry, local-first unsubscribe | 구현됨, GAS policy·frontend 회귀. live Android proof 전에는 운영 PASS 아님 |
+| Push 본문·경로 주입 | watcher나 push payload가 이름·회사·메모·token·임의 URL을 알림에 넣음 | encrypted payload를 event ID·3종 kind·검증된 capture target으로 제한하고, service worker가 고정 한국어 copy와 same-origin route만 생성 | 구현됨, service-worker build gate |
+| Push 자격 증명 유출 | VAPID private key·sender token이 저장소·명령줄·로그·health에 남음 | private key·sender token은 Windows DPAPI 파일, watcher→Node stdin, safe status code만 기록. GAS Script Properties 실제 값은 저장소에 넣지 않음 | 구현됨, secret scan·sender fixture. 운영 provisioning은 human gate |
 | Owner 토큰 유출 | 위와 동일 | persondoc·search는 OWNER_NAMES 한정, Private 포함이므로 owner 토큰은 고민감 취급 | 경계 구현됨 |
 | Prompt injection | 명함 인쇄 문구·note·웹 검색 결과 → 처리 agent | 처리 계약의 untrusted-input 규칙 + write allowlist + `eval/` adversarial fixture | 계약·fixture 존재, 회귀로 검증 |
 | 조사 지시 권한 상승 | guest가 숨겨진 UI/API를 직접 호출 | UI capability + `researchInstruction_` server-side OWNER_NAMES 재검증 | owner-only, negative fixture |
@@ -58,9 +62,18 @@ canonical 저장소는 GAS Script Properties `TOKENS`(JSON `{token: name}`)이�
 7. **감사(audit)**: GAS 편집기 → 실행(Executions) 로그에서 `doGet`/`doPost` 호출 이력·오류를 확인한다. Script Properties 변경 시 변경 일시·사유를 vault `CardCapture_Setup.md`의 변경 이력 표에 기록한다(값은 기록하지 않는다).
 8. **조사 지시 rollback**: 긴급 시 `RESEARCH_INSTRUCTION_ENABLED=false`로 접수 UI/API를 닫는다. 기존 raw receipt는 삭제하지 않고 실행만 중단한다. 재활성화는 원인과 검증 결과를 확인한 뒤 사람이 수행한다.
 
+## Web Push Lifecycle Runbook
+
+1. `Initialize-CardCapturePush.ps1`로 VAPID key와 watcher sender token을 생성한다. private 값은 `%LOCALAPPDATA%\CardCapture\push.conf`에 현재 Windows 사용자 DPAPI로만 저장하고, 저장소·vault·채팅에 복사하지 않는다. sender token은 기본적으로 stdout에 나오지 않는다. 사람이 직접 GAS 설정에 붙여넣을 때만 `-CopySenderTokenToClipboard`를 명시하고 붙여넣은 즉시 clipboard를 다른 값으로 덮는다. CI·채팅 transcript에서는 이 switch를 쓰지 않는다.
+2. Drive에서 vault와 동기화되지 않는 별도 폴더를 만들고 일반 액세스를 `제한됨(Restricted)`으로 둔다. 폴더를 공유 링크·공개·domain 공유로 바꾸지 않는다. 코드는 Kairen vault 아래이거나 private sharing이 아니면 registry를 fail-closed한다. public key, registry folder ID, sender token을 GAS Script Properties의 `PUSH_VAPID_PUBLIC_KEY`, `PUSH_REGISTRY_FOLDER_ID`, `PUSH_SENDER_TOKEN`에 각각 넣는다. 초기 `PUSH_NOTIFICATIONS_ENABLED`는 `false`다.
+3. Pages·GAS·watcher가 같은 release인지 확인하고 synthetic probes를 통과시킨 뒤 사람 승인으로만 `PUSH_NOTIFICATIONS_ENABLED=true`로 바꾼다.
+4. Android 설정의 알림 카드에서 사용자가 직접 `이 기기에서 알림 받기`를 눌러 권한과 구독을 만든다. 브라우저 boot나 page load에서 권한 prompt를 띄우지 않는다.
+5. 회수는 앱의 `알림 끄기`로 기기 구독을 먼저 끊고 registry를 정리한다. token을 `TOKENS`에서 삭제하면 registry가 남아도 그 subject에는 더 전송하지 않는다. `404`·`410` 응답은 watcher가 해당 구독을 retire한다.
+6. 긴급 rollback은 `PUSH_NOTIFICATIONS_ENABLED=false`로 새 구독·조회·발송을 fail-closed하고, watcher를 이전 release로 되돌린다. registry와 outbox는 원인 분석 전에 삭제하지 않는다. 다시 enable할 때는 initializer `-Force`로 VAPID key epoch를 회전하고 Script Property의 public key·sender token을 함께 교체한 뒤 기기에서 다시 opt-in한다. 이전 epoch event는 전송하지 않는다.
+
 ## Secret Hygiene
 
-- 금지: 토큰 값, `TOKENS` JSON, `INBOX_FOLDER_ID` 등 Drive folder ID, 실캡처 이미지·capture.json·brief, Person 개인정보.
+- 금지: 토큰 값, `TOKENS` JSON, `INBOX_FOLDER_ID`·`PUSH_REGISTRY_FOLDER_ID` 등 Drive folder ID, VAPID private key, sender token, Push endpoint·subscription keys, 실캡처 이미지·capture.json·brief, Person 개인정보.
 - 허용: `config/public-runtime.json`의 `apiUrl` exec URL(제품 동작상 공개), 합성 fixture. `scripts/validate.ps1`은 이 파일 한 곳만 예외로 검사한다.
 - `scripts/validate.ps1`이 위 패턴을 스캔하며 PR 전 필수 실행이다.
 

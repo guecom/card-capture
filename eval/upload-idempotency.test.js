@@ -9,6 +9,7 @@
    캡처가 처음부터 다시 처리될 수 있었다. 이 게이트는 서버 쪽 계약을 고정한다. */
 
 var assert = require('assert');
+var crypto = require('crypto');
 var fs = require('fs');
 var path = require('path');
 var vm = require('vm');
@@ -89,6 +90,12 @@ var sandbox = {
   LockService: { getScriptLock: function () { return { waitLock: function () {}, releaseLock: function () {} }; } },
   Utilities: {
     newBlob: function (value, mime, name) { return blob(value, name); },
+    DigestAlgorithm: { SHA_256: 'sha256' },
+    Charset: { UTF_8: 'utf8' },
+    computeDigest: function (_algorithm, value) {
+      return Array.prototype.slice.call(crypto.createHash('sha256').update(String(value), 'utf8').digest())
+        .map(function (byte) { return byte > 127 ? byte - 256 : byte; });
+    },
     base64Decode: function (value) {
       if (typeof value !== 'string' || !value) throw new Error('bad base64');
       return { length: value.length };

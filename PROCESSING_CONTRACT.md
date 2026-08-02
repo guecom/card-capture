@@ -91,7 +91,13 @@ Deep 요청은 네 목적 중 하나 이상이 필수다: meeting preparation, e
 - final은 `research-result.json`, `brief.md`, `capture.json.status=processed`, Person target이 모두 있어야 commit이다.
 - 중간 checkpoint는 terminal commit이 아니다. `processing + researchProgress.partial=true`만 다음 slice 권한을 만든다.
 - 정책 위반, 근거 부족, target mismatch는 조용히 성공으로 바꾸지 않고 명시적 error/unknown으로 남긴다.
-- 알림은 final result, human input required, recovery required 세 상태만 대상이다. 현재 Web Push transport가 배포되기 전에는 앱 안 진행 화면만 authoritative하며 닫힌 앱 알림을 제공한다고 표시하지 않는다.
+- 알림은 final result, human input required, recovery required 세 interruptive event type만 대상이다. 각각의 authoritative source는 `processed` commit, `skipped + attention`, watcher local quarantine이다. quick name·중간 단계·부분 진행은 알림하지 않으며, 해당 truth와 durable event를 먼저 기록한 뒤 별도 outbox가 전송한다. 전송 실패는 capture 상태를 되돌리거나 재처리를 만들지 않는다.
+- 전송은 표준 Web Push + VAPID를 쓰며 별도 Firebase project를 요구하지 않는다. 기능은 기본 `false`이고, Script Properties·로컬 DPAPI 설정·운영 watcher가 모두 준비된 뒤에만 명시적으로 연다.
+- 구독은 token에서 서버가 유도한 opaque subject ID에 귀속하고 vault 밖·공유 제한 private Drive registry에 보관한다. capture receipt의 subject는 server HMAC과 처리 전 snapshot으로 고정해 quick·standard·deep processor가 바꿔도 routing에 쓰지 않는다. watcher는 전용 sender token으로 자기 subject의 활성 구독만 조회하며, token 삭제·회전 뒤에는 이전 subject가 즉시 비활성화된다.
+- payload는 암호화된 event ID·allowlist kind·검증된 capture target만 담는다. service worker가 고정한 제목·본문·동일 origin 경로만 사용하므로 이름·회사·메모·조사 내용·token·endpoint를 알림이나 로그에 넣지 않는다.
+- 권한 요청은 사용자가 설정에서 직접 누른 때만 시작하고, 해제는 네트워크보다 먼저 기기 구독을 끊는다. `404`·`410`은 revision이 같은 registry record만 정리하며, 일시 조회·발송 장애는 같은 VAPID key epoch의 30분 window에서 bounded retry 후 격리한다. 30분을 넘긴 event, server-confirmed disable, 다른 key epoch event는 나중에 재생하지 않고 미전송으로 닫는다. disable 뒤 re-enable은 VAPID key epoch를 회전해 이전 event·구독을 새 session으로 가져오지 않는다.
+- recovery 알림은 고정된 `recovery_required` deep link로 진행 화면의 복구 카드와 연결된다. 사용자는 watcher 내부 사유나 개인정보를 보지 않고 해당 항목만 `다시 처리`하거나 최신 상태를 확인할 수 있다.
+- machine gate가 통과해도 실제 Android 닫힌 앱의 수신·열기·해제 증거 전에는 live PASS로 승격하지 않는다. 앱 안 진행 상태가 항상 authoritative 기준이다.
 
 ## Deployment order
 

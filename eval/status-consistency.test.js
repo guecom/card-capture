@@ -1,6 +1,7 @@
 'use strict';
 
 var assert = require('assert');
+var crypto = require('crypto');
 var fs = require('fs');
 var path = require('path');
 var vm = require('vm');
@@ -95,6 +96,12 @@ var sandbox = {
   } },
   Utilities: {
     newBlob: function (value, mime, name) { return blob(value, name); },
+    DigestAlgorithm: { SHA_256: 'sha256' },
+    Charset: { UTF_8: 'utf8' },
+    computeDigest: function (_algorithm, value) {
+      return Array.prototype.slice.call(crypto.createHash('sha256').update(String(value), 'utf8').digest())
+        .map(function (byte) { return byte > 127 ? byte - 256 : byte; });
+    },
     formatDate: function () { return '20260725-190000'; },
     getUuid: function () { return 'abcd-0000'; }
   }

@@ -12,7 +12,8 @@
 # 헬스: %LOCALAPPDATA%\CardCapture\watcher-health.json  (CardCapture_Health.ps1로 조회)
 # 상태: %LOCALAPPDATA%\CardCapture\state\  — 워처 소유 durable 상태 (claim/lease, attempt·격리, staging marker).
 #       canonical capture.json 스키마와 status 값(received/processing/processed/skipped)은 건드리지 않는다.
-# 알림(옵트인): %LOCALAPPDATA%\CardCapture\notify.conf 가 있으면 처리 완료 시 GAS notify 호출
+# 알림(옵트인): %LOCALAPPDATA%\CardCapture\push.conf 가 있고 서버 feature flag가 켜졌을 때만
+#       표준 Web Push를 보낸다. 구형 notify.conf/MailApp 경로는 퇴역했으며 호출하지 않는다.
 # 주의: 이 파일은 반드시 UTF-8 BOM으로 저장한다 (한글 경로 — PS5.1 CP949 오독 방지).
 
 $Version = 'watcher-v3.0'
@@ -22,7 +23,7 @@ $Codex  = 'C:\Users\gueco\AppData\Local\Programs\OpenAI\Codex\bin\codex.exe'
 $LogDir = Join-Path $env:LOCALAPPDATA 'CardCapture'
 $LogFile = Join-Path $LogDir 'watcher.log'
 $HealthFile = Join-Path $LogDir 'watcher-health.json'
-$NotifyConf = Join-Path $LogDir 'notify.conf'
+$PushConf = Join-Path $LogDir 'push.conf'
 $Lock   = Join-Path $Inbox 'processing.lock'
 $StateDir = Join-Path $LogDir 'state'
 # 기존 임계값 재사용: stale lock 30분 = lease 30분, 연속 실패 3회 = 항목별 시도 상한 3회.
@@ -56,6 +57,8 @@ $script:LastExitCode = $null
 $script:ConsecutiveFailures = 0
 $script:UnsafeNames = @{}
 $script:QuarantineHoldLogged = @{}
+$script:PushLastFlushAt = ''
+$script:PushLastOutcome = 'not_configured'
 # 소유자 식별자: PID만 쓰면 재사용된 PID가 남의 lease를 갱신할 수 있다.
 $WorkerId = ([string]$PID + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 
@@ -503,6 +506,25 @@ function Complete-CaptureStaging($captureId, $inputFingerprint, $outputFingerpri
     Remove-Item (Join-Path $d 'begin.json') -Force -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $d 'deep-output-backup.json') -Force -ErrorAction SilentlyContinue
     return $p
+}
+
+function Get-TextSha256($text) {
+    try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes([string]$text))
+        $sha.Dispose()
+        return (($hash | ForEach-Object { $_.ToString('x2') }) -join '')
+    } catch { return '' }
+}
+
+function Get-TextHmacSha256($key, $text) {
+    try {
+        $hmac = New-Object System.Security.Cryptography.HMACSHA256
+        $hmac.Key = [System.Text.Encoding]::UTF8.GetBytes([string]$key)
+        $hash = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes([string]$text))
+        $hmac.Dispose()
+        return (($hash | ForEach-Object { $_.ToString('x2') }) -join '')
+    } catch { return '' }
 }
 
 function Complete-CaptureCheckpoint($captureId) {
@@ -1113,6 +1135,13 @@ function Write-Health {
     if (Test-Path $claimsDir) {
         $claims = @(Get-ChildItem $claimsDir -Filter '*.claim.json' -ErrorAction SilentlyContinue).Count
     }
+    $pushPending = 0
+    $pushEventsDir = Join-Path $StateDir 'notifications\events'
+    if (Test-Path $pushEventsDir) {
+        foreach ($f in (Get-ChildItem $pushEventsDir -Filter 'pne-*.json' -ErrorAction SilentlyContinue)) {
+            try { if ((Get-Content $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json).status -eq 'pending') { $pushPending++ } } catch {}
+        }
+    }
     $h = [PSCustomObject]@{
         version = $Version
         pid = $PID
@@ -1129,6 +1158,10 @@ function Write-Health {
         activeClaims = $claims
         quarantinedCount = $quarantined
         interruptedCount = @(Get-InterruptedCaptures).Count
+        pushConfigured = (Test-Path -LiteralPath $PushConf)
+        pushPendingCount = $pushPending
+        pushLastFlushAt = $script:PushLastFlushAt
+        pushLastOutcome = $script:PushLastOutcome
         # 로그 쓰기 실패 가시성: health가 살아 있으면 여기서, health마저 못 쓰면
         # state\logging\log-write-failure.json 에서 관측한다.
         logDroppedPending = [int]$script:LogPendingDrops
@@ -1138,18 +1171,287 @@ function Write-Health {
     try { $h | ConvertTo-Json | Out-File -Encoding utf8 $HealthFile } catch {}
 }
 
-# 처리 완료 알림 (옵트인): notify.conf = {"api":"https://script.google.com/...","token":"..."}
-# conf가 없으면 조용히 건너뛴다. 실패해도 처리 상태에 영향을 주지 않는다.
-function Send-Notify($captureIds) {
-    if (-not (Test-Path $NotifyConf)) { return }
-    try { $conf = Get-Content $NotifyConf -Raw -Encoding UTF8 | ConvertFrom-Json } catch { Write-Log 'notify.conf parse failed, skip'; return }
-    if (-not $conf.api -or -not $conf.token) { return }
-    foreach ($cid in $captureIds) {
-        try {
-            $r = Invoke-RestMethod -Uri ($conf.api + '?action=notify&k=' + $conf.token + '&captureId=' + $cid) -Method Get -TimeoutSec 20
-            Write-Log ("notify " + $cid + " -> " + ($r | ConvertTo-Json -Compress))
-        } catch { Write-Log ("notify failed for " + $cid + ": " + $_.Exception.Message) }
+# ---------------------------------------------------------------------------
+# Web Push — terminal truth 뒤의 독립 outbox. endpoint·token·VAPID private key·캡처 내용은
+# argv/로그/health에 절대 쓰지 않는다. 이 계층이 실패해도 capture state와 commit은 바꾸지 않는다.
+
+function Unprotect-PushSecret($cipherText) {
+    if (-not $cipherText) { return '' }
+    $secure = $null
+    $ptr = [IntPtr]::Zero
+    try {
+        $secure = ConvertTo-SecureString -String ([string]$cipherText)
+        $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
+    } catch { return '' }
+    finally { if ($ptr -ne [IntPtr]::Zero) { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) } }
+}
+
+function Get-PushRuntimeConfig {
+    if (-not (Test-Path -LiteralPath $PushConf)) { return $null }
+    try { $raw = Get-Content -LiteralPath $PushConf -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
+    if (-not $raw -or [string]$raw.version -ne 'card-capture-push-config-v1') { return $null }
+    if ([string]$raw.api -notmatch '^https://script\.google\.com/macros/s/[A-Za-z0-9_-]+/exec$') { return $null }
+    if ([string]$raw.vapidSubject -notmatch '^(mailto:[^\s@]+@[^\s@]+|https://[^\s]+)$') { return $null }
+    if ([string]$raw.vapidPublicKey -notmatch '^[A-Za-z0-9_-]{80,120}$') { return $null }
+    if (-not (Test-Path -LiteralPath ([string]$raw.nodePath)) -or -not (Test-Path -LiteralPath ([string]$raw.senderPath))) { return $null }
+    $privateKey = Unprotect-PushSecret $raw.vapidPrivateKeyDpapi
+    $senderToken = Unprotect-PushSecret $raw.senderTokenDpapi
+    if ($privateKey -notmatch '^[A-Za-z0-9_-]{40,60}$' -or $senderToken -notmatch '^[A-Za-z0-9_-]{32,160}$') { return $null }
+    return [PSCustomObject]@{
+        api = [string]$raw.api
+        vapidSubject = [string]$raw.vapidSubject
+        vapidPublicKey = [string]$raw.vapidPublicKey
+        vapidPrivateKey = $privateKey
+        senderToken = $senderToken
+        nodePath = [string]$raw.nodePath
+        senderPath = [string]$raw.senderPath
     }
+}
+
+function Save-PushStateJson($path, $value) {
+    try {
+        $dir = Split-Path -Parent $path
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $temp = $path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+        [IO.File]::WriteAllText($temp, ($value | ConvertTo-Json -Depth 12), (New-Object Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $temp -Destination $path -Force
+        return $true
+    } catch { return $false }
+}
+
+function Get-PushCaptureMeta($captureId) {
+    $safe = Get-SafeCaptureId $captureId
+    if (-not $safe) { return $null }
+    $dir = Join-Path $Inbox $safe
+    $json = Get-CaptureJson $dir
+    if (-not $json) { return $null }
+    try { return Get-Content -LiteralPath $json.FullName -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $null }
+}
+
+function Get-PushRoutingSnapshot($captureId) {
+    $safe = Get-SafeCaptureId $captureId
+    if (-not $safe) { return [PSCustomObject]@{ ok = $false; captureId = ''; subjectId = ''; routingTag = '' } }
+    $meta = Get-PushCaptureMeta $safe
+    if (-not $meta) { return [PSCustomObject]@{ ok = $false; captureId = $safe; subjectId = ''; routingTag = '' } }
+    return [PSCustomObject]@{
+        ok = $true
+        captureId = $safe
+        subjectId = [string]$meta.pushSubjectId
+        routingTag = [string]$meta.pushRoutingTag
+    }
+}
+
+function Test-PushRoutingUnchanged($snapshot) {
+    if (-not $snapshot -or $snapshot.ok -ne $true) { return $false }
+    $current = Get-PushRoutingSnapshot ([string]$snapshot.captureId)
+    return ($current.ok -eq $true -and [string]$current.subjectId -ceq [string]$snapshot.subjectId -and
+        [string]$current.routingTag -ceq [string]$snapshot.routingTag)
+}
+
+function Restore-PushRoutingSnapshot($snapshot) {
+    if (-not $snapshot -or $snapshot.ok -ne $true) { return $false }
+    $safe = Get-SafeCaptureId ([string]$snapshot.captureId)
+    if (-not $safe) { return $false }
+    $json = Get-CaptureJson (Join-Path $Inbox $safe)
+    if (-not $json) { return $false }
+    try { $meta = Get-Content -LiteralPath $json.FullName -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $false }
+    if (-not $meta) { return $false }
+    foreach ($field in @('pushSubjectId','pushRoutingTag')) {
+        $value = if ($field -eq 'pushSubjectId') { [string]$snapshot.subjectId } else { [string]$snapshot.routingTag }
+        $property = $meta.PSObject.Properties[$field]
+        if ($property) { $property.Value = $value }
+        else { $meta | Add-Member -NotePropertyName $field -NotePropertyValue $value }
+    }
+    return (Save-PushStateJson $json.FullName $meta)
+}
+
+function Get-AllPushRoutingSnapshots {
+    $result = @()
+    foreach ($dir in @(Get-ChildItem -LiteralPath $Inbox -Directory -ErrorAction SilentlyContinue)) {
+        $snapshot = Get-PushRoutingSnapshot $dir.Name
+        if ($snapshot.ok -eq $true) { $result += $snapshot }
+    }
+    return @($result)
+}
+
+function Get-CommittedPushKind($captureId, $status) {
+    if ([string]$status -eq 'processed') { return 'final_result' }
+    if ([string]$status -ne 'skipped') { return '' }
+    $meta = Get-PushCaptureMeta $captureId
+    if (-not $meta -or -not $meta.attention -or [string]$meta.attention.kind -ne 'input_required') { return '' }
+    if (@('unreadable_capture','missing_required_side','identity_ambiguous') -notcontains [string]$meta.attention.reasonCode) { return '' }
+    $attentionAt = [datetime]::MinValue
+    if (-not [datetime]::TryParse([string]$meta.attention.requestedAt, [ref]$attentionAt)) { return '' }
+    return 'human_input_required'
+}
+
+function Queue-PushEvent($captureId, $kind, $truthFingerprint, $routingSnapshot) {
+    if (-not (Test-Path -LiteralPath $PushConf)) { return $false }
+    if (@('final_result','human_input_required','recovery_required') -notcontains [string]$kind) { return $false }
+    $safe = Get-SafeCaptureId $captureId
+    if (-not $safe -or -not $routingSnapshot -or $routingSnapshot.ok -ne $true -or
+        [string]$routingSnapshot.captureId -cne $safe -or -not (Test-PushRoutingUnchanged $routingSnapshot) -or
+        [string]$routingSnapshot.subjectId -notmatch '^psh-[a-f0-9]{64}$' -or
+        [string]$routingSnapshot.routingTag -notmatch '^prt-[a-f0-9]{64}$') { return $false }
+    $config = Get-PushRuntimeConfig
+    if (-not $config) { return $false }
+    $expectedRoutingTag = 'prt-' + (Get-TextHmacSha256 $config.senderToken ('card-capture-push-route-v1' + [char]0 + $safe + [char]0 + [string]$routingSnapshot.subjectId))
+    if ([string]$routingSnapshot.routingTag -cne $expectedRoutingTag) { return $false }
+    $keyId = 'vpk-' + (Get-TextSha256 $config.vapidPublicKey).Substring(0, 20)
+    $fingerprint = [string]$truthFingerprint
+    if (-not $fingerprint) { $fingerprint = Get-CaptureFingerprint (Join-Path $Inbox $safe) }
+    if (-not $fingerprint) { return $false }
+    $eventId = 'pne-' + (Get-TextSha256 ('card-capture-push-event-v1' + [char]0 + $kind + [char]0 + $safe + [char]0 + $fingerprint + [char]0 + [string]$routingSnapshot.subjectId))
+    $eventsDir = Resolve-StatePath 'notifications\events' $null
+    $path = Join-Path $eventsDir ($eventId + '.json')
+    if (Test-Path -LiteralPath $path) { return $true }
+    $event = [ordered]@{
+        version = 'card-capture-push-event-v1'
+        eventId = $eventId
+        kind = [string]$kind
+        target = $safe
+        subjectId = [string]$routingSnapshot.subjectId
+        keyId = $keyId
+        status = 'pending'
+        lookupAttempts = 0
+        createdAt = (Get-Date).ToUniversalTime().ToString('o')
+        completedAt = ''
+    }
+    return (Save-PushStateJson $path $event)
+}
+
+function Invoke-PushApi($config, $body) {
+    try {
+        return Invoke-RestMethod -Uri $config.api -Method Post -ContentType 'text/plain;charset=utf-8' -Body ($body | ConvertTo-Json -Compress -Depth 12) -TimeoutSec 20
+    } catch { return $null }
+}
+
+function Invoke-PushSender($config, $subscription, $payload) {
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $config.nodePath
+    $startInfo.Arguments = '"' + ([string]$config.senderPath).Replace('"', '') + '"'
+    $startInfo.WorkingDirectory = Split-Path -Parent $config.senderPath
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)
+    $startInfo.StandardErrorEncoding = New-Object System.Text.UTF8Encoding($false)
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) { return [PSCustomObject]@{ ok = $false; errorCode = 'sender_start_failed'; retryable = $true } }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $request = [ordered]@{
+            operation = 'send'
+            vapid = [ordered]@{ subject = $config.vapidSubject; publicKey = $config.vapidPublicKey; privateKey = $config.vapidPrivateKey }
+            subscription = $subscription
+            payload = $payload
+        }
+        $process.StandardInput.WriteLine(($request | ConvertTo-Json -Compress -Depth 12))
+        $process.StandardInput.Close()
+        if (-not $process.WaitForExit(25000)) {
+            try { $process.Kill() } catch {}
+            try { [void]$process.WaitForExit(2000) } catch {}
+            return [PSCustomObject]@{ ok = $false; errorCode = 'sender_timeout'; retryable = $true; statusCode = 0 }
+        }
+        try { $output = $stdoutTask.Result | ConvertFrom-Json } catch { $output = $null }
+        if (-not $output) { return [PSCustomObject]@{ ok = $false; errorCode = 'sender_bad_response'; retryable = $true; statusCode = 0 } }
+        return $output
+    } catch { return [PSCustomObject]@{ ok = $false; errorCode = 'sender_failed'; retryable = $true; statusCode = 0 } }
+    finally { if ($process) { $process.Dispose() } }
+}
+
+function Retire-PushSubscription($config, $subscriptionId, $revisionId) {
+    $null = Invoke-PushApi $config ([ordered]@{ action = 'pushretire'; senderToken = $config.senderToken; subscriptionId = $subscriptionId; revisionId = $revisionId })
+}
+
+function Flush-PushOutbox {
+    $config = Get-PushRuntimeConfig
+    if (-not $config) { $script:PushLastOutcome = 'not_configured'; return }
+    $eventsDir = Resolve-StatePath 'notifications\events' $null
+    $deliveriesDir = Resolve-StatePath 'notifications\deliveries' $null
+    $events = @(Get-ChildItem -LiteralPath $eventsDir -Filter 'pne-*.json' -File -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -First 25)
+    $accepted = 0; $retired = 0; $failed = 0
+    foreach ($eventFile in $events) {
+        try { $event = Get-Content -LiteralPath $eventFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json } catch { continue }
+        if (-not $event -or [string]$event.status -ne 'pending' -or [string]$event.eventId -notmatch '^pne-[a-f0-9]{64}$' -or
+            @('final_result','human_input_required','recovery_required') -notcontains [string]$event.kind -or
+            [string]$event.target -notmatch '^[A-Za-z0-9_-]{4,80}$' -or [string]$event.subjectId -notmatch '^psh-[a-f0-9]{64}$' -or
+            [string]$event.keyId -notmatch '^vpk-[a-f0-9]{20}$') { continue }
+        $createdAt = [datetime]::MinValue
+        if (-not [datetime]::TryParse([string]$event.createdAt, [ref]$createdAt) -or ((Get-Date).ToUniversalTime() - $createdAt.ToUniversalTime()).TotalMinutes -gt $LeaseMinutes) {
+            $event.status = 'expired'; $event.completedAt = (Get-Date).ToUniversalTime().ToString('o')
+            $null = Save-PushStateJson $eventFile.FullName $event
+            continue
+        }
+
+        $lookup = Invoke-PushApi $config ([ordered]@{ action = 'pushsubscriptions'; senderToken = $config.senderToken; subjectId = [string]$event.subjectId })
+        if (-not $lookup -or $lookup.ok -ne $true) {
+            if ($lookup -and [string]$lookup.error -eq 'feature_disabled') {
+                $event.status = 'suppressed_disabled'; $event.completedAt = (Get-Date).ToUniversalTime().ToString('o')
+            } else {
+                $event.lookupAttempts = [int]$event.lookupAttempts + 1
+                # 같은 VAPID key epoch 안에서만 bounded retry한다. 회복 뒤 keyId가 다르면 아래에서
+                # 영구 suppression하므로 disable→key rotation→re-enable을 지나 stale event가 재생되지 않는다.
+                if ([int]$event.lookupAttempts -ge [int]$MaxAttempts) {
+                    $event.status = 'failed_lookup'; $event.completedAt = (Get-Date).ToUniversalTime().ToString('o'); $failed++
+                }
+            }
+            $null = Save-PushStateJson $eventFile.FullName $event
+            continue
+        }
+        if ([string]$lookup.keyId -cne [string]$event.keyId) {
+            $event.status = 'suppressed_key_rotated'; $event.completedAt = (Get-Date).ToUniversalTime().ToString('o')
+            $null = Save-PushStateJson $eventFile.FullName $event
+            continue
+        }
+        $subscriptions = @($lookup.subscriptions)
+        if ($subscriptions.Count -eq 0) {
+            $event.status = 'completed_no_subscription'; $event.completedAt = (Get-Date).ToUniversalTime().ToString('o')
+            $null = Save-PushStateJson $eventFile.FullName $event
+            continue
+        }
+
+        foreach ($subscription in $subscriptions) {
+            $subscriptionId = [string]$subscription.subscriptionId
+            $revisionId = [string]$subscription.revisionId
+            if ($subscriptionId -notmatch '^psub-[a-f0-9]{64}$' -or $revisionId -notmatch '^prv-[a-f0-9]{32}$') { continue }
+            $deliveryPath = Join-Path $deliveriesDir ([string]$event.eventId + '-' + $subscriptionId + '.json')
+            $delivery = $null
+            if (Test-Path -LiteralPath $deliveryPath) { try { $delivery = Get-Content -LiteralPath $deliveryPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch {} }
+            if (-not $delivery) {
+                $delivery = [PSCustomObject]@{ version = 'card-capture-push-delivery-v1'; eventId = [string]$event.eventId; subscriptionId = $subscriptionId; status = 'pending'; attempts = 0; statusCode = 0; updatedAt = '' }
+            }
+            if (@('accepted','retired','failed') -contains [string]$delivery.status) { continue }
+            if ([int]$delivery.attempts -ge [int]$MaxAttempts) { $delivery.status = 'failed'; $failed++; $null = Save-PushStateJson $deliveryPath $delivery; continue }
+            $payload = [ordered]@{ v = 1; eventId = [string]$event.eventId; kind = [string]$event.kind; target = [string]$event.target }
+            $send = Invoke-PushSender $config $subscription $payload
+            $delivery.attempts = [int]$delivery.attempts + 1
+            $delivery.statusCode = if ($send -and $send.statusCode) { [int]$send.statusCode } else { 0 }
+            $delivery.updatedAt = (Get-Date).ToUniversalTime().ToString('o')
+            if ($send -and $send.ok -eq $true) { $delivery.status = 'accepted'; $accepted++ }
+            elseif ($send -and $send.permanent -eq $true) { $delivery.status = 'retired'; Retire-PushSubscription $config $subscriptionId $revisionId; $retired++ }
+            elseif ([int]$delivery.attempts -ge [int]$MaxAttempts) { $delivery.status = 'failed'; $failed++ }
+            $null = Save-PushStateJson $deliveryPath $delivery
+        }
+
+        $pending = 0
+        foreach ($subscription in $subscriptions) {
+            $subscriptionId = [string]$subscription.subscriptionId
+            $deliveryPath = Join-Path $deliveriesDir ([string]$event.eventId + '-' + $subscriptionId + '.json')
+            try { $delivery = Get-Content -LiteralPath $deliveryPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $delivery = $null }
+            if (-not $delivery -or @('accepted','retired','failed') -notcontains [string]$delivery.status) { $pending++ }
+        }
+        if ($pending -eq 0) { $event.status = 'completed'; $event.completedAt = (Get-Date).ToUniversalTime().ToString('o') }
+        $null = Save-PushStateJson $eventFile.FullName $event
+    }
+    $script:PushLastFlushAt = (Get-Date).ToUniversalTime().ToString('o')
+    $script:PushLastOutcome = 'accepted=' + $accepted + ',retired=' + $retired + ',failed=' + $failed
+    if (($accepted + $retired + $failed) -gt 0) { Write-Log ('push outbox flush ' + $script:PushLastOutcome) }
 }
 
 $Prompt = @'
@@ -1171,6 +1473,7 @@ $Prompt = @'
 6. 전방위 웹 보강(절차 문서 규칙 8이 정본): LinkedIn 한 곳에 의존하지 마라. 먼저 한글·영문(로마자 변형)·이니셜과 회사·직함·이전소속·이메일 prefix를 조합해 질의를 설계하고, 사람 6개 소스군(전문 프로필 / 뉴스·인터뷰·인사발표 / 발표·컨퍼런스·팟캐스트 / 논문·특허·GitHub·기술블로그 / 협회·위원회·수상 / 최근 90일 활동) 중 4군 이상, 회사 5개 소스군(공식·채용 / 투자·재무 / 언론·업계 / 기술 신호 / 고객·파트너) 중 3군 이상을 실제로 조회한다(합계 최소 10회 검색). 소스군별 확인/미확인을 구분해 남기고, 동일인은 이메일 도메인·소속·직함·시기 중 2개 이상 일치할 때만 확정하며 근거 문장을 쓴다. 항목별 출처 URL·확인일·신뢰도(high=독립 2출처 교차, medium=신뢰 1출처, low=간접)를 본문 '공개 출처'에 남기고, 충돌은 최신·1차 출처 우선 + 충돌 사실 기록, 미특정은 미특정이라 쓴다. 마지막에 '만나기 전에 알면 좋은 것' 대화 포인트 3~5개(최근 관심사, 공통 접점, Kairen 연결 지점, 조심할 주제)를 뽑는다. 근거 없는 성격·성향 추정 금지.
 7. 조직은 기존 Organization Instance가 있으면 File 링크, 없으면 organization_mentions로 보존한다.
 8. 캡처 폴더에 brief.md를 쓴다 — 첫 줄 제목은 반드시 '# <이름> — 이런 분이에요' 형식(이름이 먼저). 요약·명함 정보 다음에 대화 포인트 3~5개와 소스군별 확인 결과를 넣는다. capture.json을 status='processed'(명함이 아니면 'skipped'+사유), person, personAction, processedAt, processedBy로 갱신한다.
+8-1. 사람이 다시 촬영하거나 확인해야만 안전하게 계속할 수 있으면 임의 상태값을 만들지 말고 status='skipped'로 마감하되 `attention={kind:"input_required",reasonCode:<허용값>,requestedAt:<ISO>}`를 쓴다. 허용 reasonCode는 앞면을 읽을 수 없는 `unreadable_capture`, 필요한 반대면이 없는 `missing_required_side`, 서로 다른 사람 후보를 구분할 수 없는 `identity_ambiguous` 셋뿐이다. 단순 미확인·검색 결과 부족·quickName 신뢰도·일반 처리 단계에는 attention을 쓰지 않는다. 이 경우 Person을 만들거나 추측해서 병합하지 말고 skipReason에는 사용자가 해야 할 최소 행동만 적는다.
 9. reviewStatus는 agent_checked까지만. human_validated는 절대 설정하지 않는다.
 10. 완료 전 반드시 vault의 02_Kairen_OS/90_Setting/Validation/Validate-KairenOntology.ps1 을 powershell.exe -NoProfile -ExecutionPolicy Bypass -File 로 실행해 PASS를 확인한다. FAIL이면 고치고 재실행한다.
 
@@ -1202,6 +1505,7 @@ TARGET-CAPTURE-ID: $safe
 
 function Invoke-QuickExtract {
     if (-not (Test-Path $Codex)) { return }
+    $routingSnapshots = @(Get-AllPushRoutingSnapshots)
     # 처리기 출력은 watcher.log가 아니라 전용 파일로 간다. watcher.log에는 그 파일 이름만 남긴다.
     $procLog = Resolve-ProcessorLogPath ('quickpass-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
     $procName = Split-Path -Leaf $procLog
@@ -1216,6 +1520,14 @@ function Invoke-QuickExtract {
             Write-ProcessorOutput $procLog
         Write-Log ('quick-pass done, exit=' + $LASTEXITCODE + ' log=' + $procName)
     } catch { Write-Log ("quick-pass error: " + $_.Exception.Message) }
+    finally {
+        foreach ($snapshot in $routingSnapshots) {
+            if (-not (Test-PushRoutingUnchanged $snapshot)) {
+                $null = Restore-PushRoutingSnapshot $snapshot
+                Write-Log ('quick-pass attempted to change server-owned push routing; restored ' + [string]$snapshot.captureId)
+            }
+        }
+    }
 }
 
 function Invoke-StandardProcessor($targeted, $procLog) {
@@ -1414,6 +1726,7 @@ function Invoke-Processing {
                 Remove-CaptureClaim $claim
                 continue
             }
+            $pushRoutingSnapshot = Get-PushRoutingSnapshot $itemId
             $null = Start-CaptureStaging $itemId $claim.attempt $item.fingerprint $claim.owner
             $isDeep = ([int]$item.lane -eq 2)
             $deepOutputSnapshot = Get-DeepOutputSnapshot $item.dir $true
@@ -1492,6 +1805,10 @@ function Invoke-Processing {
             $verdict = if ($budgetChargeFailed) {
                 [PSCustomObject]@{ ok = $false; partial = $false; reason = 'research_budget_charge_failed'; status = ''; watcherElapsedMinutes = $priorWatcherElapsed }
             } else { Test-CaptureCommitted $itemId $observedSliceMinutes }
+            if ($verdict.ok -and -not (Test-PushRoutingUnchanged $pushRoutingSnapshot)) {
+                $verdict.ok = $false
+                $verdict.reason = 'server_owned_push_routing_mutated'
+            }
             if ($isDeep -and $verdict.ok -and -not (Test-DeepWorkspaceMutationAllowed $item.dir $deepWorkspaceSnapshot)) {
                 $verdict.ok = $false
                 $verdict.reason = 'research_modified_immutable_input'
@@ -1527,6 +1844,7 @@ function Invoke-Processing {
                         if ([int]$st.attempts -ge [int]$MaxAttempts) {
                             Set-CaptureQuarantine $itemId $item.fingerprint $reason $st.attempts
                             $quarantinedNow = $true
+                            $null = Queue-PushEvent $itemId 'recovery_required' $item.fingerprint $pushRoutingSnapshot
                         }
                     }
                 }
@@ -1542,7 +1860,8 @@ function Invoke-Processing {
                     $st.lastCommitFingerprint = [string]$item.fingerprint
                     Set-CaptureState $st
                     Write-Log ("card done — 처리됨: " + $itemId + " (status=" + $verdict.status + ")")
-                    Send-Notify @($itemId)
+                    $pushKind = Get-CommittedPushKind $itemId $verdict.status
+                    if ($pushKind) { $null = Queue-PushEvent $itemId $pushKind (Get-CaptureFingerprint $item.dir) $pushRoutingSnapshot }
                 }
             } else {
                 # processor가 status=processed나 brief/result를 먼저 썼어도 watcher 판정이
@@ -1563,6 +1882,7 @@ function Invoke-Processing {
                 if ($budgetChargeFailed -or [int]$st.attempts -ge [int]$MaxAttempts) {
                     Set-CaptureQuarantine $itemId $item.fingerprint $reason $st.attempts
                     $quarantinedNow = $true
+                    $null = Queue-PushEvent $itemId 'recovery_required' $item.fingerprint $pushRoutingSnapshot
                 }
                 $failed = $true
             }
@@ -1584,6 +1904,7 @@ function Invoke-Processing {
         Write-Log ("processing error: " + $_.Exception.Message)
     } finally {
         Remove-Item $Lock -Force -ErrorAction SilentlyContinue
+        Flush-PushOutbox
         Write-Health
     }
 }
@@ -1598,6 +1919,7 @@ if (-not $mtx.WaitOne(0)) { Write-Log "another instance running, exit (PID=$PID)
 Write-Log "=== watcher started ($Version, codex engine) PID=$PID ==="
 Write-Health
 $null = Remove-ExpiredProcessorLogs
+Flush-PushOutbox
 
 try {
     # 시작 스윕: 꺼져 있는 동안 도착한 캡처 처리
@@ -1629,6 +1951,7 @@ try {
                 Write-Log ($(if ($ev) { 'event trigger' } else { 'poll trigger' }) + ': new capture found')
                 Invoke-Processing
             }
+            Flush-PushOutbox
             if (((Get-Date) - $lastBeat).TotalMinutes -ge 10) {
                 Write-Log "heartbeat (PID=$PID, loop alive)"
                 $lastBeat = Get-Date

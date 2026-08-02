@@ -16,7 +16,7 @@ import {
   IonToolbar,
   setupIonicReact,
 } from '@ionic/react';
-import { Camera, ChevronRight, FileText, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, Waves } from 'lucide-react';
+import { BellOff, BellRing, Camera, ChevronRight, CircleAlert, FileText, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, Waves } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 릴리즈 버전은 저장소가 선언한 값 하나만 쓴다 (founder 지시 2026-07-27: "버전이 설정에 표기되었으면 함").
@@ -62,7 +62,7 @@ import {
 } from './services/capture-context';
 import { buildLegacyNote, buildQueuedCapture, parseLegacyNote, restoredDraftOf } from './services/capture-item';
 import { actionErrorMessage, briefListTitle, briefNameMap, briefTitle, elapsedMinutesOf } from './services/brief-view';
-import { captureProgress } from './services/capture-progress';
+import { captureAttentionOf, captureProgress } from './services/capture-progress';
 import { refreshCadenceMs } from './services/refresh-cadence';
 import { contactCardFromBrief } from './services/contacts';
 import { getOpenCvWorker, prefetchOpenCv } from './services/opencv';
@@ -123,6 +123,7 @@ import { applyTheme, resolveTheme, systemPrefersDark, THEME_CHOICES, watchSystem
 import { holdSafeAreaInset } from './services/viewport-shell';
 import { apiRejectionMessage, canEditApiEndpoint } from './services/api-origin';
 import { scrubCredentialParams } from './services/url-credentials';
+import { disablePushNotifications, enablePushNotifications, inspectPushState, type PushState, type PushStatus } from './services/push';
 
 setupIonicReact({ mode: 'ios' });
 
@@ -133,6 +134,16 @@ function initialTab(): Tab {
   if (view === 'search') return 'people';
   if (view === 'briefs' || view === 'activity') return 'activity';
   return 'capture';
+}
+
+function initialNotificationFocus(): string {
+  const focus = new URLSearchParams(globalThis.location?.search ?? '').get('focus') ?? '';
+  return /^[A-Za-z0-9_-]{4,80}$/.test(focus) ? focus : '';
+}
+
+function initialRecoveryFocus(): string {
+  const search = new URLSearchParams(globalThis.location?.search ?? '');
+  return search.get('notice') === 'recovery_required' ? initialNotificationFocus() : '';
 }
 
 const tabs: Array<{ id: Tab; label: string; icon: LucideIcon }> = [
@@ -149,6 +160,20 @@ const screenTitles: Record<Tab, string> = {
   activity: '처리 진행',
   people: '사람 찾기',
   settings: '내 앱 설정',
+};
+
+const pushStatusCopy: Record<PushStatus, { title: string; body: string }> = {
+  checking: { title: '알림 상태를 확인하고 있어요', body: '브라우저와 전송 서버가 연결되는지 확인합니다.' },
+  disconnected: { title: '개인 링크 연결이 필요해요', body: '먼저 받은 개인 링크로 이 기기를 연결해 주세요.' },
+  unsupported: { title: '이 브라우저는 닫힌 앱 알림을 지원하지 않아요', body: '진행 화면을 열면 최신 상태를 계속 확인할 수 있습니다.' },
+  denied: { title: '브라우저에서 알림이 차단됐어요', body: 'Chrome의 이 사이트 설정에서 알림을 허용한 뒤 다시 확인해 주세요.' },
+  offline: { title: '오프라인이라 알림 설정을 확인할 수 없어요', body: '이 기기에서 끄기는 가능하며, 연결되면 서버 상태를 다시 확인합니다.' },
+  server_disabled: { title: '안전한 전송 준비가 아직 끝나지 않았어요', body: 'VAPID 전송이 활성화되기 전에는 진행 화면이 정확한 기준입니다.' },
+  capable: { title: '닫힌 앱 알림을 켤 수 있어요', body: '버튼을 누를 때만 브라우저가 알림 권한을 요청합니다.' },
+  off: { title: '닫힌 앱 알림이 꺼져 있어요', body: '원할 때 다시 켤 수 있고, 언제든 이 기기에서 해제할 수 있습니다.' },
+  subscribed: { title: '닫힌 앱 알림이 켜져 있어요', body: '앱을 닫아도 꼭 확인해야 하는 세 경우에만 알려드립니다.' },
+  stale: { title: '알림 구독을 안전하게 정리하지 못했어요', body: '이 기기 구독이 남았을 수 있습니다. 연결 상태를 확인하고 다시 꺼 주세요.' },
+  error: { title: '알림 상태를 확인하지 못했어요', body: '캡처와 처리는 그대로입니다. 잠시 뒤 상태를 다시 확인해 주세요.' },
 };
 
 type SearchMode = 'quick' | 'recall';
@@ -330,6 +355,12 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [refreshPhase, setRefreshPhase] = useState<'idle' | 'success' | 'error' | 'offline'>('idle');
   const [message, setMessage] = useState('');
+  const [pushState, setPushState] = useState<PushState>({ status: 'checking' });
+  const [pushBusy, setPushBusy] = useState(false);
+  const pushRunRef = useRef(0);
+  const notificationFocusRef = useRef(initialNotificationFocus());
+  const notificationFocusLoadsRef = useRef(0);
+  const [recoveryFocusId, setRecoveryFocusId] = useState(initialRecoveryFocus);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [nameOnboardOpen, setNameOnboardOpen] = useState(false);
@@ -464,6 +495,12 @@ function App() {
   const refreshCallbackSession = refreshSessionRef.current;
 
   const configured = Boolean(config.apiUrl && config.token);
+  const refreshPushState = useCallback(async (showChecking = true) => {
+    const run = ++pushRunRef.current;
+    if (showChecking) setPushState({ status: 'checking' });
+    const next = await inspectPushState(config);
+    if (run === pushRunRef.current) setPushState(next);
+  }, [config]);
   const captureResearchNeedsPurpose = researchInstructionEnabled
     && researchMode === 'deep_evidence_graph'
     && !researchPurposes.length
@@ -696,6 +733,23 @@ function App() {
 
   useEffect(() => watchSystemTheme(setOsPrefersDark), []);
 
+  // 상태 확인은 권한 요청과 분리한다. 설정 화면 진입·네트워크 복귀·창 복귀에는 읽기만 하고,
+  // Notification.requestPermission()은 아래의 명시적 버튼 handler 안에서만 실행한다.
+  useEffect(() => {
+    if (tab !== 'settings' || pushBusy) return undefined;
+    void refreshPushState();
+    const refreshOnReturn = () => void refreshPushState(false);
+    window.addEventListener('online', refreshOnReturn);
+    window.addEventListener('offline', refreshOnReturn);
+    window.addEventListener('focus', refreshOnReturn);
+    return () => {
+      pushRunRef.current += 1;
+      window.removeEventListener('online', refreshOnReturn);
+      window.removeEventListener('offline', refreshOnReturn);
+      window.removeEventListener('focus', refreshOnReturn);
+    };
+  }, [pushBusy, refreshPushState, tab]);
+
   useEffect(() => {
     // DEC-000093: 과거 수동 override는 폐기하고 OS reduced-motion을 항상 존중한다.
     localStorage.removeItem('cc_motion');
@@ -747,6 +801,44 @@ function App() {
     });
     return entries.sort((a, b) => b.id.localeCompare(a.id));
   }, [briefs, queue]);
+
+  // 알림 payload는 절대 URL을 주지 않고 허용된 captureId 하나만 준다. 목록에 실제 항목이
+  // 도착했을 때만 펼치고 포커스를 옮긴다. 오래된 기록은 유계로 세 번까지만 더 읽는다.
+  useEffect(() => {
+    const focusId = notificationFocusRef.current;
+    if (!focusId) return;
+    const feedIndex = feed.findIndex((entry) => entry.id === focusId);
+    if (feedIndex < 0) {
+      if (hasMoreBriefs && notificationFocusLoadsRef.current < 3 && !loadingMore) {
+        notificationFocusLoadsRef.current += 1;
+        void loadMoreBriefs();
+      } else if (!loadingMore && !loading && refreshedAt !== null) {
+        notificationFocusRef.current = '';
+        setTab('activity');
+        const url = new URL(window.location.href);
+        url.searchParams.delete('focus');
+        url.searchParams.delete('notice');
+        window.history.replaceState(window.history.state, '', url.href);
+      }
+      return;
+    }
+
+    if (!feed[feedIndex].brief) return;
+    notificationFocusRef.current = '';
+    setTab('activity');
+    setRecordsCollapsed(false);
+    setFeedLimit((current) => Math.max(current, feedIndex + 1));
+    setExpandedBriefs((current) => new Set(current).add(focusId));
+    const url = new URL(window.location.href);
+    url.searchParams.delete('focus');
+    url.searchParams.delete('notice');
+    window.history.replaceState(window.history.state, '', url.href);
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      const card = document.getElementById(`capture-${focusId}`);
+      card?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      card?.querySelector<HTMLButtonElement>('.brief-summary')?.focus({ preventScroll: true });
+    }));
+  }, [feed, hasMoreBriefs, loadMoreBriefs, loading, loadingMore, refreshedAt]);
 
   // 다음 갱신 시각을 지어내지 않는다. 자동 갱신 여부와 마지막 성공만 정직하게 보여 준다.
   const sinceRefresh = refreshedAt === null ? null : (clockTick - refreshedAt) / 60_000;
@@ -966,6 +1058,9 @@ function App() {
   function commitSignOut() {
     refreshSessionRef.current += 1;
     refreshQueuedSessionRef.current = null;
+    // 개인 링크를 지운 뒤에도 이 기기가 알림을 받으면 안 된다. 네트워크와 무관하게
+    // PushManager 구독을 먼저 무효화하고, 서버 정리는 전달해 둔 현재 token으로 best-effort 수행한다.
+    void disablePushNotifications(config);
     signOutDevice();
     const next: RuntimeConfig = { apiUrl: config.apiUrl, token: '', capturer: '' };
     setConfig(next);
@@ -1404,13 +1499,14 @@ function App() {
       setMessage(response.alreadyTerminal
         ? (response.status === 'skipped' ? '이미 건너뜀으로 마감됐어요' : '이미 처리가 끝났어요 — 최신 상태로 바꿀게요')
         : response.deduped ? '이미 다시 처리 중이에요' : '다시 처리를 요청했어요 — 몇 분 안에 처리돼요');
+      if (recoveryFocusId === captureId) setRecoveryFocusId('');
       await refresh(true).catch(() => undefined);
     } catch (error) {
       setMessage(`재처리 실패: ${actionErrorMessage(error)}`);
     } finally {
       setRequeueingId('');
     }
-  }, [config, refresh, requeueingId]);
+  }, [config, recoveryFocusId, refresh, requeueingId]);
 
   function renderQueueRow(item: CaptureQueueItem) {
     const imageSource = queueImageSource(item);
@@ -1458,6 +1554,7 @@ function App() {
     const expanded = expandedBriefs.has(item.captureId);
     const minutes = elapsedMinutesOf(item);
     const progress = captureProgress({ brief: item, queue: local, elapsedMinutes: minutes });
+    const attention = captureAttentionOf(item);
     const title = briefTitle(item);
     // 목록에는 "이름 — 한 줄 요약"을 보여 준다 (founder 판정 2026-07-26: 전부 "이런 분이에요"라 구분이 안 됨).
     const listTitle = briefListTitle(item);
@@ -1469,16 +1566,38 @@ function App() {
     // 넘기고, 손상된 중첩 데이터는 한 카드에서 닫아 화면 전체 crash/blank를 막는다.
     const researchEvidence = researchEvidenceView(item.researchEvidence);
     return (
-      <article className="brief-card" key={item.captureId}>
+      <article className={`brief-card ${attention ? 'needs-attention' : ''}`} key={item.captureId} id={`capture-${item.captureId}`}>
         <button className="brief-summary" type="button" onClick={() => toggleBrief(item.captureId)} aria-expanded={expanded}>
           <div className="avatar" aria-hidden="true">{listTitle.slice(0, 1)}</div>
           <div className="row-copy">
             <strong>{listTitle}</strong>
             <span>{formatMoment(item.receivedAt || item.capturedAt)}{item.event ? ` · ${item.event}` : ''}{item.capturer ? ` · 촬영 ${item.capturer}` : ''}</span>
           </div>
-          <StatusBadge status={item.status} />
+          {attention
+            ? <span className="status-badge status-attention"><CircleAlert aria-hidden="true" size={13} strokeWidth={2.2} />확인 필요</span>
+            : <StatusBadge status={item.status} />}
           <ChevronRight className={expanded ? 'expanded' : ''} aria-hidden="true" size={17} />
         </button>
+        {attention && (
+          <section className="attention-recovery" aria-label="내용 확인 필요">
+            <CircleAlert aria-hidden="true" size={18} />
+            <div>
+              <strong>{progress.headline}</strong>
+              <p>{progress.detail}</p>
+            </div>
+            <div className="attention-actions">
+              <button type="button" onClick={() => local
+                ? setQueueEdit(normalizedQueueItem(structuredClone(local)))
+                : promptCorrection(item.captureId)}>
+                <PenLine aria-hidden="true" size={13} />내용 보완
+              </button>
+              <button type="button" onClick={() => {
+                if (!expanded) toggleBrief(item.captureId);
+                window.requestAnimationFrame(() => document.getElementById(`capture-${item.captureId}`)?.querySelector<HTMLButtonElement>('.brief-summary')?.focus());
+              }}>기록 확인</button>
+            </div>
+          </section>
+        )}
         {!progress.done && (
           <div className={`stage-track ${progress.late ? 'late' : ''} ${progress.failed ? 'failed' : ''}`}>
             <div className="stage-head">
@@ -1762,6 +1881,23 @@ function App() {
           <div><strong>진행 상태</strong><span role="status" aria-live="polite">{refreshStatusText}</span></div>
           <button type="button" disabled={loading || !configured} onClick={() => void manualRefresh()}><RefreshCw className={loading ? 'spinning' : ''} aria-hidden="true" size={16} /> {loading ? '확인 중…' : '진행 새로고침'}</button>
         </section>
+        {recoveryFocusId && (
+          <section className="surface-card recovery-notice" role="alert" aria-label="처리 복구 필요">
+            <div className="recovery-notice-icon"><CircleAlert aria-hidden="true" size={20} /></div>
+            <div className="recovery-notice-copy">
+              <span>복구가 필요한 명함</span>
+              <strong>자동 처리가 여러 번 완료되지 않았어요</strong>
+              <p>원본과 기존 기록은 그대로입니다. 아래에서 다시 처리를 요청하면 이 항목만 안전하게 재시도합니다.</p>
+              <div className="stage-actions">
+                <button type="button" disabled={!configured || requeueingId === recoveryFocusId} onClick={() => void retryProcessing(recoveryFocusId)}>
+                  <RotateCcw aria-hidden="true" size={13} />{requeueingId === recoveryFocusId ? '요청하는 중…' : '이 항목 다시 처리'}
+                </button>
+                <button type="button" disabled={!configured || loading} onClick={() => void manualRefresh()}><RefreshCw aria-hidden="true" size={13} />최신 상태 확인</button>
+                <button type="button" onClick={() => setRecoveryFocusId('')}>안내 닫기</button>
+              </div>
+            </div>
+          </section>
+        )}
         {/* FI-025: 손상 항목을 조용히 지우지도, 큐 전체를 막게 두지도 않는다. */}
         {damagedQueue.length > 0 && (
           <section className="surface-card damaged-card" role="status">
@@ -2005,8 +2141,42 @@ function App() {
     );
   }
 
+  async function handlePushToggle() {
+    if (pushBusy) return;
+    setPushBusy(true);
+    setPushState({ status: 'checking' });
+    const next = pushState.status === 'subscribed'
+      || pushState.detail === 'local_subscription'
+      || (pushState.status === 'stale' && pushState.detail === 'cleanup_pending')
+      ? await disablePushNotifications(config)
+      : await enablePushNotifications(config);
+    setPushState(next);
+    setPushBusy(false);
+  }
+
   function renderSettings() {
-    const browserPushCapable = typeof Notification !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window;
+    const pushHasLocalSubscription = pushState.detail === 'local_subscription';
+    const pushCopy = pushHasLocalSubscription
+      ? pushState.status === 'offline'
+        ? { title: '오프라인 · 이 기기 구독은 남아 있어요', body: '지금 이 기기에서 먼저 끌 수 있고, 만료된 서버 등록은 전송 때 안전하게 정리됩니다.' }
+        : pushState.status === 'denied'
+          ? { title: '차단됐지만 이전 기기 구독이 남아 있어요', body: '브라우저 차단과 별개로 이 기기 구독을 안전하게 정리할 수 있습니다.' }
+          : { title: '전송은 멈췄고 이 기기 구독이 남아 있어요', body: '새 알림은 보내지 않으며, 원하면 이 기기 구독도 바로 정리할 수 있습니다.' }
+      : pushState.status === 'stale' && pushState.detail === 'key_changed'
+        ? { title: '알림 전송 키가 바뀌었어요', body: '기존 구독을 교체해 다시 연결하면 새 키로 안전하게 갱신됩니다.' }
+        : pushState.status === 'stale' && pushState.detail === 'registration_missing'
+          ? { title: '이 기기 알림을 다시 연결해야 해요', body: '브라우저 구독은 남아 있지만 서버 연결이 없습니다. 다시 연결하면 안전하게 복구됩니다.' }
+        : pushStatusCopy[pushState.status];
+    const pushCanToggle = ['capable', 'off', 'subscribed'].includes(pushState.status)
+      || pushState.status === 'stale'
+      || pushHasLocalSubscription;
+    const pushCanRetry = ['denied', 'offline', 'error'].includes(pushState.status);
+    const pushTurningOff = pushState.status === 'subscribed'
+      || pushHasLocalSubscription
+      || (pushState.status === 'stale' && pushState.detail === 'cleanup_pending');
+    const pushActionLabel = pushTurningOff
+      ? '이 기기 알림 끄기'
+      : pushState.status === 'stale' ? '알림 안전하게 다시 연결' : '닫힌 앱 알림 켜기';
     return (
       <div className="settings-dashboard">
         <header className="settings-intro">
@@ -2042,12 +2212,26 @@ function App() {
 
           <section className="surface-card settings-job" aria-labelledby="settings-notifications">
             <div className="settings-job-head"><span>03</span><div><h3 id="settings-notifications">알림</h3><p>꼭 개입할 때만 알려주기</p></div></div>
-            <div className="notification-readiness" role="status">
-              <strong>{browserPushCapable ? '브라우저는 지원 · 전송 서버 준비 필요' : '이 브라우저에서는 지원되지 않음'}</strong>
-              <p>완료, 사람 확인 필요, 복구 필요 세 경우만 알림 대상입니다. 이름·회사·메모는 알림 본문에 넣지 않습니다.</p>
+            <div className={`notification-readiness state-${pushState.status}`} role="status" aria-live="polite" aria-busy={pushBusy || pushState.status === 'checking'}>
+              <span className="notification-state-icon" aria-hidden="true">
+                {pushState.status === 'subscribed' ? <BellRing size={19} /> : <BellOff size={19} />}
+              </span>
+              <div><strong>{pushCopy.title}</strong><p>{pushCopy.body}</p></div>
             </div>
-            <button className="settings-disabled-action" type="button" disabled>닫힌 앱 알림은 아직 연결할 수 없어요</button>
-            <small>서버 푸시 전송자와 VAPID 자격 증명을 먼저 선택·배포해야 합니다. 준비 전에는 앱 안 진행 화면이 정확한 기준입니다.</small>
+            <ul className="notification-scope" aria-label="알림이 오는 경우">
+              <li><strong>최종 결과</strong><span>처리가 끝나 결과를 볼 수 있을 때</span></li>
+              <li><strong>내용 확인</strong><span>사진·이름 등 사람의 보완이 필요할 때</span></li>
+              <li><strong>복구 필요</strong><span>문제를 확인하고 다시 이어가야 할 때</span></li>
+            </ul>
+            {pushCanToggle && (
+              <button className={`notification-action ${pushTurningOff ? 'is-on' : ''}`} type="button" aria-busy={pushBusy} disabled={pushBusy} onClick={() => void handlePushToggle()}>
+                {pushBusy ? <RefreshCw className="spinning" aria-hidden="true" size={16} /> : pushTurningOff ? <BellOff aria-hidden="true" size={16} /> : <BellRing aria-hidden="true" size={16} />}
+                {pushBusy ? '안전하게 반영 중…' : pushActionLabel}
+              </button>
+            )}
+            {pushCanRetry && <button className="notification-retry" type="button" disabled={pushBusy} onClick={() => void refreshPushState()}>상태 다시 확인</button>}
+            {!pushCanToggle && !pushCanRetry && <button className="settings-disabled-action" type="button" disabled>현재 이 기기에서 알림을 켤 수 없어요</button>}
+            <small>알림에는 이름·회사·메모를 넣지 않습니다. 빠른 이름 인식이나 일반 처리 단계는 알리지 않으며, 알림 실패가 캡처 상태를 바꾸지 않습니다.</small>
           </section>
 
           <section className="surface-card settings-job" aria-labelledby="settings-display">
