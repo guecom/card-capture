@@ -4,7 +4,9 @@
 
 ## [Unreleased]
 
-### 명함 자동 크롭 박스 안정화 (branch agent/tsk-000244-card-quad-v3, Kairen-Ref: ISS-000101, TSK-000244)
+## v2.18.0 — 2026-08-02 — `3ecae67` (Kairen-Ref: ISS-000101; TSK-000244)
+
+### 명함 자동 크롭 박스 안정화
 
 - 명함 전용 on-device corner heatmap 모델의 제안을 OpenCV edge 검증과 결합해, 저대비·그림자·기울어진 촬영에서도 명함 경계를 먼저 찾습니다.
 - 중복 꼭짓점, 오목·붕괴·극단 각도 같은 비정상 사각형은 화면에 표시하거나 자동 촬영에 사용하지 않습니다.
