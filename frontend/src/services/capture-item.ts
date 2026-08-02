@@ -43,6 +43,8 @@ export interface RestoredCaptureDraft {
   relKairen: string;
   memo: string;
   quickName: QuickName | null;
+  /** 되돌리기 전과 같은 논리 조사 요청을 재사용하기 위한 원본 envelope. */
+  researchInstruction: ResearchInstruction | null;
 }
 
 function storedImageDataUrl(item: CaptureQueueItem, name: 'front.jpg' | 'back.jpg'): string {
@@ -67,6 +69,7 @@ export function restoredDraftOf(item: CaptureQueueItem): RestoredCaptureDraft {
     relKairen: (legacy?.relKairen ?? item.relKairen ?? '').trim(),
     memo: (legacy?.memo ?? item.memo ?? '').trim(),
     quickName: item.quickName ?? null,
+    researchInstruction: item.researchInstruction ?? null,
   };
 }
 

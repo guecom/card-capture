@@ -153,6 +153,8 @@ if ($null -eq $node) {
   if ($LASTEXITCODE -ne 0) { Fail 'upload content-type / magic-byte gate failed' } else { Pass 'upload content-type deterministic tests passed' }
   & $node.Source (Join-Path $root 'eval\version-sync.test.js')
   if ($LASTEXITCODE -ne 0) { Fail 'release version sync (package.json / CHANGELOG / tag) failed' } else { Pass 'release version sync deterministic gate passed' }
+  & $node.Source (Join-Path $root 'eval\pages-bundle-freshness.test.js')
+  if ($LASTEXITCODE -ne 0) { Fail 'committed Pages source identity gate failed' } else { Pass 'committed Pages source identity gate passed' }
   & $node.Source (Join-Path $root 'eval\persondoc-owner.test.js')
   if ($LASTEXITCODE -ne 0) { Fail 'persondoc owner path gate failed' } else { Pass 'persondoc owner deterministic tests passed' }
   & $node.Source (Join-Path $root 'eval\prompt-injection.test.js')

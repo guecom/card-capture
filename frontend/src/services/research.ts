@@ -1,4 +1,4 @@
-import type { ResearchInstruction } from '../contracts/capture';
+import type { PersonTarget, ResearchInstruction } from '../contracts/capture';
 
 const MAX_LENGTH = 2000;
 const STANDARD_POLICY_VERSION = 'public-research-v1';
@@ -49,6 +49,96 @@ export interface ResearchInstructionOptions {
   purposes?: ResearchPurpose[];
   focusIds?: ResearchFocusId[];
   requestId?: string;
+}
+
+const RESEARCH_REQUEST_ID_PATTERN = /^[A-Za-z0-9-]{8,64}$/;
+
+function stableFingerprint(prefix: 'target' | 'request', canonical: string): string {
+  // FNV-1a 64-bit: fingerprint는 보안 토큰이 아니라 원문을 저장하지 않는 안정적인 비교 키다.
+  // 32-bit 한 개보다 충돌 여유가 크고 WebCrypto 비동기 경계 없이 submit 직전에 확정할 수 있다.
+  let hash = 0xcbf29ce484222325n;
+  for (const character of canonical) {
+    hash ^= BigInt(character.codePointAt(0) ?? 0);
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  }
+  return `research-${prefix}-v1-${hash.toString(16).padStart(16, '0')}`;
+}
+
+/** target 원문을 저장하지 않고 같은 Person/capture인지 비교하는 subject-local 키. */
+export function researchTargetFingerprint(target: PersonTarget): string {
+  return stableFingerprint('target', JSON.stringify([
+    String(target.person ?? '').trim(),
+    String(target.captureId ?? '').trim(),
+  ]));
+}
+
+/** 공백·순서 차이는 같은 요청으로, 실제 내용·mode·목적·focus 변화는 다른 요청으로 본다. */
+export function researchRequestFingerprint(instruction: ResearchInstruction): string {
+  const purposes = Array.from(new Set(instruction.purposes ?? [])).sort();
+  const focusIds = Array.from(new Set(instruction.focusIds ?? [])).sort();
+  return stableFingerprint('request', JSON.stringify([
+    sanitizeResearchInstruction(instruction.raw),
+    instruction.mode === 'deep_evidence_graph' ? 'deep_evidence_graph' : 'standard',
+    purposes,
+    focusIds,
+  ]));
+}
+
+export function matchingPendingResearchRequestId(
+  pending: { requestId: string; targetFingerprint: string; requestFingerprint: string } | null,
+  targetFingerprint: string,
+  requestFingerprint: string,
+): string | null {
+  return pending
+    && RESEARCH_REQUEST_ID_PATTERN.test(pending.requestId)
+    && pending.targetFingerprint === targetFingerprint
+    && pending.requestFingerprint === requestFingerprint
+    ? pending.requestId
+    : null;
+}
+
+export interface ResearchRequestIdLifecycle {
+  /** 현재 draft의 ID. 최초 유효 제출 때 한 번만 만든다. */
+  current(): string;
+  /** 응답 유실·거절 뒤 재시도는 반드시 현재 ID를 그대로 쓴다. */
+  retry(): string;
+  /** 사용자가 새 조사 작성기를 열었을 때 다음 제출을 새 논리 요청으로 시작한다. */
+  beginNewDraft(): void;
+  /** 서버의 명시적 성공 receipt 뒤에만 현재 논리 요청을 닫는다. */
+  markAccepted(): void;
+  /** 대기열에서 되돌린 capture처럼 이미 ID가 있는 draft를 이어 쓴다. */
+  resume(requestId: string | null | undefined): void;
+  /** 진단·테스트용 읽기. ID를 새로 만들지 않는다. */
+  peek(): string | null;
+}
+
+/**
+ * 한 조사 draft의 멱등성 ID 수명주기.
+ *
+ * 네트워크 오류는 서버가 요청을 받았는지 알 수 없는 상태다. 따라서 `retry()`는 새 ID를
+ * 만들지 않는다. 새 ID를 허용하는 경계는 명시적인 새 draft와 성공 receipt뿐이다.
+ */
+export function createResearchRequestIdLifecycle(
+  createId: () => string = () => globalThis.crypto.randomUUID(),
+): ResearchRequestIdLifecycle {
+  let requestId: string | null = null;
+
+  const current = (): string => {
+    if (requestId) return requestId;
+    const candidate = createId();
+    if (!RESEARCH_REQUEST_ID_PATTERN.test(candidate)) throw new Error('invalid_research_request_id');
+    requestId = candidate;
+    return requestId;
+  };
+
+  return {
+    current,
+    retry: current,
+    beginNewDraft() { requestId = null; },
+    markAccepted() { requestId = null; },
+    resume(value) { requestId = value && RESEARCH_REQUEST_ID_PATTERN.test(value) ? value : null; },
+    peek() { return requestId; },
+  };
 }
 
 export function buildResearchInstruction(value: string, options: ResearchInstructionOptions = {}): ResearchInstruction | null {

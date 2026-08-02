@@ -136,7 +136,7 @@ TB 'D1-1 watcher.log 가 quick-pass 로그 파일 위치를 가리킨다' {
 }
 TB 'D1-1 watcher.log 에 구조화 이벤트(captureId·attempt·exit code)는 그대로 남는다' {
     $t = LogText
-    return (($t -match 'processing card \(deep\) L0001 attempt=1/3') -and
+    return (($t -match 'processing card \(standard\) L0001 attempt=1/3') -and
             ($t -match 'exit=0') -and
             ($t -match 'card done') -and
             ($t -match 'processing loop done'))

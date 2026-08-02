@@ -23,7 +23,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 're
 // `package.json`은 이미 빌드 식별자의 해시 입력이므로 값이 바뀌면 식별자도 함께 바뀐다 —
 // 벽시계·환경변수와 달리 빌드마다 달라지지 않아 재현성 계약(eval/build-reproducibility.test.js)을 깨지 않는다.
 import { version as APP_VERSION } from '../package.json';
-import type { BriefItem, CaptureQueueItem, PersonTarget, QuickName, RuntimeConfig, SearchItem } from './contracts/capture';
+import type { BriefItem, CaptureQueueItem, PersonTarget, QuickName, ResearchEvidenceGraph, RuntimeConfig, SearchItem } from './contracts/capture';
 import { CameraCaptureModal, type CapturedSideMeta, type CardSide } from './components/CameraPreviewModal';
 import { StatusBadge } from './components/StatusBadge';
 import { MarkdownLite } from './components/MarkdownLite';
@@ -93,12 +93,15 @@ import {
   runRecallSearch,
   serverFallbackTerm,
 } from './services/recall-search';
-import { buildResearchInstruction, type ResearchFocusId, type ResearchMode, type ResearchPurpose } from './services/research';
+import { buildResearchInstruction, createResearchRequestIdLifecycle, matchingPendingResearchRequestId, researchRequestFingerprint, researchTargetFingerprint, type ResearchFocusId, type ResearchMode, type ResearchPurpose } from './services/research';
+import { researchEvidenceView } from './services/research-result';
 import { recognizeQuickName } from './services/vision';
 import {
   loadCachedBriefs,
+  clearPendingPersonResearch,
   loadGalleryFree,
   loadOwnerFlags,
+  loadPendingPersonResearch,
   loadRecentSearches,
   loadRuntimeConfigDetailed,
   loadSectionCollapsed,
@@ -107,6 +110,7 @@ import {
   saveCachedBriefs,
   saveGalleryFree,
   saveOwnerFlags,
+  savePendingPersonResearch,
   saveRecentSearch,
   saveRuntimeConfig,
   saveSectionCollapsed,
@@ -264,6 +268,57 @@ if (boot.scrubUrl) scrubCredentialParams();
 const apiEndpointEditable = canEditApiEndpoint();
 const API_ENDPOINT_LOCK_NOTE = '이 앱은 배포본에 박힌 주소 한 곳으로만 연결해요. 그래서 여기서는 바꿀 수 없어요 — 다른 주소로 옮기려면 새 배포본이 필요합니다.';
 
+const RESEARCH_NODE_LABELS: Record<ResearchEvidenceGraph['nodes'][number]['type'], string> = {
+  person: '사람',
+  organization: '조직',
+  project: '프로젝트',
+  event: '사건',
+  claim: '주장',
+  source: '출처',
+};
+
+/** 숫자 요약만으로는 왜 연결됐는지 알 수 없으므로 검증된 edge와 timeline의 실제 주장을 함께 보여준다. */
+function ResearchRelationshipOverview({ graph }: { graph: ResearchEvidenceGraph }) {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const claims = new Map(graph.claims.map((claim) => [claim.id, claim]));
+  return (
+    <section aria-label="조사 관계와 타임라인 범위">
+      <div className="research-open">
+        <strong>관계 지도</strong>
+        <p>사람·조직·프로젝트·사건·주장·출처가 어떤 근거로 이어지는지 보여줍니다.</p>
+      </div>
+      <div className="research-evidence-list">
+        {graph.edges.map((edge) => {
+          const source = nodes.get(edge.sourceId)!;
+          const target = nodes.get(edge.targetId)!;
+          return (
+            <article key={edge.id}>
+              <span>{RESEARCH_NODE_LABELS[source.type]} · {source.label}</span>
+              <strong>{edge.label}</strong>
+              <span>→ {RESEARCH_NODE_LABELS[target.type]} · {target.label}</span>
+              {source.type === 'source' && source.url && <a href={source.url} target="_blank" rel="noreferrer">원문 출처 열기</a>}
+            </article>
+          );
+        })}
+        {!graph.edges.length && <p>검증된 관계가 아직 없습니다.</p>}
+      </div>
+      <div className="research-open">
+        <strong>타임라인 근거 범위</strong>
+        <ol className="research-timeline">
+          {graph.timeline.map((event) => (
+            <li key={`${event.date}-${event.label}`}>
+              <time>{event.date}</time>
+              <strong>{event.label}</strong>
+              <small>{event.claimIds.map((claimId) => claims.get(claimId)?.summary).filter(Boolean).join(' · ')}</small>
+            </li>
+          ))}
+          {!graph.timeline.length && <li><strong>확인 가능한 시간축이 아직 없습니다.</strong></li>}
+        </ol>
+      </div>
+    </section>
+  );
+}
+
 function App() {
   const [tab, setTab] = useState<Tab>(initialTab);
   const [config, setConfig] = useState<RuntimeConfig>(boot.config);
@@ -349,6 +404,9 @@ function App() {
   const [personResearchPurposes, setPersonResearchPurposes] = useState<ResearchPurpose[]>(['meeting_preparation']);
   const [personResearchFocusIds, setPersonResearchFocusIds] = useState<ResearchFocusId[]>([]);
   const [personActionSubmitting, setPersonActionSubmitting] = useState(false);
+  // 응답 유실 뒤 다시 누를 때도 같은 논리 조사 요청이다. 성공 receipt 또는 새 작성기만 ID를 닫는다.
+  const personResearchRequestRef = useRef<ReturnType<typeof createResearchRequestIdLifecycle> | null>(null);
+  if (!personResearchRequestRef.current) personResearchRequestRef.current = createResearchRequestIdLifecycle();
   const [queueEdit, setQueueEdit] = useState<CaptureQueueItem | null>(null);
   // 기다리게 하는 동작에는 예외 없이 "지금 하고 있다"가 붙어야 한다 (founder 원칙 2026-07-27).
   const [savingQueueEdit, setSavingQueueEdit] = useState(false);
@@ -372,6 +430,10 @@ function App() {
   const [researchMode, setResearchMode] = useState<ResearchMode>('standard');
   const [researchPurposes, setResearchPurposes] = useState<ResearchPurpose[]>(['meeting_preparation']);
   const [researchFocusIds, setResearchFocusIds] = useState<ResearchFocusId[]>([]);
+  // capture queue가 재전송해도 envelope 안의 requestId가 유지된다. 로컬 저장 실패로 완료를
+  // 다시 눌러도 이 lifecycle이 같은 ID를 돌려준다.
+  const captureResearchRequestRef = useRef<ReturnType<typeof createResearchRequestIdLifecycle> | null>(null);
+  if (!captureResearchRequestRef.current) captureResearchRequestRef.current = createResearchRequestIdLifecycle();
   const [contextCollapsed, setContextCollapsed] = useState(() => loadSectionCollapsed('context', false));
   const [queueing, setQueueing] = useState(false);
   // 자동 새로고침 안내용: 마지막 갱신 시각과 현재 시각(1초 tick).
@@ -1029,13 +1091,19 @@ function App() {
     }
     setQueueing(true);
     try {
+      const researchDraft = researchInstructionEnabled
+        ? buildResearchInstruction(researchText, { mode: researchMode, purposes: researchPurposes, focusIds: researchFocusIds })
+        : null;
+      const researchInstruction = researchDraft
+        ? { ...researchDraft, requestId: captureResearchRequestRef.current!.current() }
+        : null;
       const item = buildQueuedCapture(frontFrame, {
         backFrame,
         event,
         relSelf,
         relKairen,
         memo,
-        researchInstruction: researchInstructionEnabled ? buildResearchInstruction(researchText, { mode: researchMode, purposes: researchPurposes, focusIds: researchFocusIds }) : null,
+        researchInstruction,
         quickName,
       });
       // 전송 후 원본이 정리돼도 목록에 남을 104px 썸네일 (legacy thumbOf).
@@ -1043,6 +1111,9 @@ function App() {
       // 저장했다고 말하기 전에 다시 읽어 사진이 온전한지 확인한다 (FI-032).
       // 이 확인을 통과하기 전에는 촬영 화면을 비우지 않는다 — 비우면 사진이 사라진다.
       await putQueueItemVerified(item);
+      // 로컬에 온전히 저장된 뒤 화면은 다음 capture draft로 넘어간다. 이후 전송 재시도는
+      // item.researchInstruction.requestId를 그대로 쓰고, 새 화면만 새 ID를 받는다.
+      captureResearchRequestRef.current!.markAccepted();
       setQueue((current) => [item, ...current].sort((a, b) => b.captureId.localeCompare(a.captureId)));
       // 방금 저장한 이 촬영을 즉시 되돌리거나 다시 열 수 있게 기억한다 (FI-049).
       setLastSavedId(item.captureId);
@@ -1096,6 +1167,15 @@ function App() {
       setEvent((value) => value || draft.event);
       setRelSelf((value) => value || draft.relSelf);
       setRelKairen((value) => value || draft.relKairen);
+      if (draft.researchInstruction) {
+        setResearchText(draft.researchInstruction.raw);
+        setResearchMode(draft.researchInstruction.mode ?? 'standard');
+        setResearchPurposes(draft.researchInstruction.purposes ?? []);
+        setResearchFocusIds(draft.researchInstruction.focusIds ?? []);
+        captureResearchRequestRef.current!.resume(draft.researchInstruction.requestId);
+      } else {
+        captureResearchRequestRef.current!.beginNewDraft();
+      }
       if (draft.quickName?.name) {
         ocrSessionRef.current += 1;
         nameEditedRef.current = true;
@@ -1233,6 +1313,17 @@ function App() {
   }, []);
 
   const promptResearch = useCallback((target: PersonTarget) => {
+    const targetFingerprint = researchTargetFingerprint(target);
+    const pending = loadPendingPersonResearch();
+    if (pending?.targetFingerprint === targetFingerprint) {
+      // Android가 modal을 연 채 page/process를 죽였어도 같은 대상의 작성기는 복구 후보다.
+      // 실제 재사용 여부는 submit 시 정규화된 request fingerprint까지 같을 때 확정한다.
+      personResearchRequestRef.current!.resume(pending.requestId);
+    } else {
+      // 다른 사람을 열었다면 별개의 논리 요청이다. 한 target의 ID가 다른 target으로 새지 않는다.
+      if (pending) clearPendingPersonResearch();
+      personResearchRequestRef.current!.beginNewDraft();
+    }
     setPersonActionText('');
     setPersonResearchMode('standard');
     setPersonResearchPurposes(['meeting_preparation']);
@@ -1247,9 +1338,14 @@ function App() {
 
   const closePersonActionComposer = useCallback(() => {
     if (personActionSubmitting) return;
+    if (personActionComposer?.kind === 'research') {
+      // 취소/뒤로가기는 사용자가 이 pending 요청을 버린 명시적 경계다.
+      clearPendingPersonResearch();
+      personResearchRequestRef.current!.beginNewDraft();
+    }
     setPersonActionComposer(null);
     setPersonActionText('');
-  }, [personActionSubmitting]);
+  }, [personActionComposer, personActionSubmitting]);
 
   const submitPersonAction = useCallback(async () => {
     if (!personActionComposer || personActionSubmitting) return;
@@ -1259,18 +1355,35 @@ function App() {
     if (personActionComposer.kind === 'note') {
       success = await runPersonAction(addPersonNote(config, personActionComposer.target, personActionText.trim()), '메모를 저장했어요 — 잠시 후 인물 기록에 반영됩니다');
     } else if (personActionComposer.kind === 'research') {
-      const submission = buildResearchInstruction(personActionText, {
+      const researchDraft = buildResearchInstruction(personActionText, {
         mode: personResearchMode,
         purposes: personResearchPurposes,
         focusIds: personResearchFocusIds,
-        requestId: crypto.randomUUID(),
       });
-      if (!submission) {
+      if (!researchDraft) {
         setMessage('조사할 내용을 조금 더 구체적으로 적어주세요');
-      } else if (submission.mode === 'deep_evidence_graph' && !submission.purposes?.length) {
+      } else if (researchDraft.mode === 'deep_evidence_graph' && !researchDraft.purposes?.length) {
         setMessage('Deep Research 목적을 하나 이상 선택해주세요');
       } else {
+        const targetFingerprint = researchTargetFingerprint(personActionComposer.target);
+        const requestFingerprint = researchRequestFingerprint(researchDraft);
+        const pending = loadPendingPersonResearch();
+        const reusableRequestId = matchingPendingResearchRequestId(pending, targetFingerprint, requestFingerprint);
+        if (reusableRequestId) {
+          personResearchRequestRef.current!.resume(reusableRequestId);
+        } else {
+          // 대상 또는 정규화된 내용이 달라졌다면 같은 requestId를 절대 재사용하지 않는다.
+          personResearchRequestRef.current!.beginNewDraft();
+        }
+        const requestId = personResearchRequestRef.current!.current();
+        // fetch보다 먼저 기록해야 Android/page kill이 정확히 이 ID를 복구한다.
+        savePendingPersonResearch({ version: 1, requestId, targetFingerprint, requestFingerprint });
+        const submission = { ...researchDraft, requestId };
         success = await runPersonAction(submitResearchInstruction(config, personActionComposer.target, submission), '조사 요청을 접수했어요');
+        if (success) {
+          clearPendingPersonResearch();
+          personResearchRequestRef.current!.markAccepted();
+        }
       }
     } else {
       success = await runPersonAction(requestCorrection(config, personActionComposer.captureId, personActionText.trim()), '수정 요청을 보냈어요 — 다음 처리에서 확인합니다');
@@ -1352,6 +1465,9 @@ function App() {
     const briefBody = item.brief ? item.brief.split('\n').slice(1).join('\n') : '';
     const actionable = item.status === 'processed' && item.type !== 'note' && item.type !== 'research_instruction';
     const localContext = local ? queueContextLine(local) : '';
+    // 서버의 research-result.json은 신뢰 경계 밖이다. 검증을 통과한 graph만 복잡한 패널에
+    // 넘기고, 손상된 중첩 데이터는 한 카드에서 닫아 화면 전체 crash/blank를 막는다.
+    const researchEvidence = researchEvidenceView(item.researchEvidence);
     return (
       <article className="brief-card" key={item.captureId}>
         <button className="brief-summary" type="button" onClick={() => toggleBrief(item.captureId)} aria-expanded={expanded}>
@@ -1396,6 +1512,7 @@ function App() {
           <div className="research-live-progress" role="status" aria-live="polite">
             <strong>Deep Research · {item.researchProgress.phase || 'planning'}</strong>
             <span>확인된 사실 {item.researchProgress.verifiedFacts || 0} · 충돌 {item.researchProgress.conflicts || 0} · 남은 질문 {item.researchProgress.openQuestions || 0}</span>
+            <small>분기 {item.researchProgress.branchCount ?? 0}/24 · 공개 출처 {item.researchProgress.sourceCount ?? 0} · 누적 {item.researchProgress.elapsedMinutes ?? 0}분</small>
             <small>서버가 기록한 진행만 표시합니다. 남은 시간은 추정하지 않아요.</small>
           </div>
         )}
@@ -1403,7 +1520,22 @@ function App() {
           <div className="brief-detail">
             {localContext && <p className="local-context">내 기록: {localContext}</p>}
             {briefBody ? <MarkdownLite text={briefBody} /> : <p>아직 브리핑 본문이 도착하지 않았습니다.</p>}
-            {item.researchEvidence && <ResearchEvidencePanel graph={item.researchEvidence} />}
+            {researchEvidence.kind === 'ready' && (
+              <>
+                <ResearchRelationshipOverview graph={researchEvidence.graph} />
+                <ResearchEvidencePanel graph={researchEvidence.graph} />
+              </>
+            )}
+            {researchEvidence.kind === 'invalid' && (
+              <section className="research-evidence" role="alert" aria-label="조사 결과 복구 안내">
+                <header><div><span className="eyebrow">Deep Research</span><h4>조사 결과를 안전하게 열지 못했어요</h4></div></header>
+                <p className="document-error">서버 결과 형식이 확인되지 않아 근거를 숨겼습니다. 기존 기록은 그대로이며, 다시 확인하거나 새 조사를 요청할 수 있어요.</p>
+                <div className="stage-actions">
+                  <button type="button" onClick={() => void manualRefresh()}><RefreshCw aria-hidden="true" size={13} />다시 확인</button>
+                  {researchInstructionEnabled && <button type="button" onClick={() => promptResearch({ captureId: item.captureId })}><Sparkles aria-hidden="true" size={13} />새 조사 요청</button>}
+                </div>
+              </section>
+            )}
             {actionable && <ContactActions contact={contact} />}
             {actionable && item.person && (
               <ActionSection label="기록" className="record-actions">

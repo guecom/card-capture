@@ -33,11 +33,11 @@ jobs:
       - name: Audit frontend dependencies
         run: npm audit --prefix frontend --audit-level=high
 
+      - name: Verify committed Pages bundle matches source identity
+        run: node eval/pages-bundle-freshness.test.js
+
       - name: Test and build React candidate
         run: npm run validate --prefix frontend
-
-      - name: Verify committed Pages bundle matches the source build
-        run: git diff --exit-code -- docs/next
 
       - name: Verify server-off recovery in Chrome
         run: npm run test:e2e --prefix frontend

@@ -17,8 +17,9 @@ flowchart TD
     C --> I["brief + provenance"]
     H --> I
     I --> J{"정책·근거 gate"}
-    J -->|"PASS"| K["verified fact만 Person 병합"]
+    J -->|"PASS"| K["검증된 graph·brief 공개"]
     J -->|"FAIL"| L["unknown / conflict / blocked 기록"]
+    K --> M["별도 신뢰 경계<br/>Person 병합"]
 ```
 
 ## Input Boundary
@@ -28,7 +29,7 @@ flowchart TD
 - 조사 요청은 owner-only다. `captureId`와 `person`이 함께 오면 같은 Person인지 서버에서 다시 확인한다.
 - 일반 `note`, `correction`, 명함 OCR과 `research_instruction`은 서로 다른 channel이다.
 - 허용 출처는 현재 `public_lawful_only`뿐이다. 로그인·비공개 자료, credential, 사적 신상, 민감 특성 추론, doxxing, 유료 API, 외부 send/write는 금지한다.
-- `DEEP_RESEARCH_ENABLED=false`와 `RESEARCH_INSTRUCTION_ENABLED=false`는 독립 rollback switch다.
+- Deep mode는 Script Property `DEEP_RESEARCH_ENABLED=true`가 명시된 경우에만 열린다. 누락·빈 값·`false`는 모두 fail-closed이며, `RESEARCH_INSTRUCTION_ENABLED=false`와 독립 rollback switch다.
 
 ## Standard mode
 
@@ -57,7 +58,10 @@ Deep 요청은 네 목적 중 하나 이상이 필수다: meeting preparation, e
     "updatedAt": "ISO-8601",
     "verifiedFacts": 0,
     "conflicts": 0,
-    "openQuestions": 0
+    "openQuestions": 0,
+    "branchCount": 1,
+    "sourceCount": 4,
+    "elapsedMinutes": 9
   }
 }
 ```
@@ -68,12 +72,18 @@ Deep 요청은 네 목적 중 하나 이상이 필수다: meeting preparation, e
 
 `research-result.json`은 `deep-research-evidence-v1`이며 다음을 포함한다.
 
-- `claims[]`: `fact | conflict | unknown | hypothesis`, summary, confidence, `evidenceFor[]`, `evidenceAgainst[]`.
+- `purposes[]`: 요청 때 서버가 확정한 목적과 정확히 같은 목적 목록.
+- `nodes[]`: `person | organization | project | event | claim | source`의 ID·label과 공개 source URL.
+- `edges[]`: node 간 `supports | counterevidence | affiliated_with | leads | member_of | worked_on | participated_in | occurred_at | involves | related_to` 관계.
+- `claims[]`: `fact | conflict | unknown | hypothesis`, summary, confidence, `evidenceFor[]`, `evidenceAgainst[]`. 각 evidence는 `sourceId`, title, URL을 갖고 정확한 source node와 source→claim edge에 1:1로 연결된다.
 - `timeline[]`: date, label, 연결된 claim ID.
 - `openQuestions[]`: 아직 답하지 못한 질문.
+- `metrics`: 누적 `branchCount`, `sourceCount`, watcher 실측과 대조되는 `elapsedMinutes`.
 - `stop`: `purpose_satisfied | source_exhausted | irrelevant_branch | time_cap | branch_cap`와 설명.
 
-가설은 찬성 근거, 반대 근거, 다른 설명, confidence가 모두 있어야 한다. 조건이 없으면 `fact`로 승격하지 않고 `unknown`으로 남긴다. partial 결과는 Person의 사실 필드를 수정하지 않는다. final에서 검증된 fact만 Person에 병합한다.
+가설은 찬성 근거, 반대 근거, 다른 설명, confidence가 모두 있어야 한다. 조건이 없으면 `fact`로 승격하지 않고 `unknown`으로 남긴다. Deep processor는 캡처 폴더 하나만 쓸 수 있고 partial·final 모두 Person을 직접 수정하지 않는다. watcher·GAS·클라이언트 검증을 모두 통과한 graph만 공개하며, Person 병합은 별도 신뢰 경계가 소유한다.
+
+첫 checkpoint는 반드시 `planning`이고 이후 phase는 정확히 한 단계씩만 전진한다. 같은 phase 반복이나 checkpoint 없는 final은 거절한다. 각 slice의 wall-clock은 watcher가 직접 재며 12분을 넘기면 자식 프로세스를 종료한다. watcher가 누적한 시간이 90분에 닿으면 추가 slice를 시작하지 않는다. 거절·timeout·중단 시 pre-run `capture.json`·brief·result를 durable backup에서 복구해 `processed`처럼 보이지 않게 한다.
 
 ## 완료·실패·알림
 
@@ -81,3 +91,10 @@ Deep 요청은 네 목적 중 하나 이상이 필수다: meeting preparation, e
 - 중간 checkpoint는 terminal commit이 아니다. `processing + researchProgress.partial=true`만 다음 slice 권한을 만든다.
 - 정책 위반, 근거 부족, target mismatch는 조용히 성공으로 바꾸지 않고 명시적 error/unknown으로 남긴다.
 - 알림은 final result, human input required, recovery required 세 상태만 대상이다. 현재 Web Push transport가 배포되기 전에는 앱 안 진행 화면만 authoritative하며 닫힌 앱 알림을 제공한다고 표시하지 않는다.
+
+## Deployment order
+
+1. 코드·Pages·GAS를 배포하되 `DEEP_RESEARCH_ENABLED`는 누락 또는 `false`로 유지한다.
+2. 운영 watcher를 같은 release로 교체·재기동하고 health·rollback·schema probe를 통과시킨다.
+3. 그 뒤에만 Script Property를 명시적 `true`로 바꿔 Deep mode를 노출한다.
+4. 문제가 생기면 property를 즉시 `false`로 되돌리고 이전 GAS deployment·watcher·Pages를 복구한다.

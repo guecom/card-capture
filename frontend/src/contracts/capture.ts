@@ -32,10 +32,38 @@ export interface ResearchInstruction {
 }
 
 export type ResearchClaimState = 'fact' | 'conflict' | 'unknown' | 'hypothesis';
+export type ResearchGraphNodeType = 'person' | 'organization' | 'project' | 'event' | 'claim' | 'source';
+export type ResearchGraphRelation =
+  | 'supports'
+  | 'counterevidence'
+  | 'affiliated_with'
+  | 'leads'
+  | 'member_of'
+  | 'worked_on'
+  | 'participated_in'
+  | 'occurred_at'
+  | 'involves'
+  | 'related_to';
+
+export interface ResearchGraphNode {
+  id: string;
+  type: ResearchGraphNodeType;
+  label: string;
+  url?: string;
+}
+
+export interface ResearchGraphEdge {
+  id: string;
+  sourceId: string;
+  targetId: string;
+  relation: ResearchGraphRelation;
+  label: string;
+}
 
 export interface ResearchEvidenceLink {
+  sourceId: string;
   title: string;
-  url?: string;
+  url: string;
   publishedAt?: string;
 }
 
@@ -58,9 +86,16 @@ export interface ResearchTimelineEvent {
 export interface ResearchEvidenceGraph {
   version: 'deep-research-evidence-v1';
   purposes: ResearchInstruction['purposes'];
+  nodes: ResearchGraphNode[];
+  edges: ResearchGraphEdge[];
   claims: ResearchEvidenceClaim[];
   timeline: ResearchTimelineEvent[];
   openQuestions: string[];
+  metrics: {
+    branchCount: number;
+    sourceCount: number;
+    elapsedMinutes: number;
+  };
   stop: {
     reason: 'purpose_satisfied' | 'source_exhausted' | 'irrelevant_branch' | 'time_cap' | 'branch_cap';
     summary: string;
@@ -143,6 +178,9 @@ export interface BriefItem {
     verifiedFacts?: number;
     conflicts?: number;
     openQuestions?: number;
+    branchCount?: number;
+    sourceCount?: number;
+    elapsedMinutes?: number;
     updatedAt?: string;
   };
   researchEvidence?: ResearchEvidenceGraph;

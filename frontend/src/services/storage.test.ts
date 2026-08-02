@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ANONYMOUS_SUBJECT,
   activeSubject,
+  clearPendingPersonResearch,
   loadCachedBriefs,
   loadOwnerFlags,
+  loadPendingPersonResearch,
   loadRecentSearches,
   loadRuntimeConfig,
   loadRuntimeConfigDetailed,
@@ -12,6 +14,7 @@ import {
   saveCachedBriefs,
   saveGalleryFree,
   saveOwnerFlags,
+  savePendingPersonResearch,
   saveRecentSearch,
   saveRuntimeConfig,
   saveSectionCollapsed,
@@ -334,6 +337,42 @@ describe('meeting context is private to a subject (FI-006 확장)', () => {
   });
 });
 
+describe('pending Person research identity', () => {
+  const pending = {
+    version: 1 as const,
+    requestId: 'request-00000021',
+    targetFingerprint: 'research-target-v1-0123456789abcdef',
+    requestFingerprint: 'research-request-v1-fedcba9876543210',
+  };
+
+  beforeEach(() => loadRuntimeConfig(`?api=${encodeURIComponent(PINNED_API)}&k=owner-token`));
+
+  it('survives reload-equivalent reads without storing target or request text', () => {
+    savePendingPersonResearch(pending);
+
+    expect(loadPendingPersonResearch()).toEqual(pending);
+    const serialized = JSON.stringify(store.snapshot());
+    expect(serialized).not.toContain('PER-000001');
+    expect(serialized).not.toContain('공개 결과물');
+  });
+
+  it('clears explicitly and fails closed on a damaged persisted identity', () => {
+    savePendingPersonResearch(pending);
+    clearPendingPersonResearch();
+    expect(loadPendingPersonResearch()).toBeNull();
+
+    store.setItem(`cc_${activeSubject()}_pendingPersonResearch`, '{"requestId":"bad id"}');
+    expect(loadPendingPersonResearch()).toBeNull();
+    expect(store.getItem(`cc_${activeSubject()}_pendingPersonResearch`)).toBeNull();
+  });
+
+  it('does not expose one account pending identity after the subject changes', () => {
+    savePendingPersonResearch(pending);
+    loadRuntimeConfig(`?api=${encodeURIComponent(PINNED_API)}&k=guest-token`);
+    expect(loadPendingPersonResearch()).toBeNull();
+  });
+});
+
 describe('device disconnect (FI-007)', () => {
   it('clears the link code, private caches and meeting context but keeps device preferences', () => {
     loadRuntimeConfig(`?api=${encodeURIComponent(PINNED_API)}&k=owner-token`);
@@ -342,6 +381,12 @@ describe('device disconnect (FI-007)', () => {
     saveOwnerFlags({ seeAll: true, researchInstructionEnabled: true });
     saveRecentSearch('한화 구매팀장');
     saveStickyCaptureContext({ event: '2026 로보월드', relSelf: '오늘 처음', relKairen: '잠재 고객', research: '최근 경력' });
+    savePendingPersonResearch({
+      version: 1,
+      requestId: 'request-00000021',
+      targetFingerprint: 'research-target-v1-0123456789abcdef',
+      requestFingerprint: 'research-request-v1-fedcba9876543210',
+    });
     saveGalleryFree(false);
     saveSectionCollapsed('briefs', true);
 
@@ -353,6 +398,7 @@ describe('device disconnect (FI-007)', () => {
     expect(loadCachedBriefs()).toEqual([]);
     expect(loadOwnerFlags()).toEqual({ seeAll: false, researchInstructionEnabled: false });
     expect(loadRecentSearches()).toEqual([]);
+    expect(loadPendingPersonResearch()).toBeNull();
     expect(loadStickyCaptureContext()).toEqual({ event: '', relSelf: '', relKairen: '', research: '' });
     expect(Object.keys(store.snapshot()).filter((key) => /^cc_s[0-9a-z]+_/.test(key))).toEqual([]);
 

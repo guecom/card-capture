@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const docs = fileURLToPath(new URL('../../docs/', import.meta.url));
 
-test('APP-AC-237 retires every current legacy entry and bumps the cleanup cache', async () => {
+test('APP-AC-240 retires every current legacy entry and bumps the cleanup cache', async () => {
   await expect(access(`${docs}legacy.html`, constants.F_OK)).rejects.toThrow();
   const index = await readFile(`${docs}index.html`, 'utf8');
   const rootSw = await readFile(`${docs}sw.js`, 'utf8');

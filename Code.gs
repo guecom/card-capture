@@ -117,9 +117,10 @@ function researchInstructionEnabled_() {
   return String(CONF.getProperty('RESEARCH_INSTRUCTION_ENABLED') || 'true').toLowerCase() !== 'false';
 }
 
-/* Deep Research도 별도 rollback switch를 둔다. 클라이언트가 보낸 policy나 budget은 권위가 없다. */
+/* Deep Research는 명시적으로 true일 때만 연다. 새 Script Property를 배포에서 빼먹어도
+   standard research만 남는 fail-closed 기본값이어야 한다. */
 function deepResearchEnabled_() {
-  return String(CONF.getProperty('DEEP_RESEARCH_ENABLED') || 'true').toLowerCase() !== 'false';
+  return String(CONF.getProperty('DEEP_RESEARCH_ENABLED') || '').trim().toLowerCase() === 'true';
 }
 
 /* vault Person 폴더 탐색: inbox → 00_Inbox → Kairen → 02_Kairen_OS/30_Instance/Person */
@@ -317,15 +318,27 @@ function listCaptures_(token, limitParam, offsetParam) {
         policyVersion: meta.researchInstruction.policy && meta.researchInstruction.policy.version || 'public-research-v1'
       };
     }
-    if (meta.researchProgress) item.researchProgress = meta.researchProgress;
+    if (meta.type === 'research_instruction' && meta.researchInstruction &&
+        meta.researchInstruction.mode === 'deep_evidence_graph' && meta.researchProgress) {
+      var publishedProgress = validateResearchProgress_(meta.researchProgress);
+      var processingCheckpoint = meta.status === 'processing' && publishedProgress &&
+        publishedProgress.phase !== 'done' && publishedProgress.partial === true;
+      var completedCheckpoint = meta.status === 'processed' && publishedProgress &&
+        publishedProgress.phase === 'done' && publishedProgress.partial === false;
+      if (processingCheckpoint || completedCheckpoint) item.researchProgress = publishedProgress;
+    }
     var brief = readNewestText_(folder, 'brief', '.md');
     if (brief) item.brief = brief.slice(0, 6000);
-    if (seeAll && meta.type === 'research_instruction') {
+    if (seeAll && meta.type === 'research_instruction' && meta.status === 'processed' &&
+        meta.researchInstruction && meta.researchInstruction.mode === 'deep_evidence_graph') {
       var evidenceText = readNewestText_(folder, 'research-result', '.json');
       if (evidenceText) {
         try {
           var evidence = JSON.parse(evidenceText);
-          if (evidence && evidence.version === 'deep-research-evidence-v1' && Array.isArray(evidence.claims)) item.researchEvidence = evidence;
+          var publishedEvidence = validateResearchEvidenceGraph_(evidence);
+          if (publishedEvidence && sameStringArray_(publishedEvidence.purposes, meta.researchInstruction.purposes)) {
+            item.researchEvidence = publishedEvidence;
+          }
         } catch (ignoredEvidenceError) {}
       }
     }
@@ -479,6 +492,7 @@ function doPost(e) {
       if (prior.person) meta.previousPerson = prior.person;
     }
     if (researchRequest) {
+      meta.researchRequestFingerprint = researchRequestFingerprint_(researchRequest);
       meta.researchInstruction = researchEnvelope_(researchRequest, name, {
         captureId: captureId
       }, captureId + '-research-1');
@@ -557,7 +571,6 @@ function researchInstruction_(req) {
   if (!name) return json_({ ok: false, error: 'invalid_token' });
   if (!isOwner_(name)) return json_({ ok: false, error: 'owner_only' });
   if (!researchInstructionEnabled_()) return json_({ ok: false, error: 'feature_disabled' });
-  if (!withinDailyLimit_(req.k)) return json_({ ok: false, error: 'daily_limit' });
   var request = normalizeResearchRequest_(req.instruction || req.text);
   if (!request) return json_({ ok: false, error: 'bad_research_request' });
   if (request.mode === 'deep_evidence_graph' && !deepResearchEnabled_()) return json_({ ok: false, error: 'deep_feature_disabled' });
@@ -590,31 +603,84 @@ function researchInstruction_(req) {
 
   var requestId = sanitizeRequestId_(request.requestId);
   var researchId = requestId ? 'research-' + requestId : newId_() + '-research';
+  var target = { person: person, captureId: relatedCaptureId };
+  var requestFingerprint = researchRequestFingerprint_(request);
   var lock = LockService.getScriptLock();
   lock.waitLock(10000);
   var folder;
+  var instruction;
+  var researchMeta;
+  var createdFolder = false;
+  var chargedQuota = false;
+  var recoveryCache = CacheService.getScriptCache();
+  var recoveryKey = 'research_receipt_' + researchId;
+  var recoveryReservation = JSON.stringify({ requestedBy: name, target: target, requestFingerprint: requestFingerprint });
   try {
     var existing = inbox.getFoldersByName(researchId);
-    if (existing.hasNext()) return json_({ ok: true, receiptId: researchId, person: person, status: 'received', deduped: true });
-    folder = inbox.createFolder(researchId);
+    if (existing.hasNext()) {
+      var existingFolder = existing.next();
+      var existingMeta = readJsonFile_(existingFolder);
+      if (sameResearchReceipt_(existingMeta, name, target, requestFingerprint)) {
+        return json_({
+          ok: true,
+          receiptId: researchId,
+          person: person,
+          status: existingMeta.status || 'received',
+          deduped: true
+        });
+      }
+      /* createFolder 뒤 capture.json 쓰기 전에 런타임이 죽었거나 rollback이 실패한 경우에만
+         같은 빈 폴더를 복구한다. 파일이 하나라도 있으면 다른 요청의 공간일 수 있어 닫는다. */
+      if (existingMeta || folderHasAnyFiles_(existingFolder) || recoveryCache.get(recoveryKey) !== recoveryReservation) {
+        return json_({ ok: false, error: 'request_id_conflict' });
+      }
+      folder = existingFolder;
+    }
+    if (!folder) {
+      /* 멱등 판정이 먼저다. 응답만 유실된 동일 requestId 재시도는 일일 quota를 다시 쓰지 않는다. */
+      if (!withinDailyLimit_(req.k)) return json_({ ok: false, error: 'daily_limit' });
+      chargedQuota = true;
+      recoveryCache.put(recoveryKey, recoveryReservation, 6 * 60 * 60);
+      try {
+        folder = inbox.createFolder(researchId);
+      } catch (folderError) {
+        refundDailyLimit_(req.k);
+        if (typeof recoveryCache.remove === 'function') recoveryCache.remove(recoveryKey);
+        return json_({ ok: false, error: 'receipt_folder_failed' });
+      }
+      createdFolder = true;
+    }
+    instruction = researchEnvelope_(request, name, target, researchId);
+    researchMeta = {
+      captureId: researchId,
+      type: 'research_instruction',
+      capturer: name,
+      person: person,
+      relatedCaptureId: relatedCaptureId,
+      researchRequestFingerprint: requestFingerprint,
+      researchInstruction: instruction,
+      receivedAt: instruction.requestedAt,
+      status: 'received'
+    };
+    /* 폴더 생성과 canonical receipt 쓰기를 같은 script lock 안에서 끝낸다. 다른 재시도가
+       빈 폴더만 보고 requestId collision으로 오판하는 창을 남기지 않는다. */
+    try {
+      folder.createFile(Utilities.newBlob(JSON.stringify(researchMeta, null, 2), 'application/json', 'capture.json'));
+    } catch (writeError) {
+      /* 새 폴더는 가능한 한 trash로 되돌리고 quota도 환불한다. trash 자체가 실패해 빈 폴더가
+         남더라도 다음 동일 요청은 위 recovery 경로에서 quota 없이 capture.json을 완성한다. */
+      if (chargedQuota) refundDailyLimit_(req.k);
+      var rolledBack = false;
+      if (createdFolder && folder && typeof folder.setTrashed === 'function') {
+        try { folder.setTrashed(true); rolledBack = true; } catch (ignoredRollbackError) {}
+      }
+      if (rolledBack && typeof recoveryCache.remove === 'function') recoveryCache.remove(recoveryKey);
+      return json_({ ok: false, error: 'receipt_write_failed' });
+    }
+    if (typeof recoveryCache.remove === 'function') recoveryCache.remove(recoveryKey);
   } finally {
     lock.releaseLock();
   }
-  var instruction = researchEnvelope_(request, name, {
-    person: person,
-    captureId: relatedCaptureId
-  }, researchId);
-  var researchMeta = {
-    captureId: researchId,
-    type: 'research_instruction',
-    capturer: name,
-    person: person,
-    relatedCaptureId: relatedCaptureId,
-    researchInstruction: instruction,
-    receivedAt: instruction.requestedAt,
-    status: 'received'
-  };
-  folder.createFile(Utilities.newBlob(JSON.stringify(researchMeta, null, 2), 'application/json', 'capture.json'));
   return json_({ ok: true, receiptId: researchId, person: person, status: 'received' });
 }
 
@@ -632,10 +698,27 @@ function capturerFor_(token) {
 function withinDailyLimit_(token) {
   var limit = parseInt(CONF.getProperty('DAILY_LIMIT') || '100', 10);
   var cache = CacheService.getScriptCache();
-  var key = 'cnt_' + Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyyMMdd') + '_' + token;
+  var key = dailyLimitKey_(token);
   var n = parseInt(cache.get(key) || '0', 10) + 1;
   cache.put(key, String(n), 24 * 60 * 60);
   return n <= limit;
+}
+
+function dailyLimitKey_(token) {
+  return 'cnt_' + Utilities.formatDate(new Date(), 'Asia/Seoul', 'yyyyMMdd') + '_' + token;
+}
+
+function refundDailyLimit_(token) {
+  var cache = CacheService.getScriptCache();
+  var key = dailyLimitKey_(token);
+  var n = parseInt(cache.get(key) || '0', 10);
+  cache.put(key, String(Math.max(0, n - 1)), 24 * 60 * 60);
+}
+
+function folderHasAnyFiles_(folder) {
+  if (!folder || typeof folder.getFiles !== 'function') return true;
+  var files = folder.getFiles();
+  return files && files.hasNext();
 }
 
 function sanitizeId_(id) {
@@ -703,9 +786,9 @@ var RESEARCH_FOCUS_IDS_ = ['expertise', 'authority', 'reputation', 'outcomes', '
 
 function allowedStrings_(values, allowlist) {
   var result = [];
-  (Array.isArray(values) ? values : []).forEach(function (value) {
-    var item = String(value || '');
-    if (allowlist.indexOf(item) >= 0 && result.indexOf(item) < 0) result.push(item);
+  var input = (Array.isArray(values) ? values : []).map(function (value) { return String(value || ''); });
+  allowlist.forEach(function (allowed) {
+    if (input.indexOf(allowed) >= 0) result.push(allowed);
   });
   return result;
 }
@@ -735,6 +818,40 @@ function normalizeResearchRequest_(value) {
   };
 }
 
+function researchRequestFingerprint_(requestValue) {
+  var request = normalizeResearchRequest_(requestValue);
+  if (!request) return '';
+  var canonical = JSON.stringify({
+    raw: request.raw,
+    mode: request.mode,
+    purposes: request.purposes,
+    focusIds: request.focusIds
+  });
+  var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, canonical, Utilities.Charset.UTF_8);
+  var hex = '';
+  for (var i = 0; i < bytes.length; i++) {
+    var value = bytes[i] < 0 ? bytes[i] + 256 : bytes[i];
+    hex += ('0' + value.toString(16)).slice(-2);
+  }
+  return 'sha256:' + hex;
+}
+
+function sameResearchTarget_(stored, expected) {
+  if (!stored || typeof stored !== 'object') return false;
+  return String(stored.person || '') === String(expected.person || '') &&
+    String(stored.captureId || '') === String(expected.captureId || '');
+}
+
+function sameResearchReceipt_(meta, requestedBy, target, requestFingerprint) {
+  if (!meta || meta.type !== 'research_instruction') return false;
+  if (String(meta.capturer || '') !== String(requestedBy || '')) return false;
+  var instruction = meta.researchInstruction;
+  if (!instruction || String(instruction.requestedBy || '') !== String(requestedBy || '')) return false;
+  if (!sameResearchTarget_(instruction.target, target)) return false;
+  var storedFingerprint = String(meta.researchRequestFingerprint || instruction.requestFingerprint || '');
+  return Boolean(storedFingerprint) && storedFingerprint === String(requestFingerprint || '');
+}
+
 function researchEnvelope_(requestValue, requestedBy, target, receiptId) {
   var request = normalizeResearchRequest_(requestValue) || { raw: '', mode: 'standard', purposes: [], focusIds: [], requestId: '' };
   var deep = request.mode === 'deep_evidence_graph';
@@ -743,6 +860,8 @@ function researchEnvelope_(requestValue, requestedBy, target, receiptId) {
     mode: request.mode,
     purposes: request.purposes,
     focusIds: request.focusIds,
+    requestId: request.requestId,
+    requestFingerprint: researchRequestFingerprint_(request),
     sourceAuthority: 'public_lawful_only',
     requestedBy: String(requestedBy || '').slice(0, 120),
     requestedAt: new Date().toISOString(),
@@ -766,6 +885,294 @@ function researchEnvelope_(requestValue, requestedBy, target, receiptId) {
       reviewCeiling: 'agent_checked'
     }
   };
+}
+
+var RESEARCH_PROGRESS_PHASES_ = ['planning', 'branching', 'triangulating', 'synthesizing', 'done'];
+var RESEARCH_CLAIM_STATES_ = ['fact', 'conflict', 'unknown', 'hypothesis'];
+var RESEARCH_CONFIDENCE_ = ['low', 'medium', 'high'];
+var RESEARCH_STOP_REASONS_ = ['purpose_satisfied', 'source_exhausted', 'irrelevant_branch', 'time_cap', 'branch_cap'];
+var RESEARCH_NODE_TYPES_ = ['person', 'organization', 'project', 'event', 'claim', 'source'];
+var RESEARCH_EDGE_RELATIONS_ = [
+  'supports', 'counterevidence', 'affiliated_with', 'leads', 'member_of',
+  'worked_on', 'participated_in', 'occurred_at', 'involves', 'related_to'
+];
+var DEEP_RESEARCH_BRANCH_CAP_ = 24;
+var DEEP_RESEARCH_SOURCE_CAP_ = 144;
+var DEEP_RESEARCH_TIME_CAP_MINUTES_ = 90;
+
+/* research result는 사용자 입력 보정이 아니라 processor output 검증이다. 잘라서 유효하게
+   꾸미지 않고 type·길이·control-character를 하나라도 어기면 graph 전체를 거절한다. */
+function safeText_(value, maxLength) {
+  if (typeof value !== 'string') return '';
+  if (!value || value.length > maxLength || /[\u0000-\u001f\u007f]/.test(value)) return '';
+  var trimmed = value.trim();
+  return trimmed && trimmed.length <= maxLength ? trimmed : '';
+}
+
+function safeIsoTimestamp_(value) {
+  var text = safeText_(value, 40);
+  return text && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(text) && isFinite(Date.parse(text)) ? text : '';
+}
+
+function safeCount_(value) {
+  return typeof value === 'number' && isFinite(value) && value >= 0 && value <= 1000000 && Math.floor(value) === value ? value : null;
+}
+
+/* 목록에는 처리기가 실제로 쓴 checkpoint만 내보낸다. 일부 필드만 맞는 객체를 진행 상태로
+   가장하지 않도록 여섯 필드를 모두 검증하고, 알려진 key만 새 객체로 복사한다. */
+function validateResearchProgress_(value) {
+  if (!value || typeof value !== 'object') return null;
+  var phase = String(value.phase || '');
+  var updatedAt = safeIsoTimestamp_(value.updatedAt);
+  var verifiedFacts = safeCount_(value.verifiedFacts);
+  var conflicts = safeCount_(value.conflicts);
+  var openQuestions = safeCount_(value.openQuestions);
+  var branchCount = safeCount_(value.branchCount);
+  var sourceCount = safeCount_(value.sourceCount);
+  var elapsedMinutes = typeof value.elapsedMinutes === 'number' && isFinite(value.elapsedMinutes) && value.elapsedMinutes >= 0
+    ? value.elapsedMinutes : null;
+  if (RESEARCH_PROGRESS_PHASES_.indexOf(phase) < 0 || typeof value.partial !== 'boolean' || !updatedAt ||
+      verifiedFacts === null || conflicts === null || openQuestions === null || branchCount === null ||
+      sourceCount === null || elapsedMinutes === null || branchCount > DEEP_RESEARCH_BRANCH_CAP_ ||
+      sourceCount > DEEP_RESEARCH_SOURCE_CAP_ || elapsedMinutes > DEEP_RESEARCH_TIME_CAP_MINUTES_) return null;
+  if ((phase === 'done' && value.partial) || (phase !== 'done' && !value.partial)) return null;
+  if (value.partial && (branchCount >= DEEP_RESEARCH_BRANCH_CAP_ || elapsedMinutes >= DEEP_RESEARCH_TIME_CAP_MINUTES_)) return null;
+  return {
+    phase: phase,
+    partial: value.partial,
+    updatedAt: updatedAt,
+    verifiedFacts: verifiedFacts,
+    conflicts: conflicts,
+    openQuestions: openQuestions,
+    branchCount: branchCount,
+    sourceCount: sourceCount,
+    elapsedMinutes: elapsedMinutes
+  };
+}
+
+function safeResearchUrl_(value) {
+  var url = safeText_(value, 2048);
+  if (!url || /[\\\s]/.test(url) || !/^https?:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?(?:[\/?#][^\s]*)?$/i.test(url)) return '';
+  if (/^https?:\/\/[^\/?#]*@/i.test(url)) return '';
+  var portMatch = url.match(/^https?:\/\/[A-Za-z0-9.-]+:(\d{1,5})(?:[\/?#]|$)/i);
+  if (portMatch && parseInt(portMatch[1], 10) > 65535) return '';
+  return url;
+}
+
+function safeResearchGraphId_(value) {
+  var id = safeText_(value, 80);
+  return id && /^[A-Za-z][A-Za-z0-9._:-]{0,79}$/.test(id) ? id : '';
+}
+
+function validateResearchNode_(value, nodeById) {
+  if (!value || typeof value !== 'object') return null;
+  var id = safeResearchGraphId_(value.id);
+  var type = String(value.type || '');
+  var label = safeText_(value.label, 500);
+  if (!id || nodeById[id] || RESEARCH_NODE_TYPES_.indexOf(type) < 0 || !label) return null;
+  var url = '';
+  if (value.url !== undefined) {
+    url = safeResearchUrl_(value.url);
+    if (!url) return null;
+  }
+  if (type === 'source' && !url) return null;
+  var node = { id: id, type: type, label: label };
+  if (url) node.url = url;
+  nodeById[id] = node;
+  return node;
+}
+
+function validateResearchEvidenceLink_(value, nodeById) {
+  if (!value || typeof value !== 'object') return null;
+  var sourceId = safeResearchGraphId_(value.sourceId);
+  var title = safeText_(value.title, 500);
+  var url = safeResearchUrl_(value.url);
+  var sourceNode = sourceId ? nodeById[sourceId] : null;
+  if (!sourceId || !title || !url || !sourceNode || sourceNode.type !== 'source' ||
+      sourceNode.label !== title || sourceNode.url !== url) return null;
+  var result = { sourceId: sourceId, title: title, url: url };
+  if (value.publishedAt !== undefined) {
+    var publishedAt = safeText_(value.publishedAt, 40);
+    if (!publishedAt) return null;
+    result.publishedAt = publishedAt;
+  }
+  return result;
+}
+
+function validateResearchEvidenceArray_(value, nodeById, claimId, relation, expectedEvidenceEdges) {
+  if (!Array.isArray(value) || value.length > 100) return null;
+  var result = [];
+  for (var i = 0; i < value.length; i++) {
+    var evidence = validateResearchEvidenceLink_(value[i], nodeById);
+    if (!evidence) return null;
+    var key = evidence.sourceId + '\n' + claimId + '\n' + relation;
+    if (expectedEvidenceEdges[key]) return null;
+    expectedEvidenceEdges[key] = true;
+    result.push(evidence);
+  }
+  return result;
+}
+
+function validateResearchClaim_(value, seenIds, nodeById, expectedEvidenceEdges) {
+  if (!value || typeof value !== 'object') return null;
+  var id = safeResearchGraphId_(value.id);
+  var state = String(value.state || '');
+  var summary = safeText_(value.summary, 2000);
+  var claimNode = id ? nodeById[id] : null;
+  if (!id || seenIds[id] || !claimNode || claimNode.type !== 'claim' || claimNode.label !== summary ||
+      RESEARCH_CLAIM_STATES_.indexOf(state) < 0 || !summary) return null;
+  var evidenceFor = validateResearchEvidenceArray_(value.evidenceFor, nodeById, id, 'supports', expectedEvidenceEdges);
+  var evidenceAgainst = validateResearchEvidenceArray_(value.evidenceAgainst, nodeById, id, 'counterevidence', expectedEvidenceEdges);
+  if (!evidenceFor || !evidenceAgainst) return null;
+  var confidence = value.confidence === undefined ? '' : String(value.confidence);
+  if (confidence && RESEARCH_CONFIDENCE_.indexOf(confidence) < 0) return null;
+  var alternative = value.alternativeExplanation === undefined ? '' : safeText_(value.alternativeExplanation, 2000);
+  if (value.alternativeExplanation !== undefined && !alternative) return null;
+  if (state === 'fact' && !evidenceFor.length) return null;
+  if (state === 'conflict' && (!evidenceFor.length || !evidenceAgainst.length)) return null;
+  if (state === 'hypothesis' && (!evidenceFor.length || !evidenceAgainst.length || !alternative || !confidence)) return null;
+  seenIds[id] = true;
+  var result = {
+    id: id,
+    state: state,
+    summary: summary,
+    evidenceFor: evidenceFor,
+    evidenceAgainst: evidenceAgainst
+  };
+  if (confidence) result.confidence = confidence;
+  if (alternative) result.alternativeExplanation = alternative;
+  return result;
+}
+
+function validateResearchEdge_(value, nodeById, seenEdgeIds, seenEdgeTuples, expectedEvidenceEdges, matchedEvidenceEdges) {
+  if (!value || typeof value !== 'object') return null;
+  var id = safeResearchGraphId_(value.id);
+  var sourceId = safeResearchGraphId_(value.sourceId);
+  var targetId = safeResearchGraphId_(value.targetId);
+  var relation = String(value.relation || '');
+  var label = safeText_(value.label, 200);
+  var source = sourceId ? nodeById[sourceId] : null;
+  var target = targetId ? nodeById[targetId] : null;
+  var tuple = sourceId + '\n' + targetId + '\n' + relation;
+  if (!id || seenEdgeIds[id] || !source || !target || sourceId === targetId ||
+      RESEARCH_EDGE_RELATIONS_.indexOf(relation) < 0 || !label || seenEdgeTuples[tuple]) return null;
+  var evidenceRelation = relation === 'supports' || relation === 'counterevidence';
+  if (evidenceRelation) {
+    if (source.type !== 'source' || target.type !== 'claim' || !expectedEvidenceEdges[tuple] || matchedEvidenceEdges[tuple]) return null;
+    matchedEvidenceEdges[tuple] = true;
+  } else if (source.type === 'source' && target.type === 'claim') {
+    return null;
+  }
+  seenEdgeIds[id] = true;
+  seenEdgeTuples[tuple] = true;
+  return { id: id, sourceId: sourceId, targetId: targetId, relation: relation, label: label };
+}
+
+/* `research-result.json`은 브라우저에 그대로 보내지 않는다. 전체 graph가 계약을 통과할 때만
+   known-safe schema로 재구성해 publish한다. 하나라도 malformed면 결과 전체를 숨긴다. */
+function validateResearchEvidenceGraph_(value) {
+  if (!value || typeof value !== 'object' || value.version !== 'deep-research-evidence-v1') return null;
+  if (!Array.isArray(value.purposes) || !value.purposes.length || value.purposes.length > RESEARCH_PURPOSES_.length) return null;
+  var purposes = allowedStrings_(value.purposes, RESEARCH_PURPOSES_);
+  if (purposes.length !== value.purposes.length) return null;
+  if (!Array.isArray(value.claims) || value.claims.length > 200 ||
+      !Array.isArray(value.nodes) || !value.nodes.length || value.nodes.length > 500 ||
+      !Array.isArray(value.edges) || value.edges.length > 1000 ||
+      !Array.isArray(value.timeline) || value.timeline.length > 500 ||
+      !Array.isArray(value.openQuestions) || value.openQuestions.length > 100) return null;
+
+  var nodeById = {};
+  var nodes = [];
+  var sourceNodeCount = 0;
+  for (var n = 0; n < value.nodes.length; n++) {
+    var node = validateResearchNode_(value.nodes[n], nodeById);
+    if (!node) return null;
+    if (node.type === 'source') sourceNodeCount++;
+    nodes.push(node);
+  }
+
+  var seenIds = {};
+  var expectedEvidenceEdges = {};
+  var claims = [];
+  for (var i = 0; i < value.claims.length; i++) {
+    var claim = validateResearchClaim_(value.claims[i], seenIds, nodeById, expectedEvidenceEdges);
+    if (!claim) return null;
+    claims.push(claim);
+  }
+  for (var nodeId in nodeById) {
+    if (Object.prototype.hasOwnProperty.call(nodeById, nodeId) && nodeById[nodeId].type === 'claim' && !seenIds[nodeId]) return null;
+  }
+
+  var seenEdgeIds = {};
+  var seenEdgeTuples = {};
+  var matchedEvidenceEdges = {};
+  var edges = [];
+  for (var e = 0; e < value.edges.length; e++) {
+    var edge = validateResearchEdge_(value.edges[e], nodeById, seenEdgeIds, seenEdgeTuples, expectedEvidenceEdges, matchedEvidenceEdges);
+    if (!edge) return null;
+    edges.push(edge);
+  }
+  for (var expectedEdge in expectedEvidenceEdges) {
+    if (Object.prototype.hasOwnProperty.call(expectedEvidenceEdges, expectedEdge) && !matchedEvidenceEdges[expectedEdge]) return null;
+  }
+
+  var timeline = [];
+  for (var t = 0; t < value.timeline.length; t++) {
+    var event = value.timeline[t];
+    if (!event || typeof event !== 'object') return null;
+    var date = safeText_(event.date, 40);
+    var label = safeText_(event.label, 1000);
+    if (!date || !label || !Array.isArray(event.claimIds) || event.claimIds.length > 200) return null;
+    var claimIds = [];
+    for (var c = 0; c < event.claimIds.length; c++) {
+      var claimId = safeText_(event.claimIds[c], 80);
+      if (!claimId || !seenIds[claimId] || claimIds.indexOf(claimId) >= 0) return null;
+      claimIds.push(claimId);
+    }
+    timeline.push({ date: date, label: label, claimIds: claimIds });
+  }
+
+  var openQuestions = [];
+  for (var q = 0; q < value.openQuestions.length; q++) {
+    var question = safeText_(value.openQuestions[q], 1000);
+    if (!question || openQuestions.indexOf(question) >= 0) return null;
+    openQuestions.push(question);
+  }
+  if (!value.stop || typeof value.stop !== 'object' || RESEARCH_STOP_REASONS_.indexOf(String(value.stop.reason || '')) < 0) return null;
+  var stopSummary = safeText_(value.stop.summary, 2000);
+  if (!stopSummary) return null;
+  if (!value.metrics || typeof value.metrics !== 'object') return null;
+  var metricBranches = safeCount_(value.metrics.branchCount);
+  var metricSources = safeCount_(value.metrics.sourceCount);
+  var metricMinutes = typeof value.metrics.elapsedMinutes === 'number' && isFinite(value.metrics.elapsedMinutes) && value.metrics.elapsedMinutes >= 0
+    ? value.metrics.elapsedMinutes : null;
+  if (metricBranches === null || metricSources === null || metricMinutes === null ||
+      metricBranches > DEEP_RESEARCH_BRANCH_CAP_ || metricSources > DEEP_RESEARCH_SOURCE_CAP_ ||
+      metricMinutes > DEEP_RESEARCH_TIME_CAP_MINUTES_ || metricSources < sourceNodeCount) return null;
+  var stopReason = String(value.stop.reason);
+  var atBranchCap = metricBranches >= DEEP_RESEARCH_BRANCH_CAP_;
+  var atTimeCap = metricMinutes >= DEEP_RESEARCH_TIME_CAP_MINUTES_;
+  if ((stopReason === 'branch_cap' && !atBranchCap) || (stopReason === 'time_cap' && !atTimeCap)) return null;
+  if (atBranchCap && !atTimeCap && stopReason !== 'branch_cap') return null;
+  if (atTimeCap && !atBranchCap && stopReason !== 'time_cap') return null;
+  if (atBranchCap && atTimeCap && ['branch_cap', 'time_cap'].indexOf(stopReason) < 0) return null;
+  return {
+    version: 'deep-research-evidence-v1',
+    purposes: purposes,
+    nodes: nodes,
+    edges: edges,
+    claims: claims,
+    timeline: timeline,
+    openQuestions: openQuestions,
+    metrics: { branchCount: metricBranches, sourceCount: metricSources, elapsedMinutes: metricMinutes },
+    stop: { reason: stopReason, summary: stopSummary }
+  };
+}
+
+function sameStringArray_(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+  for (var i = 0; i < left.length; i++) if (String(left[i]) !== String(right[i])) return false;
+  return true;
 }
 
 function upsertFile_(folder, fname, blob) {
