@@ -113,14 +113,25 @@ function drawProgressRing(context: CanvasRenderingContext2D, width: number, heig
 }
 
 type VideoFrameCallbackVideo = HTMLVideoElement & {
-  requestVideoFrameCallback?: (callback: (now: number, metadata: { mediaTime?: number }) => void) => number;
+  requestVideoFrameCallback?: (callback: (now: number, metadata: { mediaTime?: number; presentedFrames?: number }) => void) => number;
   cancelVideoFrameCallback?: (handle: number) => void;
+  getVideoPlaybackQuality?: () => { totalVideoFrames: number; droppedVideoFrames: number };
 };
+
+function presentedVideoFrameCount(video: HTMLVideoElement): number | null {
+  const quality = (video as VideoFrameCallbackVideo).getVideoPlaybackQuality?.();
+  if (!quality) return null;
+  const presented = quality.totalVideoFrames - quality.droppedVideoFrames;
+  return Number.isFinite(presented) && presented >= 0 ? presented : null;
+}
 
 // 실제로 새 camera frame이 도착한 뒤에만 다음 sample을 읽는다. 단순 timeout만 쓰면
 // 느린 폰에서 같은 frame을 세 번 읽고 "안정"으로 오판할 수 있다.
-function waitForNextVideoFrame(video: HTMLVideoElement, afterMediaTime: number, timeoutMs = 320): Promise<number | null> {
+function waitForNextVideoFrame(video: HTMLVideoElement, afterFrame: number | null, timeoutMs = 320): Promise<number | null> {
   const candidate = video as VideoFrameCallbackVideo;
+  const requestVideoFrame = typeof candidate.requestVideoFrameCallback === 'function'
+    ? candidate.requestVideoFrameCallback.bind(candidate)
+    : null;
   return new Promise((resolve) => {
     let settled = false;
     let callbackHandle = 0;
@@ -134,19 +145,23 @@ function waitForNextVideoFrame(video: HTMLVideoElement, afterMediaTime: number, 
       resolve(mediaTime);
     };
     const timeoutHandle = window.setTimeout(() => finish(null), timeoutMs);
-    if (candidate.requestVideoFrameCallback) {
-      const request = () => {
-        callbackHandle = candidate.requestVideoFrameCallback!((_now, metadata) => {
-          const mediaTime = metadata.mediaTime ?? video.currentTime;
-          if (mediaTime > afterMediaTime + 0.0001) finish(mediaTime);
-          else request();
-        });
-      };
-      request();
+    if (requestVideoFrame) {
+      // 이 callback 자체가 compositor에 새 frame이 제출될 때 한 번만 호출된다.
+      callbackHandle = requestVideoFrame((_now, metadata) => {
+        finish(metadata.presentedFrames ?? metadata.mediaTime ?? (afterFrame ?? 0) + 1);
+      });
+      return;
+    }
+    // currentTime은 playback clock일 뿐 frame identity가 아니다. callback API가 없는
+    // WebView에서는 실제 표시 frame counter가 있을 때만 진행하고, 없으면 fail-closed한다.
+    if (afterFrame === null) {
+      finish(null);
       return;
     }
     const poll = () => {
-      if (video.currentTime > afterMediaTime + 0.0001) finish(video.currentTime);
+      const frameCount = presentedVideoFrameCount(video);
+      if (frameCount === null) finish(null);
+      else if (frameCount > afterFrame) finish(frameCount);
       else animationHandle = requestAnimationFrame(poll);
     };
     poll();
@@ -165,11 +180,16 @@ async function freezeStableAutoFrame(
   if (!sampleContext) return { canvas: null, reason: 'frame_timeout' };
 
   const samples: CaptureMotionFrame[] = [];
-  let mediaTime = video.currentTime;
+  const candidate = video as VideoFrameCallbackVideo;
+  const hasVideoFrameCallback = typeof candidate.requestVideoFrameCallback === 'function';
+  let frameIdentity = hasVideoFrameCallback ? null : presentedVideoFrameCount(video);
+  if (!hasVideoFrameCallback && frameIdentity === null) {
+    return { canvas: null, reason: 'frame_timeout' };
+  }
   for (let index = 0; index < 3; index += 1) {
-    const nextMediaTime = await waitForNextVideoFrame(video, mediaTime);
-    if (nextMediaTime === null || !isActive()) return { canvas: null, reason: 'frame_timeout' };
-    mediaTime = nextMediaTime;
+    const nextFrame = await waitForNextVideoFrame(video, frameIdentity);
+    if (nextFrame === null || !isActive()) return { canvas: null, reason: 'frame_timeout' };
+    frameIdentity = nextFrame;
     sampleContext.drawImage(video, 0, 0, sampleCanvas.width, sampleCanvas.height);
     samples.push(captureMotionFrame(sampleContext.getImageData(0, 0, sampleCanvas.width, sampleCanvas.height)));
   }
@@ -215,6 +235,7 @@ export function CameraCaptureModal({
   const autoGateRef = useRef(blankAutoCaptureState());
   const quadTrackRef = useRef(blankQuadTrackState());
   const capturingRef = useRef(false);
+  const captureGenerationRef = useRef(0);
   const liveQuadRef = useRef<{ quad: Point[]; at: number } | null>(null);
   const displayQuadRef = useRef<Point[] | null>(null);
   const detectedSinceRef = useRef(0);
@@ -239,17 +260,24 @@ export function CameraCaptureModal({
   const [cvState, setCvState] = useState('명함 감지 엔진 대기');
   const [choiceThumb, setChoiceThumb] = useState('');
   const [autoCapture, setAutoCapture] = useState(() => localStorage.getItem('cc_autoCapture') !== 'off');
+  const autoCaptureEnabledRef = useRef(autoCapture);
+  autoCaptureEnabledRef.current = autoCapture;
   const [autoHint, setAutoHint] = useState('명함을 화면 안에 담아 주세요');
   const [torchAvailable, setTorchAvailable] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
 
+  const invalidatePendingCapture = useCallback(() => {
+    captureGenerationRef.current += 1;
+    capturingRef.current = false;
+  }, []);
+
   const stopPreview = useCallback(() => {
+    invalidatePendingCapture();
     stopCameraStream(streamRef.current);
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
     setTorchAvailable(false);
     setTorchOn(false);
-    capturingRef.current = false;
     autoGateRef.current = blankAutoCaptureState();
     quadTrackRef.current = blankQuadTrackState();
     autoProgressRef.current = 0;
@@ -258,14 +286,14 @@ export function CameraCaptureModal({
     detectedSinceRef.current = 0;
     lastDetectQuadRef.current = null;
     modelGateRef.current = blankCardQuadModelGate();
-  }, []);
+  }, [invalidatePendingCapture]);
 
   useEffect(() => stopPreview, [stopPreview]);
 
   const resumeStreaming = useCallback((nextSide: CardSide) => {
     // 선택지에서 뒷면/앞면 재촬영으로 복귀 — 스트림은 살아 있으므로 즉시 촬영 가능 (legacy camGoBack2).
     setSide(nextSide);
-    capturingRef.current = false;
+    invalidatePendingCapture();
     autoGateRef.current = blankAutoCaptureState();
     quadTrackRef.current = blankQuadTrackState();
     autoProgressRef.current = 0;
@@ -278,7 +306,7 @@ export function CameraCaptureModal({
     rearmAtRef.current = performance.now();
     setAutoHint(nextSide === 'back' ? '명함을 뒤집어 뒷면을 대주세요' : '앞면을 다시 대주세요');
     setPhase('streaming');
-  }, []);
+  }, [invalidatePendingCapture]);
 
   const startPreview = useCallback(async (nextSide: CardSide) => {
     stopPreview();
@@ -345,17 +373,27 @@ export function CameraCaptureModal({
     motionReference: CaptureMotionFrame | null = null,
   ) => {
     const video = videoRef.current;
-    if (!video || capturingRef.current) return;
+    if (!video || (source === 'auto' && capturingRef.current)) return;
+    // 수동 shutter는 진행 중 auto hold를 취소하고 즉시 새 capture generation을 시작한다.
+    const captureGeneration = captureGenerationRef.current + 1;
+    captureGenerationRef.current = captureGeneration;
     capturingRef.current = true;
+    const captureSide = sideRef.current;
+    const isCaptureCurrent = () => (
+      captureGenerationRef.current === captureGeneration
+      && capturingRef.current
+      && phaseRef.current === 'streaming'
+      && (source === 'manual' || autoCaptureEnabledRef.current)
+    );
     try {
       if (!video.videoWidth) throw new CandidateCameraError('frame_not_ready');
       let full: HTMLCanvasElement;
       if (source === 'auto') {
         const frozen = motionReference
-          ? await freezeStableAutoFrame(video, motionReference, () => capturingRef.current && phaseRef.current === 'streaming')
+          ? await freezeStableAutoFrame(video, motionReference, isCaptureCurrent)
           : { canvas: null, reason: 'frame_timeout' as const };
         if (!frozen.canvas) {
-          if (phaseRef.current === 'streaming') {
+          if (isCaptureCurrent()) {
             autoGateRef.current = blankAutoCaptureState();
             autoProgressRef.current = 0;
             capturingRef.current = false;
@@ -374,6 +412,7 @@ export function CameraCaptureModal({
         if (!context) throw new CandidateCameraError('camera_failed');
         context.drawImage(video, 0, 0);
       }
+      if (!isCaptureCurrent()) return;
       const fullContext = full.getContext('2d');
       if (!fullContext) throw new CandidateCameraError('camera_failed');
 
@@ -389,6 +428,7 @@ export function CameraCaptureModal({
           try {
             const image = fullContext.getImageData(0, 0, full.width, full.height);
             const warped = await client.warp(image, fresh);
+            if (!isCaptureCurrent()) return;
             if (warped) {
               result = canvasFromImageData(warped);
               cropState = 'rectified';
@@ -398,6 +438,7 @@ export function CameraCaptureModal({
           }
         }
       }
+      if (!isCaptureCurrent()) return;
       if (!result) {
         // 감지 실패 폴백: 화면 가이드 영역만 잘라 배경 전체가 올라가지 않게 한다 (legacy 규칙).
         const overlay = overlayRef.current;
@@ -425,10 +466,12 @@ export function CameraCaptureModal({
           checkContext?.drawImage(finalCanvas, 0, 0, check.width, check.height);
           const image = checkContext?.getImageData(0, 0, check.width, check.height);
           blurScore = image ? await client.blurScore(image) : null;
+          if (!isCaptureCurrent()) return;
         } catch {
           blurScore = null;
         }
       }
+      if (!isCaptureCurrent()) return;
       const blurry = blurScore !== null && blurScore < 45;
       // 자동 경로는 실제 저장할 frozen frame의 선명도를 확인하지 못해도 fail-closed다.
       // 수동 shutter는 사용자의 명시 행동이므로 기존처럼 저장하고 가능한 경우 경고만 남긴다.
@@ -441,13 +484,15 @@ export function CameraCaptureModal({
       }
 
       const frame = finalizeCameraFrame(finalCanvas);
-      onCaptured(sideRef.current, frame, { cropState, blurry, source });
+      if (!isCaptureCurrent()) return;
+      onCaptured(captureSide, frame, { cropState, blurry, source });
       // 앞면·뒷면 모두 "이대로 괜찮은지" 확인 단계를 거친다. 뒷면만 확인 없이 닫히던 것을
       // founder가 지적했다(2026-07-26) — 자동 촬영이면 사용자는 결과를 볼 기회조차 없었다.
       setChoiceThumb(frame.dataUrl);
       setPhase('choice');
       capturingRef.current = false;
     } catch {
+      if (!isCaptureCurrent()) return;
       capturingRef.current = false;
       setPhase('error');
       setDetail('카메라 프레임이 아직 준비되지 않았습니다. 다시 시도하거나 기본 카메라를 사용하세요.');
@@ -691,14 +736,14 @@ export function CameraCaptureModal({
   }, [initialSide, startPreview]);
 
   const toggleAutoCapture = useCallback(() => {
-    setAutoCapture((current) => {
-      const next = !current;
-      localStorage.setItem('cc_autoCapture', next ? 'on' : 'off');
-      autoGateRef.current = blankAutoCaptureState();
-      autoProgressRef.current = 0;
-      return next;
-    });
-  }, []);
+    const next = !autoCaptureEnabledRef.current;
+    autoCaptureEnabledRef.current = next;
+    setAutoCapture(next);
+    localStorage.setItem('cc_autoCapture', next ? 'on' : 'off');
+    if (!next) invalidatePendingCapture();
+    autoGateRef.current = blankAutoCaptureState();
+    autoProgressRef.current = 0;
+  }, [invalidatePendingCapture]);
 
   const toggleTorch = useCallback(async () => {
     const next = !torchOn;
@@ -710,7 +755,7 @@ export function CameraCaptureModal({
       <IonHeader>
         <IonToolbar>
           <IonTitle>{side === 'front' ? '명함 앞면' : '명함 뒷면'}</IonTitle>
-          <IonButton slot="end" fill="clear" onClick={onDismiss}>닫기</IonButton>
+          <IonButton slot="end" fill="clear" onClick={() => { stopPreview(); onDismiss(); }}>닫기</IonButton>
         </IonToolbar>
       </IonHeader>
       <IonContent className="camera-preview-content ion-padding">

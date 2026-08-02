@@ -41,7 +41,15 @@ function startStaticServer(): Promise<Server> {
 
 // 장면을 앱 밖에서 바꿀 수 있게 window.__scene을 노출한다: 'front' | 'empty' | 'back'.
 // __shakeOnReady는 auto gate가 ready가 된 직후에만 카메라 translation을 주입한다.
-function sceneScript({ frame, card }: { frame: typeof FRAME; card: typeof CARD }) {
+function sceneScript({
+  frame,
+  card,
+  frameCallbackMode = 'callback',
+}: {
+  frame: typeof FRAME;
+  card: typeof CARD;
+  frameCallbackMode?: 'callback' | 'counter' | 'unavailable';
+}) {
   localStorage.setItem('cc_name', 'Debug');
   localStorage.setItem('cc_autoCapture', 'on'); // 폰 기본값
   const runtime = window as typeof window & {
@@ -52,13 +60,31 @@ function sceneScript({ frame, card }: { frame: typeof FRAME; card: typeof CARD }
     __shakeStep?: number;
     __shakeEndedAt?: number;
     __sawMotionHold?: boolean;
+    __cancelOnBurst?: 'auto-off' | 'close';
+    __burstCancellationTriggered?: boolean;
+    __frameCounterReads?: number;
   };
   runtime.__scene = 'front';
   const videoPrototype = HTMLVideoElement.prototype as HTMLVideoElement & {
     requestVideoFrameCallback?: (callback: (now: number, metadata: VideoFrameCallbackMetadata) => void) => number;
+    getVideoPlaybackQuality?: () => VideoPlaybackQuality;
   };
   const requestVideoFrame = videoPrototype.requestVideoFrameCallback;
-  if (requestVideoFrame) {
+  const getVideoPlaybackQuality = videoPrototype.getVideoPlaybackQuality;
+  if (frameCallbackMode !== 'callback') {
+    Object.defineProperty(videoPrototype, 'requestVideoFrameCallback', { configurable: true, value: undefined });
+    if (frameCallbackMode === 'counter' && getVideoPlaybackQuality) {
+      Object.defineProperty(videoPrototype, 'getVideoPlaybackQuality', {
+        configurable: true,
+        value(this: HTMLVideoElement) {
+          runtime.__frameCounterReads = (runtime.__frameCounterReads ?? 0) + 1;
+          return getVideoPlaybackQuality.call(this);
+        },
+      });
+    } else if (frameCallbackMode === 'unavailable') {
+      Object.defineProperty(videoPrototype, 'getVideoPlaybackQuality', { configurable: true, value: undefined });
+    }
+  } else if (requestVideoFrame) {
     videoPrototype.requestVideoFrameCallback = function (callback) {
       // 이 앱에서 requestVideoFrameCallback은 auto gate가 fired된 뒤 post-trigger burst가
       // 시작할 때만 호출된다. 첫 요청 직전에 shake를 켜면 UI render timing과 무관하게
@@ -67,6 +93,15 @@ function sceneScript({ frame, card }: { frame: typeof FRAME; card: typeof CARD }
         runtime.__shakeInjected = true;
         runtime.__shakeFramesRemaining = 12;
         runtime.__shakeStep = 0;
+      }
+      if (runtime.__cancelOnBurst && !runtime.__burstCancellationTriggered) {
+        runtime.__burstCancellationTriggered = true;
+        const action = runtime.__cancelOnBurst;
+        queueMicrotask(() => {
+          const buttons = Array.from(document.querySelectorAll('ion-button')) as HTMLElement[];
+          const label = action === 'auto-off' ? '자동 촬영 켜짐' : '닫기';
+          buttons.find((button) => button.textContent?.includes(label))?.click();
+        });
       }
       return requestVideoFrame.call(this, callback);
     };
@@ -130,6 +165,95 @@ function sceneScript({ frame, card }: { frame: typeof FRAME; card: typeof CARD }
 }
 
 test.use({ viewport: { width: 375, height: 812 } });
+
+test('turning auto capture off cancels the pending burst and manual shutter still works', async ({ page }) => {
+  test.setTimeout(180_000);
+  const server = await startStaticServer();
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('no port');
+  try {
+    await page.addInitScript(sceneScript, { frame: FRAME, card: CARD });
+    await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
+    await page.evaluate(() => {
+      (window as typeof window & { __cancelOnBurst?: 'auto-off' }).__cancelOnBurst = 'auto-off';
+    });
+
+    await page.getByRole('button', { name: '명함 앞면 촬영' }).click();
+    await page.waitForFunction(() => (
+      window as typeof window & { __burstCancellationTriggered?: boolean }
+    ).__burstCancellationTriggered === true, null, { timeout: 40_000 });
+    await expect(page.getByRole('button', { name: '자동 촬영 꺼짐' })).toBeVisible();
+    await page.waitForTimeout(750);
+    await expect(page.getByText('앞면 저장됨 — 뒷면도 찍을까요? (선택)')).toHaveCount(0);
+
+    await page.getByRole('button', { name: '앞면 촬영', exact: true }).click();
+    await expect(page.getByText('앞면 저장됨 — 뒷면도 찍을까요? (선택)')).toBeVisible({ timeout: 30_000 });
+  } finally {
+    await new Promise<void>((stop) => { server.close(() => stop()); server.closeAllConnections(); });
+  }
+});
+
+test('closing the modal cancels a pending auto capture before it can publish a frame', async ({ page }) => {
+  test.setTimeout(180_000);
+  const server = await startStaticServer();
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('no port');
+  try {
+    await page.addInitScript(sceneScript, { frame: FRAME, card: CARD });
+    await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
+    await page.evaluate(() => {
+      (window as typeof window & { __cancelOnBurst?: 'close' }).__cancelOnBurst = 'close';
+    });
+
+    await page.getByRole('button', { name: '명함 앞면 촬영' }).click();
+    await page.waitForFunction(() => (
+      window as typeof window & { __burstCancellationTriggered?: boolean }
+    ).__burstCancellationTriggered === true, null, { timeout: 40_000 });
+    await expect(page.locator('ion-modal.camera-preview-modal')).not.toBeVisible({ timeout: 10_000 });
+    await page.waitForTimeout(750);
+    await expect(page.locator('.shot-main img[alt="앞면 미리보기"]')).toHaveCount(0);
+  } finally {
+    await new Promise<void>((stop) => { server.close(() => stop()); server.closeAllConnections(); });
+  }
+});
+
+test('frame-counter fallback waits for distinct presented frames without requestVideoFrameCallback', async ({ page }) => {
+  test.setTimeout(180_000);
+  const server = await startStaticServer();
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('no port');
+  try {
+    await page.addInitScript(sceneScript, { frame: FRAME, card: CARD, frameCallbackMode: 'counter' });
+    await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
+    await page.getByRole('button', { name: '명함 앞면 촬영' }).click();
+
+    await expect(page.getByText('앞면 저장됨 — 뒷면도 찍을까요? (선택)')).toBeVisible({ timeout: 40_000 });
+    const counterReads = await page.evaluate(() => (
+      window as typeof window & { __frameCounterReads?: number }
+    ).__frameCounterReads ?? 0);
+    expect(counterReads).toBeGreaterThanOrEqual(4);
+  } finally {
+    await new Promise<void>((stop) => { server.close(() => stop()); server.closeAllConnections(); });
+  }
+});
+
+test('auto capture fails closed when no trustworthy frame identity is available', async ({ page }) => {
+  test.setTimeout(180_000);
+  const server = await startStaticServer();
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('no port');
+  try {
+    await page.addInitScript(sceneScript, { frame: FRAME, card: CARD, frameCallbackMode: 'unavailable' });
+    await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
+    await page.getByRole('button', { name: '명함 앞면 촬영' }).click();
+
+    await expect(page.getByText('새 카메라 프레임을 기다리는 중 · 잠시 고정해 주세요')).toBeVisible({ timeout: 40_000 });
+    await page.waitForTimeout(750);
+    await expect(page.getByText('앞면 저장됨 — 뒷면도 찍을까요? (선택)')).toHaveCount(0);
+  } finally {
+    await new Promise<void>((stop) => { server.close(() => stop()); server.closeAllConnections(); });
+  }
+});
 
 test('auto capture cancels a shake that starts after ready and retries on a stable frame', async ({ page }) => {
   test.setTimeout(180_000);
