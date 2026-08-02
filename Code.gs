@@ -612,8 +612,7 @@ function researchInstruction_(req) {
   var researchMeta;
   var createdFolder = false;
   var chargedQuota = false;
-  var recoveryCache = CacheService.getScriptCache();
-  var recoveryKey = 'research_receipt_' + researchId;
+  var recoveryKey = 'RESEARCH_RECEIPT_RESERVATION_' + researchId;
   var recoveryReservation = JSON.stringify({ requestedBy: name, target: target, requestFingerprint: requestFingerprint });
   try {
     var existing = inbox.getFoldersByName(researchId);
@@ -630,8 +629,9 @@ function researchInstruction_(req) {
         });
       }
       /* createFolder 뒤 capture.json 쓰기 전에 런타임이 죽었거나 rollback이 실패한 경우에만
-         같은 빈 폴더를 복구한다. 파일이 하나라도 있으면 다른 요청의 공간일 수 있어 닫는다. */
-      if (existingMeta || folderHasAnyFiles_(existingFolder) || recoveryCache.get(recoveryKey) !== recoveryReservation) {
+         durable Script Property reservation과 일치하는 빈 폴더를 복구한다. CacheService eviction은
+         복구 권한을 지우지 않으며, 파일이 하나라도 있으면 다른 요청의 공간일 수 있어 닫는다. */
+      if (existingMeta || folderHasAnyFiles_(existingFolder) || CONF.getProperty(recoveryKey) !== recoveryReservation) {
         return json_({ ok: false, error: 'request_id_conflict' });
       }
       folder = existingFolder;
@@ -640,12 +640,17 @@ function researchInstruction_(req) {
       /* 멱등 판정이 먼저다. 응답만 유실된 동일 requestId 재시도는 일일 quota를 다시 쓰지 않는다. */
       if (!withinDailyLimit_(req.k)) return json_({ ok: false, error: 'daily_limit' });
       chargedQuota = true;
-      recoveryCache.put(recoveryKey, recoveryReservation, 6 * 60 * 60);
+      try {
+        CONF.setProperty(recoveryKey, recoveryReservation);
+      } catch (reservationError) {
+        refundDailyLimit_(req.k);
+        return json_({ ok: false, error: 'receipt_reservation_failed' });
+      }
       try {
         folder = inbox.createFolder(researchId);
       } catch (folderError) {
         refundDailyLimit_(req.k);
-        if (typeof recoveryCache.remove === 'function') recoveryCache.remove(recoveryKey);
+        if (typeof CONF.deleteProperty === 'function') CONF.deleteProperty(recoveryKey);
         return json_({ ok: false, error: 'receipt_folder_failed' });
       }
       createdFolder = true;
@@ -674,10 +679,10 @@ function researchInstruction_(req) {
       if (createdFolder && folder && typeof folder.setTrashed === 'function') {
         try { folder.setTrashed(true); rolledBack = true; } catch (ignoredRollbackError) {}
       }
-      if (rolledBack && typeof recoveryCache.remove === 'function') recoveryCache.remove(recoveryKey);
+      if (rolledBack && typeof CONF.deleteProperty === 'function') CONF.deleteProperty(recoveryKey);
       return json_({ ok: false, error: 'receipt_write_failed' });
     }
-    if (typeof recoveryCache.remove === 'function') recoveryCache.remove(recoveryKey);
+    if (typeof CONF.deleteProperty === 'function') CONF.deleteProperty(recoveryKey);
   } finally {
     lock.releaseLock();
   }

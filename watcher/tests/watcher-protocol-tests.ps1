@@ -561,6 +561,7 @@ TB 'APP-AC-239 checkpoint: partial processing은 terminal commit 없이 다음 s
         branchCount = 1; sourceCount = 2; elapsedMinutes = 8
     }) -Force
     ($m | ConvertTo-Json -Depth 8) | Out-File -Encoding utf8 $p
+    if (-not (Save-ResearchBudgetCharge 'A9001' $null 8)) { return $false }
     $v = Test-CaptureCommitted 'A9001' 8
     if ($v.ok) { $null = Save-ResearchBudgetSnapshot 'A9001' $m.researchProgress $v.watcherElapsedMinutes }
     return ($v.ok -and $v.partial -and $v.reason -eq 'research_checkpoint' -and $v.watcherElapsedMinutes -eq 8)
@@ -632,6 +633,8 @@ TB 'APP-AC-239 final: 선행 synthesizing checkpoint 없는 final은 fail-closed
 }
 
 TB 'APP-AC-239 final: 근거가 있는 evidence graph만 terminal commit이다' {
+    $prior = Get-ResearchBudgetSnapshot 'D9001'
+    if (-not (Save-ResearchBudgetCharge 'D9001' $prior 24)) { return $false }
     $v = Test-CaptureCommitted 'D9001' 6
     return ($v.ok -and -not $v.partial -and $v.reason -eq 'ok')
 }
@@ -659,6 +662,7 @@ TB 'APP-AC-239 final: dangling relationship edge는 fail-closed다' {
 TB 'APP-AC-239 final: 누적 90분이면 time_cap stop reason이 필수다' {
     $nearCap = [PSCustomObject]@{ phase = 'synthesizing'; branchCount = 3; sourceCount = 4; elapsedMinutes = 84; updatedAt = '2026-07-25T09:18:00Z' }
     $null = Save-ResearchBudgetSnapshot 'D9001' $nearCap 84
+    $null = Save-ResearchBudgetCharge 'D9001' (Get-ResearchBudgetSnapshot 'D9001') 90
     $bad = $validGraph | ConvertTo-Json -Depth 10 | ConvertFrom-Json
     $bad.metrics.elapsedMinutes = 90
     ($bad | ConvertTo-Json -Depth 10) | Out-File -Encoding utf8 (Join-Path $finalDir 'research-result.json')
@@ -668,6 +672,7 @@ TB 'APP-AC-239 final: 누적 90분이면 time_cap stop reason이 필수다' {
 TB 'APP-AC-239 final: time_cap은 실제 누적 상한과 함께면 통과한다' {
     $nearCap = [PSCustomObject]@{ phase = 'synthesizing'; branchCount = 3; sourceCount = 4; elapsedMinutes = 84; updatedAt = '2026-07-25T09:18:00Z' }
     $null = Save-ResearchBudgetSnapshot 'D9001' $nearCap 84
+    $null = Save-ResearchBudgetCharge 'D9001' (Get-ResearchBudgetSnapshot 'D9001') 90
     $capped = $validGraph | ConvertTo-Json -Depth 10 | ConvertFrom-Json
     $capped.metrics.elapsedMinutes = 90
     $capped.stop.reason = 'time_cap'
@@ -679,6 +684,7 @@ TB 'APP-AC-239 final: time_cap은 실제 누적 상한과 함께면 통과한다
 TB 'APP-AC-239 final: 시간·분기 상한이 동시에 닿아도 정직한 cap 사유 하나로 종료한다' {
     $nearCap = [PSCustomObject]@{ phase = 'synthesizing'; branchCount = 23; sourceCount = 4; elapsedMinutes = 84; updatedAt = '2026-07-25T09:18:00Z' }
     $null = Save-ResearchBudgetSnapshot 'D9001' $nearCap 84
+    $null = Save-ResearchBudgetCharge 'D9001' (Get-ResearchBudgetSnapshot 'D9001') 90
     $capped = $validGraph | ConvertTo-Json -Depth 10 | ConvertFrom-Json
     $capped.metrics.elapsedMinutes = 90
     $capped.metrics.branchCount = 24
@@ -688,23 +694,48 @@ TB 'APP-AC-239 final: 시간·분기 상한이 동시에 닿아도 정직한 cap
     $v = Test-CaptureCommitted 'D9001' 6
     return ($v.ok -and $v.reason -eq 'ok')
 }
-TB 'APP-AC-239 rollback: 거절된 terminal 출력은 pre-run truth로 정확히 복구된다' {
-    $snapshot = Get-DeepOutputSnapshot $finalDir $true
+TB 'APP-AC-239 budget: 실패·timeout 시간도 누적되고 90분이면 다음 spawn 예산이 0이다' {
+    $budgetId = 'E9001'
+    $progress = [PSCustomObject]@{ phase = 'synthesizing'; branchCount = 3; sourceCount = 4; elapsedMinutes = 84; updatedAt = '2026-07-25T09:18:00Z' }
+    if (-not (Save-ResearchBudgetSnapshot $budgetId $progress 84)) { return $false }
+    $prior = Get-ResearchBudgetSnapshot $budgetId
+    if (-not (Save-ResearchBudgetCharge $budgetId $prior 90)) { return $false }
+    $after = Get-ResearchBudgetSnapshot $budgetId
+    return ([double]$after.watcherElapsedMinutes -eq 90 -and (Get-ResearchRemainingSeconds $budgetId) -eq 0)
+}
+TB 'APP-AC-239 budget: 첫 launch failure도 checkpoint 없는 durable 시간으로 남는다' {
+    $budgetId = 'F9001'
+    if (-not (Save-ResearchBudgetCharge $budgetId $null 1.5)) { return $false }
+    $after = Get-ResearchBudgetSnapshot $budgetId
+    return ($after.hasCheckpoint -eq $false -and [double]$after.watcherElapsedMinutes -eq 1.5 -and
+            (Get-ResearchRemainingSeconds $budgetId) -eq (($DeepTotalTimeCapMinutes - 1.5) * 60))
+}
+TB 'APP-AC-239 rollback: 이미지·correction·unexpected 파일까지 pre-run truth로 정확히 복구된다' {
+    [System.IO.File]::WriteAllBytes((Join-Path $finalDir 'front.jpg'), [byte[]](1,2,3,4))
+    '{"correction":"keep"}' | Out-File -Encoding utf8 (Join-Path $finalDir 'correction.json')
+    $snapshot = Get-DeepWorkspaceSnapshot $finalDir
     if (-not (Save-DeepRollbackBackup 'D9001' $snapshot)) { return $false }
     '{"status":"processed","person":"POISON"}' | Out-File -Encoding utf8 $finalMetaPath
     'poison brief' | Out-File -Encoding utf8 (Join-Path $finalDir 'brief.md')
     '{"version":"poison"}' | Out-File -Encoding utf8 (Join-Path $finalDir 'research-result.json')
+    [System.IO.File]::WriteAllBytes((Join-Path $finalDir 'front.jpg'), [byte[]](9,9,9))
+    Remove-Item (Join-Path $finalDir 'correction.json') -Force
+    'unexpected' | Out-File -Encoding utf8 (Join-Path $finalDir 'junk.md')
+    if (Test-DeepWorkspaceMutationAllowed $finalDir $snapshot) { return $false }
     if (-not (Restore-DeepRollbackBackup 'D9001' $finalDir)) { return $false }
-    $after = Get-DeepOutputSnapshot $finalDir $true
+    $after = Get-DeepWorkspaceSnapshot $finalDir
     if (@($after).Count -ne @($snapshot).Count) { return $false }
     $expected = @{}
-    foreach ($entry in @($snapshot)) { $expected[$entry.name] = [Convert]::ToBase64String([byte[]]$entry.bytes) }
-    foreach ($entry in @($after)) {
-        if ($expected[$entry.name] -ne [Convert]::ToBase64String([byte[]]$entry.bytes)) { return $false }
+    foreach ($entry in @($snapshot)) {
+        $expected[$entry.name] = if ($entry.kind -eq 'file') { [Convert]::ToBase64String([byte[]]$entry.bytes) } else { 'directory' }
     }
-    return $true
+    foreach ($entry in @($after)) {
+        $actual = if ($entry.kind -eq 'file') { [Convert]::ToBase64String([byte[]]$entry.bytes) } else { 'directory' }
+        if ($expected[$entry.name] -ne $actual) { return $false }
+    }
+    return (-not (Test-Path (Join-Path $finalDir 'junk.md')))
 }
-TB 'APP-AC-239 runtime: Deep slice 자식 프로세스를 wall-clock 상한에서 실제 종료한다' {
+TB 'APP-AC-239 runtime: Deep slice process tree와 stream drain을 wall-clock 상한에서 실제 종료한다' {
     $oldMode = $CardCaptureWatcherTestMode
     $oldCodex = $Codex
     $oldTimeout = $DeepSliceTimeoutSeconds
@@ -713,7 +744,7 @@ TB 'APP-AC-239 runtime: Deep slice 자식 프로세스를 wall-clock 상한에�
     try {
         $CardCaptureWatcherTestMode = $false
         $Codex = 'powershell.exe'
-        $BoundedProcessorTestArguments = '-NoProfile -Command "Start-Sleep -Seconds 8"'
+        $BoundedProcessorTestArguments = '-NoProfile -Command "$child=Start-Process powershell.exe -ArgumentList ''-NoProfile'',''-Command'',''Start-Sleep -Seconds 8'' -PassThru -WindowStyle Hidden; Start-Sleep -Seconds 8"'
         $DeepSliceTimeoutSeconds = 1
         $Vault = $sandbox
         $timer = [System.Diagnostics.Stopwatch]::StartNew()

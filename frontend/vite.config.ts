@@ -4,7 +4,7 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join, relative, sep } from 'node:path';
+import { extname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 function readPublicRuntimeApi(): string {
@@ -31,9 +31,11 @@ function readPublicRuntimeApi(): string {
  */
 function sourceBuildId(defaultApi: string): string {
   const frontendDir = fileURLToPath(new URL('.', import.meta.url));
+  const ignoredSourceMetadata = new Set(['desktop.ini', 'Thumbs.db', '.DS_Store']);
   const files: string[] = [];
   const collect = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (ignoredSourceMetadata.has(entry.name)) continue;
       const full = join(dir, entry.name);
       if (entry.isDirectory()) collect(full);
       else files.push(full);
@@ -53,7 +55,12 @@ function sourceBuildId(defaultApi: string): string {
   for (const { rel, full } of keyed) {
     hash.update(rel);
     hash.update('\0');
-    hash.update(readFileSync(full, 'utf8').replace(/\r\n/g, '\n'));
+    // Decode only text. Decoding WOFF2 as UTF-8 makes the hash depend on the
+    // Node major's replacement-character behavior for malformed byte runs.
+    const bytes = readFileSync(full);
+    hash.update(extname(full).toLowerCase() === '.woff2'
+      ? bytes
+      : bytes.toString('utf8').replace(/\r\n?/g, '\n'));
     hash.update('\0');
   }
   // 공개 runtime config에서 주입되는 pinned endpoint도 번들 내용의 일부다.

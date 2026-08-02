@@ -12,7 +12,7 @@
 - 자동 갱신·마지막 확인·오프라인·오류 상태가 계속 보이며, 캡처와 진행 화면에서 직접 `새로고침`할 수 있습니다. 서버가 증명하지 않은 퍼센트, 단계, 남은 시간은 더 이상 만들지 않습니다.
 - AI 조사 추천은 자유 입력을 덮어쓰지 않는 8개 독립 선택 항목과 전체 선택의 none/partial/all 상태를 제공합니다.
 - `Deep Research`는 회의 준비·실행 역량·권한/관심·평판/리스크 중 명시한 목적만 조사합니다. 사실·충돌·미확인·가설, 찬반 근거, 대안 설명, 타임라인, 남은 질문을 source·claim·person·org·project·event node와 검증된 relation으로 분리하고 한 phase씩 재개합니다. 일반 캡처와 표준 조사가 항상 먼저 처리됩니다.
-- 앱이 닫히거나 Android가 화면을 다시 만든 뒤에도 같은 Person 조사 요청은 같은 request ID로 재시도해 중복 작업을 막습니다. Deep watcher는 각 slice의 실제 시간을 직접 재고, 12분 slice·90분 누적 상한과 단계 순서를 강제하며 실패·중단 때 capture·brief·result를 이전 상태로 복구합니다.
+- 앱이 닫히거나 Android가 화면을 다시 만든 뒤에도 같은 Person 조사 요청은 같은 request ID로 재시도해 중복 작업을 막습니다. 서버는 생성 도중 중단된 request ID의 복구 권한도 durable하게 보존합니다. Deep watcher는 성공·실패와 무관하게 각 slice의 실제 시간을 누적하고, 12분 slice·90분 상한과 단계 순서를 강제합니다. timeout에는 처리기와 자식 프로세스를 함께 종료하며, 실패·중단 때 이미지·정정·임의 파일을 포함한 capture 폴더 전체를 이전 상태로 복구합니다.
 - `docs/legacy.html`과 관련 복구 링크·캐시를 제거하고 공개 GAS endpoint의 단일 원본을 `config/public-runtime.json`으로 옮겼습니다.
 - 닫힌 앱 알림은 Web Push 전송자와 VAPID 자격 증명이 배포되기 전에는 사용할 수 있다고 표시하지 않습니다. 앱 안 진행 상태가 현재의 authoritative 기준입니다.
 

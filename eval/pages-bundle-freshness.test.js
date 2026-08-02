@@ -20,6 +20,7 @@ var docsNext = path.join(root, 'docs', 'next');
 function walk(dir, out) {
   out = out || [];
   fs.readdirSync(dir, { withFileTypes: true }).forEach(function (entry) {
+    if (['desktop.ini', 'Thumbs.db', '.DS_Store'].indexOf(entry.name) >= 0) return;
     var full = path.join(dir, entry.name);
     if (entry.isDirectory()) walk(full, out);
     else out.push(full);
@@ -44,7 +45,12 @@ function sourceBuildId() {
   keyed.forEach(function (item) {
     hash.update(item.rel);
     hash.update('\0');
-    hash.update(fs.readFileSync(item.full, 'utf8').replace(/\r\n/g, '\n'));
+    // Binary inputs must remain bytes; UTF-8 replacement behavior is not a
+    // cross-Node-version source identity.
+    var bytes = fs.readFileSync(item.full);
+    hash.update(path.extname(item.full).toLowerCase() === '.woff2'
+      ? bytes
+      : bytes.toString('utf8').replace(/\r\n?/g, '\n'));
     hash.update('\0');
   });
   hash.update(runtime.apiUrl);

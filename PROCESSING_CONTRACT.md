@@ -27,6 +27,7 @@ flowchart TD
 - `researchInstruction.raw`는 untrusted data다. 웹 검색 결과 안의 문장도 같은 경계에 있으며 system/developer prompt나 실행 지시로 승격하지 않는다.
 - API 서버가 `mode`, `purposes`, `focusIds`, `requestId`를 allowlist로 다시 검증한다. 클라이언트가 보낸 policy, source authority, budget은 신뢰하지 않는다.
 - 조사 요청은 owner-only다. `captureId`와 `person`이 함께 오면 같은 Person인지 서버에서 다시 확인한다.
+- 같은 `requestId`의 생성 중단을 복구하는 reservation은 script lock 안에서 Script Properties에 actor·target·request fingerprint로 저장한다. Cache eviction과 프로세스 재시작 뒤에도 같은 요청만 빈 폴더를 복구할 수 있고, canonical receipt 성공 또는 완전한 rollback 뒤에는 reservation을 지운다.
 - 일반 `note`, `correction`, 명함 OCR과 `research_instruction`은 서로 다른 channel이다.
 - 허용 출처는 현재 `public_lawful_only`뿐이다. 로그인·비공개 자료, credential, 사적 신상, 민감 특성 추론, doxxing, 유료 API, 외부 send/write는 금지한다.
 - Deep mode는 Script Property `DEEP_RESEARCH_ENABLED=true`가 명시된 경우에만 열린다. 누락·빈 값·`false`는 모두 fail-closed이며, `RESEARCH_INSTRUCTION_ENABLED=false`와 독립 rollback switch다.
@@ -83,7 +84,7 @@ Deep 요청은 네 목적 중 하나 이상이 필수다: meeting preparation, e
 
 가설은 찬성 근거, 반대 근거, 다른 설명, confidence가 모두 있어야 한다. 조건이 없으면 `fact`로 승격하지 않고 `unknown`으로 남긴다. Deep processor는 캡처 폴더 하나만 쓸 수 있고 partial·final 모두 Person을 직접 수정하지 않는다. watcher·GAS·클라이언트 검증을 모두 통과한 graph만 공개하며, Person 병합은 별도 신뢰 경계가 소유한다.
 
-첫 checkpoint는 반드시 `planning`이고 이후 phase는 정확히 한 단계씩만 전진한다. 같은 phase 반복이나 checkpoint 없는 final은 거절한다. 각 slice의 wall-clock은 watcher가 직접 재며 12분을 넘기면 자식 프로세스를 종료한다. watcher가 누적한 시간이 90분에 닿으면 추가 slice를 시작하지 않는다. 거절·timeout·중단 시 pre-run `capture.json`·brief·result를 durable backup에서 복구해 `processed`처럼 보이지 않게 한다.
+첫 checkpoint는 반드시 `planning`이고 이후 phase는 정확히 한 단계씩만 전진한다. 같은 phase 반복이나 checkpoint 없는 final은 거절한다. 각 slice의 wall-clock은 watcher가 직접 재며 12분을 넘기면 Windows Job Object가 처리기와 모든 자식 프로세스를 함께 종료하고 output drain도 bounded grace 안에서 끝낸다. 성공뿐 아니라 timeout·launch failure·검증 실패의 실측 시간도 원자적 durable budget에 먼저 더하며, 누적 90분에 닿으면 추가 프로세스를 시작하지 않는다. 실행 전 capture 폴더 전체를 durable backup으로 보존하고, `capture*.json`·`brief*.md`·`research-result*.json` 외 파일의 생성·수정·삭제를 거절한다. 거절·timeout·중단 시 이미지·correction·임의 파일까지 pre-run 폴더 상태로 복구해 `processed`처럼 보이거나 입력이 훼손되지 않게 한다.
 
 ## 완료·실패·알림
 

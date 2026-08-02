@@ -78,7 +78,11 @@ var sandbox = {
   JSON: JSON,
   Math: Math,
   isFinite: isFinite,
-  PropertiesService: { getScriptProperties: function () { return { getProperty: function (key) { return props[key] || null; } }; } },
+  PropertiesService: { getScriptProperties: function () { return {
+    getProperty: function (key) { return props[key] || null; },
+    setProperty: function (key, value) { props[key] = String(value); return this; },
+    deleteProperty: function (key) { delete props[key]; return this; }
+  }; } },
   ContentService: {
     MimeType: { JSON: 'application/json' },
     createTextOutput: function (text) { return { text: text, setMimeType: function () { return this; } }; }
@@ -273,6 +277,9 @@ assert.deepStrictEqual(body(sandbox.researchInstruction_(recoveryRequest)), { ok
 assert.strictEqual(folders['research-request-empty-recovery'].trashed, false);
 assert.strictEqual(folders['research-request-empty-recovery'].files.length, 0);
 assert.strictEqual(cache[faultQuotaKey], '0');
+var durableRecoveryKey = 'RESEARCH_RECEIPT_RESERVATION_research-request-empty-recovery';
+assert.ok(props[durableRecoveryKey], 'empty-folder recovery reservation must be durable');
+Object.keys(cache).forEach(function (key) { if (key.indexOf('research_receipt_') === 0) delete cache[key]; });
 assert.deepStrictEqual(body(sandbox.researchInstruction_({
   k: 'fault-owner-token', person: 'PER-999908', instruction: {
     raw: 'empty folder를 가로채는 다른 요청', mode: 'standard', requestId: 'request-empty-recovery'
@@ -282,6 +289,7 @@ var recoveredReceipt = body(sandbox.researchInstruction_(recoveryRequest));
 assert.strictEqual(recoveredReceipt.ok, true);
 assert.strictEqual(folders['research-request-empty-recovery'].files.length, 1);
 assert.strictEqual(cache[faultQuotaKey], '0', 'empty-folder recovery consumed quota twice');
+assert.strictEqual(props[durableRecoveryKey], undefined, 'canonical receipt must clear durable reservation');
 props.DAILY_LIMIT = '100';
 
 function validGraph() {
@@ -460,4 +468,4 @@ assert.deepStrictEqual(byId['research-result-not-final'].researchProgress, {
   branchCount: 1, sourceCount: 4, elapsedMinutes: 9
 });
 
-console.log('PASS GAS research policy: fail-closed flag/idempotency recovery, status-bound progress, canonical relationship graph publication');
+console.log('PASS GAS research policy: fail-closed flag/durable idempotency recovery, status-bound progress, canonical relationship graph publication');

@@ -534,8 +534,8 @@ function Get-CaptureCommitMarker($captureId) {
 }
 
 # Deep processor는 capture 폴더만 쓸 수 있게 별도 sandbox root에서 실행한다. 그래도
-# 비정상 종료나 계약 실패가 canonical status/brief/result를 남기지 못하도록 해당 세 파일군을
-# 메모리에 스냅샷하고 watcher가 판정 실패 시 정확히 되돌린다.
+# 그 폴더의 원본 이미지·correction까지 쓸 수 있으므로 watcher가 전체 폴더를 snapshot하고,
+# 허용된 canonical output 외 변경은 거절하며 실패 시 폴더를 정확히 되돌린다.
 function Get-DeepOutputSnapshot($dir, $includeCapture = $true) {
     $patterns = @('brief*.md', 'research-result*.json')
     if ($includeCapture) { $patterns += 'capture*.json' }
@@ -578,14 +578,94 @@ function Test-DeepAuxOutputsUnchanged($dir, $snapshot) {
     return $true
 }
 
+function Get-DeepWorkspaceSnapshot($dir) {
+    $root = [System.IO.Path]::GetFullPath([string]$dir).TrimEnd('\', '/')
+    $entries = New-Object System.Collections.ArrayList
+    foreach ($entry in (Get-ChildItem -LiteralPath $root -Force -Recurse -ErrorAction Stop)) {
+        if (($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw ('deep workspace reparse point is not allowed: ' + $entry.FullName)
+        }
+        $relative = $entry.FullName.Substring($root.Length).TrimStart('\', '/').Replace('\', '/')
+        if ($entry.PSIsContainer) {
+            [void]$entries.Add([PSCustomObject]@{ kind = 'directory'; name = $relative; bytes = $null })
+        } else {
+            [void]$entries.Add([PSCustomObject]@{ kind = 'file'; name = $relative; bytes = [System.IO.File]::ReadAllBytes($entry.FullName) })
+        }
+    }
+    return ,$entries.ToArray()
+}
+
+function Test-SafeDeepWorkspaceRelativePath($value) {
+    $name = [string]$value
+    if (-not $name -or [System.IO.Path]::IsPathRooted($name) -or $name.Contains(':')) { return $false }
+    $parts = @($name.Replace('\', '/').Split('/') | Where-Object { $_ -ne '' })
+    return ($parts.Count -gt 0 -and @($parts | Where-Object { $_ -eq '.' -or $_ -eq '..' }).Count -eq 0)
+}
+
+function Restore-DeepWorkspaceSnapshot($dir, $snapshot) {
+    $root = [System.IO.Path]::GetFullPath([string]$dir).TrimEnd('\', '/')
+    $expected = @{}
+    try {
+        foreach ($entry in @($snapshot)) {
+            if (-not (Test-SafeDeepWorkspaceRelativePath $entry.name) -or @('file','directory') -notcontains [string]$entry.kind) { return $false }
+            $relative = ([string]$entry.name).Replace('\', '/')
+            if ($expected.ContainsKey($relative)) { return $false }
+            $expected[$relative] = $entry
+        }
+        foreach ($current in @(Get-ChildItem -LiteralPath $root -Force -Recurse -ErrorAction Stop | Sort-Object { $_.FullName.Length } -Descending)) {
+            $relative = $current.FullName.Substring($root.Length).TrimStart('\', '/').Replace('\', '/')
+            $kind = if ($current.PSIsContainer) { 'directory' } else { 'file' }
+            if (-not $expected.ContainsKey($relative) -or [string]$expected[$relative].kind -ne $kind) {
+                Remove-Item -LiteralPath $current.FullName -Force -Recurse -ErrorAction Stop
+            }
+        }
+        foreach ($entry in @($snapshot | Where-Object { $_.kind -eq 'directory' } | Sort-Object { ([string]$_.name).Length })) {
+            [void](New-Item -ItemType Directory -Force -Path (Join-Path $root ([string]$entry.name)))
+        }
+        foreach ($entry in @($snapshot | Where-Object { $_.kind -eq 'file' })) {
+            $target = Join-Path $root ([string]$entry.name)
+            [void](New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target))
+            [System.IO.File]::WriteAllBytes($target, [byte[]]$entry.bytes)
+        }
+        return $true
+    } catch {
+        Write-Log ('deep workspace rollback failed — operator recovery required')
+        return $false
+    }
+}
+
+function Test-DeepWorkspaceMutationAllowed($dir, $snapshot) {
+    try { $current = Get-DeepWorkspaceSnapshot $dir } catch { return $false }
+    $before = @{}; $after = @{}
+    foreach ($entry in @($snapshot)) { $before[([string]$entry.name).Replace('\', '/')] = $entry }
+    foreach ($entry in @($current)) { $after[([string]$entry.name).Replace('\', '/')] = $entry }
+    $names = @($before.Keys + $after.Keys | Sort-Object -Unique)
+    foreach ($name in $names) {
+        $old = if ($before.ContainsKey($name)) { $before[$name] } else { $null }
+        $new = if ($after.ContainsKey($name)) { $after[$name] } else { $null }
+        $same = ($old -and $new -and [string]$old.kind -eq [string]$new.kind)
+        if ($same -and [string]$old.kind -eq 'file') {
+            $same = ([Convert]::ToBase64String([byte[]]$old.bytes) -eq [Convert]::ToBase64String([byte[]]$new.bytes))
+        }
+        if ($same) { continue }
+        # Canonical Deep output은 capture 폴더 root의 이 세 파일군뿐이다.
+        if ($name.Contains('/') -or $name -notmatch '\A(?:capture[^/]*\.json|brief[^/]*\.md|research-result[^/]*\.json)\z') { return $false }
+    }
+    return $true
+}
+
 function Save-DeepRollbackBackup($captureId, $snapshot) {
     $staging = Resolve-CaptureStaging $captureId
     if (-not $staging) { return $false }
     $rows = @($snapshot | ForEach-Object {
-        [PSCustomObject]@{ name = [string]$_.name; data = [Convert]::ToBase64String([byte[]]$_.bytes) }
+        [PSCustomObject]@{
+            kind = [string]$_.kind
+            name = [string]$_.name
+            data = if ([string]$_.kind -eq 'file') { [Convert]::ToBase64String([byte[]]$_.bytes) } else { '' }
+        }
     })
     try {
-        ([PSCustomObject]@{ version = 1; files = $rows } | ConvertTo-Json -Depth 5) |
+        ([PSCustomObject]@{ version = 2; entries = $rows } | ConvertTo-Json -Depth 5) |
             Out-File -Encoding utf8 (Join-Path $staging 'deep-output-backup.json')
         return $true
     } catch { return $false }
@@ -597,10 +677,22 @@ function Restore-DeepRollbackBackup($captureId, $dir) {
     if (-not $path -or -not (Test-Path $path)) { return $false }
     try {
         $backup = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
-        $snapshot = @($backup.files | ForEach-Object {
-            [PSCustomObject]@{ name = [string]$_.name; bytes = [Convert]::FromBase64String([string]$_.data) }
-        })
-        if (-not (Restore-DeepOutputSnapshot $dir $snapshot $true)) { return $false }
+        if ([int]$backup.version -eq 2) {
+            $snapshot = @($backup.entries | ForEach-Object {
+                [PSCustomObject]@{
+                    kind = [string]$_.kind
+                    name = [string]$_.name
+                    bytes = if ([string]$_.kind -eq 'file') { [Convert]::FromBase64String([string]$_.data) } else { $null }
+                }
+            })
+            if (-not (Restore-DeepWorkspaceSnapshot $dir $snapshot)) { return $false }
+        } else {
+            # v2.20 배포 직전 생긴 legacy backup도 잃지 않고 복구한다.
+            $snapshot = @($backup.files | ForEach-Object {
+                [PSCustomObject]@{ name = [string]$_.name; bytes = [Convert]::FromBase64String([string]$_.data) }
+            })
+            if (-not (Restore-DeepOutputSnapshot $dir $snapshot $true)) { return $false }
+        }
         Remove-Item $path -Force -ErrorAction SilentlyContinue
         return $true
     } catch { return $false }
@@ -623,10 +715,29 @@ function Get-ResearchBudgetSnapshot($captureId) {
     try { return (Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { return $null }
 }
 
-function Save-ResearchBudgetSnapshot($captureId, $progress, $watcherElapsedMinutes) {
+function Write-ResearchBudgetSnapshot($captureId, $snapshot) {
     $p = Resolve-ResearchBudgetPath $captureId
     if (-not $p) { return $false }
+    $tmp = $p + '.tmp-' + [guid]::NewGuid().ToString('N')
+    $backup = $p + '.bak-' + [guid]::NewGuid().ToString('N')
+    try {
+        ($snapshot | ConvertTo-Json) | Out-File -Encoding utf8 $tmp
+        if (Test-Path $p) {
+            [System.IO.File]::Replace($tmp, $p, $backup)
+            Remove-Item $backup -Force -ErrorAction SilentlyContinue
+        }
+        else { [System.IO.File]::Move($tmp, $p) }
+        return $true
+    } catch {
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+        Remove-Item $backup -Force -ErrorAction SilentlyContinue
+        return $false
+    }
+}
+
+function Save-ResearchBudgetSnapshot($captureId, $progress, $watcherElapsedMinutes) {
     $snapshot = [PSCustomObject]@{
+        hasCheckpoint = $true
         phase = [string]$progress.phase
         branchCount = [int]$progress.branchCount
         sourceCount = [int]$progress.sourceCount
@@ -634,7 +745,31 @@ function Save-ResearchBudgetSnapshot($captureId, $progress, $watcherElapsedMinut
         watcherElapsedMinutes = [double]$watcherElapsedMinutes
         updatedAt = [string]$progress.updatedAt
     }
-    try { ($snapshot | ConvertTo-Json) | Out-File -Encoding utf8 $p; return $true } catch { return $false }
+    return (Write-ResearchBudgetSnapshot $captureId $snapshot)
+}
+
+function Save-ResearchBudgetCharge($captureId, $previous, $watcherElapsedMinutes) {
+    $elapsed = 0.0
+    if (-not [double]::TryParse([string]$watcherElapsedMinutes, [ref]$elapsed) -or $elapsed -lt 0) { return $false }
+    $hasCheckpoint = ($previous -and [string]$previous.phase)
+    $snapshot = [PSCustomObject]@{
+        hasCheckpoint = [bool]$hasCheckpoint
+        phase = if ($hasCheckpoint) { [string]$previous.phase } else { '' }
+        branchCount = if ($hasCheckpoint) { [int]$previous.branchCount } else { 0 }
+        sourceCount = if ($hasCheckpoint) { [int]$previous.sourceCount } else { 0 }
+        elapsedMinutes = if ($hasCheckpoint) { [double]$previous.elapsedMinutes } else { 0.0 }
+        watcherElapsedMinutes = $elapsed
+        updatedAt = if ($hasCheckpoint) { [string]$previous.updatedAt } else { '' }
+    }
+    return (Write-ResearchBudgetSnapshot $captureId $snapshot)
+}
+
+function Get-ResearchRemainingSeconds($captureId) {
+    $snapshot = Get-ResearchBudgetSnapshot $captureId
+    if (-not $snapshot) { return [double]($DeepTotalTimeCapMinutes * 60) }
+    $elapsed = 0.0
+    if (-not [double]::TryParse([string]$snapshot.watcherElapsedMinutes, [ref]$elapsed) -or $elapsed -lt 0) { return 0.0 }
+    return [math]::Max(0, (($DeepTotalTimeCapMinutes - $elapsed) * 60))
 }
 
 function Test-NonNegativeInteger($value) {
@@ -689,8 +824,9 @@ function Test-ResearchProgress($captureId, $progress, $observedSliceMinutes, $re
     if ($elapsed -ge $DeepTotalTimeCapMinutes) { $res.reason = 'research_time_cap_requires_final'; return $res }
     if ([int]$progress.sourceCount -gt ($DeepBranchCap * $DeepSliceSourceCap)) { $res.reason = 'research_source_cap_exceeded'; return $res }
     $previous = Get-ResearchBudgetSnapshot $captureId
+    $previousHasCheckpoint = ($previous -and [string]$previous.phase -and $previous.hasCheckpoint -ne $false)
     if ($resumeOnly) {
-        if (-not $previous) { $res.reason = 'research_budget_snapshot_missing'; return $res }
+        if (-not $previousHasCheckpoint) { $res.reason = 'research_budget_snapshot_missing'; return $res }
         $sameElapsed = [math]::Abs($elapsed - [double]$previous.elapsedMinutes) -le 0.001
         if ($phase -ne [string]$previous.phase -or [int]$progress.branchCount -ne [int]$previous.branchCount -or
             [int]$progress.sourceCount -ne [int]$previous.sourceCount -or -not $sameElapsed) {
@@ -712,13 +848,15 @@ function Test-ResearchProgress($captureId, $progress, $observedSliceMinutes, $re
         $observed -gt ($DeepSliceTimeCapMinutes + 0.25)) { $res.reason = 'research_observed_slice_invalid'; return $res }
     $watcherElapsed = $observed
     if ($previous) {
+        if (-not [double]::TryParse([string]$previous.watcherElapsedMinutes, [ref]$watcherElapsed) -or $watcherElapsed -lt 0) {
+            $res.reason = 'research_watcher_budget_invalid'; return $res
+        }
+    }
+    if ($previousHasCheckpoint) {
         if ($phases.IndexOf($phase) -ne ($phases.IndexOf([string]$previous.phase) + 1)) { $res.reason = 'research_phase_not_next'; return $res }
         if ([int]$progress.branchCount -lt [int]$previous.branchCount -or [int]$progress.sourceCount -lt [int]$previous.sourceCount -or $elapsed -lt [double]$previous.elapsedMinutes) { $res.reason = 'research_budget_regressed'; return $res }
         if (([int]$progress.sourceCount - [int]$previous.sourceCount) -gt $DeepSliceSourceCap) { $res.reason = 'research_slice_source_cap_exceeded'; return $res }
         if (($elapsed - [double]$previous.elapsedMinutes) -gt $DeepSliceTimeCapMinutes) { $res.reason = 'research_slice_time_cap_exceeded'; return $res }
-        $priorWatcherElapsed = 0.0
-        if (-not [double]::TryParse([string]$previous.watcherElapsedMinutes, [ref]$priorWatcherElapsed) -or $priorWatcherElapsed -lt 0) { $res.reason = 'research_watcher_budget_invalid'; return $res }
-        $watcherElapsed = $priorWatcherElapsed + $observed
         if ([math]::Abs(($elapsed - [double]$previous.elapsedMinutes) - $observed) -gt 1.0) { $res.reason = 'research_elapsed_not_observed'; return $res }
     } else {
         if ($phase -ne 'planning') { $res.reason = 'research_first_phase_not_planning'; return $res }
@@ -819,13 +957,12 @@ function Test-ResearchEvidenceResult($captureId, $dir, $observedSliceMinutes) {
     if ([int]$graph.metrics.branchCount -gt $DeepBranchCap -or [int]$graph.metrics.sourceCount -gt ($DeepBranchCap * $DeepSliceSourceCap)) { $res.reason = 'research_budget_exceeded'; return $res }
     if ([int]$graph.metrics.sourceCount -lt $sourceNodeCount) { $res.reason = 'research_source_metric_underflow'; return $res }
     $previous = Get-ResearchBudgetSnapshot $captureId
-    if (-not $previous -or [string]$previous.phase -ne 'synthesizing') { $res.reason = 'research_final_without_synthesizing_checkpoint'; return $res }
+    if (-not $previous -or $previous.hasCheckpoint -eq $false -or [string]$previous.phase -ne 'synthesizing') { $res.reason = 'research_final_without_synthesizing_checkpoint'; return $res }
     $observed = 0.0
     if (-not [double]::TryParse([string]$observedSliceMinutes, [ref]$observed) -or $observed -lt 0 -or
         $observed -gt ($DeepSliceTimeCapMinutes + 0.25)) { $res.reason = 'research_observed_slice_invalid'; return $res }
-    $priorWatcherElapsed = 0.0
-    if (-not [double]::TryParse([string]$previous.watcherElapsedMinutes, [ref]$priorWatcherElapsed) -or $priorWatcherElapsed -lt 0) { $res.reason = 'research_watcher_budget_invalid'; return $res }
-    $watcherElapsed = $priorWatcherElapsed + $observed
+    $watcherElapsed = 0.0
+    if (-not [double]::TryParse([string]$previous.watcherElapsedMinutes, [ref]$watcherElapsed) -or $watcherElapsed -lt 0) { $res.reason = 'research_watcher_budget_invalid'; return $res }
     if ($watcherElapsed -gt ($DeepTotalTimeCapMinutes + 0.25)) { $res.reason = 'research_watcher_time_cap_exceeded'; return $res }
     if ([int]$graph.metrics.branchCount -lt [int]$previous.branchCount -or [int]$graph.metrics.sourceCount -lt [int]$previous.sourceCount -or $elapsed -lt [double]$previous.elapsedMinutes) { $res.reason = 'research_final_budget_regressed'; return $res }
     if (([int]$graph.metrics.sourceCount - [int]$previous.sourceCount) -gt $DeepSliceSourceCap -or ($elapsed - [double]$previous.elapsedMinutes) -gt $DeepSliceTimeCapMinutes) { $res.reason = 'research_final_slice_cap_exceeded'; return $res }
@@ -1087,6 +1224,70 @@ function Invoke-StandardProcessor($targeted, $procLog) {
     return $LASTEXITCODE
 }
 
+function New-DeepProcessTreeJob {
+    if (-not ('KairenProcessTreeJob' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+
+public sealed class KairenProcessTreeJob : IDisposable {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BasicLimitInformation {
+        public long PerProcessUserTimeLimit, PerJobUserTimeLimit;
+        public uint LimitFlags;
+        public UIntPtr MinimumWorkingSetSize, MaximumWorkingSetSize;
+        public uint ActiveProcessLimit;
+        public UIntPtr Affinity;
+        public uint PriorityClass, SchedulingClass;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IoCounters {
+        public ulong ReadOperationCount, WriteOperationCount, OtherOperationCount;
+        public ulong ReadTransferCount, WriteTransferCount, OtherTransferCount;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ExtendedLimitInformation {
+        public BasicLimitInformation BasicLimitInformation;
+        public IoCounters IoInfo;
+        public UIntPtr ProcessMemoryLimit, JobMemoryLimit, PeakProcessMemoryUsed, PeakJobMemoryUsed;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr CreateJobObject(IntPtr attributes, string name);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetInformationJobObject(IntPtr job, int infoClass, IntPtr info, uint length);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+    [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
+    private IntPtr handle;
+    public KairenProcessTreeJob() {
+        handle = CreateJobObject(IntPtr.Zero, null);
+        if (handle == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+        var info = new ExtendedLimitInformation();
+        info.BasicLimitInformation.LimitFlags = 0x00002000; // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        int size = Marshal.SizeOf(typeof(ExtendedLimitInformation));
+        IntPtr pointer = Marshal.AllocHGlobal(size);
+        try {
+            Marshal.StructureToPtr(info, pointer, false);
+            if (!SetInformationJobObject(handle, 9, pointer, (uint)size)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        } finally { Marshal.FreeHGlobal(pointer); }
+    }
+    public void Assign(Process process) {
+        if (!AssignProcessToJobObject(handle, process.Handle)) throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+    public void Terminate(uint exitCode) {
+        if (handle != IntPtr.Zero && !TerminateJobObject(handle, exitCode)) throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+    public void Dispose() {
+        if (handle != IntPtr.Zero) { CloseHandle(handle); handle = IntPtr.Zero; }
+        GC.SuppressFinalize(this);
+    }
+    ~KairenProcessTreeJob() { Dispose(); }
+}
+'@
+    }
+    return (New-Object KairenProcessTreeJob)
+}
+
 function Invoke-BoundedDeepProcessor($targeted, $procLog, $timeoutSeconds = $DeepSliceTimeoutSeconds, $processorWorkdir = $Vault) {
     # 테스트 stub은 마지막 argv에서 TARGET-CAPTURE-ID를 읽는다. 운영만 stdin UTF-8 파일과
     # 별도 프로세스를 사용해 wall-clock 12분을 실제로 강제한다.
@@ -1101,6 +1302,7 @@ function Invoke-BoundedDeepProcessor($targeted, $procLog, $timeoutSeconds = $Dee
     $processor = $null
     $stdoutTask = $null
     $stderrTask = $null
+    $processJob = $null
     $timer = [System.Diagnostics.Stopwatch]::StartNew()
     try {
         $quotedVault = '"' + ([string]$processorWorkdir).Replace('"', '\"') + '"'
@@ -1127,34 +1329,38 @@ function Invoke-BoundedDeepProcessor($targeted, $procLog, $timeoutSeconds = $Dee
         $processor = New-Object System.Diagnostics.Process
         $processor.StartInfo = $startInfo
         if (-not $processor.Start()) { throw 'processor did not start' }
+        # Assign before providing the prompt, so every subsequently spawned
+        # browser/helper child inherits the kill-on-close Job Object.
+        $processJob = New-DeepProcessTreeJob
+        $processJob.Assign($processor)
         $stdoutTask = $processor.StandardOutput.ReadToEndAsync()
         $stderrTask = $processor.StandardError.ReadToEndAsync()
         $processor.StandardInput.Write([string]$targeted)
         $processor.StandardInput.Close()
         if (-not $processor.WaitForExit([math]::Max(1, [int]($timeoutSeconds * 1000)))) {
             $timedOut = $true
-            # Prefer terminating the complete child tree. Some managed/sandboxed
-            # Windows sessions deny taskkill even for a child we own, so always
-            # retain Process.Kill as the hard parent-process fallback.
-            try { & taskkill.exe /PID $processor.Id /T /F 2>$null | Out-Null } catch {}
-            if (-not $processor.HasExited) {
-                try { $processor.Kill() } catch {}
-            }
-            try { $processor.WaitForExit() } catch {}
+            try { $processJob.Terminate(124) } catch { Write-Log ('process-tree terminate failed: ' + $_.Exception.Message) }
+            # Kill acknowledgement itself is bounded. Disposing the Job Object
+            # in finally is a second kill-on-close signal; neither path waits forever.
+            try { [void]$processor.WaitForExit(2000) } catch {}
             $exit = 124
         } else {
-            $processor.WaitForExit()
             $exit = $processor.ExitCode
         }
     } catch {
         Write-Log ('bounded processor launch error: ' + $_.Exception.Message)
     } finally {
+        if ($null -ne $processJob) {
+            try { $processJob.Dispose() } catch {}
+        }
         foreach ($outputTask in @($stdoutTask, $stderrTask)) {
             if ($null -eq $outputTask) { continue }
             try {
-                $outputTask.GetAwaiter().GetResult() -split "`r?`n" |
-                    Where-Object { $_ -ne '' } |
-                    Write-ProcessorOutput $procLog
+                if ($outputTask.Wait(2000)) {
+                    $outputTask.GetAwaiter().GetResult() -split "`r?`n" |
+                        Where-Object { $_ -ne '' } |
+                        Write-ProcessorOutput $procLog
+                } else { Write-Log 'processor output drain exceeded bounded grace period' }
             } catch {}
         }
         if ($null -ne $processor) { $processor.Dispose() }
@@ -1212,17 +1418,22 @@ function Invoke-Processing {
             $isDeep = ([int]$item.lane -eq 2)
             $deepOutputSnapshot = Get-DeepOutputSnapshot $item.dir $true
             $deepAuxSnapshot = @()
+            $deepWorkspaceSnapshot = @()
+            $deepWorkspaceSnapshotReady = $false
             $priorWatcherElapsed = 0.0
+            $priorBudget = $null
             $sliceTimeoutSeconds = $DeepSliceTimeoutSeconds
             $deepBackupReady = $true
             if ($isDeep) {
                 $deepAuxSnapshot = Get-DeepOutputSnapshot $item.dir $false
-                $deepBackupReady = Save-DeepRollbackBackup $itemId $deepOutputSnapshot
+                try { $deepWorkspaceSnapshot = Get-DeepWorkspaceSnapshot $item.dir; $deepWorkspaceSnapshotReady = $true }
+                catch { $deepBackupReady = $false; Write-Log ('deep workspace snapshot failed: ' + $_.Exception.Message) }
+                if ($deepBackupReady) { $deepBackupReady = Save-DeepRollbackBackup $itemId $deepWorkspaceSnapshot }
                 $priorBudget = Get-ResearchBudgetSnapshot $itemId
                 if ($priorBudget -and -not [double]::TryParse([string]$priorBudget.watcherElapsedMinutes, [ref]$priorWatcherElapsed)) {
                     $priorWatcherElapsed = $DeepTotalTimeCapMinutes
                 }
-                $remainingSeconds = [math]::Max(0, (($DeepTotalTimeCapMinutes - $priorWatcherElapsed) * 60))
+                $remainingSeconds = Get-ResearchRemainingSeconds $itemId
                 $sliceTimeoutSeconds = [math]::Min($DeepSliceTimeoutSeconds, $remainingSeconds)
             }
             $phaseLabel = if ($isDeep) { 'deep' } else { 'standard' }
@@ -1238,11 +1449,13 @@ function Invoke-Processing {
             Write-Log ('processor start ' + $itemId + ' attempt=' + $claim.attempt + ' phase=' + $phaseLabel + ' log=' + $procName)
             $exit = -1
             $processorResult = $null
+            $deepAttemptTimer = $null
             try {
                 # 테스트는 argv stub, 운영은 별도 프로세스의 UTF-8 stdin으로 prompt를 넘긴다.
                 # windows.sandbox=unelevated: headless에서는 elevated 샌드박스 헬퍼가 못 떠서 셸 실행이 전부 실패함.
                 # 출력은 Write-ProcessorOutput이 받는다 — 처리기 로그를 못 써도 파이프라인이 끊기지 않는다.
                 if ($isDeep) {
+                    $deepAttemptTimer = [System.Diagnostics.Stopwatch]::StartNew()
                     if (-not $deepBackupReady) { throw 'deep rollback backup unavailable' }
                     if ($sliceTimeoutSeconds -le 0) { throw 'deep total watcher time budget exhausted' }
                     # Deep processor의 workspace-write root는 이 캡처 폴더 하나다. Person과 다른
@@ -1256,6 +1469,7 @@ function Invoke-Processing {
             } catch {
                 Write-Log ("processor error for " + $itemId + ": " + $_.Exception.Message)
             }
+            if ($deepAttemptTimer -and $deepAttemptTimer.IsRunning) { $deepAttemptTimer.Stop() }
             Write-Log ('processor end ' + $itemId + ' attempt=' + $claim.attempt + ' phase=' + $phaseLabel + ' exit=' + $exit +
                 ' log=' + $procName)
             $script:LastExitCode = $exit
@@ -1266,8 +1480,22 @@ function Invoke-Processing {
                 Write-Health
                 break
             }
-            $observedSliceMinutes = if ($isDeep -and $processorResult) { [double]$processorResult.elapsedMinutes } else { $null }
-            $verdict = Test-CaptureCommitted $itemId $observedSliceMinutes
+            $observedSliceMinutes = if ($isDeep -and $deepAttemptTimer) { [double]$deepAttemptTimer.Elapsed.TotalMinutes } else { $null }
+            $budgetChargeFailed = $false
+            if ($isDeep) {
+                $chargedWatcherElapsed = $priorWatcherElapsed + [double]$observedSliceMinutes
+                if (-not (Save-ResearchBudgetCharge $itemId $priorBudget $chargedWatcherElapsed)) {
+                    $budgetChargeFailed = $true
+                    Write-Log ('research watcher budget charge failed — fail-closed ' + $itemId)
+                }
+            }
+            $verdict = if ($budgetChargeFailed) {
+                [PSCustomObject]@{ ok = $false; partial = $false; reason = 'research_budget_charge_failed'; status = ''; watcherElapsedMinutes = $priorWatcherElapsed }
+            } else { Test-CaptureCommitted $itemId $observedSliceMinutes }
+            if ($isDeep -and $verdict.ok -and -not (Test-DeepWorkspaceMutationAllowed $item.dir $deepWorkspaceSnapshot)) {
+                $verdict.ok = $false
+                $verdict.reason = 'research_modified_immutable_input'
+            }
             if ($isDeep -and $verdict.ok -and $verdict.partial -and -not (Test-DeepAuxOutputsUnchanged $item.dir $deepAuxSnapshot)) {
                 $verdict.ok = $false
                 $verdict.reason = 'research_partial_wrote_terminal_output'
@@ -1285,7 +1513,8 @@ function Invoke-Processing {
                     $checkpointMeta = Get-Content $checkpointJson.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
                     if (-not (Save-ResearchBudgetSnapshot $itemId $checkpointMeta.researchProgress $verdict.watcherElapsedMinutes)) {
                         Write-Log ('research checkpoint budget snapshot failed — ' + $itemId)
-                        $null = Restore-DeepOutputSnapshot $item.dir $deepOutputSnapshot $true
+                        if ($isDeep -and $deepWorkspaceSnapshotReady) { $null = Restore-DeepWorkspaceSnapshot $item.dir $deepWorkspaceSnapshot }
+                        else { $null = Restore-DeepOutputSnapshot $item.dir $deepOutputSnapshot $true }
                         Remove-DeepRollbackBackup $itemId
                         $failed = $true
                         $reason = 'checkpoint_budget_snapshot_failed'
@@ -1318,7 +1547,8 @@ function Invoke-Processing {
             } else {
                 # processor가 status=processed나 brief/result를 먼저 썼어도 watcher 판정이
                 # 실패하면 pre-run truth로 되돌린다. 다음 sweep이 재시도할 수 있다.
-                $null = Restore-DeepOutputSnapshot $item.dir $deepOutputSnapshot $true
+                if ($isDeep -and $deepWorkspaceSnapshotReady) { $null = Restore-DeepWorkspaceSnapshot $item.dir $deepWorkspaceSnapshot }
+                else { $null = Restore-DeepOutputSnapshot $item.dir $deepOutputSnapshot $true }
                 if ($isDeep) { Remove-DeepRollbackBackup $itemId }
                 $reason = 'commit_incomplete_' + [string]$verdict.reason
                 if ($exit -ne 0) { $reason = 'processor_exit_' + [string]$exit }
@@ -1330,7 +1560,7 @@ function Invoke-Processing {
                 $script:ConsecutiveFailures++
                 Write-Log ("card FAILED " + $itemId + " reason=" + $reason + " attempts=" + $st.attempts + "/" + $MaxAttempts +
                     " consecutiveFailures=" + $script:ConsecutiveFailures)
-                if ([int]$st.attempts -ge [int]$MaxAttempts) {
+                if ($budgetChargeFailed -or [int]$st.attempts -ge [int]$MaxAttempts) {
                     Set-CaptureQuarantine $itemId $item.fingerprint $reason $st.attempts
                     $quarantinedNow = $true
                 }
