@@ -2,7 +2,7 @@
 
 var fs = require('fs');
 var path = require('path');
-var pages = ['index.html', 'legacy.html'];
+var pages = ['index.html'];
 var total = 0;
 pages.forEach(function (name) {
   var html = fs.readFileSync(path.join(__dirname, '..', 'docs', name), 'utf8');
@@ -11,4 +11,4 @@ pages.forEach(function (name) {
   scripts.forEach(function (match) { new Function(match[1]); });
   total += scripts.length;
 });
-console.log('PASS page syntax: ' + total + ' inline script block(s) across root and legacy');
+console.log('PASS page syntax: ' + total + ' inline script block(s) in the current root entry');

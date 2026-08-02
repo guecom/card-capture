@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ANONYMOUS_SUBJECT,
   activeSubject,
+  clearPendingPersonResearch,
   loadCachedBriefs,
   loadOwnerFlags,
+  loadPendingPersonResearch,
   loadRecentSearches,
   loadRuntimeConfig,
   loadRuntimeConfigDetailed,
@@ -12,6 +14,7 @@ import {
   saveCachedBriefs,
   saveGalleryFree,
   saveOwnerFlags,
+  savePendingPersonResearch,
   saveRecentSearch,
   saveRuntimeConfig,
   saveSectionCollapsed,
@@ -210,7 +213,8 @@ describe('private state is namespaced per subject (FI-006)', () => {
    * 1. 이 정리가 도는 시점의 "지금 저장된 token"은 이번 boot에 들어온 링크가 **방금** 써 넣은 값이다.
    *    이전 subject가 남긴 값에 대해 새 subject의 토큰을 증거로 삼는 구조라, 토큰이 바뀌는 경우
    *    — 곧 FI-006이 막으려던 바로 그 경우 — 에 반드시 틀린다.
-   * 2. 전역 자리는 잔재가 아니라 이전 앱(`docs/legacy.html`)이 지금도 쓰는 자리라 창이 계속 열린다.
+   * 2. 결함을 발견했을 때는 이전 앱(`docs/legacy.html`)도 전역 자리를 계속 쓰고 있어 창이 반복해서 열렸다.
+   *    그 앱은 이제 폐기됐지만, 남아 있는 예전 기기 데이터를 안전하게 버리는 계약은 유지한다.
    *
    * 그래서 계약을 "귀속을 추정하지 않고 버린다"로 바꿨다. 이 검사는 **owner 자신의 링크로 열어도**
    * 옮기지 않는다는 것까지 단언한다 — 우리는 owner인지 아닌지를 구별할 수 없고, 구별할 수 있는
@@ -240,10 +244,10 @@ describe('private state is namespaced per subject (FI-006)', () => {
   /**
    * 판정 게이트 — Kairen-Ref: TSK-000289
    *
-   * 전역 사적 키는 "namespace 도입 전 잔재"가 아니라 같은 Pages 루트의 이전 앱
-   * (`docs/legacy.html`)이 **지금도 쓰는 자리**다 — `briefSeeAll`·`researchInstructionEnabled`·
-   * `briefs`·`recentSearches` 모두 그 앱이 계속 다시 채운다. 그 값을 다음에 boot한 링크 코드가
-   * 상속하면 owner의 브리핑 전문(Private 포함)과 owner 게이트가 guest namespace로 들어간다.
+   * 전역 사적 키는 어느 subject가 썼는지 증명할 수 없는 이전 저장 형식이다. 당시 이전 앱도
+   * `briefSeeAll`·`researchInstructionEnabled`·`briefs`·`recentSearches`를 계속 채웠다. 앱을 폐기한
+   * 뒤에도 예전 기기에 남은 값을 다음 링크 코드가 상속하면 owner의 브리핑 전문(Private 포함)과
+   * owner 게이트가 guest namespace로 들어가므로, 무조건 버리는 경계를 유지한다.
    */
   it('never adopts an unattributable shared cache into whichever link code boots first', () => {
     // owner 세션이 이전 앱에 남긴 전역 사적 키.
@@ -333,6 +337,42 @@ describe('meeting context is private to a subject (FI-006 확장)', () => {
   });
 });
 
+describe('pending Person research identity', () => {
+  const pending = {
+    version: 1 as const,
+    requestId: 'request-00000021',
+    targetFingerprint: 'research-target-v1-0123456789abcdef',
+    requestFingerprint: 'research-request-v1-fedcba9876543210',
+  };
+
+  beforeEach(() => loadRuntimeConfig(`?api=${encodeURIComponent(PINNED_API)}&k=owner-token`));
+
+  it('survives reload-equivalent reads without storing target or request text', () => {
+    savePendingPersonResearch(pending);
+
+    expect(loadPendingPersonResearch()).toEqual(pending);
+    const serialized = JSON.stringify(store.snapshot());
+    expect(serialized).not.toContain('PER-000001');
+    expect(serialized).not.toContain('공개 결과물');
+  });
+
+  it('clears explicitly and fails closed on a damaged persisted identity', () => {
+    savePendingPersonResearch(pending);
+    clearPendingPersonResearch();
+    expect(loadPendingPersonResearch()).toBeNull();
+
+    store.setItem(`cc_${activeSubject()}_pendingPersonResearch`, '{"requestId":"bad id"}');
+    expect(loadPendingPersonResearch()).toBeNull();
+    expect(store.getItem(`cc_${activeSubject()}_pendingPersonResearch`)).toBeNull();
+  });
+
+  it('does not expose one account pending identity after the subject changes', () => {
+    savePendingPersonResearch(pending);
+    loadRuntimeConfig(`?api=${encodeURIComponent(PINNED_API)}&k=guest-token`);
+    expect(loadPendingPersonResearch()).toBeNull();
+  });
+});
+
 describe('device disconnect (FI-007)', () => {
   it('clears the link code, private caches and meeting context but keeps device preferences', () => {
     loadRuntimeConfig(`?api=${encodeURIComponent(PINNED_API)}&k=owner-token`);
@@ -341,6 +381,12 @@ describe('device disconnect (FI-007)', () => {
     saveOwnerFlags({ seeAll: true, researchInstructionEnabled: true });
     saveRecentSearch('한화 구매팀장');
     saveStickyCaptureContext({ event: '2026 로보월드', relSelf: '오늘 처음', relKairen: '잠재 고객', research: '최근 경력' });
+    savePendingPersonResearch({
+      version: 1,
+      requestId: 'request-00000021',
+      targetFingerprint: 'research-target-v1-0123456789abcdef',
+      requestFingerprint: 'research-request-v1-fedcba9876543210',
+    });
     saveGalleryFree(false);
     saveSectionCollapsed('briefs', true);
 
@@ -352,6 +398,7 @@ describe('device disconnect (FI-007)', () => {
     expect(loadCachedBriefs()).toEqual([]);
     expect(loadOwnerFlags()).toEqual({ seeAll: false, researchInstructionEnabled: false });
     expect(loadRecentSearches()).toEqual([]);
+    expect(loadPendingPersonResearch()).toBeNull();
     expect(loadStickyCaptureContext()).toEqual({ event: '', relSelf: '', relKairen: '', research: '' });
     expect(Object.keys(store.snapshot()).filter((key) => /^cc_s[0-9a-z]+_/.test(key))).toEqual([]);
 

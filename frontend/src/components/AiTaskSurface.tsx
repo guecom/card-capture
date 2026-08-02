@@ -5,6 +5,7 @@
 import { Sparkles } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { AiStage } from '../services/ai-stages';
+import { researchBulkState, toggleAllResearchFocus, type ResearchFocusId } from '../services/research';
 
 // 표면의 상태. 장식이 아니라 실제 lifecycle에 붙는다 (INT-000016 항목 002):
 // `idle`은 평소, `active`는 지금 처리 중, `done`·`error`는 끝난 뒤다.
@@ -70,6 +71,36 @@ export function AiExampleChips({ examples, onPick, label }: {
       {examples.map((example) => (
         <button key={example} type="button" onClick={() => onPick(example)}>{example}</button>
       ))}
+    </div>
+  );
+}
+
+export function AiResearchExamples({ examples, selectedIds, onChange, label }: {
+  examples: ReadonlyArray<{ id: ResearchFocusId; label: string }>;
+  selectedIds: ResearchFocusId[];
+  onChange: (value: ResearchFocusId[]) => void;
+  label: string;
+}) {
+  const bulk = researchBulkState(selectedIds, examples);
+  const selected = new Set(selectedIds);
+  return (
+    <div className="ai-research-examples">
+      <button
+        className={`ai-bulk-select is-${bulk.state}`}
+        type="button"
+        aria-pressed={bulk.state === 'partial' ? 'mixed' : bulk.state === 'all'}
+        onClick={() => onChange(toggleAllResearchFocus(selectedIds, examples))}
+      >
+        <span aria-hidden="true">{bulk.state === 'all' ? '✓' : bulk.state === 'partial' ? '–' : '＋'}</span>
+        <span><strong>{bulk.state === 'all' ? '추천 항목 모두 선택됨' : '추천 항목 모두 선택'}</strong><small>{bulk.selected}/{examples.length}개 선택</small></span>
+      </button>
+      <div className="ai-example-chips" role="group" aria-label={label}>
+        {examples.map((example) => (
+          <button key={example.id} className={selected.has(example.id) ? 'is-selected' : ''} aria-pressed={selected.has(example.id)} type="button" onClick={() => onChange(selected.has(example.id)
+            ? selectedIds.filter((id) => id !== example.id)
+            : [...selectedIds, example.id])}>{example.label}</button>
+        ))}
+      </div>
     </div>
   );
 }

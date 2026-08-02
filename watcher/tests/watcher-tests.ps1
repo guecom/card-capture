@@ -51,7 +51,7 @@ $Codex = $stub
 $Vault = $sandbox
 $LogFile = Join-Path $sbLog 'watcher.log'
 $HealthFile = Join-Path $sbLog 'watcher-health.json'
-$NotifyConf = Join-Path $sbLog 'notify.conf'
+$PushConf = Join-Path $sbLog 'push.conf'
 $Lock = Join-Path $sbInbox 'processing.lock'
 # 실행 중인 실제 워처의 %LOCALAPPDATA%\CardCapture\state 를 절대 건드리지 않도록 반드시 override한다.
 $StateDir = Join-Path $sandbox 'state'
@@ -130,14 +130,13 @@ $h2 = Get-Content $HealthFile -Raw -Encoding UTF8 | ConvertFrom-Json
 T ($h2.consecutiveFailures -eq 3) 'health: failures surfaced'
 T ($h2.lastExitCode -eq 1) 'health: lastExitCode surfaced'
 
-# 10. recovery -> success resets and notify skipped gracefully without conf
+# 10. recovery -> success resets and push outbox skips gracefully without config
 '0' | Out-File -Encoding ascii $stubExit
 $null = New-Capture 'T0011-recovery' 'received' $null $null
 Invoke-Processing
 T ($script:ConsecutiveFailures -eq 0) 'recovery: failures reset after success'
-T (-not (Test-Path $NotifyConf)) 'notify.conf absent'
-Send-Notify @('T0001-received')   # must not throw
-T $true 'notify without conf: silent no-op'
+T (-not (Test-Path $PushConf)) 'push.conf absent'
+T (-not (Queue-PushEvent 'T0001-received' 'final_result' 'fixture' $null)) 'push without config: silent no-op'
 
 # 11. per-card loop (v3): smart stub가 한 번에 가장 이른 received 1건만 processed로 바꿈 →
 #     루프가 대기 3건을 한 건씩 소진하고 카드별로 codex를 호출한다.

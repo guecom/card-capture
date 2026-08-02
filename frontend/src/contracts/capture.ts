@@ -1,6 +1,12 @@
 export type CaptureState = 'queued' | 'failed' | 'sent';
 export type ProcessingStatus = 'received' | 'processing' | 'processed' | 'skipped' | string;
 
+export interface CaptureAttention {
+  kind: 'input_required';
+  reasonCode: 'unreadable_capture' | 'missing_required_side' | 'identity_ambiguous';
+  requestedAt: string;
+}
+
 export interface CaptureImage {
   name: 'front.jpg' | 'back.jpg';
   mime?: 'image/jpeg';
@@ -20,6 +26,86 @@ export interface ResearchInstruction {
   channel?: 'owner_ui';
   policyVersion?: string;
   riskFlags?: string[];
+  mode?: 'standard' | 'deep_evidence_graph';
+  purposes?: Array<'meeting_preparation' | 'expertise_execution' | 'authority_interests' | 'reputation_risk'>;
+  focusIds?: Array<'expertise' | 'authority' | 'reputation' | 'outcomes' | 'interests' | 'career' | 'company' | 'connection'>;
+  requestId?: string;
+  sourceAuthority?: 'public_lawful_only';
+  budget?: {
+    branchCap: number;
+    timeCapMinutes: number;
+  };
+}
+
+export type ResearchClaimState = 'fact' | 'conflict' | 'unknown' | 'hypothesis';
+export type ResearchGraphNodeType = 'person' | 'organization' | 'project' | 'event' | 'claim' | 'source';
+export type ResearchGraphRelation =
+  | 'supports'
+  | 'counterevidence'
+  | 'affiliated_with'
+  | 'leads'
+  | 'member_of'
+  | 'worked_on'
+  | 'participated_in'
+  | 'occurred_at'
+  | 'involves'
+  | 'related_to';
+
+export interface ResearchGraphNode {
+  id: string;
+  type: ResearchGraphNodeType;
+  label: string;
+  url?: string;
+}
+
+export interface ResearchGraphEdge {
+  id: string;
+  sourceId: string;
+  targetId: string;
+  relation: ResearchGraphRelation;
+  label: string;
+}
+
+export interface ResearchEvidenceLink {
+  sourceId: string;
+  title: string;
+  url: string;
+  publishedAt?: string;
+}
+
+export interface ResearchEvidenceClaim {
+  id: string;
+  state: ResearchClaimState;
+  summary: string;
+  confidence?: 'low' | 'medium' | 'high';
+  evidenceFor: ResearchEvidenceLink[];
+  evidenceAgainst: ResearchEvidenceLink[];
+  alternativeExplanation?: string;
+}
+
+export interface ResearchTimelineEvent {
+  date: string;
+  label: string;
+  claimIds: string[];
+}
+
+export interface ResearchEvidenceGraph {
+  version: 'deep-research-evidence-v1';
+  purposes: ResearchInstruction['purposes'];
+  nodes: ResearchGraphNode[];
+  edges: ResearchGraphEdge[];
+  claims: ResearchEvidenceClaim[];
+  timeline: ResearchTimelineEvent[];
+  openQuestions: string[];
+  metrics: {
+    branchCount: number;
+    sourceCount: number;
+    elapsedMinutes: number;
+  };
+  stop: {
+    reason: 'purpose_satisfied' | 'source_exhausted' | 'irrelevant_branch' | 'time_cap' | 'branch_cap';
+    summary: string;
+  };
 }
 
 export interface CaptureQueueItem {
@@ -84,6 +170,11 @@ export interface BriefItem {
   capturedAt?: string;
   receivedAt?: string;
   status: ProcessingStatus;
+  /**
+   * Human input is a terminal outcome without widening the long-lived status enum.
+   * Unknown/raw server reasons are never rendered; UI maps this bounded reasonCode allowlist.
+   */
+  attention?: CaptureAttention;
   person?: string;
   type?: string;
   brief?: string;
@@ -92,6 +183,18 @@ export interface BriefItem {
   event?: string;
   note?: string;
   capturer?: string;
+  researchInstruction?: Pick<ResearchInstruction, 'mode' | 'purposes' | 'sourceAuthority' | 'policyVersion'>;
+  researchProgress?: {
+    phase?: 'planning' | 'branching' | 'triangulating' | 'synthesizing' | 'done';
+    verifiedFacts?: number;
+    conflicts?: number;
+    openQuestions?: number;
+    branchCount?: number;
+    sourceCount?: number;
+    elapsedMinutes?: number;
+    updatedAt?: string;
+  };
+  researchEvidence?: ResearchEvidenceGraph;
 }
 
 export interface ListResponse {
@@ -100,6 +203,7 @@ export interface ListResponse {
   items?: BriefItem[];
   seeAll?: boolean;
   researchInstructionEnabled?: boolean;
+  deepResearchEnabled?: boolean;
   hasMore?: boolean;
 }
 
@@ -125,6 +229,12 @@ export interface DocumentResponse {
   ok: boolean;
   error?: string;
   markdown?: string;
+}
+
+export interface ResearchEvidenceResponse {
+  ok: boolean;
+  error?: string;
+  graph?: ResearchEvidenceGraph;
 }
 
 export interface ActionResponse {

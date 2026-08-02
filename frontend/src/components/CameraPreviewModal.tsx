@@ -813,7 +813,6 @@ export function CameraCaptureModal({
           </>
         )}
         <input ref={nativeInputRef} className="native-camera-input" type="file" accept="image/*" capture="environment" onChange={(inputEvent) => { void handleNativeFile(inputEvent.target.files?.[0]); inputEvent.target.value = ''; }} />
-        <IonButton expand="block" fill="clear" href="../legacy.html">이전 촬영 화면 열기 · 복구용</IonButton>
       </IonContent>
     </IonModal>
   );

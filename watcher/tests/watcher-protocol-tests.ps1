@@ -286,15 +286,17 @@ TB 'FI-018 commit: commit 후에는 중단 목록에서 빠진다' {
 Remove-Item (StagingDir 'R0001') -Recurse -Force -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $sbState 'items\R0001.json') -Force -ErrorAction SilentlyContinue
 
-TB 'FI-018 commit gate: exit 0인데 brief가 없으면 commit이 아니다' {
+TB 'FI-018 commit gate: exit 0인데 brief가 없으면 pre-run received로 복구된다' {
     $null = New-Capture 'N0001' 'received' '2026-07-25T04:00:00Z'
     Set-StubConf @('N0001') 'nobrief'
     $script:ConsecutiveFailures = 0
     Invoke-Processing
     $v = Test-CaptureCommitted 'N0001'
+    $m = Get-Content (Join-Path (Join-Path $sbInbox 'N0001') 'capture.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $eligibility = Get-CaptureEligibility (Get-Item (Join-Path $sbInbox 'N0001'))
     $noMarker = -not (Test-Path (Join-Path (StagingDir 'N0001') 'commit.json'))
     $st = Get-CaptureState 'N0001'
-    return ((-not $v.ok) -and ($v.reason -match 'brief') -and $noMarker -and ($st.attempts -ge 1))
+    return ((-not $v.ok) -and $m.status -eq 'received' -and $eligibility.eligible -and $noMarker -and ($st.attempts -ge 1))
 }
 TB 'FI-018 commit gate: 구조적 실패 사유가 로그에 남는다' {
     return ((LogText) -match 'commit_incomplete')
@@ -511,6 +513,253 @@ TB 'FI-019 recharge: 진짜 입력 변경은 예산을 정확히 MaxAttempts만�
 TB 'FI-019 recharge: 재충전 중에도 정상 항목은 계속 처리된다' {
     $m = Get-Content (Join-Path (Join-Path $sbInbox 'Z0009') 'capture.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     return ($m.status -eq 'processed')
+}
+
+# ---- APP-AC-239 Deep Research: lane / checkpoint / evidence graph ----
+$deepInbox = Join-Path $sandbox 'deep-inbox'
+New-Item -ItemType Directory -Force -Path $deepInbox | Out-Null
+$Inbox = $deepInbox
+
+function New-DeepFixture($id, $mode, $status) {
+    $d = Join-Path $deepInbox $id
+    New-Item -ItemType Directory -Force -Path $d | Out-Null
+    $m = [PSCustomObject]@{
+        captureId = $id
+        status = $status
+        receivedAt = '2026-07-25T09:00:00Z'
+        files = @('front.jpg')
+    }
+    if ($mode) {
+        $m | Add-Member -NotePropertyName type -NotePropertyValue 'research_instruction' -Force
+        $m | Add-Member -NotePropertyName researchInstruction -NotePropertyValue ([PSCustomObject]@{ mode = $mode }) -Force
+    }
+    ($m | ConvertTo-Json -Depth 8) | Out-File -Encoding utf8 (Join-Path $d 'capture.json')
+    return $d
+}
+
+$null = New-DeepFixture 'A9001' 'deep_evidence_graph' 'received'
+$null = New-DeepFixture 'B9001' 'standard' 'received'
+$null = New-DeepFixture 'Z9001' $null 'received'
+
+TB 'APP-AC-239 lane: 일반 캡처가 더 오래된 Deep Research보다 먼저다' {
+    return ((Get-NextEligibleCapture @{}).id -eq 'Z9001')
+}
+TB 'APP-AC-239 lane: 일반 캡처 다음은 표준 조사다' {
+    return ((Get-NextEligibleCapture @{ Z9001 = $true }).id -eq 'B9001')
+}
+TB 'APP-AC-239 lane: Deep Research는 마지막 lane이다' {
+    return ((Get-NextEligibleCapture @{ Z9001 = $true; B9001 = $true }).id -eq 'A9001')
+}
+
+TB 'APP-AC-239 checkpoint: partial processing은 terminal commit 없이 다음 slice 권한을 만든다' {
+    $p = Join-Path (Join-Path $deepInbox 'A9001') 'capture.json'
+    $m = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
+    $m.status = 'processing'
+    $m | Add-Member -NotePropertyName researchProgress -NotePropertyValue ([PSCustomObject]@{
+        phase = 'planning'; partial = $true; updatedAt = '2026-07-25T09:01:00Z'
+        verifiedFacts = 0; conflicts = 0; openQuestions = 1
+        branchCount = 1; sourceCount = 2; elapsedMinutes = 8
+    }) -Force
+    ($m | ConvertTo-Json -Depth 8) | Out-File -Encoding utf8 $p
+    if (-not (Save-ResearchBudgetCharge 'A9001' $null 8)) { return $false }
+    $v = Test-CaptureCommitted 'A9001' 8
+    if ($v.ok) { $null = Save-ResearchBudgetSnapshot 'A9001' $m.researchProgress $v.watcherElapsedMinutes }
+    return ($v.ok -and $v.partial -and $v.reason -eq 'research_checkpoint' -and $v.watcherElapsedMinutes -eq 8)
+}
+
+TB 'APP-AC-239 checkpoint: 같은 phase 반복은 진행량을 늘려도 fail-closed다' {
+    $p = Join-Path (Join-Path $deepInbox 'A9001') 'capture.json'
+    $m = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
+    $m.researchProgress.elapsedMinutes = 9
+    $m.researchProgress.sourceCount = 3
+    ($m | ConvertTo-Json -Depth 8) | Out-File -Encoding utf8 $p
+    $v = Test-CaptureCommitted 'A9001' 1
+    return ((-not $v.ok) -and $v.reason -eq 'research_phase_not_next')
+}
+
+TB 'APP-AC-239 checkpoint: counter 없는 partial은 fail-closed다' {
+    $p = Join-Path (Join-Path $deepInbox 'A9001') 'capture.json'
+    $m = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
+    $m.researchProgress.PSObject.Properties.Remove('sourceCount')
+    ($m | ConvertTo-Json -Depth 8) | Out-File -Encoding utf8 $p
+    $v = Test-CaptureCommitted 'A9001' 1
+    return ((-not $v.ok) -and $v.reason -eq 'bad_research_counter_sourceCount')
+}
+
+$finalDir = New-DeepFixture 'D9001' 'deep_evidence_graph' 'processed'
+$finalMetaPath = Join-Path $finalDir 'capture.json'
+$finalMeta = Get-Content $finalMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$finalMeta | Add-Member -NotePropertyName person -NotePropertyValue 'PER-000001' -Force
+($finalMeta | ConvertTo-Json -Depth 8) | Out-File -Encoding utf8 $finalMetaPath
+'synthetic brief' | Out-File -Encoding utf8 (Join-Path $finalDir 'brief.md')
+$validGraph = [PSCustomObject]@{
+    version = 'deep-research-evidence-v1'
+    purposes = @('meeting_preparation')
+    nodes = @(
+        [PSCustomObject]@{ id = 'person-1'; type = 'person'; label = '합성 대상 인물' },
+        [PSCustomObject]@{ id = 'org-1'; type = 'organization'; label = '합성 조직' },
+        [PSCustomObject]@{ id = 'project-1'; type = 'project'; label = '합성 프로젝트' },
+        [PSCustomObject]@{ id = 'event-1'; type = 'event'; label = '합성 사건' },
+        [PSCustomObject]@{ id = 'claim-1'; type = 'claim'; label = '합성 검증 사실' },
+        [PSCustomObject]@{ id = 'source-1'; type = 'source'; label = '합성 출처 A'; url = 'https://example.test/source-a' }
+    )
+    edges = @(
+        [PSCustomObject]@{ id = 'edge-support-1'; sourceId = 'source-1'; targetId = 'claim-1'; relation = 'supports'; label = '주장을 뒷받침' },
+        [PSCustomObject]@{ id = 'edge-affiliation-1'; sourceId = 'person-1'; targetId = 'org-1'; relation = 'affiliated_with'; label = '소속' },
+        [PSCustomObject]@{ id = 'edge-project-1'; sourceId = 'person-1'; targetId = 'project-1'; relation = 'worked_on'; label = '프로젝트 참여' },
+        [PSCustomObject]@{ id = 'edge-event-1'; sourceId = 'person-1'; targetId = 'event-1'; relation = 'participated_in'; label = '사건 참여' }
+    )
+    claims = @([PSCustomObject]@{
+        id = 'claim-1'; state = 'fact'; summary = '합성 검증 사실'; confidence = 'high'
+        evidenceFor = @([PSCustomObject]@{ sourceId = 'source-1'; title = '합성 출처 A'; url = 'https://example.test/source-a'; publishedAt = '2026-01-01' }); evidenceAgainst = @()
+    })
+    timeline = @([PSCustomObject]@{ date = '2026-01'; label = '합성 사건'; claimIds = @('claim-1') })
+    openQuestions = @('추가 확인 질문')
+    metrics = [PSCustomObject]@{ branchCount = 4; sourceCount = 6; elapsedMinutes = 24 }
+    stop = [PSCustomObject]@{ reason = 'purpose_satisfied'; summary = '합성 목적을 충족했다' }
+}
+($validGraph | ConvertTo-Json -Depth 10) | Out-File -Encoding utf8 (Join-Path $finalDir 'research-result.json')
+$finalPriorProgress = [PSCustomObject]@{
+    phase = 'synthesizing'; branchCount = 3; sourceCount = 4; elapsedMinutes = 18; updatedAt = '2026-07-25T09:18:00Z'
+}
+$null = Save-ResearchBudgetSnapshot 'D9001' $finalPriorProgress 18
+
+TB 'APP-AC-239 final: 선행 synthesizing checkpoint 없는 final은 fail-closed다' {
+    $budgetPath = Resolve-ResearchBudgetPath 'D9001'
+    Remove-Item $budgetPath -Force -ErrorAction SilentlyContinue
+    $v = Test-CaptureCommitted 'D9001' 6
+    $null = Save-ResearchBudgetSnapshot 'D9001' $finalPriorProgress 18
+    return ((-not $v.ok) -and $v.reason -eq 'research_final_without_synthesizing_checkpoint')
+}
+
+TB 'APP-AC-239 final: 근거가 있는 evidence graph만 terminal commit이다' {
+    $prior = Get-ResearchBudgetSnapshot 'D9001'
+    if (-not (Save-ResearchBudgetCharge 'D9001' $prior 24)) { return $false }
+    $v = Test-CaptureCommitted 'D9001' 6
+    return ($v.ok -and -not $v.partial -and $v.reason -eq 'ok')
+}
+TB 'APP-AC-239 final: 근거 없는 fact는 fail-closed다' {
+    $bad = Get-Content (Join-Path $finalDir 'research-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $bad.claims[0].evidenceFor = @()
+    ($bad | ConvertTo-Json -Depth 10) | Out-File -Encoding utf8 (Join-Path $finalDir 'research-result.json')
+    $v = Test-CaptureCommitted 'D9001' 6
+    return ((-not $v.ok) -and $v.reason -eq 'unsupported_fact')
+}
+TB 'APP-AC-239 final: 문자열 evidence는 UI 계약과 달라 fail-closed다' {
+    $bad = $validGraph | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $bad.claims[0].evidenceFor = @('https://example.test/not-an-evidence-object')
+    ($bad | ConvertTo-Json -Depth 10) | Out-File -Encoding utf8 (Join-Path $finalDir 'research-result.json')
+    $v = Test-CaptureCommitted 'D9001' 6
+    return ((-not $v.ok) -and $v.reason -eq 'bad_research_evidence_link')
+}
+TB 'APP-AC-239 final: dangling relationship edge는 fail-closed다' {
+    $bad = $validGraph | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $bad.edges[1].targetId = 'missing-node'
+    ($bad | ConvertTo-Json -Depth 10) | Out-File -Encoding utf8 (Join-Path $finalDir 'research-result.json')
+    $v = Test-CaptureCommitted 'D9001' 6
+    return ((-not $v.ok) -and $v.reason -eq 'bad_research_edge')
+}
+TB 'APP-AC-239 final: 누적 90분이면 time_cap stop reason이 필수다' {
+    $nearCap = [PSCustomObject]@{ phase = 'synthesizing'; branchCount = 3; sourceCount = 4; elapsedMinutes = 84; updatedAt = '2026-07-25T09:18:00Z' }
+    $null = Save-ResearchBudgetSnapshot 'D9001' $nearCap 84
+    $null = Save-ResearchBudgetCharge 'D9001' (Get-ResearchBudgetSnapshot 'D9001') 90
+    $bad = $validGraph | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $bad.metrics.elapsedMinutes = 90
+    ($bad | ConvertTo-Json -Depth 10) | Out-File -Encoding utf8 (Join-Path $finalDir 'research-result.json')
+    $v = Test-CaptureCommitted 'D9001' 6
+    return ((-not $v.ok) -and $v.reason -eq 'research_time_cap_reason_required')
+}
+TB 'APP-AC-239 final: time_cap은 실제 누적 상한과 함께면 통과한다' {
+    $nearCap = [PSCustomObject]@{ phase = 'synthesizing'; branchCount = 3; sourceCount = 4; elapsedMinutes = 84; updatedAt = '2026-07-25T09:18:00Z' }
+    $null = Save-ResearchBudgetSnapshot 'D9001' $nearCap 84
+    $null = Save-ResearchBudgetCharge 'D9001' (Get-ResearchBudgetSnapshot 'D9001') 90
+    $capped = $validGraph | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $capped.metrics.elapsedMinutes = 90
+    $capped.stop.reason = 'time_cap'
+    $capped.stop.summary = '합성 시간 상한 도달'
+    ($capped | ConvertTo-Json -Depth 10) | Out-File -Encoding utf8 (Join-Path $finalDir 'research-result.json')
+    $v = Test-CaptureCommitted 'D9001' 6
+    return ($v.ok -and $v.reason -eq 'ok')
+}
+TB 'APP-AC-239 final: 시간·분기 상한이 동시에 닿아도 정직한 cap 사유 하나로 종료한다' {
+    $nearCap = [PSCustomObject]@{ phase = 'synthesizing'; branchCount = 23; sourceCount = 4; elapsedMinutes = 84; updatedAt = '2026-07-25T09:18:00Z' }
+    $null = Save-ResearchBudgetSnapshot 'D9001' $nearCap 84
+    $null = Save-ResearchBudgetCharge 'D9001' (Get-ResearchBudgetSnapshot 'D9001') 90
+    $capped = $validGraph | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $capped.metrics.elapsedMinutes = 90
+    $capped.metrics.branchCount = 24
+    $capped.stop.reason = 'branch_cap'
+    $capped.stop.summary = '합성 분기·시간 상한 동시 도달'
+    ($capped | ConvertTo-Json -Depth 10) | Out-File -Encoding utf8 (Join-Path $finalDir 'research-result.json')
+    $v = Test-CaptureCommitted 'D9001' 6
+    return ($v.ok -and $v.reason -eq 'ok')
+}
+TB 'APP-AC-239 budget: 실패·timeout 시간도 누적되고 90분이면 다음 spawn 예산이 0이다' {
+    $budgetId = 'E9001'
+    $progress = [PSCustomObject]@{ phase = 'synthesizing'; branchCount = 3; sourceCount = 4; elapsedMinutes = 84; updatedAt = '2026-07-25T09:18:00Z' }
+    if (-not (Save-ResearchBudgetSnapshot $budgetId $progress 84)) { return $false }
+    $prior = Get-ResearchBudgetSnapshot $budgetId
+    if (-not (Save-ResearchBudgetCharge $budgetId $prior 90)) { return $false }
+    $after = Get-ResearchBudgetSnapshot $budgetId
+    return ([double]$after.watcherElapsedMinutes -eq 90 -and (Get-ResearchRemainingSeconds $budgetId) -eq 0)
+}
+TB 'APP-AC-239 budget: 첫 launch failure도 checkpoint 없는 durable 시간으로 남는다' {
+    $budgetId = 'F9001'
+    if (-not (Save-ResearchBudgetCharge $budgetId $null 1.5)) { return $false }
+    $after = Get-ResearchBudgetSnapshot $budgetId
+    return ($after.hasCheckpoint -eq $false -and [double]$after.watcherElapsedMinutes -eq 1.5 -and
+            (Get-ResearchRemainingSeconds $budgetId) -eq (($DeepTotalTimeCapMinutes - 1.5) * 60))
+}
+TB 'APP-AC-239 rollback: 이미지·correction·unexpected 파일까지 pre-run truth로 정확히 복구된다' {
+    [System.IO.File]::WriteAllBytes((Join-Path $finalDir 'front.jpg'), [byte[]](1,2,3,4))
+    '{"correction":"keep"}' | Out-File -Encoding utf8 (Join-Path $finalDir 'correction.json')
+    $snapshot = Get-DeepWorkspaceSnapshot $finalDir
+    if (-not (Save-DeepRollbackBackup 'D9001' $snapshot)) { return $false }
+    '{"status":"processed","person":"POISON"}' | Out-File -Encoding utf8 $finalMetaPath
+    'poison brief' | Out-File -Encoding utf8 (Join-Path $finalDir 'brief.md')
+    '{"version":"poison"}' | Out-File -Encoding utf8 (Join-Path $finalDir 'research-result.json')
+    [System.IO.File]::WriteAllBytes((Join-Path $finalDir 'front.jpg'), [byte[]](9,9,9))
+    Remove-Item (Join-Path $finalDir 'correction.json') -Force
+    'unexpected' | Out-File -Encoding utf8 (Join-Path $finalDir 'junk.md')
+    if (Test-DeepWorkspaceMutationAllowed $finalDir $snapshot) { return $false }
+    if (-not (Restore-DeepRollbackBackup 'D9001' $finalDir)) { return $false }
+    $after = Get-DeepWorkspaceSnapshot $finalDir
+    if (@($after).Count -ne @($snapshot).Count) { return $false }
+    $expected = @{}
+    foreach ($entry in @($snapshot)) {
+        $expected[$entry.name] = if ($entry.kind -eq 'file') { [Convert]::ToBase64String([byte[]]$entry.bytes) } else { 'directory' }
+    }
+    foreach ($entry in @($after)) {
+        $actual = if ($entry.kind -eq 'file') { [Convert]::ToBase64String([byte[]]$entry.bytes) } else { 'directory' }
+        if ($expected[$entry.name] -ne $actual) { return $false }
+    }
+    return (-not (Test-Path (Join-Path $finalDir 'junk.md')))
+}
+TB 'APP-AC-239 runtime: Deep slice process tree와 stream drain을 wall-clock 상한에서 실제 종료한다' {
+    $oldMode = $CardCaptureWatcherTestMode
+    $oldCodex = $Codex
+    $oldTimeout = $DeepSliceTimeoutSeconds
+    $oldVault = $Vault
+    $oldArguments = $BoundedProcessorTestArguments
+    try {
+        $CardCaptureWatcherTestMode = $false
+        $Codex = 'powershell.exe'
+        $BoundedProcessorTestArguments = '-NoProfile -Command "$child=Start-Process powershell.exe -ArgumentList ''-NoProfile'',''-Command'',''Start-Sleep -Seconds 8'' -PassThru -WindowStyle Hidden; Start-Sleep -Seconds 8"'
+        $DeepSliceTimeoutSeconds = 1
+        $Vault = $sandbox
+        $timer = [System.Diagnostics.Stopwatch]::StartNew()
+        $bounded = Invoke-BoundedDeepProcessor '합성 timeout prompt' (Join-Path $sbLog 'timeout.log')
+        $timer.Stop()
+        Write-Host ('  bounded timeout probe: exit=' + $bounded.exit + ' timedOut=' + $bounded.timedOut + ' elapsed=' + [math]::Round($timer.Elapsed.TotalSeconds, 2) + 's')
+        Get-Content $LogFile -Tail 2 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('  log: ' + $_) }
+        return ($bounded.timedOut -and [int]$bounded.exit -eq 124 -and $timer.Elapsed.TotalSeconds -lt 5)
+    } finally {
+        $CardCaptureWatcherTestMode = $oldMode
+        $Codex = $oldCodex
+        $DeepSliceTimeoutSeconds = $oldTimeout
+        $Vault = $oldVault
+        $BoundedProcessorTestArguments = $oldArguments
+    }
 }
 
 # ---- summary + cleanup ----

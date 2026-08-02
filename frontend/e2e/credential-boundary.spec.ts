@@ -9,16 +9,16 @@ import { fileURLToPath } from 'node:url';
 // Kairen-Ref: TSK-000269 (FI-004 / FI-005 / FI-006 / FI-007)
 
 const buildRoot = resolve(fileURLToPath(new URL('../../docs/', import.meta.url)));
-const legacyHtmlPath = resolve(fileURLToPath(new URL('../../docs/legacy.html', import.meta.url)));
+const publicRuntimePath = resolve(fileURLToPath(new URL('../../config/public-runtime.json', import.meta.url)));
 
 /**
- * 빌드에 박힌 배포본 주소. `vite.config.ts`가 같은 값을 읽어 `__CARD_CAPTURE_DEFAULT_API__`로 넣는다 —
+ * 빌드에 박힌 배포본 주소. `vite.config.ts`가 같은 공개 runtime config를 읽는다 —
  * 게이트가 빌드와 같은 원본을 보게 해서, 배포본이 바뀌어도 게이트가 조용히 무의미해지지 않게 한다.
  */
 async function pinnedApiEndpoint(): Promise<string> {
-  const match = /var DEFAULT_API = '([^']+)'/.exec(await readFile(legacyHtmlPath, 'utf8'));
-  if (!match?.[1]) throw new Error('legacy_default_api_missing');
-  return match[1];
+  const runtime = JSON.parse(await readFile(publicRuntimePath, 'utf8')) as { apiUrl?: unknown };
+  if (typeof runtime.apiUrl !== 'string') throw new Error('public_runtime_api_missing');
+  return runtime.apiUrl;
 }
 
 const contentTypes: Record<string, string> = {

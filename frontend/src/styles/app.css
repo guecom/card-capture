@@ -257,10 +257,62 @@ ion-toolbar {
 .header-refresh:active { background: rgba(var(--cc-accent), 0.08); color: var(--cc-blue); }
 .header-refresh[aria-busy="true"] { color: var(--cc-blue); }
 .header-refresh .spinning { animation: cc-spin 900ms linear infinite; }
+.inline-refresh, .refresh-console button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 8px 11px; border: 1px solid var(--cc-line); border-radius: var(--cc-r-md); background: var(--cc-solid-soft); color: var(--cc-blue-ink); font-size: 11px; font-weight: 750; }
+.inline-refresh .spinning, .refresh-console .spinning { animation: cc-spin 900ms linear infinite; }
+.refresh-console { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.refresh-console > div { display: grid; gap: 3px; min-width: 0; }
+.refresh-console strong { color: var(--cc-ink); font-size: 13px; }
+.refresh-console span { color: var(--cc-muted); font-size: 10.5px; overflow-wrap: anywhere; }
+.refresh-console.is-error { border-color: color-mix(in srgb, var(--ion-color-danger) 30%, var(--cc-line)); }
+.refresh-console.is-offline { border-style: dashed; }
+@media (max-width: 360px) {
+  .refresh-console { align-items: stretch; flex-direction: column; }
+  .refresh-console button { width: 100%; }
+}
 @keyframes cc-spin { to { transform: rotate(360deg); } }
 
 .candidate-shell { min-height: 100%; padding: 24px max(18px, env(safe-area-inset-left)) calc(28px + var(--cc-safe-bottom)); background: radial-gradient(circle at 92% 3%, var(--cc-page-tint), transparent 30%), var(--cc-page); }
 .cc-stack { display: grid; gap: 18px; max-width: 760px; margin: 0 auto; }
+.settings-dashboard { display: grid; gap: 18px; max-width: 980px; margin: 0 auto; }
+.settings-intro { padding: 4px 2px; }
+.settings-intro h2 { margin: 5px 0 4px; color: var(--cc-ink); font-size: clamp(21px, 4vw, 29px); letter-spacing: -0.04em; }
+.settings-intro p { margin: 0; color: var(--cc-muted); font-size: 12px; }
+.settings-job-grid { display: grid; gap: 14px; }
+.settings-job { display: grid; gap: 14px; align-content: start; min-width: 0; }
+.settings-job-head { display: flex; gap: 10px; align-items: center; padding-bottom: 11px; border-bottom: 1px solid var(--cc-line); }
+.settings-job-head > span { display: grid; width: 31px; height: 31px; place-items: center; flex: 0 0 auto; border-radius: 11px; background: var(--cc-blue-soft); color: var(--cc-blue); font-size: 10px; font-weight: 800; }
+.settings-job-head h3 { margin: 0; color: var(--cc-ink); font-size: 15px; }
+.settings-job-head p { margin: 2px 0 0; color: var(--cc-muted); font-size: 10.5px; }
+.settings-facts { display: grid; margin: 0; }
+.settings-facts div { display: flex; justify-content: space-between; gap: 16px; padding: 9px 0; border-bottom: 1px solid var(--cc-line); }
+.settings-facts dt { color: var(--cc-muted); font-size: 11px; }
+.settings-facts dd { margin: 0; color: var(--cc-ink); font-size: 11px; font-weight: 750; text-align: right; }
+.settings-danger { display: grid; gap: 6px; margin-top: 4px; padding: 12px; border: 1px solid color-mix(in srgb, var(--ion-color-danger) 24%, transparent); border-radius: var(--cc-r-md); background: color-mix(in srgb, var(--ion-color-danger) 5%, transparent); }
+.settings-danger p, .settings-explain, .notification-readiness p, .settings-job > p { margin: 0; color: var(--cc-muted); font-size: 11px; line-height: 1.55; }
+.notification-readiness { display: flex; align-items: flex-start; gap: 11px; padding: 13px; border: 1px solid var(--cc-line); border-radius: var(--cc-r-md); background: var(--cc-solid-soft); transition: border-color 160ms ease, background 160ms ease; }
+.notification-readiness > div { display: grid; min-width: 0; gap: 3px; }
+.notification-readiness strong { color: var(--cc-ink); font-size: 12px; line-height: 1.4; }
+.notification-readiness.state-subscribed { border-color: color-mix(in srgb, var(--cc-teal) 45%, var(--cc-line)); background: color-mix(in srgb, var(--cc-teal) 8%, var(--cc-solid-soft)); }
+.notification-readiness.state-denied, .notification-readiness.state-error, .notification-readiness.state-stale { border-color: color-mix(in srgb, var(--ion-color-warning) 35%, var(--cc-line)); }
+.notification-state-icon { display: grid; width: 38px; height: 38px; flex: 0 0 auto; place-items: center; border-radius: var(--cc-r-sm); background: rgba(var(--cc-accent), 0.1); color: var(--cc-blue); }
+.notification-readiness.state-subscribed .notification-state-icon { background: color-mix(in srgb, var(--cc-teal) 15%, transparent); color: var(--cc-teal); }
+.notification-scope { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.notification-scope li { position: relative; display: grid; grid-template-columns: minmax(76px, auto) 1fr; gap: 10px; padding: 9px 0 9px 18px; border-bottom: 1px solid var(--cc-line); }
+.notification-scope li::before { position: absolute; top: 14px; left: 2px; width: 8px; height: 8px; border-radius: 50%; background: var(--cc-teal); box-shadow: 0 0 0 4px color-mix(in srgb, var(--cc-teal) 11%, transparent); content: ""; }
+.notification-scope strong { color: var(--cc-ink); font-size: 11px; }
+.notification-scope span { color: var(--cc-muted); font-size: 10.5px; line-height: 1.45; }
+.notification-action, .notification-retry { display: inline-flex; width: 100%; min-height: 46px; align-items: center; justify-content: center; gap: 7px; padding: 10px 12px; border: 1px solid rgba(var(--cc-accent), 0.28); border-radius: var(--cc-r-md); background: rgba(var(--cc-accent), 0.1); color: var(--cc-blue-ink); font-size: 11.5px; font-weight: 760; }
+.notification-action.is-on { border-color: var(--cc-line); background: var(--cc-solid-soft); color: var(--cc-muted); }
+.notification-action:disabled, .notification-retry:disabled { cursor: wait; opacity: 0.68; }
+.notification-action .spinning { animation: cc-spin 900ms linear infinite; }
+.notification-retry { min-height: 42px; border-color: var(--cc-line); background: transparent; }
+.settings-disabled-action { min-height: 46px; padding: 10px; border: 1px solid var(--cc-line); border-radius: var(--cc-r-md); background: var(--cc-solid-soft); color: var(--cc-muted); font-size: 11px; font-weight: 750; }
+.settings-boundary { margin: 0; }
+.help-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.help-actions button { display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 46px; padding: 9px; border: 1px solid var(--cc-line); border-radius: var(--cc-r-md); background: var(--cc-solid-soft); color: var(--cc-blue-ink); font-size: 11px; font-weight: 750; }
+@media (min-width: 760px) {
+  .settings-job-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+}
 .hero-card, .surface-card { border: 1px solid var(--cc-line); border-radius: var(--cc-r-xl); background: var(--cc-surface); box-shadow: var(--cc-elev-2); }
 .hero-card { overflow: hidden; padding: 28px 24px 22px; background: linear-gradient(155deg, rgba(255,255,255,0.98), rgba(239,246,255,0.95)); }
 .hero-card h1, .top-heading h1 { margin: 11px 0 12px; color: var(--cc-ink); font-size: clamp(28px, 7.3vw, 42px); line-height: 1.12; letter-spacing: -0.055em; font-weight: 760; word-break: keep-all; }
@@ -327,9 +379,30 @@ ion-toolbar {
 .retry-action { flex: 0 0 auto; border: 0; border-radius: var(--cc-r-sm); background: var(--cc-danger-soft); color: var(--cc-danger); font-size: 10px; font-weight: 720; padding: 9px 10px; }
 
 .brief-card { overflow: hidden; border: 1px solid var(--cc-line); border-radius: var(--cc-r-lg); background: var(--cc-surface); box-shadow: var(--cc-elev-1); }
+.brief-card.needs-attention { border-color: color-mix(in srgb, var(--ion-color-warning) 38%, var(--cc-line)); }
 .brief-summary { display: flex; width: 100%; min-height: 76px; align-items: center; gap: 11px; padding: 12px 14px; border: 0; background: transparent; color: inherit; text-align: left; }
 .brief-summary > svg { flex: 0 0 auto; color: var(--cc-muted); transition: transform 160ms ease; }
 .brief-summary > svg.expanded { transform: rotate(90deg); }
+.status-attention { border-color: color-mix(in srgb, var(--ion-color-warning) 34%, var(--cc-line)); background: color-mix(in srgb, var(--ion-color-warning) 8%, var(--cc-solid-soft)); color: color-mix(in srgb, var(--ion-color-warning) 78%, var(--cc-ink)); }
+.attention-recovery { display: grid; grid-template-columns: auto 1fr; gap: 9px 10px; padding: 13px 14px; border-top: 1px solid color-mix(in srgb, var(--ion-color-warning) 26%, var(--cc-line)); background: color-mix(in srgb, var(--ion-color-warning) 7%, var(--cc-solid-soft)); }
+.attention-recovery > svg { margin-top: 1px; color: color-mix(in srgb, var(--ion-color-warning) 75%, var(--cc-ink)); }
+.attention-recovery > div:not(.attention-actions) { display: grid; gap: 3px; }
+.attention-recovery strong { color: var(--cc-ink); font-size: 12px; }
+.attention-recovery p { margin: 0; color: var(--cc-muted); font-size: 10.5px; line-height: 1.5; }
+.attention-actions { display: flex; grid-column: 2; flex-wrap: wrap; gap: 7px; }
+.attention-actions button { display: inline-flex; min-height: 36px; align-items: center; justify-content: center; gap: 5px; padding: 7px 10px; border: 1px solid var(--cc-line); border-radius: var(--cc-r-sm); background: var(--cc-solid); color: var(--cc-blue-ink); font-size: 10.5px; font-weight: 740; }
+.attention-actions button:first-child { border-color: rgba(var(--cc-accent), 0.28); background: rgba(var(--cc-accent), 0.08); }
+.recovery-notice { display: grid; grid-template-columns: auto 1fr; gap: 12px; border-color: color-mix(in srgb, var(--ion-color-warning) 36%, var(--cc-line)); background: linear-gradient(145deg, color-mix(in srgb, var(--ion-color-warning) 10%, var(--cc-solid)), var(--cc-solid)); }
+.recovery-notice-icon { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 12px; background: color-mix(in srgb, var(--ion-color-warning) 15%, var(--cc-solid)); color: color-mix(in srgb, var(--ion-color-warning) 78%, var(--cc-ink)); }
+.recovery-notice-copy { display: grid; gap: 5px; min-width: 0; }
+.recovery-notice-copy > span { color: var(--cc-muted); font-size: 10px; font-weight: 760; letter-spacing: .04em; text-transform: uppercase; }
+.recovery-notice-copy > strong { color: var(--cc-ink); font-size: 13px; }
+.recovery-notice-copy > p { margin: 0 0 4px; color: var(--cc-muted); font-size: 11px; line-height: 1.55; }
+@media (max-width: 360px) {
+  .attention-recovery { grid-template-columns: auto 1fr; }
+  .attention-actions { grid-column: 1 / -1; }
+  .attention-actions button { flex: 1; }
+}
 .processing-line { display: grid; gap: 7px; padding: 0 14px 12px 67px; color: var(--cc-warn); font-size: 10px; }
 .processing-line.late { color: var(--cc-danger); }
 .processing-line > div { display: flex; flex-wrap: wrap; gap: 7px; }
@@ -412,10 +485,10 @@ ion-toolbar {
 .person-action-composer > p { margin: 0; color: var(--cc-muted); font-size: 13px; line-height: 1.6; word-break: keep-all; }
 .person-action-composer ion-textarea { --background: var(--cc-sunken); --padding-start: 13px; --padding-end: 13px; border: 1px solid var(--cc-line); border-radius: var(--cc-r-md); }
 .person-action-composer > small { margin-top: -7px; color: var(--cc-muted); font-size: 10px; text-align: right; }
-/* 접수 버튼은 시트 바닥에 붙어 있어야 한다 — 예시 chip·경계 문구가 늘어나면 예전에는 화면 밖으로
-   밀려 버튼을 아예 누를 수 없었다 (회귀 게이트가 잡았다). */
-.person-action-submit { position: sticky; bottom: 0; display: grid; gap: 5px; padding-top: 9px; margin-top: -3px; background: linear-gradient(180deg, rgba(255,255,255,0), var(--ion-background-color, #fff) 26%); }
+/* 접수 버튼은 modal scroll content와 분리된 footer다. Deep 목적·근거 설명이 길어져도 화면 밖으로 밀리지 않는다. */
+.person-action-submit { display: grid; gap: 5px; padding: 9px max(16px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); border-top: 1px solid var(--cc-line); background: var(--ion-background-color, #fff); box-shadow: 0 -10px 24px rgba(24, 35, 54, 0.08); }
 .person-action-submit small { color: var(--cc-muted); font-size: 10px; text-align: right; }
+.person-action-submit ion-button { margin: 0; }
 
 ion-modal.camera-preview-modal { --height: 100%; --width: min(100%, 680px); }
 .camera-preview-content { --background: #0f1722; }
@@ -476,18 +549,15 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(var(--cc-accent)
   .signal-grid { grid-template-columns: repeat(2, minmax(0, 220px)); }
 }
 
-/* 움직임 최소화. 두 갈래로 적는다:
-   1. 미디어 쿼리 — JS가 `data-motion`을 붙이기 전 **첫 프레임부터** 폰 설정을 존중한다.
-      단 `켜기`를 명시적으로 고른 사람은 제외한다(`:not([data-motion="on"])`).
-   2. 속성 — 폰은 그대로인데 앱에서만 끄기를 고른 사람. */
+/* DEC-000093: OS의 움직임 줄이기는 첫 프레임부터 항상 우선하며 앱 override가 없다. */
 @media (prefers-reduced-motion: reduce) {
-  :root:not([data-motion="on"]) *,
-  :root:not([data-motion="on"]) *::before,
-  :root:not([data-motion="on"]) *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  :root *,
+  :root *::before,
+  :root *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+  :root .ai-surface::before { display: none; }
+  :root .ai-surface { box-shadow: 0 0 0 1px var(--cc-ai-rim-lit), 0 0 14px -3px var(--cc-ai-rim-lit); }
+  :root .ai-stage-bars i.ai-stage-active { background: linear-gradient(90deg, rgb(var(--cc-accent)), rgba(var(--cc-accent), 0.45)); background-size: auto; }
 }
-:root[data-motion="off"] *,
-:root[data-motion="off"] *::before,
-:root[data-motion="off"] *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 
 /* ── 브리핑·프로필 마크다운 렌더링 (legacy mdLite 파리티) ── */
 .md-lite { display: grid; gap: 2px; color: var(--cc-ink); font-size: 13px; line-height: 1.55; }
@@ -711,7 +781,7 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(var(--cc-accent)
 
    2026-07-28 2차 판정: 실기기에서 "여전히 안 나옴". 조건을 하나씩 흉내 내 재 보니
    원인은 이 층이 아니라 **폰의 움직임 최소화**였다(그 상태에서 시간에 따른 픽셀 변화 0).
-   그건 아래 `[data-motion="off"]`가 소유한다. 다만 같이 고친 두 가지가 여기 있다:
+   그건 아래 OS `prefers-reduced-motion` 규칙이 소유한다. 다만 같이 고친 두 가지가 여기 있다:
      1. 움직임을 `transform`으로 옮겼다. `background-position`은 매 프레임 다시 칠해야 해서
         폰에서 프레임이 떨어지면 느린 7.5초 띠가 정지 화면처럼 보인다. transform은 합성만 한다.
      2. 세기를 올렸다. 어두운 면 위 26/255는 밝은 실내에서 "없는 것"과 구별되지 않았다.
@@ -763,15 +833,6 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(var(--cc-accent)
   to { background-position: -130% 0; }
 }
 
-/* 움직임을 끄면 효과는 사라지되 상태는 남는다 — 테두리·단계 글자가 그대로 말한다.
-   `data-motion`은 사용자가 설정에서 고른 값이 해석된 결과다(`services/motion.ts`).
-   `시스템`을 골랐을 때만 폰의 움직임 최소화를 따르므로 여기서 `prefers-reduced-motion`을
-   직접 보지 않는다 — 그러면 `켜기`를 고른 사람의 화면까지 멈춘다. 테마와 같은 규칙이다. */
-:root[data-motion="off"] .ai-surface::before { display: none; }
-:root[data-motion="off"] .ai-surface .ai-mark { animation: none; }
-/* 발광은 **멈추되 사라지지 않는다**. 이 박스가 AI 표면이라는 표식은 정지한 빛으로 남는다. */
-:root[data-motion="off"] .ai-surface { animation: none; box-shadow: 0 0 0 1px var(--cc-ai-rim-lit), 0 0 14px -3px var(--cc-ai-rim-lit); }
-:root[data-motion="off"] .ai-stage-bars i.ai-stage-active { background: linear-gradient(90deg, rgb(var(--cc-accent)), rgba(var(--cc-accent), 0.45)); background-size: auto; animation: none; }
 .ai-surface-head { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
 .ai-surface-head strong { color: var(--cc-ink); font-size: 13.5px; font-weight: 790; letter-spacing: -0.02em; }
 .ai-surface-head p { flex: 1 0 100%; margin: 0; color: var(--cc-muted); font-size: 11.5px; line-height: 1.5; word-break: keep-all; }
@@ -780,6 +841,58 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(var(--cc-accent)
 .ai-surface ion-textarea { --background: var(--cc-solid); --padding-start: 12px; --padding-end: 12px; border: 1px solid rgba(var(--cc-accent), 0.16); border-radius: var(--cc-r-md); font-size: 12.5px; }
 .ai-example-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .ai-example-chips button { min-height: 32px; padding: 7px 10px; border: 1px solid var(--cc-line); border-radius: var(--cc-r-md); background: var(--cc-solid-soft); color: var(--cc-blue-ink); font-size: 10.5px; font-weight: 700; }
+.ai-example-chips button.is-selected { border-color: rgba(var(--cc-accent), 0.55); background: var(--cc-blue-soft); box-shadow: inset 0 0 0 1px rgba(var(--cc-accent), 0.12); }
+.ai-research-examples { display: grid; gap: 8px; }
+.ai-bulk-select { display: flex; align-items: center; gap: 10px; min-height: 46px; width: 100%; padding: 8px 11px; border: 1px dashed rgba(var(--cc-accent), 0.38); border-radius: var(--cc-r-md); background: rgba(var(--cc-accent), 0.05); color: var(--cc-blue-ink); text-align: left; }
+.ai-bulk-select > span:first-child { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid rgba(var(--cc-accent), 0.4); border-radius: 8px; }
+.ai-bulk-select > span:last-child { display: grid; gap: 1px; }
+.ai-bulk-select strong { font-size: 11.5px; }
+.ai-bulk-select small { color: var(--cc-muted); font-size: 10px; }
+.research-mode-switch { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.research-mode-switch > button:only-child { grid-column: 1 / -1; }
+.research-mode-switch button, .research-purpose-grid button { display: grid; gap: 3px; min-height: 58px; padding: 10px; border: 1px solid var(--cc-line); border-radius: var(--cc-r-md); background: var(--cc-solid-soft); color: var(--cc-muted); text-align: left; }
+.research-mode-switch button strong, .research-purpose-grid button strong { color: var(--cc-ink); font-size: 12px; }
+.research-mode-switch button small, .research-purpose-grid button small { font-size: 10px; line-height: 1.35; }
+.research-mode-switch button.on, .research-purpose-grid button.on { border-color: rgba(var(--cc-accent), 0.55); background: var(--cc-blue-soft); }
+.research-mode-switch button.on strong, .research-purpose-grid button.on strong { color: var(--cc-ink); }
+.research-purpose-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; padding: 0; border: 0; }
+.research-purpose-grid legend { grid-column: 1 / -1; margin-bottom: 2px; color: var(--cc-muted); font-size: 11px; font-weight: 750; }
+.research-validation { margin: 0; padding: 9px 10px; border: 1px solid var(--cc-danger); border-radius: var(--cc-r-sm); background: var(--cc-danger-soft); color: var(--cc-danger); font-size: 11px; font-weight: 700; }
+.research-live-progress { display: grid; gap: 4px; margin: 0 13px 12px; padding: 11px; border: 1px solid rgba(var(--cc-accent), 0.22); border-radius: var(--cc-r-md); background: var(--cc-blue-soft); }
+.research-live-progress strong { color: var(--cc-blue-ink); font-size: 11.5px; }
+.research-live-progress span, .research-live-progress small { color: var(--cc-muted); font-size: 10px; }
+.research-evidence { display: grid; gap: 13px; margin-top: 14px; padding: 14px; border: 1px solid rgba(var(--cc-accent), 0.24); border-radius: var(--cc-r-lg); background: var(--cc-solid-soft); }
+.research-evidence > header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.research-evidence h4 { margin: 3px 0 0; color: var(--cc-ink); font-size: 15px; }
+.research-stop { max-width: 46%; padding: 5px 7px; border-radius: 9px; background: var(--cc-blue-soft); color: var(--cc-blue-ink); font-size: 9.5px; font-weight: 750; text-align: right; }
+.research-counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
+.research-counts span { display: grid; gap: 1px; padding: 7px 4px; border: 1px solid var(--cc-line); border-radius: 9px; color: var(--cc-muted); font-size: 8.5px; text-align: center; }
+.research-counts b { color: var(--cc-ink); font-size: 14px; }
+.research-result-tabs { display: grid; grid-template-columns: repeat(3, 1fr); padding: 3px; border-radius: var(--cc-r-md); background: var(--cc-fill); }
+.research-result-tabs button { min-height: 42px; border: 0; border-radius: 9px; background: transparent; color: var(--cc-muted); font-size: 11px; font-weight: 750; }
+.research-result-tabs button.on { background: var(--cc-solid); color: var(--cc-blue); box-shadow: var(--cc-shadow-soft); }
+.research-claims, .research-evidence-list { display: grid; gap: 8px; }
+.research-claim, .research-evidence-list article { display: grid; gap: 5px; padding: 11px; border: 1px solid var(--cc-line); border-left-width: 4px; border-radius: var(--cc-r-md); background: var(--cc-solid); }
+.research-claim > span { color: var(--cc-muted); font-size: 9.5px; font-weight: 750; }
+.research-claim > strong, .research-evidence-list article > strong { color: var(--cc-ink); font-size: 12px; line-height: 1.45; }
+.research-claim.is-fact { border-left-color: #248a67; }
+.research-claim.is-conflict { border-left-color: #d4822b; }
+.research-claim.is-unknown { border-left-color: #7c8799; }
+.research-claim.is-hypothesis { border-left-color: rgb(var(--cc-accent)); }
+.research-open { padding: 11px; border-radius: var(--cc-r-md); background: var(--cc-fill); color: var(--cc-muted); font-size: 10.5px; }
+.research-open ul { margin: 7px 0 0; padding-left: 18px; }
+.research-timeline { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.research-timeline li { display: grid; grid-template-columns: 82px 1fr; gap: 2px 10px; padding: 10px 0; border-bottom: 1px solid var(--cc-line); }
+.research-timeline time { grid-row: 1 / 3; color: var(--cc-blue); font-size: 10px; font-weight: 750; }
+.research-timeline strong { color: var(--cc-ink); font-size: 11.5px; }
+.research-timeline small { color: var(--cc-muted); font-size: 9.5px; }
+.research-evidence-list article > div { display: grid; grid-template-columns: 75px 1fr; gap: 6px; color: var(--cc-muted); font-size: 10px; }
+.research-evidence-list a { color: var(--cc-blue); overflow-wrap: anywhere; }
+.research-evidence > footer { color: var(--cc-muted); font-size: 9.5px; line-height: 1.5; }
+@media (min-width: 760px) {
+  .research-claims { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .research-open { grid-column: 1 / -1; }
+}
 .ai-scope-note { margin: 0; color: #4b5a70; font-size: 10.5px; line-height: 1.55; word-break: keep-all; }
 /* "하지 않는 일"은 시각적으로 분리해 경계가 눈에 띄게 한다. */
 .ai-scope-note.is-limit { padding-top: 7px; border-top: 1px solid rgba(var(--cc-accent), 0.14); color: var(--cc-muted); }

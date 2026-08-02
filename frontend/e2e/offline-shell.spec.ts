@@ -88,7 +88,7 @@ test('serves the cached candidate shell after the origin server stops', async ({
   }
 });
 
-test('promotes the root entrypoint while preserving token links and legacy rollback', async ({ page }) => {
+test('promotes the root entrypoint while preserving token links after legacy retirement', async ({ page }) => {
   const server = await startStaticServer();
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
@@ -102,12 +102,8 @@ test('promotes the root entrypoint while preserving token links and legacy rollb
     await expect(page).toHaveURL(`${origin}next/?view=search`);
     await expect(page.locator('ion-header .app-header b')).toHaveText('사람 찾기');
     expect(await page.evaluate(() => localStorage.getItem('cc_token'))).toBe('root-token');
-    await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '설정' }).click();
-    await expect(page.getByRole('link', { name: /이전 앱 열기/ })).toHaveAttribute('href', '../legacy.html');
-
     const legacyResponse = await page.request.get(`${origin}legacy.html`);
-    expect(legacyResponse.ok()).toBe(true);
-    expect(await legacyResponse.text()).toContain('<title>명함 캡처 — 이전 앱</title>');
+    expect(legacyResponse.status()).toBe(404);
   } finally {
     await stopStaticServer(server);
   }
@@ -133,7 +129,7 @@ test('keeps person search on the bottom navigation without a capture-home shortc
   }
 });
 
-test('boots from legacy link parameters and retries a failed local capture when online', async ({ page }) => {
+test('boots from personal-link parameters and retries a failed local capture when online', async ({ page }) => {
   const server = await startStaticServer();
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
@@ -188,7 +184,7 @@ test('boots from legacy link parameters and retries a failed local capture when 
     await expect.poll(() => postCount).toBe(1);
     await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '진행' }).click();
     await expect(page.getByText('Queue Fixture', { exact: true })).toBeVisible();
-    await expect(page.getByText(/4단계 중 2단계 · 서버 접수 중/)).toBeVisible();
+    await expect(page.getByText('서버가 접수했어요')).toBeVisible();
     await page.getByRole('button', { name: /Queue Fixture/ }).click();
     await page.getByLabel('어디서 만났는지', { exact: true }).fill('Edited Expo');
     await page.getByLabel('메모', { exact: true }).fill('Edited memo');
@@ -279,7 +275,7 @@ test('restores brief, profile, contact, search, and post-processing actions', as
   }
 });
 
-test('captures front and back with context into the legacy queue without uploading when unconfigured', async ({ page }) => {
+test('captures front and back with context into the local queue without uploading when unconfigured', async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(window, '__candidatePostCount', { configurable: true, value: 0, writable: true });
     const originalFetch = window.fetch.bind(window);
@@ -325,7 +321,7 @@ test('captures front and back with context into the legacy queue without uploadi
     await expect(page.getByText('명함 앞면', { exact: true })).toBeVisible();
     await expect(page.getByLabel('후면 카메라 미리보기')).toBeVisible();
     await expect(page.getByRole('button', { name: '자동 촬영 켜짐' })).toBeVisible();
-    await expect(page.getByRole('link', { name: '이전 촬영 화면 열기 · 복구용' })).toBeVisible();
+    await expect(page.getByRole('link', { name: /이전 촬영 화면/ })).toHaveCount(0);
     await page.getByRole('button', { name: '앞면 촬영', exact: true }).click();
     // 카메라를 벗어나지 않는 선택지 (legacy camChoiceUI).
     await expect(page.getByText('앞면 저장됨 — 뒷면도 찍을까요? (선택)')).toBeVisible();
@@ -347,7 +343,7 @@ test('captures front and back with context into the legacy queue without uploadi
     await page.getByRole('button', { name: '완료', exact: true }).click();
     // 저장이 확인된 뒤에만, 그리고 이 기기 저장 사실만 말한다 (FI-031·032).
     await expect(page.getByText('이 폰에 저장했어요 — 이제 폰을 넣어도 됩니다. 연결되면 자동으로 전송합니다.', { exact: false })).toBeVisible();
-    await expect(page.locator('.queue-row', { hasText: '김카이렌' })).toContainText('4단계 중 1단계 · 사진 전송 중');
+    await expect(page.locator('.queue-row', { hasText: '김카이렌' })).toContainText('기기에서 전송을 기다려요');
     const queueReceipt = await page.evaluate(async () => {
       const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {
         const request = indexedDB.open('cardcapture', 1);

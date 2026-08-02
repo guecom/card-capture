@@ -1,6 +1,7 @@
 'use strict';
 
 var assert = require('assert');
+var crypto = require('crypto');
 var fs = require('fs');
 var path = require('path');
 var vm = require('vm');
@@ -95,6 +96,12 @@ var sandbox = {
   } },
   Utilities: {
     newBlob: function (value, mime, name) { return blob(value, name); },
+    DigestAlgorithm: { SHA_256: 'sha256' },
+    Charset: { UTF_8: 'utf8' },
+    computeDigest: function (_algorithm, value) {
+      return Array.prototype.slice.call(crypto.createHash('sha256').update(String(value), 'utf8').digest())
+        .map(function (byte) { return byte > 127 ? byte - 256 : byte; });
+    },
     formatDate: function () { return '20260725-190000'; },
     getUuid: function () { return 'abcd-0000'; }
   }
@@ -138,21 +145,4 @@ var listedProcessed = listed.items.filter(function (item) { return item.captureI
 assert.strictEqual(listedProcessed.receivedAt, '2026-07-25T07:00:00.000Z');
 assert.strictEqual(listedProcessed.processedAt, '2026-07-25T07:10:00.000Z');
 
-var html = fs.readFileSync(path.join(__dirname, '..', 'docs', 'legacy.html'), 'utf8');
-assert.ok(/&_ts=' \+ Date\.now\(\)/.test(html), 'list request needs a cache-busting nonce');
-assert.ok(/fetch\(listUrl, \{ cache: 'no-store' \}\)/.test(html), 'list request needs no-store');
-assert.ok(/method: 'POST'.*action: 'requeue'/s.test(html), 'requeue must use POST');
-assert.ok(/elapsedMinOf\(it\)/.test(html), 'elapsed time must receive the current item');
-
-var elapsedSource = html.match(/function elapsedMinOf\(item\) \{[\s\S]*?\n\}/);
-assert.ok(elapsedSource, 'elapsedMinOf helper must exist');
-var FixedDate = class extends Date { static now() { return Date.parse('2026-07-25T10:20:00.000Z'); } };
-var uiSandbox = { Date: FixedDate, elapsedMinOf: null };
-vm.runInNewContext(elapsedSource[0], uiSandbox);
-assert.strictEqual(uiSandbox.elapsedMinOf({
-  captureId: '20260725-070000-test',
-  capturedAt: '2026-07-25T07:00:00.000Z',
-  receivedAt: '2026-07-25T10:10:00.000Z'
-}), 10, 'latest receivedAt must reset the displayed queue age');
-
-console.log('PASS status consistency: fresh list, terminal non-regression, receivedAt queue age');
+console.log('PASS status consistency: terminal non-regression and receivedAt reset');

@@ -340,6 +340,10 @@ $reported = [PSCustomObject]@{
     activeClaims = $null
     quarantinedCount = $null
     interruptedCount = $null
+    pushConfigured = $null
+    pushPendingCount = $null
+    pushLastFlushAt = $null
+    pushLastOutcome = $null
 }
 
 $healthPresent = Test-Path $HealthFile
@@ -366,6 +370,10 @@ if ($null -ne $h) {
     $reported.activeClaims = Get-Prop $h 'activeClaims'
     $reported.quarantinedCount = Get-Prop $h 'quarantinedCount'
     $reported.interruptedCount = Get-Prop $h 'interruptedCount'
+    $reported.pushConfigured = Get-Prop $h 'pushConfigured'
+    $reported.pushPendingCount = Get-Prop $h 'pushPendingCount'
+    $reported.pushLastFlushAt = Get-Prop $h 'pushLastFlushAt'
+    $reported.pushLastOutcome = Get-Prop $h 'pushLastOutcome'
 
     # heartbeat
     $beat = ConvertTo-Stamp $watcher.lastHeartbeat
@@ -415,6 +423,10 @@ if ($null -ne $h) {
     $cf = $null
     try { if ($null -ne $reported.consecutiveFailures) { $cf = [int]$reported.consecutiveFailures } } catch { $cf = $null }
     if ($null -ne $cf -and $cf -ge 3) { Sev 2 'consecutive_failures' }
+    $pushPending = 0
+    try { if ($null -ne $reported.pushPendingCount) { $pushPending = [int]$reported.pushPendingCount } } catch { $pushPending = 0 }
+    if ($pushPending -gt 0) { Sev 1 'push_delivery_pending' }
+    if ([string]$reported.pushLastOutcome -match 'failed=[1-9][0-9]*') { Sev 1 'push_delivery_failed' }
 }
 
 # 고아 워처: health가 가리키지 않는데 워처로 떠 있는 프로세스.
@@ -534,6 +546,8 @@ Write-Host ("backlog            : " + (Show $reported.backlogCount) + "  (oldest
 Write-Host ("consecutiveFailures: " + (Show $reported.consecutiveFailures))
 Write-Host ("lastRun            : " + (Show $reported.lastRunStart) + " -> " + (Show $reported.lastRunEnd) + "  (exit=" + (Show $reported.lastExitCode) + ")")
 Write-Host ("lock               : " + (Show $reported.lockExists))
+Write-Host ("push               : configured=" + (Show $reported.pushConfigured) + "  pending=" + (Show $reported.pushPendingCount) +
+    "  last=" + (Show $reported.pushLastFlushAt) + "  outcome=" + (Show $reported.pushLastOutcome))
 
 Write-Host ''
 Write-Host '--- 지금 관측한 상태 (state 디렉터리) ---'

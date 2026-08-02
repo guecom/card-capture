@@ -20,7 +20,7 @@
        `front.jpg`라는 이름에 `text/html` MIME을 붙일 수 있다. 이름은 서버가 소유하는데
        content type은 아직 클라이언트가 소유한다.
 
-   실제 클라이언트는 두 경로(`frontend/src/services/camera.ts`, `docs/legacy.html`) 모두
+   현재 클라이언트(`frontend/src/services/camera.ts`)는
    canvas `toDataURL('image/jpeg', …)`로 인코딩한다 — 기본 카메라 파일 선택도
    `fileToCameraFrame`이 canvas로 재인코딩한다. 즉 **정상 업로드는 예외 없이 canvas JPEG**이고,
    SOI(FF D8 FF)로 시작해 EOI(FF D9)로 끝난다. 그러므로 JPEG만 받는 것은 계약을 좁히는 것이
@@ -420,7 +420,7 @@ var PROPOSED_ISJPEG = [
   "   `mime: 'image/jpeg'`라고 주장하며 PNG·PDF·ZIP·HTML·SVG·순수 텍스트를 front.jpg로",
   '   저장할 수 있었고, 처리 파이프라인은 receipt의 files를 보고 그것을 명함 사진으로 다뤘다.',
   '',
-  '   두 클라이언트(frontend camera.ts / docs legacy.html)는 기본 카메라로 고른 파일까지',
+  '   현재 frontend camera.ts는 기본 카메라로 고른 파일까지',
   "   canvas `toDataURL('image/jpeg', ...)`로 재인코딩한다 — 정상 업로드는 예외 없이",
   '   SOI(FF D8 FF)로 시작해 EOI(FF D9)로 끝나는 canvas JPEG이다. 그래서 두 끝을 다 본다:',
   '   헤더만 보면 "앞은 JPEG, 뒤는 HTML"인 폴리글롯을 못 막는다.',

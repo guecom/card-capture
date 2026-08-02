@@ -4,14 +4,15 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join, relative, sep } from 'node:path';
+import { extname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-function readLegacyDefaultApi(): string {
-  const legacyHtml = readFileSync(new URL('../docs/legacy.html', import.meta.url), 'utf8');
-  const match = /var DEFAULT_API = '([^']+)'/.exec(legacyHtml);
-  if (!match?.[1]) throw new Error('legacy_default_api_missing');
-  return match[1];
+function readPublicRuntimeApi(): string {
+  const runtime = JSON.parse(readFileSync(new URL('../config/public-runtime.json', import.meta.url), 'utf8')) as { apiUrl?: unknown };
+  if (typeof runtime.apiUrl !== 'string' || !/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(runtime.apiUrl)) {
+    throw new Error('public_runtime_api_missing');
+  }
+  return runtime.apiUrl;
 }
 
 /**
@@ -30,9 +31,11 @@ function readLegacyDefaultApi(): string {
  */
 function sourceBuildId(defaultApi: string): string {
   const frontendDir = fileURLToPath(new URL('.', import.meta.url));
+  const ignoredSourceMetadata = new Set(['desktop.ini', 'Thumbs.db', '.DS_Store']);
   const files: string[] = [];
   const collect = (dir: string): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (ignoredSourceMetadata.has(entry.name)) continue;
       const full = join(dir, entry.name);
       if (entry.isDirectory()) collect(full);
       else files.push(full);
@@ -52,15 +55,20 @@ function sourceBuildId(defaultApi: string): string {
   for (const { rel, full } of keyed) {
     hash.update(rel);
     hash.update('\0');
-    hash.update(readFileSync(full, 'utf8').replace(/\r\n/g, '\n'));
+    // Decode only text. Decoding WOFF2 as UTF-8 makes the hash depend on the
+    // Node major's replacement-character behavior for malformed byte runs.
+    const bytes = readFileSync(full);
+    hash.update(extname(full).toLowerCase() === '.woff2'
+      ? bytes
+      : bytes.toString('utf8').replace(/\r\n?/g, '\n'));
     hash.update('\0');
   }
-  // docs/legacy.html에서 주입되는 pinned endpoint도 번들 내용의 일부다.
+  // 공개 runtime config에서 주입되는 pinned endpoint도 번들 내용의 일부다.
   hash.update(defaultApi);
   return `src-${hash.digest('hex').slice(0, 12)}`;
 }
 
-const legacyDefaultApi = readLegacyDefaultApi();
+const publicRuntimeApi = readPublicRuntimeApi();
 
 function stableHash(values: string[]): string {
   let hash = 2166136261;
@@ -88,6 +96,13 @@ function candidatePwa(): Plugin {
 const CACHE = ${JSON.stringify(cacheName)};
 const CACHE_PREFIX = 'cardcapture-next-';
 const SHELL = ${JSON.stringify(shell)};
+const PUSH_COPY = Object.freeze({
+  final_result: Object.freeze({ title: '처리가 끝났어요', body: '최종 결과를 확인할 수 있어요.', action: '결과 보기' }),
+  human_input_required: Object.freeze({ title: '내용 확인이 필요해요', body: '앱에서 필요한 내용을 보완해 주세요.', action: '내용 보완' }),
+  recovery_required: Object.freeze({ title: '처리를 이어가야 해요', body: '앱에서 문제를 확인하고 다시 시도해 주세요.', action: '문제 확인' }),
+});
+const PUSH_TARGET = /^[A-Za-z0-9_-]{4,80}$/;
+const PUSH_EVENT_ID = /^pne-[a-f0-9]{64}$/;
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -103,6 +118,63 @@ self.addEventListener('message', (event) => {
   if (event.data?.type === 'CC_PING' && event.ports?.[0]) {
     event.ports[0].postMessage({ type: 'CC_PONG', cache: CACHE });
   }
+});
+
+/* Push text and destinations are owned by this service worker, never by sender input.
+   A notification payload may select one of three kinds and optionally identify a bounded capture.
+   Names, companies, notes, quick-name results, arbitrary stages, and absolute URLs are ignored. */
+self.addEventListener('push', (event) => {
+  event.waitUntil((async () => {
+    let payload = null;
+    try { payload = event.data ? event.data.json() : null; } catch { return; }
+    if (!payload || typeof payload !== 'object' || payload.v !== 1 || !PUSH_EVENT_ID.test(payload.eventId || '')) return;
+    if (typeof payload.kind !== 'string' || !Object.prototype.hasOwnProperty.call(PUSH_COPY, payload.kind)) return;
+    const copy = PUSH_COPY[payload.kind];
+    const target = typeof payload.target === 'string' && PUSH_TARGET.test(payload.target) ? payload.target : '';
+    const notice = payload.kind === 'recovery_required' ? '&notice=recovery_required' : '';
+    const route = target
+      ? './?view=activity&focus=' + encodeURIComponent(target) + notice
+      : './?view=activity';
+    await self.registration.showNotification(copy.title, {
+      body: copy.body,
+      tag: 'cc-' + payload.eventId,
+      renotify: false,
+      requireInteraction: false,
+      icon: new URL('../icon-192.png', self.registration.scope).href,
+      badge: new URL('../icon-192.png', self.registration.scope).href,
+      data: { route: route },
+      actions: [{ action: 'open', title: copy.action }],
+    });
+  })());
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil((async () => {
+    const fallback = new URL('./?view=activity', self.registration.scope);
+    let target = fallback;
+    try {
+      const candidate = new URL(event.notification.data?.route || '', self.registration.scope);
+      const scope = new URL(self.registration.scope);
+      if (candidate.origin === self.location.origin
+          && candidate.pathname.startsWith(scope.pathname)
+          && candidate.searchParams.get('view') === 'activity'
+          && (!candidate.searchParams.has('focus') || PUSH_TARGET.test(candidate.searchParams.get('focus') || ''))) {
+        target = candidate;
+      }
+    } catch { /* use bounded fallback */ }
+
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const scope = new URL(self.registration.scope);
+    for (const client of windows) {
+      const current = new URL(client.url);
+      if (current.origin !== self.location.origin || !current.pathname.startsWith(scope.pathname)) continue;
+      try { if ('navigate' in client) await client.navigate(target.href); } catch { /* focus current client */ }
+      await client.focus();
+      return;
+    }
+    await self.clients.openWindow(target.href);
+  })());
 });
 
 self.addEventListener('fetch', (event) => {
@@ -206,10 +278,10 @@ export default defineConfig({
     ],
   },
   define: {
-    __CARD_CAPTURE_DEFAULT_API__: JSON.stringify(legacyDefaultApi),
+    __CARD_CAPTURE_DEFAULT_API__: JSON.stringify(publicRuntimeApi),
     // 설정 화면에 노출되는 빌드 식별자 — "지금 무슨 버전을 보고 있나"를 원격으로 확인하는 용도.
     // 소스 내용 해시라 재현 가능하고, 저장소에서 다시 계산해 대조할 수 있다.
-    __CARD_CAPTURE_BUILD_ID__: JSON.stringify(sourceBuildId(legacyDefaultApi)),
+    __CARD_CAPTURE_BUILD_ID__: JSON.stringify(sourceBuildId(publicRuntimeApi)),
   },
   plugins: [
     react(),

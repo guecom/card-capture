@@ -1,7 +1,7 @@
 /* CardCapture service worker — 앱 셸 캐시 */
-var CACHE = 'cardcapture-v20';
+var CACHE = 'cardcapture-v21';
 var SHELL = [
-  './', './index.html', './legacy.html', './manifest.json', './icon-192.png', './icon-512.png',
+  './', './index.html', './manifest.json', './icon-192.png', './icon-512.png',
   './camera-quality.js', './research-policy.js', './vendor/tesseract/tesseract.min.js', './vendor/tesseract/worker.min.js'
 ];
 
