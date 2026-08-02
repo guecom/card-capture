@@ -25,13 +25,21 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
+          cache-dependency-path: |
+            frontend/package-lock.json
+            watcher/push/package-lock.json
 
       - name: Install frontend dependencies
         run: npm ci --prefix frontend
 
       - name: Audit frontend dependencies
         run: npm audit --prefix frontend --audit-level=high
+
+      - name: Install Web Push sender dependencies
+        run: npm ci --prefix watcher/push
+
+      - name: Audit Web Push sender dependencies
+        run: npm audit --prefix watcher/push --audit-level=high
 
       - name: Verify committed Pages bundle matches source identity
         run: node eval/pages-bundle-freshness.test.js
