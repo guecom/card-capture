@@ -48,7 +48,9 @@ function sceneScript({ frame, card }: { frame: typeof FRAME; card: typeof CARD }
     __scene?: string;
     __shakeOnReady?: boolean;
     __shakeInjected?: boolean;
-    __shakeUntil?: number;
+    __shakeFramesRemaining?: number;
+    __shakeStep?: number;
+    __shakeEndedAt?: number;
     __sawMotionHold?: boolean;
   };
   runtime.__scene = 'front';
@@ -63,7 +65,8 @@ function sceneScript({ frame, card }: { frame: typeof FRAME; card: typeof CARD }
       // 분석 완료 이후·실제 저장 이전의 TOCTOU를 정확히 재현한다.
       if (runtime.__shakeOnReady && !runtime.__shakeInjected) {
         runtime.__shakeInjected = true;
-        runtime.__shakeUntil = performance.now() + 480;
+        runtime.__shakeFramesRemaining = 12;
+        runtime.__shakeStep = 0;
       }
       return requestVideoFrame.call(this, callback);
     };
@@ -73,10 +76,10 @@ function sceneScript({ frame, card }: { frame: typeof FRAME; card: typeof CARD }
   canvas.height = frame.height;
   const context = canvas.getContext('2d')!;
   const draw = () => {
-    const shaking = performance.now() < (runtime.__shakeUntil ?? 0);
+    const shaking = (runtime.__shakeFramesRemaining ?? 0) > 0;
     // 64px/720px는 사용자가 shutter 순간 폰을 휙 움직인 상황을 재현한다. 주입은
     // ready 이후에만 시작하므로 기존 pre-trigger quad gate가 대신 잡을 수 없다.
-    const shiftX = shaking ? (Math.floor(performance.now() / 36) % 2 ? 64 : -64) : 0;
+    const shiftX = shaking ? ((runtime.__shakeStep ?? 0) % 2 ? 64 : -64) : 0;
     context.fillStyle = '#b9a892';
     context.fillRect(0, 0, frame.width, frame.height);
     for (let index = 0; index < 900; index += 1) {
@@ -99,6 +102,11 @@ function sceneScript({ frame, card }: { frame: typeof FRAME; card: typeof CARD }
       context.fillText('김진우', card.x + shiftX + 36, card.y + 104);
       context.font = '400 27px "Malgun Gothic", sans-serif';
       context.fillText('대표이사', card.x + shiftX + 36, card.y + 148);
+    }
+    if (shaking) {
+      runtime.__shakeStep = (runtime.__shakeStep ?? 0) + 1;
+      runtime.__shakeFramesRemaining = Math.max(0, (runtime.__shakeFramesRemaining ?? 0) - 1);
+      if (runtime.__shakeFramesRemaining === 0) runtime.__shakeEndedAt = performance.now();
     }
   };
   draw();
@@ -144,8 +152,8 @@ test('auto capture cancels a shake that starts after ready and retries on a stab
     // 주입한 shake가 끝나면 gate가 처음부터 다시 안정성을 모으고 한 번만 촬영한다.
     await expect(page.getByText('앞면 저장됨 — 뒷면도 찍을까요? (선택)')).toBeVisible({ timeout: 40_000 });
     const retry = await page.evaluate(() => {
-      const runtime = window as typeof window & { __shakeInjected?: boolean; __shakeUntil?: number };
-      return { injected: runtime.__shakeInjected, stableRetryMs: performance.now() - (runtime.__shakeUntil ?? performance.now()) };
+      const runtime = window as typeof window & { __shakeInjected?: boolean; __shakeEndedAt?: number };
+      return { injected: runtime.__shakeInjected, stableRetryMs: performance.now() - (runtime.__shakeEndedAt ?? performance.now()) };
     });
     expect(retry.injected).toBe(true);
     expect(retry.stableRetryMs, 'shake가 끝난 뒤 안정 촬영이 2초 안에 끝나야 한다').toBeLessThan(2_000);
