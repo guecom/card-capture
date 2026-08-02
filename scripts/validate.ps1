@@ -17,7 +17,7 @@ function Pass($m) { Write-Host "PASS  $m" }
 # ---------- 1. required files ----------
 $required = @(
   'AGENTS.md','SECURITY.md','CHANGELOG.md','RELEASE.md','README.md','Code.gs',
-  'docs/index.html','docs/legacy.html','docs/sw.js','docs/manifest.json','docs/camera-quality.js',
+  'config/public-runtime.json','docs/index.html','docs/sw.js','docs/manifest.json','docs/camera-quality.js',
   'docs/vendor/tesseract/tesseract.min.js','docs/vendor/tesseract/worker.min.js',
   'docs/vendor/tesseract/tesseract-core-simd-lstm.wasm.js',
   'docs/vendor/tesseract/kor.traineddata.gz','docs/vendor/tesseract/eng.traineddata.gz','docs/vendor/tesseract/README.md',
@@ -25,7 +25,7 @@ $required = @(
   'docs/vendor/paddleocr/ppocrv5_korean_dict.txt','docs/vendor/ort/ort-wasm-simd-threaded.wasm','docs/vendor/ort/ort-wasm-simd-threaded.mjs',
   'docs/vendor/cardquad/lcnet100_h_e_bifpn_256_fp32.onnx','docs/vendor/cardquad/LICENSE','docs/vendor/cardquad/README.md',
   'watcher/CardCapture_Watcher.ps1','watcher/CardCapture_Health.ps1','watcher/tests/watcher-tests.ps1','watcher/tests/watcher-protocol-tests.ps1','watcher/tests/health-tests.ps1','watcher/tests/log-pii-tests.ps1',
-  'eval/README.md','eval/run-eval.ps1','eval/upload-idempotency.test.js','eval/upload-filename-allowlist.test.js','eval/upload-content-type.test.js','eval/legacy-credential.test.js','eval/build-reproducibility.test.js','eval/version-sync.test.js','eval/persondoc-owner.test.js','eval/prompt-injection.test.js','eval/gas-sandbox.js','eval/golden-capture.test.js','eval/adversarial-capture.test.js','eval/camera-quality.test.js','eval/page-syntax.test.js','eval/server-syntax.test.js','eval/ocr-browser-smoke.html','scripts/validate.ps1'
+  'eval/README.md','eval/run-eval.ps1','eval/upload-idempotency.test.js','eval/upload-filename-allowlist.test.js','eval/upload-content-type.test.js','eval/public-runtime-credential.test.js','eval/build-reproducibility.test.js','eval/version-sync.test.js','eval/persondoc-owner.test.js','eval/prompt-injection.test.js','eval/gas-sandbox.js','eval/golden-capture.test.js','eval/adversarial-capture.test.js','eval/camera-quality.test.js','eval/page-syntax.test.js','eval/server-syntax.test.js','eval/ocr-browser-smoke.html','scripts/validate.ps1'
 )
 $missing = @($required | Where-Object { -not (Test-Path (Join-Path $root $_)) })
 if ($missing.Count -gt 0) { Fail ("required files missing: " + ($missing -join ', ')) } else { Pass 'required files present' }
@@ -47,9 +47,9 @@ foreach ($f in $scanFiles) {
   $lineNo = 0
   foreach ($line in [System.IO.File]::ReadAllLines($f.FullName)) {
     $lineNo++
-    # GAS deployment id: allowed only in the rollback baseline (DEFAULT_API is a sanctioned public value)
-    if ($line -match 'AKfycb[A-Za-z0-9_-]{10,}' -and $rel -ne 'docs\legacy.html') {
-      [void]$secretHits.Add("$rel(:$lineNo) GAS exec id outside docs/legacy.html")
+    # GAS deployment id: allowed only in the explicit public runtime config.
+    if ($line -match 'AKfycb[A-Za-z0-9_-]{10,}' -and $rel -ne 'config\public-runtime.json') {
+      [void]$secretHits.Add("$rel(:$lineNo) GAS exec id outside config/public-runtime.json")
     }
     # TOKENS-style mapping with literal long key
     if ($line -match '"[A-Za-z0-9_-]{32,}"\s*:\s*"') {
@@ -117,10 +117,12 @@ if ($LASTEXITCODE -ne 0) { Fail 'eval harness self-test / fixture schema check f
 
 # ---------- 6. PWA sanity ----------
 $idx = Get-Content (Join-Path $root 'docs\index.html') -Raw
-$legacy = Get-Content (Join-Path $root 'docs\legacy.html') -Raw
+$runtime = Get-Content (Join-Path $root 'config\public-runtime.json') -Raw | ConvertFrom-Json
 $rootSw = Get-Content (Join-Path $root 'docs\sw.js') -Raw
 if ($idx -notmatch "new URL\('next/'" -or $idx -notmatch 'destination\.search = location\.search') { Fail 'docs/index.html live redirect missing or query not preserved' } else { Pass 'live redirect preserves query parameters' }
-if ($legacy -notmatch "DEFAULT_API\s*=\s*'https://script\.google\.com/") { Fail 'docs/legacy.html DEFAULT_API missing or malformed' } else { Pass 'DEFAULT_API present' }
+if (-not $runtime.apiUrl -or $runtime.apiUrl -notmatch '^https://script\.google\.com/macros/s/[A-Za-z0-9_-]+/exec$') { Fail 'public runtime API missing or malformed' } else { Pass 'public runtime API present' }
+if (Test-Path (Join-Path $root 'docs\legacy.html')) { Fail 'retired docs/legacy.html still exists' } else { Pass 'legacy user surface retired' }
+if ($idx -match 'legacy\.html' -or $rootSw -match 'legacy\.html') { Fail 'current root entry or service worker still references legacy.html' } else { Pass 'current root has no legacy entry or precache' }
 if (-not $rootSw.Contains("if (url.pathname.indexOf(scopePath + 'next/') === 0) return;") -or -not $rootSw.Contains('/^cardcapture-v/.test(k)')) { Fail 'root service worker must ignore next scope and preserve candidate caches' } else { Pass 'root and React service-worker caches are isolated' }
 if ((Get-Content (Join-Path $root 'CHANGELOG.md') -Raw) -notmatch '\[Unreleased\]') { Warn 'CHANGELOG has no [Unreleased] section' } else { Pass 'CHANGELOG has [Unreleased]' }
 
@@ -133,8 +135,8 @@ if ($null -eq $node) {
   if ($LASTEXITCODE -ne 0) { Fail 'camera-quality deterministic tests failed' } else { Pass 'camera-quality deterministic tests passed' }
   & $node.Source (Join-Path $root 'eval\page-syntax.test.js')
   if ($LASTEXITCODE -ne 0) { Fail 'page JavaScript syntax test failed' } else { Pass 'page JavaScript syntax test passed' }
-  & $node.Source (Join-Path $root 'eval\legacy-credential.test.js')
-  if ($LASTEXITCODE -ne 0) { Fail 'legacy credential boundary test failed' } else { Pass 'legacy credential boundary static test passed' }
+  & $node.Source (Join-Path $root 'eval\public-runtime-credential.test.js')
+  if ($LASTEXITCODE -ne 0) { Fail 'public runtime credential boundary test failed' } else { Pass 'public runtime credential boundary static test passed' }
   & $node.Source (Join-Path $root 'eval\server-syntax.test.js')
   if ($LASTEXITCODE -ne 0) { Fail 'Code.gs JavaScript syntax test failed' } else { Pass 'Code.gs JavaScript syntax test passed' }
   & $node.Source (Join-Path $root 'eval\upload-idempotency.test.js')

@@ -8,11 +8,11 @@ var policy = require('../docs/research-policy.js');
 var root = path.join(__dirname, '..');
 var fixtureDir = path.join(__dirname, 'research-fixtures');
 var server = fs.readFileSync(path.join(root, 'Code.gs'), 'utf8');
-// 조사 지시 접수 UI와 owner action은 React 앱이 소유한다. 이전 앱(`docs/legacy.html`)은
-// 촬영·업로드·전송 상태로 축소돼 이 action들을 더 이상 갖지 않는다 (TSK-000301).
-// 세 단언은 약화되지 않았다 — 같은 문자열을 실제 소유자에게서 찾는다.
+// 조사 지시 접수 UI와 owner action은 현재 React 앱이 단독 소유한다.
 var page = fs.readFileSync(path.join(root, 'frontend', 'src', 'services', 'api.ts'), 'utf8')
-  + fs.readFileSync(path.join(root, 'frontend', 'src', 'App.tsx'), 'utf8');
+  + fs.readFileSync(path.join(root, 'frontend', 'src', 'App.tsx'), 'utf8')
+  + fs.readFileSync(path.join(root, 'frontend', 'src', 'components', 'ResearchComposer.tsx'), 'utf8')
+  + fs.readFileSync(path.join(root, 'frontend', 'src', 'components', 'AiTaskSurface.tsx'), 'utf8');
 var processing = fs.readFileSync(path.join(root, 'PROCESSING_CONTRACT.md'), 'utf8');
 var fixtures = fs.readdirSync(fixtureDir).filter(function (name) { return /\.json$/.test(name); })
   .map(function (name) { return JSON.parse(fs.readFileSync(path.join(fixtureDir, name), 'utf8')); });
@@ -55,7 +55,10 @@ assert(!/note:\s*[^\n]*researchInstruction/.test(server), 'research instruction 
 assert(/action:\s*'researchinstruction'/.test(page), 'existing Person action missing from page');
 assert(/action:\s*'correction'/.test(page), 'correction must remain a separate action');
 assert(/aria-label="AI 조사 요청"/.test(page), 'initial capture research input missing');
-assert(/raw instruction.*system prompt/i.test(processing), 'processing contract must keep raw input out of system prompt');
+assert(/system\/developer prompt/.test(processing), 'processing contract must keep raw input out of system prompt');
 assert(/source.*confidence.*unknown/i.test(processing), 'processing receipt contract must require source/confidence/unknown');
+assert(/lawful-authority-deep-research-v2/.test(server + processing), 'Deep policy snapshot missing');
+assert(/RESEARCH_FOCUS_IDS_/.test(server), 'server focus allowlist missing');
+assert(/researchProgress/.test(server + processing), 'server-proven Deep progress contract missing');
 
 console.log('PASS research policy: ' + fixtures.length + ' fixtures, owner/target/UI/processing boundaries fixed');

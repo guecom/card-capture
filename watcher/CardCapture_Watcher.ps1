@@ -253,9 +253,11 @@ function Get-CaptureFingerprint($dir) {
     if (-not $m) { return '' }
     $files = ''
     if ($m.files) { $files = ((@($m.files) | Sort-Object) -join ',') }
+    $research = ''
+    if ($m.researchInstruction) { $research = ($m.researchInstruction | ConvertTo-Json -Compress -Depth 12) }
     $parts = @(
         [string]$m.captureId, [string]$m.receivedAt, [string]$m.capturedAt, [string]$m.type,
-        $files, [string]$m.note, [string]$m.event, [string]$m.requeueRequested
+        $files, [string]$m.note, [string]$m.event, [string]$m.requeueRequested, $research
     )
     $text = ($parts -join '|~|')
     try {
@@ -492,6 +494,13 @@ function Complete-CaptureStaging($captureId, $inputFingerprint, $outputFingerpri
     return $p
 }
 
+function Complete-CaptureCheckpoint($captureId) {
+    $d = Resolve-CaptureStaging $captureId
+    if (-not $d) { return $false }
+    Remove-Item (Join-Path $d 'begin.json') -Force -ErrorAction SilentlyContinue
+    return $true
+}
+
 # begin은 있고 commit이 없는 항목 = commit 전에 죽은 attempt.
 # 반환은 평범한 배열이다: ',$out' 로 감싸면 파이프라인이 컬렉션 하나로 취급해 열거되지 않는다.
 function Get-InterruptedCaptures {
@@ -512,10 +521,41 @@ function Get-CaptureCommitMarker($captureId) {
     try { return (Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { return $null }
 }
 
+function Test-ResearchEvidenceResult($dir) {
+    $res = [PSCustomObject]@{ ok = $false; reason = '' }
+    $path = Join-Path $dir 'research-result.json'
+    if (-not (Test-Path $path)) { $res.reason = 'missing_research_result'; return $res }
+    $graph = $null
+    try { $graph = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $res.reason = 'unparsable_research_result'; return $res }
+    if (-not $graph -or [string]$graph.version -ne 'deep-research-evidence-v1') { $res.reason = 'bad_research_version'; return $res }
+    if ($null -eq $graph.claims -or $null -eq $graph.timeline -or $null -eq $graph.openQuestions) { $res.reason = 'research_arrays_missing'; return $res }
+    $ids = @{}
+    foreach ($claim in @($graph.claims)) {
+        $id = [string]$claim.id
+        if (-not $id -or $ids.ContainsKey($id)) { $res.reason = 'duplicate_or_missing_claim_id'; return $res }
+        $ids[$id] = $true
+        if (@('fact','conflict','unknown','hypothesis') -notcontains [string]$claim.state) { $res.reason = 'bad_claim_state'; return $res }
+        if (-not [string]$claim.summary) { $res.reason = 'missing_claim_summary'; return $res }
+        if ([string]$claim.state -eq 'fact' -and @($claim.evidenceFor).Count -eq 0) { $res.reason = 'unsupported_fact'; return $res }
+        if ([string]$claim.state -eq 'hypothesis' -and (@($claim.evidenceFor).Count -eq 0 -or @($claim.evidenceAgainst).Count -eq 0 -or -not [string]$claim.alternativeExplanation -or -not [string]$claim.confidence)) {
+            $res.reason = 'one_sided_hypothesis'; return $res
+        }
+    }
+    foreach ($event in @($graph.timeline)) {
+        foreach ($claimId in @($event.claimIds)) { if (-not $ids.ContainsKey([string]$claimId)) { $res.reason = 'timeline_unknown_claim'; return $res } }
+    }
+    if (-not $graph.stop -or @('purpose_satisfied','source_exhausted','irrelevant_branch','time_cap','branch_cap') -notcontains [string]$graph.stop.reason -or -not [string]$graph.stop.summary) {
+        $res.reason = 'bad_research_stop'; return $res
+    }
+    $res.ok = $true
+    $res.reason = 'ok'
+    return $res
+}
+
 # commit 판정: exit code만으로 성공을 추론하지 않는다. 계약이 요구하는 산출물이 실제로
 # 있어야 commit이다 (규칙 8·10: brief.md + person + terminal status).
 function Test-CaptureCommitted($captureId) {
-    $res = [PSCustomObject]@{ ok = $false; reason = ''; status = '' }
+    $res = [PSCustomObject]@{ ok = $false; partial = $false; reason = ''; status = '' }
     $safe = Get-SafeCaptureId $captureId
     if (-not $safe) { $res.reason = 'unsafe_capture_id'; return $res }
     $dir = Join-Path $Inbox $safe
@@ -526,12 +566,22 @@ function Test-CaptureCommitted($captureId) {
     try { $m = Get-Content $json.FullName -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $m = $null }
     if (-not $m) { $res.reason = 'unparsable_capture_json'; return $res }
     $res.status = [string]$m.status
+    if ($res.status -eq 'processing' -and [string]$m.type -eq 'research_instruction' -and $m.researchProgress -and $m.researchProgress.partial -eq $true) {
+        $res.ok = $true
+        $res.partial = $true
+        $res.reason = 'research_checkpoint'
+        return $res
+    }
     if (($res.status -ne 'processed') -and ($res.status -ne 'skipped')) { $res.reason = 'not_terminal'; return $res }
     if ($res.status -eq 'processed') {
         if (-not [string]$m.person) { $res.reason = 'missing_person'; return $res }
         $brief = Join-Path $dir 'brief.md'
         if (-not (Test-Path $brief)) { $res.reason = 'missing_brief'; return $res }
         if ((Get-Item $brief).Length -le 0) { $res.reason = 'empty_brief'; return $res }
+        if ([string]$m.type -eq 'research_instruction' -and $m.researchInstruction -and [string]$m.researchInstruction.mode -eq 'deep_evidence_graph') {
+            $evidenceVerdict = Test-ResearchEvidenceResult $dir
+            if (-not $evidenceVerdict.ok) { $res.reason = [string]$evidenceVerdict.reason; return $res }
+        }
     }
     $res.ok = $true
     $res.reason = 'ok'
@@ -540,7 +590,7 @@ function Test-CaptureCommitted($captureId) {
 
 # 처리 자격 판정 한 곳: 안전한 이름 → 대기 상태(received/재전송) → 같은 입력의 commit 없음 → 미격리.
 function Get-CaptureEligibility($dir) {
-    $res = [PSCustomObject]@{ id = $dir.Name; dir = $dir.FullName; mtime = $null; fingerprint = ''; eligible = $false; reason = '' }
+    $res = [PSCustomObject]@{ id = $dir.Name; dir = $dir.FullName; mtime = $null; fingerprint = ''; lane = 0; eligible = $false; reason = '' }
     $safe = Get-SafeCaptureId $dir.Name
     if (-not $safe) { $res.reason = 'unsafe_name'; return $res }
     $json = Get-CaptureJson $dir.FullName
@@ -548,15 +598,20 @@ function Get-CaptureEligibility($dir) {
     $res.mtime = $json.LastWriteTime
     $raw = ''
     try { $raw = Get-Content $json.FullName -Raw -ErrorAction Stop } catch { $res.reason = 'read_failed'; return $res }
+    $m = $null
+    try { $m = $raw | ConvertFrom-Json } catch {}
     $isReceived = $raw -match '"status"\s*:\s*"received"'
+    $isResearchCheckpoint = $m -and [string]$m.status -eq 'processing' -and [string]$m.type -eq 'research_instruction' -and $m.researchProgress -and $m.researchProgress.partial -eq $true
     $isResend = $false
     if (-not $isReceived -and $raw -match '"status"\s*:\s*"processed"') {
         try {
-            $m = $raw | ConvertFrom-Json
             if ($m.receivedAt -and $m.processedAt -and ([datetime]$m.receivedAt -gt [datetime]$m.processedAt)) { $isResend = $true }
         } catch {}
     }
-    if (-not ($isReceived -or $isResend)) { $res.reason = 'terminal'; return $res }
+    if (-not ($isReceived -or $isResend -or $isResearchCheckpoint)) { $res.reason = 'terminal'; return $res }
+    if ($m -and [string]$m.type -eq 'research_instruction') {
+        $res.lane = if ($m.researchInstruction -and [string]$m.researchInstruction.mode -eq 'deep_evidence_graph') { 2 } else { 1 }
+    }
     $res.fingerprint = Get-CaptureFingerprint $dir.FullName
     $marker = Get-CaptureCommitMarker $safe
     if ($marker -and ([string]$marker.inputFingerprint -eq [string]$res.fingerprint)) { $res.reason = 'already_committed'; return $res }
@@ -575,7 +630,7 @@ function Get-Backlog {
     foreach ($d in (Get-ChildItem $Inbox -Directory -ErrorAction SilentlyContinue)) {
         $e = Get-CaptureEligibility $d
         if ($e.eligible) {
-            [void]$items.Add([PSCustomObject]@{ id = $e.id; mtime = $e.mtime; dir = $e.dir; fingerprint = $e.fingerprint })
+            [void]$items.Add([PSCustomObject]@{ id = $e.id; mtime = $e.mtime; dir = $e.dir; fingerprint = $e.fingerprint; lane = $e.lane })
         } elseif ($e.reason -eq 'unsafe_name') {
             if (-not $script:UnsafeNames.ContainsKey($e.id)) {
                 $script:UnsafeNames[$e.id] = $true
@@ -586,10 +641,10 @@ function Get-Backlog {
     return ,$items
 }
 
-# captureId 오름차순으로 다음 처리 대상 하나. 남이 claim한 항목은 $skip에 담겨 건너뛴다.
+# 일반 캡처(P0) → 표준 조사 → Deep Research 순서, 같은 lane 안에서는 captureId 오름차순이다.
 function Get-NextEligibleCapture($skip) {
     $backlog = Get-Backlog   # 변수에 담아야 아래 파이프라인이 항목별로 열거된다
-    foreach ($item in ($backlog | Sort-Object id)) {
+    foreach ($item in ($backlog | Sort-Object lane, id)) {
         if (-not $item) { continue }
         if ($skip -and $skip.ContainsKey([string]$item.id)) { continue }
         return $item
@@ -671,6 +726,8 @@ $Prompt = @'
 1. `00_Inbox/BusinessCards/` 하위 폴더의 capture.json(변형 `capture (1).json`이면 가장 최신 파일이 진실)을 확인해 status가 'received'인 캡처, 또는 status가 'processed'여도 receivedAt이 processedAt보다 최신인 재전송 캡처 중 **captureId가 가장 이른 한 건만** 완결 처리하고 종료한다. 여러 건이 대기해도 나머지는 건드리지 마라 — 워처가 곧바로 다시 불러 다음 한 건을 처리한다(카드별 진행 표시·하트비트 유지를 위한 계약).
 2. 처리 대상이 없으면 아무 것도 바꾸지 말고 '새 캡처 없음'으로 즉시 종료한다.
 3. 캡처 폴더에 correction*.json이 있으면 사용자 수정 요청이다 — 절차 문서 규칙 2-1에 따라 정정을 우선 반영한다. capture.json의 type이 'note'면 사후 메모다 — 규칙 2-2에 따라 이미지 없이 해당 Person에 병합한다. event가 있는 명함 캡처는 규칙 8-2에 따라 Encounter·met_at을 닫는다 — occurred_at에 캡처 시각을 넣지 말고 단서가 없으면 occurred_precision을 unknown으로 둔다.
+3-1. type이 `research_instruction`이고 researchInstruction.mode가 `deep_evidence_graph`이면 한 번에 전부 끝내지 말고 다음 phase 하나만 수행한다: planning → branching → triangulating → synthesizing → done. 한 phase는 공개·합법 출처 6개 또는 12분 중 먼저 도달한 상한에서 멈춘다. 중간 phase는 capture.json을 status=`processing`, researchProgress={phase,partial:true,updatedAt,verifiedFacts,conflicts,openQuestions}로 원자 갱신하고 종료한다. 다음 워처 실행이 이어간다. 일반 명함·메모·수정·표준 조사가 이 작업보다 항상 우선한다.
+3-2. Deep Research 최종 phase는 같은 폴더에 `research-result.json`을 쓴다. version=`deep-research-evidence-v1`, claims(state=fact|conflict|unknown|hypothesis, evidenceFor[], evidenceAgainst[], confidence), timeline[], openQuestions[], stop(reason=purpose_satisfied|source_exhausted|irrelevant_branch|time_cap|branch_cap, summary)를 만족해야 한다. hypothesis는 찬성 근거·반대 근거·다른 설명이 모두 없으면 fact로 승격하지 말고 unknown으로 남긴다. partial 결과는 Person 사실을 수정하지 않는다. final에서 검증된 fact만 Person에 병합하고 brief.md와 terminal status를 함께 쓴다.
 4. 명함 이미지를 직접 읽어 OCR하고, 기존 Person과 이메일·전화(정규화)·이름으로 중복검사한다. capture.json의 quickName은 기기 OCR 힌트이며 명함보다 우선하는 권위 값이 아니다. 단, quickName.confirmed=true인 사용자 정정은 우선 확인하고 불일치가 있으면 추측하지 말고 provenance에 남긴다. 중복이면 신규 생성 금지, 기존 인스턴스를 프런트매터+본문 전면 재구성으로 갱신한다(과거 소속은 Career 이력으로 내리고 provenance는 보존). 신규면 PER typeID를 쓰기 직전 재스캔(max+1)으로 발급해 Template_Person 스키마로 생성한다.
 5. 이미지를 `90_Vault/Attachment/BusinessCards/PER-ID_YYYYMMDD_front|back.jpg`로 옮기고 source_refs에 기록한다.
 6. 전방위 웹 보강(절차 문서 규칙 8이 정본): LinkedIn 한 곳에 의존하지 마라. 먼저 한글·영문(로마자 변형)·이니셜과 회사·직함·이전소속·이메일 prefix를 조합해 질의를 설계하고, 사람 6개 소스군(전문 프로필 / 뉴스·인터뷰·인사발표 / 발표·컨퍼런스·팟캐스트 / 논문·특허·GitHub·기술블로그 / 협회·위원회·수상 / 최근 90일 활동) 중 4군 이상, 회사 5개 소스군(공식·채용 / 투자·재무 / 언론·업계 / 기술 신호 / 고객·파트너) 중 3군 이상을 실제로 조회한다(합계 최소 10회 검색). 소스군별 확인/미확인을 구분해 남기고, 동일인은 이메일 도메인·소속·직함·시기 중 2개 이상 일치할 때만 확정하며 근거 문장을 쓴다. 항목별 출처 URL·확인일·신뢰도(high=독립 2출처 교차, medium=신뢰 1출처, low=간접)를 본문 '공개 출처'에 남기고, 충돌은 최신·1차 출처 우선 + 충돌 사실 기록, 미특정은 미특정이라 쓴다. 마지막에 '만나기 전에 알면 좋은 것' 대화 포인트 3~5개(최근 관심사, 공통 접점, Kairen 연결 지점, 조심할 주제)를 뽑는다. 근거 없는 성격·성향 추정 금지.
@@ -797,17 +854,23 @@ function Invoke-Processing {
             $failed = $false
             $quarantinedNow = $false
             if (($exit -eq 0) -and $verdict.ok) {
-                $null = Complete-CaptureStaging $itemId $item.fingerprint (Get-CaptureFingerprint $item.dir)
                 $st = Get-CaptureState $itemId
                 $st.attempts = 0
                 $st.lastError = ''
-                $st.lastCommitAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-                $st.lastCommitFingerprint = [string]$item.fingerprint
-                Set-CaptureState $st
                 $script:ConsecutiveFailures = 0
                 $done++
-                Write-Log ("card done — 처리됨: " + $itemId + " (status=" + $verdict.status + ")")
-                Send-Notify @($itemId)
+                if ($verdict.partial) {
+                    $null = Complete-CaptureCheckpoint $itemId
+                    Set-CaptureState $st
+                    Write-Log ("research checkpoint — " + $itemId + " (next slice will resume)")
+                } else {
+                    $null = Complete-CaptureStaging $itemId $item.fingerprint (Get-CaptureFingerprint $item.dir)
+                    $st.lastCommitAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+                    $st.lastCommitFingerprint = [string]$item.fingerprint
+                    Set-CaptureState $st
+                    Write-Log ("card done — 처리됨: " + $itemId + " (status=" + $verdict.status + ")")
+                    Send-Notify @($itemId)
+                }
             } else {
                 $reason = 'commit_incomplete_' + [string]$verdict.reason
                 if ($exit -ne 0) { $reason = 'processor_exit_' + [string]$exit }

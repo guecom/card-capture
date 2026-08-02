@@ -13,21 +13,21 @@ Kairen Ref: `TSK-000141` (credential·access baseline), `TSK-000153` (processing
 
 - token은 **bearer credential**이다. URL 파라미터로 전달되고 폰 브라우저 localStorage에 저장된다 — 링크를 아는 사람이 곧 그 사용자다.
 - GAS 웹앱은 소유자 계정 권한으로 실행된다("실행: 나, 액세스: 모든 사용자"). 코드가 곧 권한 경계다.
-- **credential은 빌드에 박힌 배포본 주소로만 나간다** (`frontend/src/services/api-origin.ts`). 신뢰 기준은 origin이 아니라 **origin + pathname**이다 — `docs/legacy.html`의 `DEFAULT_API`가 가리키는 배포본 주소 그 자체와 앱 자신의 origin뿐이며, URL·localStorage·캐시·서버 응답 어느 것도 이 집합을 넓히지 못한다. 로컬 harness(`localhost`/`127.0.0.1`에서 서비스될 때)에 한해 RFC 6761 `.test`·RFC 8375 `.localhost` 이름을 mock API로 허용한다.
+- **credential은 빌드에 박힌 배포본 주소로만 나간다** (`frontend/src/services/api-origin.ts`). 신뢰 기준은 origin이 아니라 **origin + pathname**이다 — `config/public-runtime.json`의 `apiUrl`이 가리키는 배포본 주소 그 자체와 앱 자신의 origin뿐이며, URL·localStorage·캐시·서버 응답 어느 것도 이 집합을 넓히지 못한다. 로컬 harness(`localhost`/`127.0.0.1`에서 서비스될 때)에 한해 RFC 6761 `.test`·RFC 8375 `.localhost` 이름을 mock API로 허용한다.
   - **origin만 비교하면 부족했다.** `script.google.com`은 누구나 자기 Apps Script 웹앱을 배포할 수 있는 multi-tenant 호스트다. origin만 맞추면 `?api=https://script.google.com/macros/s/<공격자 배포 ID>/exec`가 통과해 저장된 링크 코드가 그대로 공격자 배포본으로 나갔다(`ISS-000109`).
   - 채택하는 주소에서는 **query와 fragment를 버린다.** 저장되는 주소에 자격 정보가 섞일 자리를 없앤다. `연결 해제`는 저장된 연결 주소까지 지운다.
-- **같은 Pages 루트에 함께 서빙되는 이전 앱(`docs/legacy.html`)도 같은 경계를 따른다.** 이전 앱은 빌드에 박힌 `DEFAULT_API` 하나만 쓰고 링크의 `?api=`를 아예 받지 않으며, 저장돼 있던 `cc_api`가 그 값과 정확히 같지 않으면 실행할 때 폐기한다. 두 앱이 같은 저장 키를 쓰므로 이 정리는 React 앱의 저장 상태에도 함께 적용된다(`ISS-000110`).
+- **이전 독립 앱은 더 이상 배포하지 않는다.** 루트 서비스 워커 v21이 기존 `cardcapture-v20` 캐시를 활성화 시 삭제하고, 현재 앱만 `config/public-runtime.json`에서 고정 endpoint를 받는다(`ISS-000110`).
 - **사적 브라우저 상태는 subject(= API origin + token) 별로 격리된다.** 기준은 **목록이 아니라 원칙**이다 — **그 사람이 직접 적었거나 그 사람에게만 보이는 값은 모두 사적 상태다.** 브리핑 캐시·owner 게이트·검색 기록과 **만남 맥락(만난 상황·관계 메모·조사 지시 초안과 그 유지 시각)**이 여기 해당한다. owner 링크로 쓰던 기기를 guest 링크로 열면 이전 subject의 것이 보이지 않고, 그 namespace는 기기에서 제거된다. 촬영 대기열(IndexedDB)은 유일본이라 이 정리 대상이 아니다 — **유일한 예외다.**
   - 이 항목이 닫힌 열거로 쓰여 있던 것이 `ISS-000112`의 원인이다. 만남 맥락이 목록에 없어 격리되지 않았고, 그것은 화면 노출로 끝나지 않았다 — sticky 값이 다음 촬영에 붙어 **owner의 관계 메모가 guest의 캡처로 서버에 기록**됐다.
-  - **namespace 없는 전역 자리에 남아 있던 사적 상태는 어느 subject로도 이관하지 않고 버린다.** 누가 적었는지 증거가 없고, 그 자리는 같은 Pages 루트의 이전 앱(`docs/legacy.html`)이 **지금도 쓰는 자리**라 상속 창이 한 번 닫히지 않고 계속 열린다. 브리핑은 다음 조회에서, owner 게이트는 서버 응답에서 다시 얻는다.
+  - **namespace 없는 전역 자리에 남아 있던 사적 상태는 어느 subject로도 이관하지 않고 버린다.** 누가 적었는지 증거가 없기 때문이다. 브리핑은 다음 조회에서, owner 게이트는 서버 응답에서 다시 얻는다.
 
 ## Threat Model (현재 완화 상태)
 
 | 위협 | 경로 | 완화 | 상태 |
 | --- | --- | --- | --- |
 | 토큰 유출 | 공유 링크 전달·스크린샷·브라우저 이력 | 개인별 토큰 분리, 회수/rotation 절차, DAILY_LIMIT | 절차 문서화됨, rotation은 human gate |
-| 토큰 탈취 (악성 API 주소) | `?api=https://attacker.example/`가 붙은 링크를 한 번 열면 그 주소가 저장되고 이후 모든 업로드·조회가 그리로 감. **같은 호스트의 다른 Apps Script 배포본**도 같은 경로다 | build-time **endpoint**(origin + pathname) pinning + fail-closed 판정, 채택 주소에서 query·fragment 폐기, 거부한 주소는 저장하지 않음, 저장돼 있던 신뢰 밖 주소도 boot에서 폐기, 고급 설정 입력도 동일 판정. 이전 앱(`docs/legacy.html`)은 `?api=`를 받지 않고 빌드에 박힌 주소만 쓴다 | 구현됨, e2e 회귀 **2면**(`credential-boundary.spec.ts` — React 표면, `legacy-credential-boundary.spec.ts` — 이전 앱 표면. 두 표면 모두 빌드에 박힌 origin 밖 요청 0건) |
-| 토큰 잔류 (주소창·이력·Referer) | 개인 링크의 `?k=`가 주소창·방문 기록·화면 공유·외부 링크 Referer에 남음 | 저장 직후 `history.replaceState`로 `k`·`api` 제거(push 아님), `<meta name="referrer" content="no-referrer">` | 구현됨, e2e 회귀 **2면**. 이전 앱은 문서 파싱 중 나가는 같은 origin 자산 요청의 Referer에도 링크 코드가 실리지 않는 것까지 검증한다 |
+| 토큰 탈취 (악성 API 주소) | `?api=https://attacker.example/`가 붙은 링크를 한 번 열면 그 주소가 저장되고 이후 모든 업로드·조회가 그리로 감. **같은 호스트의 다른 Apps Script 배포본**도 같은 경로다 | build-time **endpoint**(origin + pathname) pinning + fail-closed 판정, 채택 주소에서 query·fragment 폐기, 거부한 주소는 저장하지 않음, 저장돼 있던 신뢰 밖 주소도 boot에서 폐기, 고급 설정 입력도 동일 판정 | 구현됨, `credential-boundary.spec.ts`가 빌드에 박힌 endpoint 밖 요청 0건을 검증 |
+| 토큰 잔류 (주소창·이력·Referer) | 개인 링크의 `?k=`가 주소창·방문 기록·화면 공유·외부 링크 Referer에 남음 | 저장 직후 `history.replaceState`로 `k`·`api` 제거(push 아님), `<meta name="referrer" content="no-referrer">` | 구현됨, 현재 root·React 앱 e2e 회귀. 폐기된 앱과 캐시도 다시 노출되지 않음을 별도 retirement gate가 검증한다 |
 | 기기 내 subject 교차 노출 | 한 폰을 owner 링크 → guest 링크로 열 때 이전 사람의 캐시가 그대로 렌더 | 사적 키를 subject namespace로 분리, 링크 코드 없으면 사적 캐시를 읽지도 쓰지도 않음, 다른 subject namespace는 boot에서 제거 | 구현됨, e2e 회귀(서버 침묵 상태에서 이전 기록 0건) |
 | 기기 양도·링크 회수 후 잔류 | 폰을 넘기거나 토큰을 회수해도 기기에 브리핑 사본이 남음 | 설정의 `연결 해제`가 토큰·이름·사적 캐시·만남 맥락을 제거(대기 중 촬영은 보존하고 건수를 먼저 경고) | 구현됨, e2e 회귀 |
 | Owner 토큰 유출 | 위와 동일 | persondoc·search는 OWNER_NAMES 한정, Private 포함이므로 owner 토큰은 고민감 취급 | 경계 구현됨 |
@@ -61,7 +61,7 @@ canonical 저장소는 GAS Script Properties `TOKENS`(JSON `{token: name}`)이�
 ## Secret Hygiene
 
 - 금지: 토큰 값, `TOKENS` JSON, `INBOX_FOLDER_ID` 등 Drive folder ID, 실캡처 이미지·capture.json·brief, Person 개인정보.
-- 허용: `docs/legacy.html`의 `DEFAULT_API` exec URL(제품 동작상 공개), 합성 fixture. **`docs/index.html`이 아니다** — 그 파일에는 exec URL이 없다. 실제 상수는 `docs/legacy.html`에만 있고 `scripts/validate.ps1`도 그쪽을 검사한다.
+- 허용: `config/public-runtime.json`의 `apiUrl` exec URL(제품 동작상 공개), 합성 fixture. `scripts/validate.ps1`은 이 파일 한 곳만 예외로 검사한다.
 - `scripts/validate.ps1`이 위 패턴을 스캔하며 PR 전 필수 실행이다.
 
 ## Reporting

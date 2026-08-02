@@ -5,6 +5,7 @@ import type {
   DocumentResponse,
   ListResponse,
   PersonTarget,
+  ResearchInstruction,
   RuntimeConfig,
   SearchResponse,
   UploadPayload,
@@ -213,8 +214,8 @@ export function addPersonNote(config: RuntimeConfig, target: PersonTarget, text:
   return postAction(config, { action: 'addnote', ...target, text: text.trim().slice(0, 2000) });
 }
 
-export function submitResearchInstruction(config: RuntimeConfig, target: PersonTarget, text: string): Promise<ActionResponse> {
-  return postAction(config, { action: 'researchinstruction', ...target, text: text.trim().slice(0, 2000) });
+export function submitResearchInstruction(config: RuntimeConfig, target: PersonTarget, instruction: ResearchInstruction): Promise<ActionResponse> {
+  return postAction(config, { action: 'researchinstruction', ...target, instruction });
 }
 
 export function requestCorrection(config: RuntimeConfig, captureId: string, text: string): Promise<ActionResponse> {

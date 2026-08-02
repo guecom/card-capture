@@ -63,6 +63,7 @@ function listFixture() {
     ok: true,
     seeAll: true,
     researchInstructionEnabled: true,
+    deepResearchEnabled: true,
     hasMore: false,
     items: [
       person(1, '김민서', '한화시스템', '구매팀장', '2026 로보월드', 3),
@@ -75,7 +76,7 @@ function listFixture() {
 
 interface Harness { server: Server; requests: string[] }
 
-async function boot(page: import('@playwright/test').Page): Promise<Harness> {
+async function boot(page: import('@playwright/test').Page, options: { deepResearchEnabled?: boolean } = {}): Promise<Harness> {
   const server = await startStaticServer();
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
@@ -86,7 +87,13 @@ async function boot(page: import('@playwright/test').Page): Promise<Harness> {
     const request = route.request();
     requests.push(`${request.method()} ${request.url()} ${request.postData() ?? ''}`);
     const action = new URL(request.url()).searchParams.get('action');
-    if (action === 'list') { await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(listFixture()) }); return; }
+    if (action === 'list') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        ...listFixture(),
+        deepResearchEnabled: options.deepResearchEnabled ?? true,
+      }) });
+      return;
+    }
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, items: [] }) });
   });
 
@@ -204,10 +211,31 @@ test('the research request looks and behaves like handing work to an AI, without
     // 넓히지 않은 경계는 그대로 적혀 있다 — DEC-000035의 금지 항목은 유지된다.
     await expect(surface.getByText(/로그인이 필요한 자료, 정치·종교·건강 같은 사적 특성, 집주소·가족 같은 신상, 외부로 보내는 행동은 하지 않아요/)).toBeVisible();
 
-    // 예시 chip은 기존 입력을 지우지 않고 덧붙인다.
+    // 예시 chip은 자유 입력과 독립적으로 선택된다.
     await surface.locator('ion-textarea textarea').fill('최근 발표 확인');
-    await surface.getByRole('button', { name: '실력·전문성 추정' }).click();
-    await expect(surface.locator('ion-textarea textarea')).toHaveValue('최근 발표 확인, 실력·전문성 추정');
+    const expertise = surface.getByRole('button', { name: '실력·전문성 추정' });
+    await expertise.click();
+    await expect(expertise).toHaveAttribute('aria-pressed', 'true');
+    await expect(surface.locator('ion-textarea textarea')).toHaveValue('최근 발표 확인');
+
+    // 전체 선택은 none → partial → all 상태를 명시하고, 자유 입력은 그대로 둔다.
+    const bulk = surface.getByRole('button', { name: /추천 항목 모두 선택 1\/8개 선택/ });
+    await expect(bulk).toHaveAttribute('aria-pressed', 'mixed');
+    await bulk.click();
+    await expect(surface.getByRole('button', { name: /추천 항목 모두 선택됨 8\/8개 선택/ })).toHaveAttribute('aria-pressed', 'true');
+    await expect(surface.locator('.ai-example-chips').getByRole('button')).toHaveCount(8);
+    await expect(surface.locator('ion-textarea textarea')).toHaveValue('최근 발표 확인');
+  } finally {
+    harness.server.close();
+  }
+});
+
+test('Deep Research stays hidden until the connected server confirms the capability', async ({ page }) => {
+  const harness = await boot(page, { deepResearchEnabled: false });
+  try {
+    const surface = page.locator('.ai-surface.research-request');
+    await expect(surface.getByRole('radio', { name: /빠른 조사/ })).toBeVisible();
+    await expect(surface.getByRole('radio', { name: /Deep Research/ })).toHaveCount(0);
   } finally {
     harness.server.close();
   }
@@ -227,7 +255,17 @@ test('the research composer keeps its submit button reachable however tall the s
     const submit = composer.getByRole('button', { name: '조사 요청 접수' });
     await expect(submit).toBeEnabled();
 
-    // 스크롤하지 않아도 버튼 전체가 화면 안에 있어야 한다.
+    // Deep Research는 목적을 하나 이상 고르기 전에는 접수되지 않는다.
+    await composer.getByRole('radio', { name: /Deep Research/ }).click();
+    const meetingPurpose = composer.getByRole('button', { name: /중요한 만남 준비/ });
+    await expect(meetingPurpose).toHaveAttribute('aria-pressed', 'true');
+    await meetingPurpose.click();
+    await expect(composer.getByRole('alert')).toContainText('목적을 하나 이상 선택');
+    await expect(submit).toBeDisabled();
+    await composer.getByRole('button', { name: /전문성·실행력 검증/ }).click();
+    await expect(submit).toBeEnabled();
+
+    // 리치한 조사 작성기는 전체 높이 시트로 열리고, 스크롤하지 않아도 버튼 전체가 화면 안에 있어야 한다.
     //
     // `toBeEnabled()`는 버튼이 존재하고 눌리는 순간 통과한다 — ion-modal 시트는 그때 아직
     // 아래에서 올라오는 중이다. 정착 전에 기하를 재면 시트가 화면 밖으로 읽혀 **없는 결함이

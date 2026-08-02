@@ -7,11 +7,12 @@ import { createHash } from 'node:crypto';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-function readLegacyDefaultApi(): string {
-  const legacyHtml = readFileSync(new URL('../docs/legacy.html', import.meta.url), 'utf8');
-  const match = /var DEFAULT_API = '([^']+)'/.exec(legacyHtml);
-  if (!match?.[1]) throw new Error('legacy_default_api_missing');
-  return match[1];
+function readPublicRuntimeApi(): string {
+  const runtime = JSON.parse(readFileSync(new URL('../config/public-runtime.json', import.meta.url), 'utf8')) as { apiUrl?: unknown };
+  if (typeof runtime.apiUrl !== 'string' || !/^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(runtime.apiUrl)) {
+    throw new Error('public_runtime_api_missing');
+  }
+  return runtime.apiUrl;
 }
 
 /**
@@ -55,12 +56,12 @@ function sourceBuildId(defaultApi: string): string {
     hash.update(readFileSync(full, 'utf8').replace(/\r\n/g, '\n'));
     hash.update('\0');
   }
-  // docs/legacy.html에서 주입되는 pinned endpoint도 번들 내용의 일부다.
+  // 공개 runtime config에서 주입되는 pinned endpoint도 번들 내용의 일부다.
   hash.update(defaultApi);
   return `src-${hash.digest('hex').slice(0, 12)}`;
 }
 
-const legacyDefaultApi = readLegacyDefaultApi();
+const publicRuntimeApi = readPublicRuntimeApi();
 
 function stableHash(values: string[]): string {
   let hash = 2166136261;
@@ -206,10 +207,10 @@ export default defineConfig({
     ],
   },
   define: {
-    __CARD_CAPTURE_DEFAULT_API__: JSON.stringify(legacyDefaultApi),
+    __CARD_CAPTURE_DEFAULT_API__: JSON.stringify(publicRuntimeApi),
     // 설정 화면에 노출되는 빌드 식별자 — "지금 무슨 버전을 보고 있나"를 원격으로 확인하는 용도.
     // 소스 내용 해시라 재현 가능하고, 저장소에서 다시 계산해 대조할 수 있다.
-    __CARD_CAPTURE_BUILD_ID__: JSON.stringify(sourceBuildId(legacyDefaultApi)),
+    __CARD_CAPTURE_BUILD_ID__: JSON.stringify(sourceBuildId(publicRuntimeApi)),
   },
   plugins: [
     react(),

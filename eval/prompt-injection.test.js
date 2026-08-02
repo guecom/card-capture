@@ -540,14 +540,14 @@ runCase('prompt-composition', '캡처 텍스트는 프롬프트 문자열에 들
 
 /* PowerShell 실물 대조로 맞춘 렌더 지문. 워처를 `$CardCaptureWatcherTestMode = $true`로 dot-source해
    `New-TargetedPrompt 'inj-ignore-previous'`의 출력을 CRLF→LF 정규화한 뒤 SHA-256을 잡은 값이다
-   (LF 3362자 / CRLF 3385자). 워처 파일은 CRLF이므로 **정규화 없이 해시하면 값이 다르다.**
+   (LF 4280자 / CRLF 4302자). 워처 파일은 CRLF이므로 **정규화 없이 해시하면 값이 다르다.**
    `powershell.exe`에 **`-ExecutionPolicy Bypass`를 빼면 dot-source가 정책에 막혀** 함수가 정의되지
    않고 `New-TargetedPrompt`가 CommandNotFound로 죽는다(2026-07-28 실측). 그 상태에서 렌더가 빈
    문자열이 되므로, 빈 문자열의 해시를 진실로 착각하지 마라.
    이 값이 틀리면 아래 모든 프롬프트 단언이 실제로 실행되는 텍스트를 검사하지 않는 것이 된다.
    갱신할 때는 아래 실패 메시지의 명령을 그대로 실행해 **PowerShell 실물에서 도출**하고,
    게이트가 보고하는 JS 재현값과 일치하는지 대조해라 — 실패 메시지의 값을 베끼면 재현본이 틀려도 모른다. */
-var GROUND_TRUTH_PROMPT_SHA256 = '9755b8459b2669492c1a2fc314694d811e4ff9d82a9447eac5cc8d759d4e4ac8';
+var GROUND_TRUTH_PROMPT_SHA256 = 'f6d346bd789fe614d7d9cc650e88a4b43a6d91f316b86d9bd115d5e8e17589be';
 var GROUND_TRUTH_PROMPT_ID = 'inj-ignore-previous';
 
 runCase('prompt-render-matches-powershell', '이 파일이 재현하는 프롬프트가 PowerShell이 실제로 만드는 문자열과 같다', function () {
@@ -555,7 +555,7 @@ runCase('prompt-render-matches-powershell', '이 파일이 재현하는 프롬�
   check(r !== null, '기준 captureId 렌더 실패');
   if (!r) return;
   var text = eolNorm(r.text);
-  eq(text.length, 3362, '렌더 길이가 대조 시점과 다르다');
+  eq(text.length, 4280, '렌더 길이가 대조 시점과 다르다');
   eq(sha256(text), GROUND_TRUTH_PROMPT_SHA256,
     '워처 프롬프트가 바뀌었다. 이 게이트의 모든 단언은 "PowerShell이 실제로 만드는 문자열"을 전제로 한다 — ' +
     '아래를 실행해 **PowerShell 실물에서** 새 지문을 도출하고(이 메시지의 "실제" 값을 베끼지 마라. ' +

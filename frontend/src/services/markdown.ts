@@ -1,4 +1,4 @@
-// Legacy docs/legacy.html mdLite/mdTable/parseFm 동작 계약 포팅.
+// Retired standalone renderer의 mdLite/mdTable/parseFm 동작 계약을 현재 앱에 포팅.
 // 파싱은 여기(순수 함수), JSX 변환은 components/MarkdownLite.tsx가 소유한다.
 
 export interface TableBlock {

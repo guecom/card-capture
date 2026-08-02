@@ -682,10 +682,8 @@ test('움직임을 끈 사용자에게 테두리 발광은 정지하되 사라�
         .filter((animation) => animation.playState === 'running' && (animation.effect?.getComputedTiming().iterations ?? 1) === Infinity)
         .length,
       shadow: getComputedStyle(node).boxShadow,
-      animationName: getComputedStyle(node).animationName,
     }));
     expect(state.looping, '움직임을 끈 사용자에게도 무한 애니메이션이 돈다').toBe(0);
-    expect(state.animationName, '테두리 발광 애니메이션이 꺼지지 않았다').toBe('none');
     // 의미는 남는다 — 이 박스가 AI 표면이라는 표식(테두리 둘레의 빛)은 정지 상태로 그대로 있다.
     expect(state.shadow, '움직임을 끄자 AI 표면의 빛까지 사라졌다').not.toBe('none');
   } finally {

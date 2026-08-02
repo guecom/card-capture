@@ -513,6 +513,85 @@ TB 'FI-019 recharge: 재충전 중에도 정상 항목은 계속 처리된다' {
     return ($m.status -eq 'processed')
 }
 
+# ---- APP-AC-239 Deep Research: lane / checkpoint / evidence graph ----
+$deepInbox = Join-Path $sandbox 'deep-inbox'
+New-Item -ItemType Directory -Force -Path $deepInbox | Out-Null
+$Inbox = $deepInbox
+
+function New-DeepFixture($id, $mode, $status) {
+    $d = Join-Path $deepInbox $id
+    New-Item -ItemType Directory -Force -Path $d | Out-Null
+    $m = [PSCustomObject]@{
+        captureId = $id
+        status = $status
+        receivedAt = '2026-07-25T09:00:00Z'
+        files = @('front.jpg')
+    }
+    if ($mode) {
+        $m | Add-Member -NotePropertyName type -NotePropertyValue 'research_instruction' -Force
+        $m | Add-Member -NotePropertyName researchInstruction -NotePropertyValue ([PSCustomObject]@{ mode = $mode }) -Force
+    }
+    ($m | ConvertTo-Json -Depth 8) | Out-File -Encoding utf8 (Join-Path $d 'capture.json')
+    return $d
+}
+
+$null = New-DeepFixture 'A9001' 'deep_evidence_graph' 'received'
+$null = New-DeepFixture 'B9001' 'standard' 'received'
+$null = New-DeepFixture 'Z9001' $null 'received'
+
+TB 'APP-AC-239 lane: 일반 캡처가 더 오래된 Deep Research보다 먼저다' {
+    return ((Get-NextEligibleCapture @{}).id -eq 'Z9001')
+}
+TB 'APP-AC-239 lane: 일반 캡처 다음은 표준 조사다' {
+    return ((Get-NextEligibleCapture @{ Z9001 = $true }).id -eq 'B9001')
+}
+TB 'APP-AC-239 lane: Deep Research는 마지막 lane이다' {
+    return ((Get-NextEligibleCapture @{ Z9001 = $true; B9001 = $true }).id -eq 'A9001')
+}
+
+TB 'APP-AC-239 checkpoint: partial processing은 terminal commit 없이 다음 slice 권한을 만든다' {
+    $p = Join-Path (Join-Path $deepInbox 'A9001') 'capture.json'
+    $m = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
+    $m.status = 'processing'
+    $m | Add-Member -NotePropertyName researchProgress -NotePropertyValue ([PSCustomObject]@{
+        phase = 'branching'; partial = $true; updatedAt = '2026-07-25T09:01:00Z'
+        verifiedFacts = 0; conflicts = 0; openQuestions = 1
+    }) -Force
+    ($m | ConvertTo-Json -Depth 8) | Out-File -Encoding utf8 $p
+    $v = Test-CaptureCommitted 'A9001'
+    return ($v.ok -and $v.partial -and $v.reason -eq 'research_checkpoint')
+}
+
+$finalDir = New-DeepFixture 'D9001' 'deep_evidence_graph' 'processed'
+$finalMetaPath = Join-Path $finalDir 'capture.json'
+$finalMeta = Get-Content $finalMetaPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$finalMeta | Add-Member -NotePropertyName person -NotePropertyValue 'PER-000001' -Force
+($finalMeta | ConvertTo-Json -Depth 8) | Out-File -Encoding utf8 $finalMetaPath
+'synthetic brief' | Out-File -Encoding utf8 (Join-Path $finalDir 'brief.md')
+$validGraph = [PSCustomObject]@{
+    version = 'deep-research-evidence-v1'
+    claims = @([PSCustomObject]@{
+        id = 'claim-1'; state = 'fact'; summary = '합성 검증 사실'; confidence = 'high'
+        evidenceFor = @('https://example.test/source-a'); evidenceAgainst = @()
+    })
+    timeline = @([PSCustomObject]@{ date = '2026-01'; label = '합성 사건'; claimIds = @('claim-1') })
+    openQuestions = @('추가 확인 질문')
+    stop = [PSCustomObject]@{ reason = 'purpose_satisfied'; summary = '합성 목적을 충족했다' }
+}
+($validGraph | ConvertTo-Json -Depth 10) | Out-File -Encoding utf8 (Join-Path $finalDir 'research-result.json')
+
+TB 'APP-AC-239 final: 근거가 있는 evidence graph만 terminal commit이다' {
+    $v = Test-CaptureCommitted 'D9001'
+    return ($v.ok -and -not $v.partial -and $v.reason -eq 'ok')
+}
+TB 'APP-AC-239 final: 근거 없는 fact는 fail-closed다' {
+    $bad = Get-Content (Join-Path $finalDir 'research-result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $bad.claims[0].evidenceFor = @()
+    ($bad | ConvertTo-Json -Depth 10) | Out-File -Encoding utf8 (Join-Path $finalDir 'research-result.json')
+    $v = Test-CaptureCommitted 'D9001'
+    return ((-not $v.ok) -and $v.reason -eq 'unsupported_fact')
+}
+
 # ---- summary + cleanup ----
 Write-Host ''
 Write-Host ("summary: pass=" + $pass + " fail=" + $fail)

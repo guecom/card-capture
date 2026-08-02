@@ -20,6 +20,51 @@ export interface ResearchInstruction {
   channel?: 'owner_ui';
   policyVersion?: string;
   riskFlags?: string[];
+  mode?: 'standard' | 'deep_evidence_graph';
+  purposes?: Array<'meeting_preparation' | 'expertise_execution' | 'authority_interests' | 'reputation_risk'>;
+  focusIds?: Array<'expertise' | 'authority' | 'reputation' | 'outcomes' | 'interests' | 'career' | 'company' | 'connection'>;
+  requestId?: string;
+  sourceAuthority?: 'public_lawful_only';
+  budget?: {
+    branchCap: number;
+    timeCapMinutes: number;
+  };
+}
+
+export type ResearchClaimState = 'fact' | 'conflict' | 'unknown' | 'hypothesis';
+
+export interface ResearchEvidenceLink {
+  title: string;
+  url?: string;
+  publishedAt?: string;
+}
+
+export interface ResearchEvidenceClaim {
+  id: string;
+  state: ResearchClaimState;
+  summary: string;
+  confidence?: 'low' | 'medium' | 'high';
+  evidenceFor: ResearchEvidenceLink[];
+  evidenceAgainst: ResearchEvidenceLink[];
+  alternativeExplanation?: string;
+}
+
+export interface ResearchTimelineEvent {
+  date: string;
+  label: string;
+  claimIds: string[];
+}
+
+export interface ResearchEvidenceGraph {
+  version: 'deep-research-evidence-v1';
+  purposes: ResearchInstruction['purposes'];
+  claims: ResearchEvidenceClaim[];
+  timeline: ResearchTimelineEvent[];
+  openQuestions: string[];
+  stop: {
+    reason: 'purpose_satisfied' | 'source_exhausted' | 'irrelevant_branch' | 'time_cap' | 'branch_cap';
+    summary: string;
+  };
 }
 
 export interface CaptureQueueItem {
@@ -92,6 +137,15 @@ export interface BriefItem {
   event?: string;
   note?: string;
   capturer?: string;
+  researchInstruction?: Pick<ResearchInstruction, 'mode' | 'purposes' | 'sourceAuthority' | 'policyVersion'>;
+  researchProgress?: {
+    phase?: 'planning' | 'branching' | 'triangulating' | 'synthesizing' | 'done';
+    verifiedFacts?: number;
+    conflicts?: number;
+    openQuestions?: number;
+    updatedAt?: string;
+  };
+  researchEvidence?: ResearchEvidenceGraph;
 }
 
 export interface ListResponse {
@@ -100,6 +154,7 @@ export interface ListResponse {
   items?: BriefItem[];
   seeAll?: boolean;
   researchInstructionEnabled?: boolean;
+  deepResearchEnabled?: boolean;
   hasMore?: boolean;
 }
 
@@ -125,6 +180,12 @@ export interface DocumentResponse {
   ok: boolean;
   error?: string;
   markdown?: string;
+}
+
+export interface ResearchEvidenceResponse {
+  ok: boolean;
+  error?: string;
+  graph?: ResearchEvidenceGraph;
 }
 
 export interface ActionResponse {

@@ -45,7 +45,8 @@ function doGet(e) {
       ok: true,
       name: name,
       owner: isOwner_(name),
-      researchInstructionEnabled: researchInstructionEnabled_()
+      researchInstructionEnabled: researchInstructionEnabled_(),
+      deepResearchEnabled: deepResearchEnabled_()
     } : { ok: false, error: 'invalid_token' });
   }
   if (action === 'list') {
@@ -114,6 +115,11 @@ function isOwner_(name) {
 /* Rollback switch. 명시적으로 false일 때만 닫아 기존 배포 설정 없이도 승인된 기능이 열린다. */
 function researchInstructionEnabled_() {
   return String(CONF.getProperty('RESEARCH_INSTRUCTION_ENABLED') || 'true').toLowerCase() !== 'false';
+}
+
+/* Deep Research도 별도 rollback switch를 둔다. 클라이언트가 보낸 policy나 budget은 권위가 없다. */
+function deepResearchEnabled_() {
+  return String(CONF.getProperty('DEEP_RESEARCH_ENABLED') || 'true').toLowerCase() !== 'false';
 }
 
 /* vault Person 폴더 탐색: inbox → 00_Inbox → Kairen → 02_Kairen_OS/30_Instance/Person */
@@ -302,8 +308,27 @@ function listCaptures_(token, limitParam, offsetParam) {
       contact: meta.contact || null,
       quickName: meta.quickName || null
     };
+    if (meta.researchInstruction) {
+      item.researchInstruction = {
+        mode: meta.researchInstruction.mode || 'standard',
+        purposes: meta.researchInstruction.purposes || [],
+        focusIds: meta.researchInstruction.focusIds || [],
+        sourceAuthority: 'public_lawful_only',
+        policyVersion: meta.researchInstruction.policy && meta.researchInstruction.policy.version || 'public-research-v1'
+      };
+    }
+    if (meta.researchProgress) item.researchProgress = meta.researchProgress;
     var brief = readNewestText_(folder, 'brief', '.md');
     if (brief) item.brief = brief.slice(0, 6000);
+    if (seeAll && meta.type === 'research_instruction') {
+      var evidenceText = readNewestText_(folder, 'research-result', '.json');
+      if (evidenceText) {
+        try {
+          var evidence = JSON.parse(evidenceText);
+          if (evidence && evidence.version === 'deep-research-evidence-v1' && Array.isArray(evidence.claims)) item.researchEvidence = evidence;
+        } catch (ignoredEvidenceError) {}
+      }
+    }
     items.push(item);
   }
   return json_({
@@ -311,6 +336,7 @@ function listCaptures_(token, limitParam, offsetParam) {
     name: name,
     seeAll: seeAll,
     researchInstructionEnabled: researchInstructionEnabled_(),
+    deepResearchEnabled: deepResearchEnabled_(),
     items: items,
     offset: offset,
     hasMore: hasMore
@@ -352,9 +378,11 @@ function doPost(e) {
     if (req.action === 'researchinstruction') return researchInstruction_(req);
     var name = capturerFor_(req.k);
     if (!name) return json_({ ok: false, error: 'invalid_token' });
-    var researchRaw = sanitizeResearchRaw_(req.researchInstruction);
-    if (researchRaw && !researchInstructionEnabled_()) return json_({ ok: false, error: 'feature_disabled' });
-    if (researchRaw && !isOwner_(name)) return json_({ ok: false, error: 'owner_only' });
+    var researchRequest = normalizeResearchRequest_(req.researchInstruction);
+    if (req.researchInstruction && !researchRequest) return json_({ ok: false, error: 'bad_research_request' });
+    if (researchRequest && !researchInstructionEnabled_()) return json_({ ok: false, error: 'feature_disabled' });
+    if (researchRequest && researchRequest.mode === 'deep_evidence_graph' && !deepResearchEnabled_()) return json_({ ok: false, error: 'deep_feature_disabled' });
+    if (researchRequest && !isOwner_(name)) return json_({ ok: false, error: 'owner_only' });
     if (!withinDailyLimit_(req.k)) return json_({ ok: false, error: 'daily_limit' });
 
     var captureId = sanitizeId_(req.captureId) || newId_();
@@ -450,8 +478,8 @@ function doPost(e) {
       meta.previousProcessedAt = prior.processedAt || '';
       if (prior.person) meta.previousPerson = prior.person;
     }
-    if (researchRaw) {
-      meta.researchInstruction = researchEnvelope_(researchRaw, name, {
+    if (researchRequest) {
+      meta.researchInstruction = researchEnvelope_(researchRequest, name, {
         captureId: captureId
       }, captureId + '-research-1');
     }
@@ -530,8 +558,9 @@ function researchInstruction_(req) {
   if (!isOwner_(name)) return json_({ ok: false, error: 'owner_only' });
   if (!researchInstructionEnabled_()) return json_({ ok: false, error: 'feature_disabled' });
   if (!withinDailyLimit_(req.k)) return json_({ ok: false, error: 'daily_limit' });
-  var raw = sanitizeResearchRaw_(req.text);
-  if (!raw) return json_({ ok: false, error: 'empty_text' });
+  var request = normalizeResearchRequest_(req.instruction || req.text);
+  if (!request) return json_({ ok: false, error: 'bad_research_request' });
+  if (request.mode === 'deep_evidence_graph' && !deepResearchEnabled_()) return json_({ ok: false, error: 'deep_feature_disabled' });
 
   var inboxId = CONF.getProperty('INBOX_FOLDER_ID');
   if (!inboxId) return json_({ ok: false, error: 'not_configured' });
@@ -559,16 +588,19 @@ function researchInstruction_(req) {
   }
   if (!person) return json_({ ok: false, error: 'no_target' });
 
-  var researchId = newId_() + '-research';
+  var requestId = sanitizeRequestId_(request.requestId);
+  var researchId = requestId ? 'research-' + requestId : newId_() + '-research';
   var lock = LockService.getScriptLock();
   lock.waitLock(10000);
   var folder;
   try {
+    var existing = inbox.getFoldersByName(researchId);
+    if (existing.hasNext()) return json_({ ok: true, receiptId: researchId, person: person, status: 'received', deduped: true });
     folder = inbox.createFolder(researchId);
   } finally {
     lock.releaseLock();
   }
-  var instruction = researchEnvelope_(raw, name, {
+  var instruction = researchEnvelope_(request, name, {
     person: person,
     captureId: relatedCaptureId
   }, researchId);
@@ -666,17 +698,62 @@ function sanitizeResearchRaw_(value) {
     .slice(0, 2000);
 }
 
-function researchEnvelope_(raw, requestedBy, target, receiptId) {
+var RESEARCH_PURPOSES_ = ['meeting_preparation', 'expertise_execution', 'authority_interests', 'reputation_risk'];
+var RESEARCH_FOCUS_IDS_ = ['expertise', 'authority', 'reputation', 'outcomes', 'interests', 'career', 'company', 'connection'];
+
+function allowedStrings_(values, allowlist) {
+  var result = [];
+  (Array.isArray(values) ? values : []).forEach(function (value) {
+    var item = String(value || '');
+    if (allowlist.indexOf(item) >= 0 && result.indexOf(item) < 0) result.push(item);
+  });
+  return result;
+}
+
+function sanitizeRequestId_(value) {
+  var id = String(value || '');
+  return /^[A-Za-z0-9-]{8,64}$/.test(id) ? id : '';
+}
+
+/* 요청 데이터만 정규화한다. 정책·권한·예산은 researchEnvelope_가 서버 상수로 다시 만든다. */
+function normalizeResearchRequest_(value) {
+  if (value === null || value === undefined || value === '') return null;
+  var input = value && typeof value === 'object' ? value : { raw: value };
+  var raw = sanitizeResearchRaw_(input.raw);
+  var mode = input.mode === 'deep_evidence_graph' ? 'deep_evidence_graph' : 'standard';
+  if (input.mode && input.mode !== 'standard' && input.mode !== 'deep_evidence_graph') return null;
+  var purposes = allowedStrings_(input.purposes, RESEARCH_PURPOSES_);
+  var focusIds = allowedStrings_(input.focusIds, RESEARCH_FOCUS_IDS_);
+  if (mode === 'deep_evidence_graph' && !purposes.length) return null;
+  if (!raw && !focusIds.length && !(mode === 'deep_evidence_graph' && purposes.length)) return null;
   return {
-    raw: sanitizeResearchRaw_(raw),
+    raw: raw,
+    mode: mode,
+    purposes: mode === 'deep_evidence_graph' ? purposes : [],
+    focusIds: focusIds,
+    requestId: sanitizeRequestId_(input.requestId)
+  };
+}
+
+function researchEnvelope_(requestValue, requestedBy, target, receiptId) {
+  var request = normalizeResearchRequest_(requestValue) || { raw: '', mode: 'standard', purposes: [], focusIds: [], requestId: '' };
+  var deep = request.mode === 'deep_evidence_graph';
+  return {
+    raw: request.raw,
+    mode: request.mode,
+    purposes: request.purposes,
+    focusIds: request.focusIds,
+    sourceAuthority: 'public_lawful_only',
     requestedBy: String(requestedBy || '').slice(0, 120),
     requestedAt: new Date().toISOString(),
     target: target,
     receiptId: String(receiptId || '').slice(0, 80),
     status: 'received',
     policy: {
-      version: 'public-research-v1',
-      mode: 'bounded_plan_required',
+      version: deep ? 'lawful-authority-deep-research-v2' : 'public-research-v1',
+      mode: deep ? 'evidence_graph_required' : 'bounded_plan_required',
+      branchCap: deep ? 24 : 10,
+      timeCapMinutes: deep ? 90 : 30,
       publicLawfulSourcesOnly: true,
       privateOrLoginSources: false,
       credentials: false,

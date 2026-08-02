@@ -16,7 +16,7 @@ import {
   IonToolbar,
   setupIonicReact,
 } from '@ionic/react';
-import { ArrowUpRight, Camera, ChevronRight, FileText, ImageOff, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, Waves } from 'lucide-react';
+import { Camera, ChevronRight, FileText, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, Waves } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 릴리즈 버전은 저장소가 선언한 값 하나만 쓴다 (founder 지시 2026-07-27: "버전이 설정에 표기되었으면 함").
@@ -28,7 +28,9 @@ import { CameraCaptureModal, type CapturedSideMeta, type CardSide } from './comp
 import { StatusBadge } from './components/StatusBadge';
 import { MarkdownLite } from './components/MarkdownLite';
 import { ActionSection, ContactActions, PersonDocument } from './components/PersonDocument';
-import { AiExampleChips, AiScopeNote, AiStageRail, AiSurface, AiSurfaceHead } from './components/AiTaskSurface';
+import { AiScopeNote, AiStageRail, AiSurface, AiSurfaceHead } from './components/AiTaskSurface';
+import { ResearchComposer } from './components/ResearchComposer';
+import { ResearchEvidencePanel } from './components/ResearchEvidencePanel';
 import { addPersonNote, fetchServerCaptureIds, listBriefsUpTo, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
 import {
   contentEvidence,
@@ -41,13 +43,7 @@ import {
   elapsedLabel,
   RECALL_SCOPE_NOTE,
   recallStages,
-  RESEARCH_EXAMPLE_CHIPS,
-  RESEARCH_PLACEHOLDER,
-  RESEARCH_SCOPE_DOES,
-  RESEARCH_SCOPE_LIMITS,
-  researchStages,
   type RecallStageKey,
-  type ResearchStageKey,
 } from './services/ai-stages';
 import { type CapturedCameraFrame, storedCameraFrame, thumbnailOf } from './services/camera';
 import {
@@ -66,7 +62,7 @@ import {
 } from './services/capture-context';
 import { buildLegacyNote, buildQueuedCapture, parseLegacyNote, restoredDraftOf } from './services/capture-item';
 import { actionErrorMessage, briefListTitle, briefNameMap, briefTitle, elapsedMinutesOf } from './services/brief-view';
-import { captureProgress, refreshHint } from './services/capture-progress';
+import { captureProgress } from './services/capture-progress';
 import { refreshCadenceMs } from './services/refresh-cadence';
 import { contactCardFromBrief } from './services/contacts';
 import { getOpenCvWorker, prefetchOpenCv } from './services/opencv';
@@ -97,7 +93,7 @@ import {
   runRecallSearch,
   serverFallbackTerm,
 } from './services/recall-search';
-import { buildResearchInstruction } from './services/research';
+import { buildResearchInstruction, type ResearchFocusId, type ResearchMode, type ResearchPurpose } from './services/research';
 import { recognizeQuickName } from './services/vision';
 import {
   loadCachedBriefs,
@@ -107,7 +103,6 @@ import {
   loadRuntimeConfigDetailed,
   loadSectionCollapsed,
   loadStickyCaptureContext,
-  loadMotionPreference,
   loadThemePreference,
   saveCachedBriefs,
   saveGalleryFree,
@@ -116,14 +111,11 @@ import {
   saveRuntimeConfig,
   saveSectionCollapsed,
   saveStickyCaptureContext,
-  saveMotionPreference,
   saveThemePreference,
   signOutDevice,
-  type MotionPreference,
   type ThemePreference,
 } from './services/storage';
 import { applyTheme, resolveTheme, systemPrefersDark, THEME_CHOICES, watchSystemTheme } from './services/theme';
-import { applyMotion, MOTION_CHOICES, resolveMotion, systemPrefersReducedMotion, watchSystemMotion } from './services/motion';
 import { holdSafeAreaInset } from './services/viewport-shell';
 import { apiRejectionMessage, canEditApiEndpoint } from './services/api-origin';
 import { scrubCredentialParams } from './services/url-credentials';
@@ -281,6 +273,7 @@ function App() {
   const [queue, setQueue] = useState<CaptureQueueItem[]>([]);
   const [damagedQueue, setDamagedQueue] = useState<DamagedQueueEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refreshPhase, setRefreshPhase] = useState<'idle' | 'success' | 'error' | 'offline'>('idle');
   const [message, setMessage] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -315,12 +308,6 @@ function App() {
   const [theme, setTheme] = useState<ThemePreference>(loadThemePreference);
   const [osPrefersDark, setOsPrefersDark] = useState(systemPrefersDark);
   const resolvedTheme = resolveTheme(theme, osPrefersDark);
-  // 화면 움직임 (founder 판정 2026-07-28). 폰의 `움직임 최소화`가 켜져 있으면 AI 표면의 빛이
-  // 하나도 그려지지 않는다 — 그건 결함이 아니라 존중이지만, **왜 안 보이는지 말해 주고 직접 켤 수도**
-  // 있어야 한다. 그래서 OS 설정은 기본값이지 잠금장치가 아니다.
-  const [motion, setMotion] = useState<MotionPreference>(loadMotionPreference);
-  const [osPrefersReducedMotion, setOsPrefersReducedMotion] = useState(systemPrefersReducedMotion);
-  const resolvedMotion = resolveMotion(motion, osPrefersReducedMotion);
   /**
    * 지금 **실제로 서버에 올리고 있는** captureId. 없으면 보내는 중이 아니다 (FI-034).
    *
@@ -336,6 +323,8 @@ function App() {
     const flags = loadOwnerFlags();
     return flags.seeAll && flags.researchInstructionEnabled;
   });
+  // Deep는 서버가 현재 연결에서 capability를 확인한 뒤에만 보인다. 오프라인 캐시로 권한을 추정하지 않는다.
+  const [deepResearchEnabled, setDeepResearchEnabled] = useState(false);
   // 화면이 서버에 요청하는 총 건수. `더 보기`를 누를 때마다 커지고 상한이 없다 —
   // 서버 한 페이지(100건) 안에서만 움직이면 101번째부터는 앱에서 존재하지 않는 것이 된다 (FI-100).
   const listWantedRef = useRef(LIST_PAGE_STEP);
@@ -356,6 +345,9 @@ function App() {
   const [documentNoteTarget, setDocumentNoteTarget] = useState<PersonTarget | null>(null);
   const [personActionComposer, setPersonActionComposer] = useState<PersonActionComposer | null>(null);
   const [personActionText, setPersonActionText] = useState('');
+  const [personResearchMode, setPersonResearchMode] = useState<ResearchMode>('standard');
+  const [personResearchPurposes, setPersonResearchPurposes] = useState<ResearchPurpose[]>(['meeting_preparation']);
+  const [personResearchFocusIds, setPersonResearchFocusIds] = useState<ResearchFocusId[]>([]);
   const [personActionSubmitting, setPersonActionSubmitting] = useState(false);
   const [queueEdit, setQueueEdit] = useState<CaptureQueueItem | null>(null);
   // 기다리게 하는 동작에는 예외 없이 "지금 하고 있다"가 붙어야 한다 (founder 원칙 2026-07-27).
@@ -377,6 +369,9 @@ function App() {
   const [relKairen, setRelKairen] = useState(sticky.relKairen);
   const [memo, setMemo] = useState('');
   const [researchText, setResearchText] = useState(sticky.research);
+  const [researchMode, setResearchMode] = useState<ResearchMode>('standard');
+  const [researchPurposes, setResearchPurposes] = useState<ResearchPurpose[]>(['meeting_preparation']);
+  const [researchFocusIds, setResearchFocusIds] = useState<ResearchFocusId[]>([]);
   const [contextCollapsed, setContextCollapsed] = useState(() => loadSectionCollapsed('context', false));
   const [queueing, setQueueing] = useState(false);
   // 자동 새로고침 안내용: 마지막 갱신 시각과 현재 시각(1초 tick).
@@ -407,6 +402,10 @@ function App() {
   const refreshCallbackSession = refreshSessionRef.current;
 
   const configured = Boolean(config.apiUrl && config.token);
+  const captureResearchNeedsPurpose = researchInstructionEnabled
+    && researchMode === 'deep_evidence_graph'
+    && !researchPurposes.length
+    && Boolean(researchText.trim() || researchFocusIds.length);
   const refreshIntervalMs = useMemo(() => refreshCadenceMs(briefs), [briefs]);
 
   // 자동 trigger끼리는 같은 요청을 공유한다. 반면 사용자의 확인이나 새 작업 직후 trigger가 이미
@@ -434,6 +433,7 @@ function App() {
     const request = (async (): Promise<{ count: number; hasMore: boolean } | null> => {
       setLoading(true);
       try {
+        if (configured && !navigator.onLine) throw new Error('offline');
         await pruneSentQueue();
         // 손상 항목은 화면·전송에서 빼되 기기에서 지우지 않는다 (FI-025).
         const integrity = await readQueueChecked();
@@ -450,13 +450,23 @@ function App() {
         saveCachedBriefs(nextBriefs);
         const seeAll = response.seeAll === true;
         const research = response.researchInstructionEnabled === true;
+        const deepResearch = seeAll && research && response.deepResearchEnabled === true;
         setOwnerCanSeeAll(seeAll);
         setResearchInstructionEnabled(seeAll && research);
+        setDeepResearchEnabled(deepResearch);
+        if (!deepResearch) {
+          setResearchMode('standard');
+          setPersonResearchMode('standard');
+        }
         saveOwnerFlags({ seeAll, researchInstructionEnabled: research });
         const hasMore = response.hasMore === true;
         setHasMoreBriefs(hasMore);
         setRefreshedAt(Date.now());
+        setRefreshPhase('success');
         return { count: nextBriefs.length, hasMore };
+      } catch (error) {
+        if (session === refreshSessionRef.current) setRefreshPhase(!navigator.onLine ? 'offline' : 'error');
+        throw error;
       } finally {
         if (session === refreshSessionRef.current) setLoading(false);
       }
@@ -475,12 +485,10 @@ function App() {
 
   // 수동 새로고침은 즉시 진행 토스트 → 완료/실패 토스트로 반응한다 (2026-07-26 실폰 피드백 7).
   const manualRefresh = useCallback(async () => {
-    setMessage('새로고침 중…');
     try {
       await refresh(true);
-      setMessage((current) => current === '' || current === '새로고침 중…' ? '새로고침 완료 — 최신 상태예요' : current);
     } catch (error) {
-      setMessage(`새로고침 실패: ${actionErrorMessage(error)}`);
+      if (navigator.onLine) setMessage(`새로고침 실패: ${actionErrorMessage(error)}`);
     }
   }, [refresh]);
 
@@ -627,10 +635,10 @@ function App() {
   useEffect(() => watchSystemTheme(setOsPrefersDark), []);
 
   useEffect(() => {
-    applyMotion(resolveMotion(motion, osPrefersReducedMotion));
-  }, [motion, osPrefersReducedMotion]);
-
-  useEffect(() => watchSystemMotion(setOsPrefersReducedMotion), []);
+    // DEC-000093: 과거 수동 override는 폐기하고 OS reduced-motion을 항상 존중한다.
+    localStorage.removeItem('cc_motion');
+    document.documentElement.removeAttribute('data-motion');
+  }, []);
 
   // 탭 바가 스크롤 중에 오르내리지 않도록 아래 safe-area 여백을 고정한다 (INT-000016 항목 001).
   useEffect(() => holdSafeAreaInset(), []);
@@ -678,12 +686,16 @@ function App() {
     return entries.sort((a, b) => b.id.localeCompare(a.id));
   }, [briefs, queue]);
 
-  // "언제 저절로 갱신되는지"를 화면에 그대로 보여 준다 (founder 판정 2026-07-26).
+  // 다음 갱신 시각을 지어내지 않는다. 자동 갱신 여부와 마지막 성공만 정직하게 보여 준다.
   const sinceRefresh = refreshedAt === null ? null : (clockTick - refreshedAt) / 60_000;
-  const untilRefresh = refreshedAt === null
-    ? refreshIntervalMs / 1000
-    : Math.min(refreshIntervalMs / 1000, Math.max(0, (refreshIntervalMs - (clockTick - refreshedAt)) / 1000));
-  const autoRefreshHint = refreshHint(untilRefresh, sinceRefresh);
+  const lastRefreshLabel = sinceRefresh === null ? '아직 갱신 전'
+    : sinceRefresh < 1 ? '마지막 갱신 방금'
+      : `마지막 갱신 ${Math.floor(sinceRefresh)}분 전`;
+  const refreshStatusText = loading ? '새로고침 중'
+    : refreshPhase === 'offline' ? '오프라인 · 연결되면 자동 재시도'
+      : refreshPhase === 'error' ? '갱신 실패 · 다시 시도'
+        : `자동 갱신 켜짐 · ${lastRefreshLabel}`;
+  const autoRefreshHint = refreshStatusText;
 
   // 지금 올리고 있는 촬영의 표시 이름. 없으면 빈 문자열이다.
   const sendingItem = useMemo(
@@ -902,6 +914,7 @@ function App() {
     setRecallResult(null);
     setOwnerCanSeeAll(false);
     setResearchInstructionEnabled(false);
+    setDeepResearchEnabled(false);
     setEvent('');
     setRelSelf('');
     setRelKairen('');
@@ -1010,6 +1023,10 @@ function App() {
 
   const completeCapture = useCallback(async () => {
     if (!frontFrame || queueing) return;
+    if (captureResearchNeedsPurpose) {
+      setMessage('Deep Research 목적을 하나 이상 선택해 주세요');
+      return;
+    }
     setQueueing(true);
     try {
       const item = buildQueuedCapture(frontFrame, {
@@ -1018,7 +1035,7 @@ function App() {
         relSelf,
         relKairen,
         memo,
-        researchInstruction: researchInstructionEnabled ? buildResearchInstruction(researchText) : null,
+        researchInstruction: researchInstructionEnabled ? buildResearchInstruction(researchText, { mode: researchMode, purposes: researchPurposes, focusIds: researchFocusIds }) : null,
         quickName,
       });
       // 전송 후 원본이 정리돼도 목록에 남을 104px 썸네일 (legacy thumbOf).
@@ -1049,7 +1066,7 @@ function App() {
     } finally {
       setQueueing(false);
     }
-  }, [backFrame, configured, event, flushPendingQueue, frontFrame, memo, queueing, quickName, relKairen, relSelf, researchInstructionEnabled, researchText, resetQuickName]);
+  }, [backFrame, captureResearchNeedsPurpose, configured, event, flushPendingQueue, frontFrame, memo, queueing, quickName, relKairen, relSelf, researchFocusIds, researchInstructionEnabled, researchMode, researchPurposes, researchText, resetQuickName]);
 
   /**
    * 방금 찍은 촬영을 대기열에서 빼서 촬영 화면으로 되돌린다 (FI-049).
@@ -1175,16 +1192,6 @@ function App() {
     });
   }, []);
 
-  // 예시 chip은 입력을 지우지 않고 덧붙인다 — 이미 쓴 문장을 날리면 안 된다.
-  const appendResearchExample = useCallback((value: string) => {
-    setResearchText((current) => {
-      const trimmed = current.trim();
-      if (!trimmed) return value;
-      if (trimmed.includes(value)) return current;
-      return `${trimmed}, ${value}`;
-    });
-  }, []);
-
   const openDocument = useCallback(async (title: string, target: { id?: string; captureId?: string }, noteTarget: PersonTarget | null) => {
     if (!configured) return;
     setDocumentTitle(title);
@@ -1227,6 +1234,9 @@ function App() {
 
   const promptResearch = useCallback((target: PersonTarget) => {
     setPersonActionText('');
+    setPersonResearchMode('standard');
+    setPersonResearchPurposes(['meeting_preparation']);
+    setPersonResearchFocusIds([]);
     setPersonActionComposer({ kind: 'research', target });
   }, []);
 
@@ -1242,17 +1252,25 @@ function App() {
   }, [personActionSubmitting]);
 
   const submitPersonAction = useCallback(async () => {
-    if (!personActionComposer || !personActionText.trim() || personActionSubmitting) return;
+    if (!personActionComposer || personActionSubmitting) return;
+    if (personActionComposer.kind !== 'research' && !personActionText.trim()) return;
     setPersonActionSubmitting(true);
     let success = false;
     if (personActionComposer.kind === 'note') {
       success = await runPersonAction(addPersonNote(config, personActionComposer.target, personActionText.trim()), '메모를 저장했어요 — 잠시 후 인물 기록에 반영됩니다');
     } else if (personActionComposer.kind === 'research') {
-      const submission = buildResearchInstruction(personActionText);
+      const submission = buildResearchInstruction(personActionText, {
+        mode: personResearchMode,
+        purposes: personResearchPurposes,
+        focusIds: personResearchFocusIds,
+        requestId: crypto.randomUUID(),
+      });
       if (!submission) {
         setMessage('조사할 내용을 조금 더 구체적으로 적어주세요');
+      } else if (submission.mode === 'deep_evidence_graph' && !submission.purposes?.length) {
+        setMessage('Deep Research 목적을 하나 이상 선택해주세요');
       } else {
-        success = await runPersonAction(submitResearchInstruction(config, personActionComposer.target, submission.raw), '조사 요청을 접수했어요');
+        success = await runPersonAction(submitResearchInstruction(config, personActionComposer.target, submission), '조사 요청을 접수했어요');
       }
     } else {
       success = await runPersonAction(requestCorrection(config, personActionComposer.captureId, personActionText.trim()), '수정 요청을 보냈어요 — 다음 처리에서 확인합니다');
@@ -1262,7 +1280,7 @@ function App() {
       setPersonActionComposer(null);
       setPersonActionText('');
     }
-  }, [config, personActionComposer, personActionSubmitting, personActionText, runPersonAction]);
+  }, [config, personActionComposer, personActionSubmitting, personActionText, personResearchFocusIds, personResearchMode, personResearchPurposes, runPersonAction]);
 
   const retryProcessing = useCallback(async (captureId: string) => {
     if (requeueingId) return;
@@ -1359,7 +1377,7 @@ function App() {
                 </li>
               ))}
             </ol>
-            {progress.late && (
+            {!progress.done && (
               <div className="stage-actions">
                 {/* 접근 이름은 고정한다 — 보이는 글자가 진행에 따라 바뀌어도 낭독기·자동화가 같은 버튼을 계속 가리킨다. */}
                 <button
@@ -1374,10 +1392,18 @@ function App() {
             )}
           </div>
         )}
+        {item.type === 'research_instruction' && item.researchProgress && (
+          <div className="research-live-progress" role="status" aria-live="polite">
+            <strong>Deep Research · {item.researchProgress.phase || 'planning'}</strong>
+            <span>확인된 사실 {item.researchProgress.verifiedFacts || 0} · 충돌 {item.researchProgress.conflicts || 0} · 남은 질문 {item.researchProgress.openQuestions || 0}</span>
+            <small>서버가 기록한 진행만 표시합니다. 남은 시간은 추정하지 않아요.</small>
+          </div>
+        )}
         {expanded && (
           <div className="brief-detail">
             {localContext && <p className="local-context">내 기록: {localContext}</p>}
             {briefBody ? <MarkdownLite text={briefBody} /> : <p>아직 브리핑 본문이 도착하지 않았습니다.</p>}
+            {item.researchEvidence && <ResearchEvidencePanel graph={item.researchEvidence} />}
             {actionable && <ContactActions contact={contact} />}
             {actionable && item.person && (
               <ActionSection label="기록" className="record-actions">
@@ -1539,24 +1565,21 @@ function App() {
           {/* 조사 지시는 메모가 아니라 AI에게 맡기는 일이다 — 표면·표식·단계를 그렇게 보이게 한다
               (INT-000015 Feedback item 002). 권한은 기존 owner-only public-research-v1 그대로다. */}
           {researchInstructionEnabled && (
-            <AiSurface className="research-request" state={queueing ? 'active' : 'idle'}>
-              <AiSurfaceHead title="AI 조사 요청" badge="소유자 전용" helper="묻기 껄끄럽지만 알아야 하는 것까지 맡기세요. 공개된 근거로 판단하고 확신도를 함께 적습니다." />
-              <IonTextarea
-                aria-label="AI 조사 요청"
-                maxlength={2000}
-                autoGrow
-                placeholder={RESEARCH_PLACEHOLDER}
-                value={researchText}
-                onIonInput={(inputEvent) => setResearchText(String(inputEvent.detail.value ?? ''))}
-              />
-              <AiExampleChips examples={RESEARCH_EXAMPLE_CHIPS} onPick={appendResearchExample} label="조사 요청 예시" />
-              <AiStageRail stages={researchStages('draft')} label="AI 조사 요청 진행 단계" />
-              <AiScopeNote>{RESEARCH_SCOPE_DOES}</AiScopeNote>
-              <AiScopeNote limit>{RESEARCH_SCOPE_LIMITS}</AiScopeNote>
-            </AiSurface>
+            <ResearchComposer
+              value={researchText}
+              onChange={setResearchText}
+              mode={researchMode}
+              onModeChange={setResearchMode}
+              purposes={researchPurposes}
+              onPurposesChange={setResearchPurposes}
+              focusIds={researchFocusIds}
+              onFocusIdsChange={setResearchFocusIds}
+              deepEnabled={deepResearchEnabled}
+              surfaceState={queueing ? 'active' : 'idle'}
+            />
           )}
 
-          <IonButton className="primary-action" expand="block" disabled={!frontFrame || queueing} onClick={() => void completeCapture()}>{queueing ? '저장 중…' : '완료'}</IonButton>
+          <IonButton className="primary-action" expand="block" disabled={!frontFrame || queueing || captureResearchNeedsPurpose} onClick={() => void completeCapture()}>{queueing ? '저장 중…' : '완료'}</IonButton>
           <p className="hint">전파가 약해도 기기에 저장했다가 자동으로 다시 보내요.</p>
 
           {/* 방금 찍은 것을 즉시 되돌리거나 다시 열기 (FI-049). 서버가 이미 받은 촬영에는
@@ -1589,7 +1612,10 @@ function App() {
           </button>
           {/* 이 구획의 진실만 쓴다. 지금 올리는 촬영이 있을 때만, 그리고 그것이 무엇인지 이름을 붙여서. */}
           {sendingId && <span className="sending-note" role="status">{sendingName || '명함'} 전송 중…</span>}
-          <span className="refresh-hint" role="status">{autoRefreshHint}</span>
+          <button className="inline-refresh" type="button" disabled={loading || !configured} onClick={() => void manualRefresh()}>
+            <RefreshCw className={loading ? 'spinning' : ''} aria-hidden="true" size={14} /> 새로고침
+          </button>
+          <span className="refresh-hint" role="status" aria-live="polite">{autoRefreshHint}</span>
         </div>
         {!recordsCollapsed && <div className="records-feed">{renderFeedBody()}</div>}
       </div>
@@ -1600,6 +1626,10 @@ function App() {
     return (
       <div className="cc-stack">
         {!configured && <EmptyState title="연결 설정이 필요해요" body="받으신 개인 링크(?k=토큰 포함)로 접속하면 같은 진행 상태를 읽습니다." action="설정 열기" onAction={() => { setDraftConfig(config); setSettingsOpen(true); }} />}
+        <section className={`surface-card refresh-console is-${refreshPhase}`} aria-label="진행 상태 갱신">
+          <div><strong>진행 상태</strong><span role="status" aria-live="polite">{refreshStatusText}</span></div>
+          <button type="button" disabled={loading || !configured} onClick={() => void manualRefresh()}><RefreshCw className={loading ? 'spinning' : ''} aria-hidden="true" size={16} /> {loading ? '확인 중…' : '진행 새로고침'}</button>
+        </section>
         {/* FI-025: 손상 항목을 조용히 지우지도, 큐 전체를 막게 두지도 않는다. */}
         {damagedQueue.length > 0 && (
           <section className="surface-card damaged-card" role="status">
@@ -1844,108 +1874,85 @@ function App() {
   }
 
   function renderSettings() {
+    const browserPushCapable = typeof Notification !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window;
     return (
-      <div className="cc-stack">
-        <section className="surface-card settings-summary">
-          <div><span>사용자</span><strong>{config.capturer || '이름을 입력해 주세요'}</strong></div>
-          <div><span>명함 연결</span><strong>{configured ? '연결됨' : (config.token ? '연결 주소 확인 필요' : '개인 링크로 접속해 주세요')}</strong></div>
-          <div><span>개인 링크</span><strong>{config.token ? '이 기기에 저장됨' : '아직 저장되지 않음'}</strong></div>
-          <IonButton fill="outline" expand="block" onClick={() => { setDraftConfig(config); setAdvancedOpen(false); setSettingsOpen(true); }}>사용자·연결 정보 편집</IonButton>
-        </section>
-        {/* INT-000016 항목 003: 시스템 자동 추종만으로는 부족하다 — 직접 고르고, 고른 값은 이 기기에 남는다. */}
-        <section className="surface-card theme-card">
-          <div className="theme-head"><SunMoon aria-hidden="true" size={17} /><strong>화면 테마</strong></div>
-          <p>어두운 곳에서는 다크로 바꿔 보세요. 고른 값은 이 기기에 저장돼요.</p>
-          <div className="theme-choice" role="radiogroup" aria-label="화면 테마">
-            {THEME_CHOICES.map((choice) => (
-              <button
-                key={choice.value}
-                type="button"
-                role="radio"
-                aria-checked={theme === choice.value}
-                className={theme === choice.value ? 'on' : ''}
-                onClick={() => { setTheme(choice.value); saveThemePreference(choice.value); }}
-              >
-                <strong>{choice.label}</strong>
-                <small>{choice.hint}</small>
-              </button>
-            ))}
-          </div>
-          <small className="theme-foot">
-            지금 보이는 화면은 <b>{resolvedTheme === 'dark' ? '다크' : '라이트'}</b>예요{theme === 'system' ? ' — 폰 설정을 따라갑니다.' : '.'}
-          </small>
-        </section>
-        {/* founder 판정 2026-07-28: "여전히 하이라이팅이 안 나옴".
-            폰이 `움직임 최소화`를 켜고 있으면 AI 표면의 빛은 한 픽셀도 그려지지 않는다(실측 확인).
-            그건 존중이지만 **말없이 사라지면 고장으로 읽힌다** — 지금 상태를 적고, 직접 켤 수 있게 한다. */}
-        <section className="surface-card theme-card">
-          <div className="theme-head"><Waves aria-hidden="true" size={17} /><strong>화면 움직임</strong></div>
-          <p>AI가 맡은 자리(<b>AI 조사 요청</b>·<b>AI 사람 찾기</b>)는 평소에도 은은한 빛이 지나갑니다. 고른 값은 이 기기에 저장돼요.</p>
-          <div className="theme-choice" role="radiogroup" aria-label="화면 움직임">
-            {MOTION_CHOICES.map((choice) => (
-              <button
-                key={choice.value}
-                type="button"
-                role="radio"
-                aria-checked={motion === choice.value}
-                className={motion === choice.value ? 'on' : ''}
-                onClick={() => { setMotion(choice.value); saveMotionPreference(choice.value); }}
-              >
-                <strong>{choice.label}</strong>
-                <small>{choice.hint}</small>
-              </button>
-            ))}
-          </div>
-          <small className="theme-foot">
-            지금은 <b>{resolvedMotion === 'on' ? '움직이는 중' : '멈춰 있음'}</b>이에요
-            {motion === 'system'
-              ? (osPrefersReducedMotion
-                ? ' — 이 폰이 움직임 최소화를 켜 두어서 빛이 멈춰 있습니다. 여기서 켜기를 고르면 앱에서만 다시 움직여요.'
-                : ' — 폰 설정을 따라갑니다.')
-              : '.'}
-          </small>
-        </section>
-        {/* ISS-000102: 갤러리 사본은 OS 기본 카메라 앱만 만든다. 지울 수 없는 것을 지운다고 말하지 않는다. */}
-        <section className="surface-card gallery-card">
-          <div className="gallery-head"><ImageOff aria-hidden="true" size={17} /><strong>명함 사진과 갤러리</strong></div>
-          <p>카이렌 카메라로 찍은 명함은 <b>휴대폰 갤러리에 저장되지 않아요.</b> 앱 안에만 두었다가 전송이 확인되면 10분 뒤 원본을 지우고 목록용 작은 썸네일만 남깁니다.</p>
-          <label className="gallery-toggle">
-            <input
-              type="checkbox"
-              checked={galleryFree}
-              onChange={(changeEvent) => { const next = changeEvent.target.checked; setGalleryFree(next); saveGalleryFree(next); }}
-            />
-            <span>
-              <strong>기본 카메라 앱 쓰지 않기</strong>
-              <small>{galleryFree
-                ? '켜짐 — 촬영 화면에서 기본 카메라 앱 버튼을 숨깁니다. 카메라가 열리지 않는 기기에서는 예외로 보여 줘요.'
-                : '꺼짐 — 기본 카메라 앱으로도 찍을 수 있어요. 그 사진은 갤러리에 남고 카이렌이 지울 수 없습니다.'}</small>
-            </span>
-          </label>
-          <small className="gallery-foot">이미 갤러리에 쌓인 사진은 앱이 지울 수 없어요 — 휴대폰 갤러리에서 직접 지워 주세요.</small>
-        </section>
-        <section className="boundary-note">
-          <ShieldCheck aria-hidden="true" size={20} />
-          <div>
-            <strong>개인 링크 정보는 이 기기에만 저장돼요.</strong>
-            <p>연결 정보는 저장소나 로그에 넣지 않습니다. 연결에 문제가 있을 때만 고급 설정에서 직접 확인하세요.</p>
-            {/* FI-004·005: 어디로 보내지는지와, 주소창에서 코드를 지웠다는 사실을 그대로 말한다. */}
-            <p className="boundary-origin">명함과 개인 링크 코드는 <b>{trustedApiHost}</b> 로만 전송돼요. 다른 주소를 붙인 링크는 무시합니다.</p>
-            <p className="boundary-origin">개인 링크로 열면 주소창의 코드를 <b>즉시 지웁니다</b> — 방문 기록·화면 공유에 남지 않아요.</p>
-          </div>
-        </section>
-        {/* FI-007: 폰을 넘기거나 링크를 회수할 때 이 기기의 사본을 끊는 경로. */}
-        <section className="surface-card signout-card">
-          <div className="signout-head"><strong>이 기기에서 연결 해제</strong></div>
-          <p>개인 링크 코드와 이 기기에 저장된 브리핑 사본·검색 기록·만남 맥락을 지웁니다. <b>전송을 기다리는 촬영은 지우지 않아요.</b></p>
-          <IonButton fill="outline" color="danger" expand="block" disabled={!config.token} onClick={() => setSignOutOpen(true)}>연결 해제</IonButton>
-        </section>
-        <a className="legacy-link" href="../legacy.html">문제가 있을 때 이전 앱 열기 <ArrowUpRight aria-hidden="true" size={16} /></a>
-        {/* 두 값은 서로 다른 일을 한다. 버전은 사람이 말하기 위한 것이고(“2.12.0 쓰고 있어요”),
-            소스 식별자는 그 화면이 정확히 어느 소스에서 나왔는지 저장소에서 다시 계산해 대조하기
-            위한 것이다. 하나만으로는 문제를 알릴 수도, 확인할 수도 없다. */}
-        <p className="build-line">버전 {APP_VERSION} · 빌드 {__CARD_CAPTURE_BUILD_ID__}</p>
-        <p className="build-note">문제를 알리실 때 이 두 줄을 함께 알려 주세요. 버전은 이 앱이 나온 릴리즈 이름이고, 빌드는 그 화면을 만든 소스를 가리킵니다.</p>
+      <div className="settings-dashboard">
+        <header className="settings-intro">
+          <span className="eyebrow">내 앱 설정</span>
+          <h2>필요한 일을 기준으로 정리했어요</h2>
+          <p>연결, 캡처, 알림, 화면, 개인정보, 도움말을 한 곳에서 확인합니다.</p>
+        </header>
+        <div className="settings-job-grid">
+          <section className="surface-card settings-job" aria-labelledby="settings-account">
+            <div className="settings-job-head"><span>01</span><div><h3 id="settings-account">계정·연결</h3><p>누가 어떤 개인 링크로 쓰는지</p></div></div>
+            <dl className="settings-facts">
+              <div><dt>사용자</dt><dd>{config.capturer || '이름을 입력해주세요'}</dd></div>
+              <div><dt>명함 연결</dt><dd>{configured ? '연결됨' : '연결 필요'}</dd></div>
+              <div><dt>개인 링크</dt><dd>{config.token ? '이 기기에 안전하게 저장됨' : '저장되지 않음'}</dd></div>
+            </dl>
+            <IonButton fill="outline" expand="block" onClick={() => { setDraftConfig(config); setAdvancedOpen(false); setSettingsOpen(true); }}>사용자·연결 정보 편집</IonButton>
+            <div className="settings-danger">
+              <strong>이 기기에서 연결 해제</strong>
+              <p>개인 링크와 기기 내 브리핑·검색 기록을 지웁니다. 서버 기록과 전송 대기 중인 촬영은 지우지 않습니다.</p>
+              <IonButton fill="outline" color="danger" expand="block" disabled={!config.token} onClick={() => setSignOutOpen(true)}>연결 해제</IonButton>
+            </div>
+          </section>
+
+          <section className="surface-card settings-job" aria-labelledby="settings-capture">
+            <div className="settings-job-head"><span>02</span><div><h3 id="settings-capture">캡처·처리</h3><p>촬영과 자동 처리 방식</p></div></div>
+            <label className="gallery-toggle">
+              <input type="checkbox" checked={galleryFree} onChange={(event) => { const next = event.target.checked; setGalleryFree(next); saveGalleryFree(next); }} />
+              <span><strong>기본 카메라 앱 쓰지 않기</strong><small>{galleryFree ? '앱 안의 명함 카메라만 사용합니다.' : '기본 카메라 촬영도 선택할 수 있습니다. 그 사진은 갤러리에 남고 카이렌이 지울 수 없습니다.'}</small></span>
+            </label>
+            <p className="settings-explain">촬영 원본은 전송 확인 뒤 기기에서 정리합니다. 진행 화면은 앱이 보일 때 자동 갱신되고, 언제든 직접 새로고침할 수 있습니다.</p>
+            <IonButton fill="outline" expand="block" disabled={loading} onClick={() => void manualRefresh()}><RefreshCw aria-hidden="true" size={16} /> {loading ? '상태 확인 중…' : '지금 처리 상태 확인'}</IonButton>
+          </section>
+
+          <section className="surface-card settings-job" aria-labelledby="settings-notifications">
+            <div className="settings-job-head"><span>03</span><div><h3 id="settings-notifications">알림</h3><p>꼭 개입할 때만 알려주기</p></div></div>
+            <div className="notification-readiness" role="status">
+              <strong>{browserPushCapable ? '브라우저는 지원 · 전송 서버 준비 필요' : '이 브라우저에서는 지원되지 않음'}</strong>
+              <p>완료, 사람 확인 필요, 복구 필요 세 경우만 알림 대상입니다. 이름·회사·메모는 알림 본문에 넣지 않습니다.</p>
+            </div>
+            <button className="settings-disabled-action" type="button" disabled>닫힌 앱 알림은 아직 연결할 수 없어요</button>
+            <small>서버 푸시 전송자와 VAPID 자격 증명을 먼저 선택·배포해야 합니다. 준비 전에는 앱 안 진행 화면이 정확한 기준입니다.</small>
+          </section>
+
+          <section className="surface-card settings-job" aria-labelledby="settings-display">
+            <div className="settings-job-head"><span>04</span><div><h3 id="settings-display">화면</h3><p>읽기 편한 테마</p></div></div>
+            <div className="theme-head"><SunMoon aria-hidden="true" size={17} /><strong>화면 테마</strong></div>
+            <div className="theme-choice" role="radiogroup" aria-label="화면 테마">
+              {THEME_CHOICES.map((choice) => (
+                <button key={choice.value} type="button" role="radio" aria-checked={theme === choice.value} className={theme === choice.value ? 'on' : ''} onClick={() => { setTheme(choice.value); saveThemePreference(choice.value); }}>
+                  <strong>{choice.label}</strong><small>{choice.hint}</small>
+                </button>
+              ))}
+            </div>
+            <small>지금은 <b>{resolvedTheme === 'dark' ? '다크' : '라이트'}</b> 화면입니다. 움직임은 휴대폰의 ‘움직임 줄이기’를 항상 존중합니다.</small>
+          </section>
+
+          <section className="surface-card settings-job" aria-labelledby="settings-data">
+            <div className="settings-job-head"><span>05</span><div><h3 id="settings-data">데이터·개인정보</h3><p>무엇이 어디로 가는지</p></div></div>
+            <div className="boundary-note settings-boundary">
+              <ShieldCheck aria-hidden="true" size={20} />
+              <div>
+                <strong>개인 링크 정보는 이 기기에만 저장돼요.</strong>
+                <p>명함과 개인 링크 코드는 <b>{trustedApiHost}</b>로만 전송됩니다. 주소창의 코드는 바로 지워 화면 공유와 방문 기록에 남지 않게 합니다.</p>
+                <p>Deep Research도 공개·합법 출처만 사용합니다. 로그인 자료, 가족·집주소, 정치·종교·건강 추론은 차단합니다.</p>
+              </div>
+            </div>
+          </section>
+
+          <section className="surface-card settings-job" aria-labelledby="settings-help">
+            <div className="settings-job-head"><span>06</span><div><h3 id="settings-help">도움말·버전</h3><p>문제를 진단하고 알려줄 정보</p></div></div>
+            <div className="help-actions">
+              <button type="button" onClick={() => void manualRefresh()}><RefreshCw aria-hidden="true" size={16} /> 연결 다시 확인</button>
+              <button type="button" onClick={() => { setTab('activity'); contentRef.current?.scrollToTop(250); }}><Waves aria-hidden="true" size={16} /> 진행 화면 열기</button>
+            </div>
+            <p>문제가 계속되면 버전과 빌드 값을 함께 전달해주세요. 연결 주소나 개인 링크 코드는 보내지 마세요.</p>
+            <p className="build-line">버전 {APP_VERSION} · 빌드 {__CARD_CAPTURE_BUILD_ID__}</p>
+          </section>
+        </div>
       </div>
     );
   }
@@ -2046,22 +2053,28 @@ function App() {
             <IonButton expand="block" disabled={!draftConfig.capturer.trim()} onClick={commitSettings}>설정 저장</IonButton>
           </IonContent>
         </IonModal>
-        <IonModal className="person-action-modal" isOpen={Boolean(personActionComposer)} onDidDismiss={closePersonActionComposer} initialBreakpoint={personActionComposer?.kind === 'research' ? 0.92 : 0.62} breakpoints={[0, 0.62, 0.92]}>
+        <IonModal className="person-action-modal" isOpen={Boolean(personActionComposer)} onDidDismiss={closePersonActionComposer} initialBreakpoint={1} breakpoints={[0, 1]}>
           {personActionComposer && (
-            <>
+            <IonPage className="person-action-page">
               <IonHeader><IonToolbar><IonTitle>{personActionCopy[personActionComposer.kind].title}</IonTitle><IonButton slot="end" fill="clear" disabled={personActionSubmitting} onClick={closePersonActionComposer}>취소</IonButton></IonToolbar></IonHeader>
               <IonContent className="ion-padding">
                 <div className="person-action-composer">
                   {personActionComposer.kind === 'research' ? (
                     // 같은 AI 표면·표식·단계를 캡처 화면과 인물 카드에서 그대로 쓴다 (INT-000015 항목 002).
-                    <AiSurface className="research-request" state={personActionSubmitting ? 'active' : 'idle'}>
-                      <AiSurfaceHead title="AI 조사 요청" badge="소유자 전용" helper={personActionCopy.research.helper} />
-                      <IonTextarea aria-label="AI 조사 요청" autofocus autoGrow maxlength={2000} placeholder={personActionCopy.research.placeholder} value={personActionText} onIonInput={(inputEvent) => setPersonActionText(String(inputEvent.detail.value ?? ''))} />
-                      <AiExampleChips examples={RESEARCH_EXAMPLE_CHIPS} onPick={(value) => setPersonActionText((current) => (current.trim() ? (current.includes(value) ? current : `${current.trim()}, ${value}`) : value))} label="조사 요청 예시" />
-                      <AiStageRail stages={researchStages(personActionSubmitting ? 'received' : 'draft')} label="AI 조사 요청 진행 단계" />
-                      <AiScopeNote>{RESEARCH_SCOPE_DOES}</AiScopeNote>
-                      <AiScopeNote limit>{RESEARCH_SCOPE_LIMITS}</AiScopeNote>
-                    </AiSurface>
+                    <ResearchComposer
+                      value={personActionText}
+                      onChange={setPersonActionText}
+                      mode={personResearchMode}
+                      onModeChange={setPersonResearchMode}
+                      purposes={personResearchPurposes}
+                      onPurposesChange={setPersonResearchPurposes}
+                      focusIds={personResearchFocusIds}
+                      onFocusIdsChange={setPersonResearchFocusIds}
+                      deepEnabled={deepResearchEnabled}
+                      surfaceState={personActionSubmitting ? 'active' : 'idle'}
+                      stage={personActionSubmitting ? 'received' : 'draft'}
+                      autofocus
+                    />
                   ) : (
                     <>
                       <span className="eyebrow">{personActionCopy[personActionComposer.kind].eyebrow}</span>
@@ -2069,14 +2082,14 @@ function App() {
                       <IonTextarea aria-label={personActionCopy[personActionComposer.kind].title} autofocus autoGrow maxlength={2000} label={personActionCopy[personActionComposer.kind].title} labelPlacement="stacked" placeholder={personActionCopy[personActionComposer.kind].placeholder} value={personActionText} onIonInput={(inputEvent) => setPersonActionText(String(inputEvent.detail.value ?? ''))} />
                     </>
                   )}
-                  {/* 접수 버튼은 시트 아래에 고정한다 — 예시 chip이 늘어나도 화면 밖으로 밀리면 안 된다. */}
-                  <div className="person-action-submit">
-                    <small>{personActionText.length.toLocaleString()} / 2,000</small>
-                    <IonButton expand="block" disabled={!personActionText.trim() || personActionSubmitting} onClick={() => void submitPersonAction()}>{personActionSubmitting ? '접수 중…' : personActionCopy[personActionComposer.kind].submit}</IonButton>
-                  </div>
                 </div>
               </IonContent>
-            </>
+              {/* 접수 버튼은 scroll content 밖의 modal footer가 소유한다. 내용이 길어져도 항상 닿는다. */}
+              <IonFooter className="person-action-submit">
+                <small>{personActionText.length.toLocaleString()} / 2,000</small>
+                <IonButton expand="block" disabled={personActionSubmitting || (personActionComposer.kind !== 'research' && !personActionText.trim()) || (personActionComposer.kind === 'research' && ((personResearchMode === 'deep_evidence_graph' && !personResearchPurposes.length) || (!personActionText.trim() && !personResearchFocusIds.length && !(personResearchMode === 'deep_evidence_graph' && personResearchPurposes.length))))} onClick={() => void submitPersonAction()}>{personActionSubmitting ? '접수 중…' : personActionCopy[personActionComposer.kind].submit}</IonButton>
+              </IonFooter>
+            </IonPage>
           )}
         </IonModal>
         <IonModal isOpen={documentOpen} onDidDismiss={() => setDocumentOpen(false)}>

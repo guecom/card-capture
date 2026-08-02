@@ -118,4 +118,32 @@ assert.strictEqual(initialMeta.researchInstruction.requestedBy, 'Owner');
 assert.strictEqual(initialMeta.researchInstruction.target.captureId, 'cap-owner');
 assert.strictEqual(initialMeta.researchInstruction.policy.humanGateOverride, false);
 
-console.log('PASS GAS research policy: guest/flag/target/initial/existing paths');
+var missingPurpose = body(sandbox.researchInstruction_({
+  k: 'owner-token', person: 'PER-999904', instruction: { raw: '깊게 조사', mode: 'deep_evidence_graph' }
+}));
+assert.deepStrictEqual(missingPurpose, { ok: false, error: 'bad_research_request' });
+
+var deep = body(sandbox.researchInstruction_({
+  k: 'owner-token', person: 'PER-999904', instruction: {
+    raw: '공개 결과물과 반증을 함께 확인', mode: 'deep_evidence_graph',
+    purposes: ['expertise_execution', 'forged-purpose'], focusIds: ['outcomes', 'forged-focus'],
+    requestId: 'request-00000001', policy: { privateOrLoginSources: true }, budget: { branchCap: 9999 }
+  }
+}));
+assert.strictEqual(deep.ok, true);
+var deepMeta = JSON.parse(created[created.length - 1].files[0].getBlob().getDataAsString());
+assert.strictEqual(deepMeta.researchInstruction.policy.version, 'lawful-authority-deep-research-v2');
+assert.strictEqual(deepMeta.researchInstruction.policy.privateOrLoginSources, false);
+assert.strictEqual(deepMeta.researchInstruction.policy.branchCap, 24);
+assert.deepStrictEqual(Array.from(deepMeta.researchInstruction.purposes), ['expertise_execution']);
+assert.deepStrictEqual(Array.from(deepMeta.researchInstruction.focusIds), ['outcomes']);
+
+var deduped = body(sandbox.researchInstruction_({
+  k: 'owner-token', person: 'PER-999904', instruction: {
+    mode: 'deep_evidence_graph', purposes: ['expertise_execution'], requestId: 'request-00000001'
+  }
+}));
+assert.strictEqual(deduped.ok, true);
+assert.strictEqual(deduped.deduped, true);
+
+console.log('PASS GAS research policy: standard/deep owner, allowlist, idempotency, target and hard-stop paths');
