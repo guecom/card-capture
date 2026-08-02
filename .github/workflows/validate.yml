@@ -36,6 +36,9 @@ jobs:
       - name: Test and build React candidate
         run: npm run validate --prefix frontend
 
+      - name: Verify committed Pages bundle matches the source build
+        run: git diff --exit-code -- docs/next
+
       - name: Verify server-off recovery in Chrome
         run: npm run test:e2e --prefix frontend
 
