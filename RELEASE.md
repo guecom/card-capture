@@ -42,6 +42,19 @@ release 기록은 이 파일 하단 "Verified Baselines"에 최신이 위로 오
 
 ## Verified Baselines
 
+### v2.18.0 @ `125acbb` — 검증 2026-08-02 (agent:kairen.codex, Kairen-Ref: TSK-000244 / ISS-000101) — **Code.gs 무변경**
+
+- repository: annotated tag `v2.18.0` → merge commit `125acbb965d9d910d4c24fea48dc1bbd16db1c23`(main). 담은 merge는 PR #66이고, 승인·검증된 exact PR head는 `d1bad9c61a551028e8788d2e019a1d82117a1dfe`다.
+- human gate: founder가 2026-08-01 `Approve`로 implementation을 승인했고 2026-08-02 `배포도해줘`로 PR merge·`v2.18.0` tag·Pages publication을 승인했다. **실폰 80회 matrix를 먼저 수행하지 않고 release하는 잔여 위험은 그대로 표시하며, 이 승인을 actual-phone PASS로 해석하지 않는다.** Apps Script 재배포·watcher 재기동·token·credential·Script Property·운영 데이터 변경은 승인·실행 범위 밖이며 이 릴리즈에 필요하지도 않다.
+- CI: exact PR head `d1bad9c…`의 `validate` run `30726258930` SUCCESS — Vitest 30 files / 333 tests PASS, Chrome E2E 110/110 PASS, repository validator `fail=0 warn=0`. local exact-head `scripts/validate.ps1`도 `fail=0 warn=0`이다.
+  - 독립 review는 첫 release head에서 OpenCV-only crop 허가·모델/OpenCV 후보 불일치·측정만 하고 단언하지 않는 model test·confidence 없는 후보 교체를 차단 결함으로 잡았다. 수정 head `e18951c…`에서 세 항목은 닫혔지만 낮은-confidence 후보가 lock expiry 뒤 재획득되는 우회가 남아 다시 FAIL했다. 최종 head `d1bad9c…`는 낮은-confidence 후보 12연속 frame에서도 기존 lock을 대체하지 못하고, 실제 verified-frame 부재 4회 뒤에만 신규 3-frame acquisition을 허용하며 독립 re-review PASS했다.
+  - model hard-scene gate는 3개 장면을 각각 4회 실행해 detection 12/12, malformed 0, max corner error 4px, max repeated drift 0px, max inference 238ms를 확인했다. 모델 asset을 끊은 browser gate도 자동 촬영·자동 크롭 0, 수동 guide capture 가능으로 PASS했다. live synthetic camera의 표시 중심 오차는 1–2px, crop ratio는 1.67이었다.
+- Pages: source `main:/docs`, build commit `125acbb…`, status `built`(2026-08-02T01:09:42Z). **live와 merge commit blob이 exact-match** — `docs/index.html` `0b491c9253fc2058…`, `docs/sw.js` `f171a6c6190a541a…`, `docs/next/index.html` `c8f976cfc3798bb…`, `docs/next/sw.js` `d2047b09ca1b68e…`, active JS `docs/next/assets/index-BB2R91t0.js` `d2f15d8fc4df9b…`. live active JS와 service worker가 같은 entry를 가리키며, 실제 Chrome 설정 화면은 `버전 2.18.0 · 빌드 src-a1906ca0cbd5`를 표시했다.
+- 이번 변경의 machine-observable behavior: learned corner model과 OpenCV 후보가 같은 위치·크기·꼭짓점에 동의해야만 overlay·auto-capture·perspective warp로 진행한다. 모델 unavailable/negative/waiting 또는 후보 불일치에는 live quad를 지우고 자동 경로를 닫으며 수동 guide capture를 남긴다. lock 교체에는 confidence margin과 4-frame consensus가 모두 필요하다.
+- **GAS deployment: 해당 없음.** `v2.17.0..v2.18.0`에서 `Code.gs` 무변경. Watcher도 무변경·재기동 없음. credential·schema·production-data migration도 없다.
+- 실기기 판정: **미완료.** 조건별 10회·총 80회 actual-phone matrix, malformed 표시 0, usable stable lock 90% 이상, lock-time p95 2초 이하, 실제 crop 육안 판정은 다음 founder 폰 검증에 남아 있다. 따라서 TSK-000244와 ISS-000101은 In Progress이며, 이 machine·release evidence는 Task Done·MVP gate PASS·customer proof가 아니다. MVP build/testability gate comes before customer proof.
+- rollback: PR #66 merge commit `125acbb…`를 revert하고 같은 Pages 절차로 재배포하거나, 긴급 시 마지막 검증 baseline `v2.17.0`을 복원한다. 서버·watcher·data rollback은 없다.
+
 ### v2.17.0 @ `09087c9` — 검증 2026-07-30 (agent:kairen.codex, Kairen-Ref: TSK-000161 / ISS-000050) — **Code.gs 무변경**
 
 - repository: annotated tag `v2.17.0` → squash merge commit `09087c96ac45beb0642b39d0904558857b257a56`(main). 담은 merge는 PR #64이고, 승인·검증된 exact PR head는 `e01c32b1f73759299d018052ea18a71651b9de52`다.
