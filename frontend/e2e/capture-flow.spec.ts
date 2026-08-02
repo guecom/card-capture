@@ -52,6 +52,22 @@ function sceneScript({ frame, card }: { frame: typeof FRAME; card: typeof CARD }
     __sawMotionHold?: boolean;
   };
   runtime.__scene = 'front';
+  const videoPrototype = HTMLVideoElement.prototype as HTMLVideoElement & {
+    requestVideoFrameCallback?: (callback: (now: number, metadata: VideoFrameCallbackMetadata) => void) => number;
+  };
+  const requestVideoFrame = videoPrototype.requestVideoFrameCallback;
+  if (requestVideoFrame) {
+    videoPrototype.requestVideoFrameCallback = function (callback) {
+      // 이 앱에서 requestVideoFrameCallback은 auto gate가 fired된 뒤 post-trigger burst가
+      // 시작할 때만 호출된다. 첫 요청 직전에 shake를 켜면 UI render timing과 무관하게
+      // 분석 완료 이후·실제 저장 이전의 TOCTOU를 정확히 재현한다.
+      if (runtime.__shakeOnReady && !runtime.__shakeInjected) {
+        runtime.__shakeInjected = true;
+        runtime.__shakeUntil = performance.now() + 480;
+      }
+      return requestVideoFrame.call(this, callback);
+    };
+  }
   const canvas = document.createElement('canvas');
   canvas.width = frame.width;
   canvas.height = frame.height;
@@ -90,10 +106,6 @@ function sceneScript({ frame, card }: { frame: typeof FRAME; card: typeof CARD }
   window.addEventListener('DOMContentLoaded', () => {
     const observer = new MutationObserver(() => {
       const hint = document.querySelector('.camera-hint-pill span')?.textContent ?? '';
-      if (runtime.__shakeOnReady && !runtime.__shakeInjected && hint.includes('자동 촬영 중')) {
-        runtime.__shakeInjected = true;
-        runtime.__shakeUntil = performance.now() + 480;
-      }
       if (hint.includes('카메라가 움직였어요')) runtime.__sawMotionHold = true;
     });
     observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
