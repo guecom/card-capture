@@ -42,6 +42,18 @@ release 기록은 이 파일 하단 "Verified Baselines"에 최신이 위로 오
 
 ## Verified Baselines
 
+### v2.19.0 @ `5e3d8ec` — 검증 2026-08-02 (agent:kairen.codex, Kairen-Ref: TSK-000219 / ISS-000083) — **Code.gs 무변경**
+
+- repository: annotated tag `v2.19.0` → merge commit `5e3d8ec672ab888a6c2c422c11bc0a6f316bb811`(main). 구현 PR은 [#69](https://github.com/guecom/card-capture/pull/69)이고 승인·검증된 exact PR head는 `a1e578ab33e9b38c4aaf9b866b6f7b17cdf39c0f`다.
+- human gate: founder가 2026-08-02 자동 촬영 순간 손떨림·급이동 결함의 구현과 release를 지시했다. repository `HUMAN TEST REQUIRED` gate가 exact version의 actual-phone outcome 미확인을 이유로 첫 merge 시도를 차단한 뒤, agent가 실제 폰 steady·손떨림·급이동·crop 품질과 threshold 민감도가 `NOT RUN`임을 고지했고 founder가 `배포 승인`으로 PR merge·`v2.19.0` tag·Pages publication을 명시 승인했다. **이 승인을 actual-phone PASS로 해석하지 않는다.** Apps Script 재배포·watcher 재기동·token·credential·Script Property·운영 데이터 변경은 승인·실행 범위 밖이며 이 release에 필요하지도 않다.
+- CI: exact PR head `a1e578a…`의 `validate` run `30730231554` SUCCESS(5m35s) — Vitest 31 files / 337 tests PASS, Chrome E2E 115/115 PASS, repository validator `fail=0 warn=0`, 서로 다른 clock·timezone build 27 artifacts byte-identical. focused capture-flow는 6/6 PASS다.
+  - 독립 review는 첫 head에서 auto-off·close 뒤 stale capture가 `onCaptured`까지 갈 수 있는 generation race, manual shutter가 pending auto hold에 막히는 문제와 `requestVideoFrameCallback` 미지원 WebView가 `currentTime`만 보고 같은 frame을 3개로 오인할 수 있는 결함을 찾아 FAIL했다. 최종 head는 stop·off·close·side change 때 capture generation을 무효화하고 freeze·warp·blur·publish 뒤 active generation을 재확인하며, manual shutter가 auto hold를 선점한다. fallback은 `totalVideoFrames - droppedVideoFrames`만 신뢰하고 없으면 fail-closed한다. 최종 exact-head 독립 re-review PASS다.
+- Pages: source `main:/docs`, `pages-build-deployment` run `30731294400` SUCCESS, build commit `5e3d8ec…`, status `built`(2026-08-02T03:50:36Z). **live와 merge commit blob이 exact-match** — `docs/index.html` `0b491c9253fc2058a88232403667363115e600ff4807f6997734af9bf76cfe16`, `docs/sw.js` `f171a6c6190a541a53169622053a49a55e84d52b0e554ea0f11729eb48fff5f2`, `docs/next/index.html` `9b4edaddbf92c94ec12f1f623be0bf354ba9118475adcf6f728c00af2a2632b2`, `docs/next/sw.js` `58ca87335dcb4bec02b7fd211cf8c2e354f30b812d065fe6c307daf048e0a075`, active JS `docs/next/assets/index-DH2_HlMv.js` `bc542bfb45f53103db976e37dad4be765c90a7e885888789ed8e252a14028ce8`, active CSS `docs/next/assets/index-0bbMrTSJ.css` `a5c0f17823610739c7c5fa71148dc627699dbbb03cd16ed671c64379a6840fd7`. live HTML·service worker가 같은 active JS를 가리키고 live JS 안의 앱 버전 `2.19.0`을 확인했다.
+- 이번 변경의 machine-observable behavior: 자동 gate가 ready가 된 뒤 서로 다른 새 camera frame 3개를 비교해 손떨림·translation을 reject하고, 통과한 마지막 frame을 즉시 freeze한 뒤 실제 저장 후보의 sharpness를 다시 확인한다. motion·blur는 저장 없이 gate를 처음부터 다시 모은다. auto-off·닫기는 pending work를 취소하고 manual shutter는 기다리지 않고 실행된다. frame identity를 신뢰할 수 없는 WebView는 자동 촬영을 보류한다. motion fingerprint와 raw frame은 저장·전송하지 않는다.
+- **GAS deployment: 해당 없음.** `v2.18.0..v2.19.0`에서 `Code.gs`, watcher와 dependency lockfile 무변경. watcher 재기동, credential·schema·production-data migration도 없다.
+- 실기기 판정: **미완료.** exact version의 steady capture, 손떨림, 급이동, 결과 crop과 threshold 민감도는 founder phone에서 확인하지 않았다. 따라서 TSK-000219·ISS-000083은 In Progress/Open이고 TST-000017은 Running이다. 이 machine·release evidence는 Task Done·MVP gate PASS·customer proof가 아니다. MVP build/testability gate comes before customer proof.
+- rollback: PR #69 merge commit `5e3d8ec…`를 revert하고 같은 Pages 절차로 재배포하거나, 긴급 시 마지막 검증 baseline `v2.18.0`을 복원한다. 서버·watcher·data rollback은 없다.
+
 ### v2.18.0 @ `125acbb` — 검증 2026-08-02 (agent:kairen.codex, Kairen-Ref: TSK-000244 / ISS-000101) — **Code.gs 무변경**
 
 - repository: annotated tag `v2.18.0` → merge commit `125acbb965d9d910d4c24fea48dc1bbd16db1c23`(main). 담은 merge는 PR #66이고, 승인·검증된 exact PR head는 `d1bad9c61a551028e8788d2e019a1d82117a1dfe`다.
