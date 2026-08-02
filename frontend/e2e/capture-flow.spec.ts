@@ -39,43 +39,120 @@ function startStaticServer(): Promise<Server> {
   return new Promise((resolveServer, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', () => resolveServer(server)); });
 }
 
-// 장면을 앱 밖에서 바꿀 수 있게 window.__scene을 노출한다: 'front' | 'empty' | 'back'
-function sceneScript({ frame, card }: { frame: typeof FRAME; card: typeof CARD }) {
+// 장면을 앱 밖에서 바꿀 수 있게 window.__scene을 노출한다: 'front' | 'empty' | 'back'.
+// __shakeOnReady는 auto gate가 ready가 된 직후에만 카메라 translation을 주입한다.
+function sceneScript({
+  frame,
+  card,
+  frameCallbackMode = 'callback',
+}: {
+  frame: typeof FRAME;
+  card: typeof CARD;
+  frameCallbackMode?: 'callback' | 'counter' | 'unavailable';
+}) {
   localStorage.setItem('cc_name', 'Debug');
   localStorage.setItem('cc_autoCapture', 'on'); // 폰 기본값
-  const runtime = window as typeof window & { __scene?: string };
+  const runtime = window as typeof window & {
+    __scene?: string;
+    __shakeOnReady?: boolean;
+    __shakeInjected?: boolean;
+    __shakeFramesRemaining?: number;
+    __shakeStep?: number;
+    __shakeEndedAt?: number;
+    __sawMotionHold?: boolean;
+    __cancelOnBurst?: 'auto-off' | 'close';
+    __burstCancellationTriggered?: boolean;
+    __frameCounterReads?: number;
+  };
   runtime.__scene = 'front';
+  const videoPrototype = HTMLVideoElement.prototype as HTMLVideoElement & {
+    requestVideoFrameCallback?: (callback: (now: number, metadata: VideoFrameCallbackMetadata) => void) => number;
+    getVideoPlaybackQuality?: () => VideoPlaybackQuality;
+  };
+  const requestVideoFrame = videoPrototype.requestVideoFrameCallback;
+  const getVideoPlaybackQuality = videoPrototype.getVideoPlaybackQuality;
+  if (frameCallbackMode !== 'callback') {
+    Object.defineProperty(videoPrototype, 'requestVideoFrameCallback', { configurable: true, value: undefined });
+    if (frameCallbackMode === 'counter' && getVideoPlaybackQuality) {
+      Object.defineProperty(videoPrototype, 'getVideoPlaybackQuality', {
+        configurable: true,
+        value(this: HTMLVideoElement) {
+          runtime.__frameCounterReads = (runtime.__frameCounterReads ?? 0) + 1;
+          return getVideoPlaybackQuality.call(this);
+        },
+      });
+    } else if (frameCallbackMode === 'unavailable') {
+      Object.defineProperty(videoPrototype, 'getVideoPlaybackQuality', { configurable: true, value: undefined });
+    }
+  } else if (requestVideoFrame) {
+    videoPrototype.requestVideoFrameCallback = function (callback) {
+      // 이 앱에서 requestVideoFrameCallback은 auto gate가 fired된 뒤 post-trigger burst가
+      // 시작할 때만 호출된다. 첫 요청 직전에 shake를 켜면 UI render timing과 무관하게
+      // 분석 완료 이후·실제 저장 이전의 TOCTOU를 정확히 재현한다.
+      if (runtime.__shakeOnReady && !runtime.__shakeInjected) {
+        runtime.__shakeInjected = true;
+        runtime.__shakeFramesRemaining = 12;
+        runtime.__shakeStep = 0;
+      }
+      if (runtime.__cancelOnBurst && !runtime.__burstCancellationTriggered) {
+        runtime.__burstCancellationTriggered = true;
+        const action = runtime.__cancelOnBurst;
+        queueMicrotask(() => {
+          const buttons = Array.from(document.querySelectorAll('ion-button')) as HTMLElement[];
+          const label = action === 'auto-off' ? '자동 촬영 켜짐' : '닫기';
+          buttons.find((button) => button.textContent?.includes(label))?.click();
+        });
+      }
+      return requestVideoFrame.call(this, callback);
+    };
+  }
   const canvas = document.createElement('canvas');
   canvas.width = frame.width;
   canvas.height = frame.height;
   const context = canvas.getContext('2d')!;
   const draw = () => {
+    const shaking = (runtime.__shakeFramesRemaining ?? 0) > 0;
+    // 64px/720px는 사용자가 shutter 순간 폰을 휙 움직인 상황을 재현한다. 주입은
+    // ready 이후에만 시작하므로 기존 pre-trigger quad gate가 대신 잡을 수 없다.
+    const shiftX = shaking ? ((runtime.__shakeStep ?? 0) % 2 ? 64 : -64) : 0;
     context.fillStyle = '#b9a892';
     context.fillRect(0, 0, frame.width, frame.height);
     for (let index = 0; index < 900; index += 1) {
-      const px = (index * 977) % frame.width;
+      const px = ((index * 977) % frame.width + shiftX + frame.width) % frame.width;
       const py = (index * 1597) % frame.height;
       context.fillStyle = index % 2 ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)';
       context.fillRect(px, py, 3, 3);
     }
     if (runtime.__scene === 'empty') return; // 명함을 치운 상태(뒤집는 중)
     context.fillStyle = 'rgba(0,0,0,0.22)';
-    context.fillRect(card.x + 6, card.y + 9, card.width, card.height);
+    context.fillRect(card.x + shiftX + 6, card.y + 9, card.width, card.height);
     context.fillStyle = '#f3f1ec';
-    context.fillRect(card.x, card.y, card.width, card.height);
+    context.fillRect(card.x + shiftX, card.y, card.width, card.height);
     context.fillStyle = '#1d2a3a';
     if (runtime.__scene === 'back') {
       context.font = '600 30px "Malgun Gothic", sans-serif';
-      context.fillText('KAIREN ROBOTICS', card.x + 36, card.y + 170);
+      context.fillText('KAIREN ROBOTICS', card.x + shiftX + 36, card.y + 170);
     } else {
       context.font = '700 58px "Malgun Gothic", sans-serif';
-      context.fillText('김진우', card.x + 36, card.y + 104);
+      context.fillText('김진우', card.x + shiftX + 36, card.y + 104);
       context.font = '400 27px "Malgun Gothic", sans-serif';
-      context.fillText('대표이사', card.x + 36, card.y + 148);
+      context.fillText('대표이사', card.x + shiftX + 36, card.y + 148);
+    }
+    if (shaking) {
+      runtime.__shakeStep = (runtime.__shakeStep ?? 0) + 1;
+      runtime.__shakeFramesRemaining = Math.max(0, (runtime.__shakeFramesRemaining ?? 0) - 1);
+      if (runtime.__shakeFramesRemaining === 0) runtime.__shakeEndedAt = performance.now();
     }
   };
   draw();
-  window.setInterval(draw, 100);
+  window.setInterval(draw, 40);
+  window.addEventListener('DOMContentLoaded', () => {
+    const observer = new MutationObserver(() => {
+      const hint = document.querySelector('.camera-hint-pill span')?.textContent ?? '';
+      if (hint.includes('카메라가 움직였어요')) runtime.__sawMotionHold = true;
+    });
+    observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+  }, { once: true });
   const stream = (canvas as HTMLCanvasElement & { captureStream: (fps: number) => MediaStream }).captureStream(30);
   const mediaDevices = navigator.mediaDevices ?? ({} as MediaDevices);
   Object.defineProperty(navigator, 'mediaDevices', {
@@ -88,6 +165,126 @@ function sceneScript({ frame, card }: { frame: typeof FRAME; card: typeof CARD }
 }
 
 test.use({ viewport: { width: 375, height: 812 } });
+
+test('turning auto capture off cancels the pending burst and manual shutter still works', async ({ page }) => {
+  test.setTimeout(180_000);
+  const server = await startStaticServer();
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('no port');
+  try {
+    await page.addInitScript(sceneScript, { frame: FRAME, card: CARD });
+    await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
+    await page.evaluate(() => {
+      (window as typeof window & { __cancelOnBurst?: 'auto-off' }).__cancelOnBurst = 'auto-off';
+    });
+
+    await page.getByRole('button', { name: '명함 앞면 촬영' }).click();
+    await page.waitForFunction(() => (
+      window as typeof window & { __burstCancellationTriggered?: boolean }
+    ).__burstCancellationTriggered === true, null, { timeout: 40_000 });
+    await expect(page.getByRole('button', { name: '자동 촬영 꺼짐' })).toBeVisible();
+    await page.waitForTimeout(750);
+    await expect(page.getByText('앞면 저장됨 — 뒷면도 찍을까요? (선택)')).toHaveCount(0);
+
+    await page.getByRole('button', { name: '앞면 촬영', exact: true }).click();
+    await expect(page.getByText('앞면 저장됨 — 뒷면도 찍을까요? (선택)')).toBeVisible({ timeout: 30_000 });
+  } finally {
+    await new Promise<void>((stop) => { server.close(() => stop()); server.closeAllConnections(); });
+  }
+});
+
+test('closing the modal cancels a pending auto capture before it can publish a frame', async ({ page }) => {
+  test.setTimeout(180_000);
+  const server = await startStaticServer();
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('no port');
+  try {
+    await page.addInitScript(sceneScript, { frame: FRAME, card: CARD });
+    await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
+    await page.evaluate(() => {
+      (window as typeof window & { __cancelOnBurst?: 'close' }).__cancelOnBurst = 'close';
+    });
+
+    await page.getByRole('button', { name: '명함 앞면 촬영' }).click();
+    await page.waitForFunction(() => (
+      window as typeof window & { __burstCancellationTriggered?: boolean }
+    ).__burstCancellationTriggered === true, null, { timeout: 40_000 });
+    await expect(page.locator('ion-modal.camera-preview-modal')).not.toBeVisible({ timeout: 10_000 });
+    await page.waitForTimeout(750);
+    await expect(page.locator('.shot-main img[alt="앞면 미리보기"]')).toHaveCount(0);
+  } finally {
+    await new Promise<void>((stop) => { server.close(() => stop()); server.closeAllConnections(); });
+  }
+});
+
+test('frame-counter fallback waits for distinct presented frames without requestVideoFrameCallback', async ({ page }) => {
+  test.setTimeout(180_000);
+  const server = await startStaticServer();
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('no port');
+  try {
+    await page.addInitScript(sceneScript, { frame: FRAME, card: CARD, frameCallbackMode: 'counter' });
+    await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
+    await page.getByRole('button', { name: '명함 앞면 촬영' }).click();
+
+    await expect(page.getByText('앞면 저장됨 — 뒷면도 찍을까요? (선택)')).toBeVisible({ timeout: 40_000 });
+    const counterReads = await page.evaluate(() => (
+      window as typeof window & { __frameCounterReads?: number }
+    ).__frameCounterReads ?? 0);
+    expect(counterReads).toBeGreaterThanOrEqual(4);
+  } finally {
+    await new Promise<void>((stop) => { server.close(() => stop()); server.closeAllConnections(); });
+  }
+});
+
+test('auto capture fails closed when no trustworthy frame identity is available', async ({ page }) => {
+  test.setTimeout(180_000);
+  const server = await startStaticServer();
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('no port');
+  try {
+    await page.addInitScript(sceneScript, { frame: FRAME, card: CARD, frameCallbackMode: 'unavailable' });
+    await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
+    await page.getByRole('button', { name: '명함 앞면 촬영' }).click();
+
+    await expect(page.getByText('새 카메라 프레임을 기다리는 중 · 잠시 고정해 주세요')).toBeVisible({ timeout: 40_000 });
+    await page.waitForTimeout(750);
+    await expect(page.getByText('앞면 저장됨 — 뒷면도 찍을까요? (선택)')).toHaveCount(0);
+  } finally {
+    await new Promise<void>((stop) => { server.close(() => stop()); server.closeAllConnections(); });
+  }
+});
+
+test('auto capture cancels a shake that starts after ready and retries on a stable frame', async ({ page }) => {
+  test.setTimeout(180_000);
+  const server = await startStaticServer();
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('no port');
+  try {
+    await page.addInitScript(sceneScript, { frame: FRAME, card: CARD });
+    await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'networkidle' });
+    await page.evaluate(() => {
+      (window as typeof window & { __shakeOnReady?: boolean }).__shakeOnReady = true;
+    });
+
+    await page.getByRole('button', { name: '명함 앞면 촬영' }).click();
+    await expect(page.locator('.camera-preview-stage')).toHaveAttribute('data-state', 'streaming', { timeout: 20_000 });
+    await page.waitForFunction(() => (window as typeof window & { __sawMotionHold?: boolean }).__sawMotionHold === true, null, { timeout: 40_000 });
+    await expect(page.locator('.camera-preview-stage')).toHaveAttribute('data-state', 'streaming');
+    await expect(page.getByText('앞면 저장됨 — 뒷면도 찍을까요? (선택)')).toHaveCount(0);
+
+    // 주입한 shake가 끝나면 gate가 처음부터 다시 안정성을 모으고 한 번만 촬영한다.
+    await expect(page.getByText('앞면 저장됨 — 뒷면도 찍을까요? (선택)')).toBeVisible({ timeout: 40_000 });
+    const retry = await page.evaluate(() => {
+      const runtime = window as typeof window & { __shakeInjected?: boolean; __shakeEndedAt?: number };
+      return { injected: runtime.__shakeInjected, stableRetryMs: performance.now() - (runtime.__shakeEndedAt ?? performance.now()) };
+    });
+    expect(retry.injected).toBe(true);
+    expect(retry.stableRetryMs, 'shake가 끝난 뒤 안정 촬영이 2초 안에 끝나야 한다').toBeLessThan(2_000);
+  } finally {
+    await new Promise<void>((stop) => { server.close(() => stop()); server.closeAllConnections(); });
+  }
+});
 
 test('auto capture waits for the card to change before shooting the other side', async ({ page }) => {
   test.setTimeout(300_000);
