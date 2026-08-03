@@ -169,9 +169,6 @@
 :root[data-theme="dark"] .now-card { border-color: rgba(72,188,171,0.28); background: linear-gradient(150deg, rgba(24,48,48,0.95), rgba(30,24,45,0.98)); }
 :root[data-theme="dark"] .ai-surface { background: linear-gradient(152deg, rgba(45,34,72,0.95), rgba(37,30,60,0.93)); }
 :root[data-theme="dark"] .ai-scope-note { color: var(--cc-muted); }
-:root[data-theme="dark"] .boundary-note { background: rgba(31,143,130,0.14); color: var(--cc-teal-ink); }
-:root[data-theme="dark"] .boundary-note p { color: var(--cc-muted); }
-:root[data-theme="dark"] .boundary-note .boundary-origin b { color: var(--cc-teal-ink); }
 :root[data-theme="dark"] .camera-contract-note { background: rgba(31,143,130,0.16); color: var(--cc-teal-ink); }
 :root[data-theme="dark"] .camera-contract-note p { color: var(--cc-muted); }
 :root[data-theme="dark"] .quick-name-panel { background: var(--cc-solid); color: var(--cc-ink); }
@@ -272,7 +269,7 @@ ion-toolbar {
 
 .signal-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
 .signal-grid article { display: grid; gap: 2px; padding: 17px 18px; border: 1px solid var(--cc-line); border-radius: var(--cc-r-lg); background: var(--cc-solid-soft); }
-.signal-grid span, .settings-summary span { color: var(--cc-muted); font-size: 11px; font-weight: 650; }
+.signal-grid span { color: var(--cc-muted); font-size: 11px; font-weight: 650; }
 .signal-grid strong { color: var(--cc-ink); font-size: 27px; letter-spacing: -0.04em; }
 .signal-grid small { color: var(--cc-muted); font-size: 10px; }
 
@@ -372,41 +369,6 @@ ion-toolbar {
 .empty-state p { max-width: 340px; margin: 0 0 15px; color: var(--cc-muted); font-size: 12px; line-height: 1.6; }
 .center-state { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 34px; color: var(--cc-muted); font-size: 12px; }
 
-/* 설정 묶음 (ISS-000217 · DEC-000093) — 최상위를 "사용자가 하려는 일" 여섯 갈래로 가른다.
-   묶음 머리는 새 어휘가 아니다. 화면 안에서 조작 묶음 위에 붙는 머리는 이미 있고
-   (`.context-head` — 캡처 화면의 `만남 맥락`), 같은 크기·굵기·색을 그대로 쓴다.
-   카드 머리(13.5px + 그림표, 카드 **안**)와는 자리로 갈린다 — 이 머리는 카드 **밖**에 선다.
-   번호(01~06)는 붙이지 않는다: 순서가 없는 묶음이 사양서처럼 읽힌다. */
-.settings-group { display: grid; gap: 10px; }
-.settings-group-label { margin: 0 2px; color: var(--cc-ink); font-size: 13px; font-weight: 760; }
-
-.settings-summary { display: grid; gap: 0; }
-.settings-summary > div { display: flex; align-items: center; justify-content: space-between; min-height: 50px; border-bottom: 1px solid var(--cc-line); }
-.settings-summary > div:nth-child(3) { margin-bottom: 16px; border-bottom: 0; }
-.settings-summary strong { max-width: 68%; color: var(--cc-ink); font-size: 12px; text-align: right; }
-/* 화면 테마 고르기 (INT-000016 항목 003) — 세 칸을 나란히 두고 지금 고른 값이 눌려 있게 한다. */
-.theme-card { display: grid; gap: 12px; }
-.theme-head { display: inline-flex; align-items: center; gap: 7px; color: var(--cc-ink); font-size: 13.5px; font-weight: 780; }
-.theme-card > p { margin: 0; color: var(--cc-muted); font-size: 12.5px; line-height: 1.6; word-break: keep-all; }
-.theme-choice { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.theme-choice button { display: grid; gap: 3px; align-content: center; min-height: 58px; padding: 10px 6px; border: 1px solid var(--cc-line); border-radius: var(--cc-r-md); background: var(--cc-solid-soft); color: var(--cc-muted); text-align: center; }
-.theme-choice button strong { color: var(--cc-ink); font-size: 12.5px; font-weight: 760; }
-.theme-choice button small { font-size: 10px; line-height: 1.3; word-break: keep-all; }
-.theme-choice button.on { border-color: rgba(var(--cc-accent), 0.45); background: var(--cc-blue-soft); }
-.theme-choice button.on strong { color: var(--cc-blue); }
-.theme-foot { color: var(--cc-muted); font-size: 11px; line-height: 1.5; }
-.theme-foot b { color: var(--cc-ink); font-weight: 760; }
-
-.boundary-note { display: flex; gap: 12px; padding: 16px; border-radius: var(--cc-r-lg); background: #edf7f5; color: #1c7168; }
-.boundary-note strong { font-size: 12px; }
-.boundary-note p { margin: 3px 0 0; color: #527a76; font-size: 11px; line-height: 1.55; }
-.boundary-note .boundary-origin { margin-top: 6px; word-break: break-word; }
-.boundary-note .boundary-origin b { color: #16584f; font-weight: 760; }
-/* 연결 해제 (FI-007) — 되돌릴 수 없는 정리라 위험색을 쓰되, 촬영 대기열은 남는다고 못 박는다. */
-.signout-card { display: grid; gap: 11px; }
-.signout-head strong { color: var(--cc-ink); font-size: 13.5px; font-weight: 780; }
-.signout-card > p { margin: 0; color: var(--cc-muted); font-size: 12.5px; line-height: 1.6; word-break: keep-all; }
-.signout-card b { color: var(--cc-ink); font-weight: 760; }
 .signout-modal { --width: min(100%, 560px); --border-radius: var(--cc-r-xl) var(--cc-r-xl) 0 0; }
 .signout-confirm { display: grid; gap: 11px; padding: 2px 2px 20px; }
 .signout-confirm p { margin: 0; color: var(--cc-muted); font-size: 12.5px; line-height: 1.6; word-break: keep-all; }
@@ -589,14 +551,7 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(var(--cc-accent)
 .name-onboard p { margin: 0 0 4px; color: var(--cc-muted); font-size: 13.5px; line-height: 1.5; }
 .name-onboard ion-input { --background: var(--cc-sunken); --padding-start: 12px; --padding-end: 12px; border-radius: var(--cc-r-md); }
 
-.advanced-toggle { display: block; margin: 6px 10px 4px; border: 0; background: transparent; color: var(--cc-muted); font-size: 12.5px; font-weight: 700; }
 .modal-copy code { font-size: 11px; background: rgba(42,63,89,0.08); border-radius: 4px; padding: 1px 4px; }
-/* 배포본에서는 연결 주소를 바꿀 수 없다 (TSK-000302). 입력 표면과 같은 sunken 배경을 쓰되
-   커서와 리사이즈 손잡이를 없애 "여기 타이핑하세요"로 읽히지 않게 한다.
-   값의 글자색은 그대로 둔다 — 지금 어디에 연결됐는지 읽으라고 남긴 값이라 흐려지면 안 된다. */
-.api-endpoint-locked { --background: var(--cc-sunken); }
-.api-endpoint-locked .native-textarea { cursor: default; resize: none; }
-
 .camera-choice { display: grid; gap: 8px; margin-top: 14px; }
 .camera-choice p { margin: 0 0 2px; color: #dfe9f6; font-size: 13px; text-align: center; }
 .camera-engine-note { margin: 10px 2px 6px; color: rgba(223,233,246,0.6); font-size: 11px; text-align: center; }
@@ -609,9 +564,6 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(var(--cc-accent)
 .records-feed { display: grid; gap: 10px; }
 .records-feed .queue-row { background: var(--cc-surface); box-shadow: var(--cc-elev-1); }
 .local-context { margin: 0; padding: 8px 10px; border-radius: var(--cc-r-sm); background: rgba(42,63,89,0.05); color: var(--cc-muted); font-size: 11.5px; }
-
-.build-line { margin: 2px 4px 0; color: var(--cc-muted); font-size: 10px; text-align: center; opacity: 0.75; }
-.build-note { margin: 4px 16px 0; color: var(--cc-muted); font-size: 10px; line-height: 1.55; text-align: center; word-break: keep-all; }
 
 /* ── AI 사람 찾기 (자연어 회상 검색, ISS-000103) ── */
 .mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; border: 1px solid var(--cc-line); border-radius: var(--cc-r-md); background: var(--cc-solid-soft); }
@@ -653,41 +605,6 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(var(--cc-accent)
 .damaged-card li span { color: #a2701f; }
 .damaged-card > small { color: var(--cc-muted); font-size: 11px; }
 
-/* ── 명함 사진과 갤러리 (ISS-000102) · 알림 · 도움말 (ISS-000217) ──
-   세 카드는 같은 문법이다: 머리 한 줄 → 무엇에 관한 것인지 → 조작 → 경계 한 줄.
-   알림·도움말 묶음이 새 시각 어휘를 만들지 않도록 선택자만 같이 받는다. */
-.gallery-card, .notify-card, .help-card { display: grid; gap: 12px; }
-.gallery-head, .notify-head { display: inline-flex; align-items: center; gap: 7px; color: var(--cc-ink); font-size: 13.5px; font-weight: 780; }
-.gallery-card > p, .notify-card > p { margin: 0; color: var(--cc-muted); font-size: 12.5px; line-height: 1.6; word-break: keep-all; }
-.gallery-card b, .notify-card b { color: var(--cc-ink); font-weight: 760; }
-.gallery-toggle { display: flex; gap: 11px; min-height: 44px; align-items: flex-start; padding: 12px; border: 1px solid var(--cc-line); border-radius: var(--cc-r-md); background: var(--cc-soft); }
-.gallery-toggle input { width: 20px; height: 20px; flex: 0 0 auto; margin: 1px 0 0; accent-color: var(--cc-blue); }
-.gallery-toggle > span { display: grid; gap: 3px; }
-.gallery-toggle strong { color: var(--cc-ink); font-size: 12.5px; }
-.gallery-toggle small { color: var(--cc-muted); font-size: 11px; line-height: 1.5; word-break: keep-all; }
-.gallery-foot, .notify-foot { color: var(--cc-muted); font-size: 11px; line-height: 1.5; }
-/* 알림이 오는 경우 세 갈래. `.now-card`의 목록과 같은 모양(이름 한 줄 + 설명 한 줄)이고,
-   색만 설정 화면의 중립 팔레트를 쓴다 — teal은 이 앱에서 기기 경계 안내가 계속 쓴다. */
-.notify-scope { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
-.notify-scope li { display: grid; gap: 2px; }
-.notify-scope strong { color: var(--cc-ink); font-size: 12px; font-weight: 760; }
-.notify-scope span { color: var(--cc-muted); font-size: 11.5px; line-height: 1.5; word-break: keep-all; }
-/* 알림 상태와 조작 (ISS-000045).
-   비활성 버튼도 **읽혀야 한다.** `현재 이 기기에서 알림을 켤 수 없어요`는 지금 누를 수 없다는
-   뜻이지 읽지 않아도 된다는 뜻이 아니다. 색을 지정하지 않으면 브라우저 기본 비활성 색이
-   적용되는데 다크에서 흰색 30%(2.69:1)라 대비 게이트에서 걸린다 — 실측으로 잡혔다. */
-.notify-state { display: grid; gap: 3px; padding: 11px 12px; border: 1px solid var(--cc-line); border-radius: var(--cc-r-md); background: var(--cc-soft); }
-.notify-state strong { color: var(--cc-ink); font-size: 12.5px; font-weight: 760; }
-.notify-state p { margin: 0; color: var(--cc-muted); font-size: 11.5px; line-height: 1.55; word-break: keep-all; }
-.notify-action, .notify-retry {
-  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  min-height: 44px; padding: 0 14px; border: 1px solid var(--cc-line);
-  border-radius: var(--cc-r-md); background: var(--cc-solid);
-  color: var(--cc-blue); font-size: 12px; font-weight: 720;
-}
-.notify-action.is-on { color: var(--cc-ink); }
-.notify-action:disabled { color: var(--cc-muted); opacity: 1; }
-
 /* 확인이 필요한 명함 (ISS-000045 · 알림 3종 중 `내용 확인`이 여는 자리).
    단계 막대와 나란히 서므로 같은 리듬을 쓰되, 여기만 사용자의 행동을 요구한다는 것이 보이게 한다. */
 .attention-recovery { display: grid; gap: 9px; padding: 11px 13px; border-top: 1px solid var(--cc-line); background: var(--cc-soft); }
@@ -709,14 +626,6 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(var(--cc-accent)
 .recovery-notice-copy > span { color: var(--cc-muted); font-size: 11px; font-weight: 700; }
 .recovery-notice-copy strong { color: var(--cc-ink); font-size: 13px; font-weight: 780; }
 .recovery-notice-copy p { margin: 0 0 3px; color: var(--cc-muted); font-size: 11.5px; line-height: 1.55; word-break: keep-all; }
-/* 다른 묶음에서 내려온 운영 설명. 기본은 접혀 있고, 펼쳐도 조작이 아니라 글이라는 것이
-   글자 크기로 드러난다 (ISS-000217). 접기 조작 자체는 이미 있는 `.section-toggle`을 쓴다 —
-   다만 목록 위에 얹힌 그 자리와 달리 여기서는 카드 안의 유일한 조작이라 손가락 크기를 준다.
-   `.section-toggle` 자체를 키우지 않는 이유: 진행 화면의 `명함 기록` 접기는 지금 크기가 맞다. */
-.help-card .section-toggle { min-height: 44px; }
-.help-body { display: grid; gap: 9px; }
-.help-body p { margin: 0; color: var(--cc-muted); font-size: 12px; line-height: 1.6; word-break: keep-all; }
-.help-body b { color: var(--cc-ink); font-weight: 760; }
 .camera-privacy-note { margin: 10px 2px 2px; color: rgba(223,233,246,0.72); font-size: 11.5px; text-align: center; }
 
 /* 처리 단계 스테퍼 — "몇 단계 중 몇 단계 · 얼마나 남았나"를 한눈에 (TSK-000249) */

@@ -80,9 +80,11 @@ test('notification settings explain exact scope and stay disabled until the auth
     await expect(section.getByText('최종 결과')).toBeVisible();
     await expect(section.getByText('내용 확인')).toBeVisible();
     await expect(section.getByText('복구 필요')).toBeVisible();
-    await expect(section).toContainText('이름·회사·메모를 넣지 않습니다');
-    await expect(section).toContainText('빠른 이름 인식이나 일반 처리 단계는 알리지 않으며');
-    await expect(section.getByRole('button', { name: '현재 이 기기에서 알림을 켤 수 없어요' })).toBeDisabled();
+    // 지키는 계약은 그대로다: 알림은 위 세 갈래로 한정되고, 내용에 사람 정보가 담기지 않는다.
+    // 문구만 DEC-000093(Kairen-Ref: TSK-000532)에서 짧아졌다.
+    await expect(section).toContainText('이 세 가지 외에는 알리지 않아요');
+    await expect(section).toContainText('이름·회사·메모는 담기지 않습니다');
+    await expect(section.getByRole('button', { name: '아직 켤 수 없어요' })).toBeDisabled();
   } finally {
     server.close();
   }

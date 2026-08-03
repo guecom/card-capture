@@ -82,10 +82,16 @@ function deployedOrigin(origin: string): string {
   return origin.replace('//127.0.0.1:', '//app.localhost:');
 }
 
-async function openSettingsAdvanced(page: import('@playwright/test').Page): Promise<void> {
+/**
+ * 연결 정보 칸까지 간다.
+ *
+ * DEC-000093(Kairen-Ref: TSK-000532) 이후 시트도 `고급 설정` 접기도 없다 — 이름·연결 주소·
+ * 개인 링크 코드는 설정 본문에 그대로 있다. 잠금 계약(D3-1·D3-3)은 뎁스가 아니라
+ * **칸이 편집 가능한가**에 걸려 있으므로 그 게이트는 그대로 성립한다.
+ */
+async function openSettingsConnection(page: import('@playwright/test').Page): Promise<void> {
   await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '설정' }).click();
-  await page.getByRole('button', { name: '사용자·연결 정보 편집' }).click();
-  await page.getByRole('button', { name: /고급 설정/ }).click();
+  await expect(page.getByRole('heading', { name: '계정·연결' })).toBeVisible();
 }
 
 test.beforeEach(async ({ page }) => {
@@ -310,8 +316,8 @@ test('locks the advanced address field on a deployed host while still showing wh
     // 전제 확인: 개발 호스트로 열렸다면 이 게이트는 아무것도 증명하지 않는다.
     expect(await page.evaluate(() => location.hostname)).toBe('app.localhost');
 
-    await openSettingsAdvanced(page);
-    const apiField = page.getByLabel('연결 주소 (GAS API)');
+    await openSettingsConnection(page);
+    const apiField = page.getByLabel('연결 주소');
 
     // 1) 숨기지 않는다 — 지금 어디에 연결돼 있는지는 계속 읽을 수 있어야 한다.
     await expect(apiField).toBeVisible();
@@ -340,7 +346,9 @@ test('locks the advanced address field on a deployed host while still showing wh
     });
     await expect(apiField).toHaveValue('https://attacker.invalid/exec');
     await page.getByRole('button', { name: '설정 저장' }).click();
-    await expect(page.getByRole('button', { name: '설정 저장' })).toBeHidden();
+    // 저장은 늘 같은 자리에 있는 조작이다(시트가 없어졌으므로 닫히지도 않는다).
+    // 저장이 실제로 끝났다는 것은 앱이 말하는 결과로 판정한다.
+    await expect(page.getByText('이 기기에 저장했어요')).toBeVisible();
 
     expect(await page.evaluate(() => localStorage.getItem('cc_api'))).toBe(pinned);
     expect(await page.evaluate(() => Object.values(localStorage).map(String).join('\n'))).not.toContain('attacker.invalid');
@@ -379,9 +387,9 @@ test('never revives an address stored earlier, even on a deployed host', async (
     expect(await page.evaluate(() => localStorage.getItem('cc_api'))).toBeNull();
     // 3) 무시했다는 사실을 화면에 말한다.
     await expect(page.getByText('허용되지 않은 서버 주소라 무시했어요', { exact: false })).toBeVisible();
-    // 4) 고급 설정이 보여 주는 주소도 빌드에 박힌 주소다 — 화면과 실제 연결이 갈라지면 안 된다.
-    await openSettingsAdvanced(page);
-    await expect(page.getByLabel('연결 주소 (GAS API)')).toHaveValue(pinned);
+    // 4) 설정이 보여 주는 주소도 빌드에 박힌 주소다 — 화면과 실제 연결이 갈라지면 안 된다.
+    await openSettingsConnection(page);
+    await expect(page.getByLabel('연결 주소')).toHaveValue(pinned);
   } finally {
     await stopStaticServer(server);
   }
@@ -396,8 +404,8 @@ test('keeps the advanced address field editable on a development host', async ({
     await page.goto(`${origin}next/?k=owner-token`, { waitUntil: 'networkidle' });
     expect(await page.evaluate(() => location.hostname)).toBe('127.0.0.1');
 
-    await openSettingsAdvanced(page);
-    const apiField = page.getByLabel('연결 주소 (GAS API)');
+    await openSettingsConnection(page);
+    const apiField = page.getByLabel('연결 주소');
     await expect(apiField).toBeVisible();
     await expect(apiField).toBeEditable();
 
