@@ -159,7 +159,16 @@ Deep 요청은 네 목적 중 하나 이상이 필수다: meeting preparation, e
 - 구독은 token에서 서버가 유도한 opaque subject ID에 귀속하고 vault 밖·공유 제한 private Drive registry에 보관한다. capture receipt의 subject는 server HMAC과 처리 전 snapshot으로 고정해 quick·standard·deep processor가 바꿔도 routing에 쓰지 않는다. watcher는 전용 sender token으로 자기 subject의 활성 구독만 조회하며, token 삭제·회전 뒤에는 이전 subject가 즉시 비활성화된다.
 - payload는 암호화된 event ID·allowlist kind·검증된 capture target만 담는다. service worker가 고정한 제목·본문·동일 origin 경로만 사용하므로 이름·회사·메모·조사 내용·token·endpoint를 알림이나 로그에 넣지 않는다.
 - 권한 요청은 사용자가 설정에서 직접 누른 때만 시작하고, 해제는 네트워크보다 먼저 기기 구독을 끊는다. `404`·`410`은 revision이 같은 registry record만 정리하며, 일시 조회·발송 장애는 같은 VAPID key epoch의 30분 window에서 bounded retry 후 격리한다. 30분을 넘긴 event, server-confirmed disable, 다른 key epoch event는 나중에 재생하지 않고 미전송으로 닫는다. disable 뒤 re-enable은 VAPID key epoch를 회전해 이전 event·구독을 새 session으로 가져오지 않는다.
-- recovery 알림은 고정된 `recovery_required` deep link로 진행 화면의 복구 카드와 연결된다. 사용자는 watcher 내부 사유나 개인정보를 보지 않고 해당 항목만 `다시 처리`하거나 최신 상태를 확인할 수 있다.
+- recovery 알림은 고정된 `recovery_required` deep link로 진행 화면의 복구 카드와 연결된다. 사용자는 watcher 내부 사유나 개인정보를 보지 않고 해당 항목의 최신 상태를 확인한다. `retry_scheduled`는 그 자리에서 `다시 처리`할 수 있지만, `recovery_required`로 잠긴 영수증에는 `다시 처리`를 내밀지 않는다 — 워처가 어차피 무시할 요청에 버튼을 남기면 "눌러도 아무 일도 일어나지 않는" 상태가 된다.
+
+### Failure receipt and recovery state (TSK-000531)
+
+- staging 폴더의 상태는 세 가지로만 읽는다. `failure.json`이 있고 `begin.json`이 없으면 **닫힌 실패**, `begin.json`이 있으면 **중단(crash)**, `begin.json`이 있는데 rollback backup이 없으면 **화해 가능한 낡은 표식**이다. 마지막 경우는 복구를 시도하지 않고 표식만 정리한다 — 없는 backup을 복구하려는 sweep이 영구히 반복되는 것이 ISS-000232의 2차 결함이었다.
+- 정상 실패는 `failure.json`을 남기면서 `begin.json`과 rollback backup을 **한 번에** 닫는다. 실패 receipt에는 원인 class와 시도 횟수만 담고 Person 내용·명함 원문·token은 담지 않는다.
+- `capture.json`의 `recovery`는 watcher가 소유하는 출력이다. `kind`는 `retry_scheduled` 또는 `recovery_required`, `reasonCode`는 `processor_failed`·`processor_timeout`·`result_incomplete`·`internal_state_failed`·`unknown_failure`로 닫혀 있다. `since`는 ISO/UTC로 적는다 — 지역 `yyyy-MM-dd HH:mm:ss`는 iOS Safari의 `Date.parse`에서 NaN이 되어 경과 시간 표시가 조용히 사라진다.
+- `recovery_required` 문턱은 `$MaxAttempts * 2`다. quarantine이 사람에게 requeue 한 번 분량의 예산 재충전을 허용하므로 같은 원인의 총 예산은 최초 예산 + 재충전 1회이며, 새 tuning 상수를 만들지 않는다.
+- GAS `list` 투영은 allowlist다. 위 closed enum에 맞는 `recovery`만 통과시키고, 워처 내부 사유 문자열을 그대로 흘리지 않는다. `requeue`도 `recovery_required` 영수증을 거절해 서버와 워처의 판정이 갈리지 않게 한다.
+- 잠긴 영수증의 유일한 해제 경로는 원인을 고친 뒤 watcher local state의 해당 item 파일을 지우는 것이며, 이 경로는 gate로 고정돼 있다.
 - machine gate가 통과해도 실제 Android 닫힌 앱의 수신·열기·해제 증거 전에는 live PASS로 승격하지 않는다. 앱 안 진행 상태가 항상 authoritative 기준이다.
 
 ## Deployment order

@@ -107,6 +107,11 @@ function requeue_(token, captureId) {
       processedAt: meta.processedAt || ''
     });
   }
+  /* 같은 원인으로 예산을 다 쓴 영수증은 서버도 거절한다 — 워처가 어차피 무시할 요청에
+     200을 돌려주면 화면이 "접수됐다"고 거짓말하게 된다 (TSK-000531). */
+  if (meta.recovery && String(meta.recovery.kind || '') === 'recovery_required') {
+    return json_({ ok: false, error: 'recovery_required', captureId: cid });
+  }
   var cache = CacheService.getScriptCache();
   var key = 'rq_' + cid;
   if (cache.get(key)) return json_({ ok: true, captureId: cid, status: 'received', deduped: true });
@@ -600,6 +605,21 @@ function listCaptures_(token, limitParam, offsetParam) {
         kind: 'input_required',
         reasonCode: String(meta.attention.reasonCode),
         requestedAt: attentionAt.slice(0, 40)
+      };
+    }
+    /* 반복 실패로 잠긴 영수증은 화면이 알아야 `다시 처리`를 내밀지 않는다 (TSK-000531).
+       투영은 allowlist다 — 워처가 쓴 closed enum만 통과시키고, 원인 문자열을 그대로 흘리지 않는다. */
+    if (meta.recovery && !isTerminalMeta_(meta) &&
+        ['retry_scheduled', 'recovery_required'].indexOf(String(meta.recovery.kind || '')) >= 0 &&
+        ['processor_failed', 'processor_timeout', 'result_incomplete', 'internal_state_failed', 'unknown_failure']
+          .indexOf(String(meta.recovery.reasonCode || '')) >= 0) {
+      item.recovery = {
+        kind: String(meta.recovery.kind),
+        reasonCode: String(meta.recovery.reasonCode),
+        attempts: Number(meta.recovery.attempts) || 0,
+        failures: Number(meta.recovery.failures) || 0,
+        threshold: Number(meta.recovery.threshold) || 0,
+        since: String(meta.recovery.since || '').slice(0, 40)
       };
     }
     if (meta.researchInstruction) {
