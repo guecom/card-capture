@@ -187,27 +187,29 @@ test('the research request looks and behaves like handing work to an AI, without
     await expect(surface.getByText('AI 조사 요청')).toBeVisible();
     await expect(surface.getByText('소유자 전용')).toBeVisible();
 
-    // 접수 후 어떤 단계를 거치는지 미리 보인다 — 불투명한 로딩이 아니다.
-    const rail = surface.locator('.ai-stage-rail');
-    await expect(rail.getByText('작성 중')).toBeVisible();
-    await expect(rail.getByText('공개 자료 조사 중')).toBeVisible();
-    await expect(rail.getByText('출처 정리 중')).toBeVisible();
-    await expect(rail.locator('li.ai-stage-active')).toHaveText(/작성 중/);
+    // 접수 뒤의 처리 단계는 **여기서 말하지 않는다** (TSK-000535 / ISS-000050, founder 2026-08-04:
+    // "AI 조사 요청에 있는 진행 막대기는 현재 무의미한 것 같아"). 진행은 명함 기록·진행의 블록이
+    // 소유한다 — 같은 진행을 두 곳에서 말하면 어느 쪽이 진실인지 알 수 없게 된다.
+    // 자세한 판정은 `int29-research.spec.ts`에 있다.
+    await expect(surface.locator('.ai-stage-rail')).toHaveCount(0);
 
     // 묻기 껄끄럽지만 실제로 필요한 판단을 먼저 꺼내 놓는다 (founder 지시 2026-07-27).
-    await expect(surface.getByRole('button', { name: '실력·전문성 추정' })).toBeVisible();
-    await expect(surface.getByRole('button', { name: '의사결정 권한' })).toBeVisible();
-    await expect(surface.getByRole('button', { name: '평판·레퍼런스' })).toBeVisible();
+    // 이제는 글자를 덧붙이는 예시가 아니라 켜고 끄는 항목 블록이다 (TSK-000536).
+    const scopes = surface.getByRole('group', { name: 'AI 조사 항목' });
+    await expect(scopes.getByRole('button', { name: '실력·역량 근거' })).toBeVisible();
+    await expect(scopes.getByRole('button', { name: '의사결정 권한·직급' })).toBeVisible();
+    await expect(scopes.getByRole('button', { name: '평판·레퍼런스' })).toBeVisible();
 
     // 그 판단은 근거·확신도를 붙이는 조건에서만 허용된다.
     await expect(surface.getByText(/근거로 판단까지 합니다. 근거와 확신도를 함께 적고, 모르는 건 모른다고 남겨요/)).toBeVisible();
     // 넓히지 않은 경계는 그대로 적혀 있다 — DEC-000035의 금지 항목은 유지된다.
     await expect(surface.getByText(/로그인이 필요한 자료, 정치·종교·건강 같은 사적 특성, 집주소·가족 같은 신상, 외부로 보내는 행동은 하지 않아요/)).toBeVisible();
 
-    // 예시 chip은 기존 입력을 지우지 않고 덧붙인다.
+    // 항목을 고르는 것은 이미 적어 둔 글을 건드리지 않는다 — 예전 예시 chip은 문장 뒤에 쉼표로 붙었다.
     await surface.locator('ion-textarea textarea').fill('최근 발표 확인');
-    await surface.getByRole('button', { name: '실력·전문성 추정' }).click();
-    await expect(surface.locator('ion-textarea textarea')).toHaveValue('최근 발표 확인, 실력·전문성 추정');
+    await scopes.getByRole('button', { name: '실력·역량 근거' }).click();
+    await expect(scopes.getByRole('button', { name: '실력·역량 근거' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(surface.locator('ion-textarea textarea')).toHaveValue('최근 발표 확인');
   } finally {
     harness.server.close();
   }
