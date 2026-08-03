@@ -402,6 +402,49 @@ try {
     if ($null -ne $j) { $qh = $j.log.eventCounts.quarantine_hold }
     T ($qh -eq 1) ('G20 quarantine hold is a recognized watcher event (got ' + (Show-Or-Null $qh) + ')')
     T ($null -ne $j -and $j.log.suppressedLines -eq 0) ('G20 no watcher-written line is dropped as processor output (suppressed=' + $(if ($null -ne $j) { $j.log.suppressedLines } else { '?' }) + ')')
+
+    # ---- G21 반복 실패 잠금이 진단에서 읽힌다 (TSK-000531) ----
+    #      건수만으로는 다음 행동을 고를 수 없다. 격리(다시 보내면 풀림)와 복구 필요(안 풀림)를
+    #      구분하고, 원인·시각·임계값을 함께 내야 운영자가 무엇을 해야 하는지 알 수 있다.
+    Reset-Fixture
+    Set-Health @{
+        version = 'watcher-v3.0'; pid = $selfPid; startedAt = $nowStamp; lastHeartbeat = $nowStamp
+        backlogCount = 0; quarantinedCount = 1; recoveryRequiredCount = 1; recoveryRequiredThreshold = 6
+    }
+    $itemsDir = Join-Path (Join-Path $root 'state') 'items'
+    New-Item -ItemType Directory -Force -Path $itemsDir | Out-Null
+    $lockedAt = (Get-Date).AddMinutes(-42).ToString('yyyy-MM-dd HH:mm:ss')
+    ([PSCustomObject]@{
+        captureId = 'CAP0009'; attempts = 3; lastError = 'SENTINELNOTETEXT'
+        lastAttemptAt = $lockedAt; quarantined = $true; quarantineReason = 'SENTINELPERSONNAME'
+        quarantineCause = 'processor_failed'; quarantineFingerprint = 'cafe'; quarantinedAt = $lockedAt
+        repeatCause = 'processor_failed'; repeatFailures = 6
+        recoveryRequired = $true; recoveryCause = 'processor_failed'; recoveryRequiredAt = $lockedAt
+    } | ConvertTo-Json) | Out-File -Encoding utf8 (Join-Path $itemsDir 'CAP0009.json')
+    $stagingDir = Join-Path (Join-Path (Join-Path $root 'state') 'staging') 'CAP0009'
+    New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
+    ([PSCustomObject]@{
+        version = 'card-capture-failure-v1'; captureId = 'CAP0009'; attempt = 3
+        causeClass = 'processor_failed'; reason = 'processor_exit_1'; failures = 6; sameCauseFailures = 6
+        recoveryThreshold = 6; quarantined = $true; recoveryRequired = $true
+        attemptStartedAt = $lockedAt; firstFailedAt = $lockedAt; lastFailedAt = $lockedAt
+    } | ConvertTo-Json) | Out-File -Encoding utf8 (Join-Path $stagingDir 'failure.json')
+    $r = Invoke-Health @('-Json', '-WatcherProcessPattern', $selfPattern)
+    $j = Get-Json $r
+    $row = $null
+    if ($null -ne $j) { $row = @($j.observed.blocked | Where-Object { $_.captureId -eq 'CAP0009' })[0] }
+    T ($null -ne $row -and $row.recoveryRequired -eq $true -and $row.cause -eq 'processor_failed') 'G21 blocked receipt reports recovery-required state with a closed cause class'
+    T ($null -ne $row -and $null -ne $row.sinceAgeMin -and [double]$row.sinceAgeMin -ge 40) ('G21 blocked receipt says since when (' + $(if ($row) { Show-Or-Null $row.sinceAgeMin } else { '?' }) + ' min)')
+    T ($null -ne $j -and $j.observed.recoveryRequiredCount -eq 1 -and $j.observed.recoveryRequiredThreshold -eq 6) 'G21 recovery-required count and threshold are both visible'
+    T ($null -ne $j -and @($j.reasons) -contains 'recovery_required_captures') 'G21 recovery-required is its own verdict reason (requeue does not clear it)'
+    T ($r.code -eq 2) ('G21 recovery-required is critical (exit ' + $r.code + ')')
+    T ($null -ne $j -and $j.observed.failureJournalCount -eq 1 -and @($j.observed.failureJournals)[0].cause -eq 'processor_failed') 'G21 closed failure receipts are counted apart from interrupted attempts'
+    T ($null -ne $j -and $j.observed.interruptedCount -eq 0) 'G21 a closed failure is not reported as an interrupted attempt'
+    # redaction: 상태 파일의 자유 문자열은 기계·사람 어느 출력에도 나가지 않는다.
+    T (Test-NoSentinel $r.out) 'G21 free-form lastError/quarantineReason never reach the diagnostic output'
+    $rh = Invoke-Health @('-WatcherProcessPattern', $selfPattern)
+    T ($rh.out -match 'recoveryRequired\s*:' -and $rh.out -match '복구 필요' -and $rh.out -match 'cause=processor_failed') 'G21 human output names the blocked receipt, its cause and its state'
+    T (Test-NoSentinel $rh.out) 'G21 human output stays redacted too'
 } finally {
     $env:LOCALAPPDATA = $origLocal
     Remove-Item $sandbox -Recurse -Force -ErrorAction SilentlyContinue

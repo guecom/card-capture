@@ -41,6 +41,13 @@ $ProcessorDir = Join-Path $Root 'processor'
 $HeartbeatStaleMin = 15
 $BacklogStaleMin = 30
 $MaxAttempts = 3
+# 반복 실패 잠금 임계값. 워처와 같은 유도를 쓴다(첫 예산 + 격리가 주는 requeue 1회분).
+# health 파일이 값을 실어 오면 그 값을 쓰고, 없으면 이 유도값으로 말한다 — 임계값을 모른 채
+# '6회 실패'만 보여 주면 운영자가 몇 번 남았는지 읽을 수 없다.
+$RecoveryRequiredFailures = ($MaxAttempts * 2)
+# 워처가 쓰는 닫힌 원인 enum. 이 목록 밖의 값은 출력하지 않는다 — 상태 파일의 임의 문자열이
+# 대시보드로 새는 경로를 만들지 않기 위해서다(자유 문자열 redaction 계약과 같은 이유).
+$FailureCauseClasses = @('processor_failed','processor_timeout','result_incomplete','internal_state_failed','interrupted_attempt','unknown_failure')
 
 $script:exit = 0
 $script:reasons = New-Object System.Collections.ArrayList
@@ -156,6 +163,10 @@ function Get-ObservedState {
 
     $quarantined = New-Object System.Collections.ArrayList
     $attemptCapped = New-Object System.Collections.ArrayList
+    # 건수만으로는 다음 행동을 고를 수 없다. '어느 receipt가 / 왜 / 언제부터'까지 낸다 (TSK-000531).
+    # 원인은 닫힌 enum만, 자유 문자열(lastError·quarantineReason)은 그대로 둔다.
+    $blocked = New-Object System.Collections.ArrayList
+    $recoveryRequired = New-Object System.Collections.ArrayList
     $unreadableItems = 0
     $itemsDir = Join-Path $StateDir 'items'
     if (Test-Path $itemsDir) {
@@ -163,18 +174,54 @@ function Get-ObservedState {
             $s = Read-JsonFile $f.FullName
             if ($null -eq $s) { $unreadableItems++; continue }
             $id = Get-SafeId ($f.Name -replace '\.json$', '')
-            if ((Get-Prop $s 'quarantined') -eq $true) { [void]$quarantined.Add($id) }
+            $isQuarantined = ((Get-Prop $s 'quarantined') -eq $true)
+            $isRecovery = ((Get-Prop $s 'recoveryRequired') -eq $true)
+            if ($isQuarantined) { [void]$quarantined.Add($id) }
+            if ($isRecovery) { [void]$recoveryRequired.Add($id) }
             $attempts = 0
             try { $attempts = [int](Get-Prop $s 'attempts') } catch { $attempts = 0 }
             if ($attempts -ge $MaxAttempts) { [void]$attemptCapped.Add($id) }
+            if ($isQuarantined -or $isRecovery) {
+                $cause = [string](Get-Prop $s 'quarantineCause')
+                if ($isRecovery -and (Get-Prop $s 'recoveryCause')) { $cause = [string](Get-Prop $s 'recoveryCause') }
+                if ($FailureCauseClasses -notcontains $cause) { $cause = 'unknown_failure' }
+                $repeat = 0
+                try { $repeat = [int](Get-Prop $s 'repeatFailures') } catch { $repeat = 0 }
+                $sinceRaw = Get-Prop $s 'quarantinedAt'
+                if ($isRecovery -and (Get-Prop $s 'recoveryRequiredAt')) { $sinceRaw = Get-Prop $s 'recoveryRequiredAt' }
+                [void]$blocked.Add([PSCustomObject]@{
+                    captureId = $id
+                    cause = $cause
+                    attempts = $attempts
+                    repeatFailures = $repeat
+                    recoveryRequired = $isRecovery
+                    sinceAgeMin = (Get-AgeMin (ConvertTo-Stamp $sinceRaw))
+                })
+            }
         }
     }
 
     $interrupted = New-Object System.Collections.ArrayList
+    # 정상 실패 영수증. begin marker가 남은 '중단'과 다른 상태다 — 이 둘이 구분돼야
+    # 운영자가 '죽은 것'과 '실패해서 끝난 것'을 섞지 않는다.
+    $failureJournals = New-Object System.Collections.ArrayList
     $stagingDir = Join-Path $StateDir 'staging'
     if (Test-Path $stagingDir) {
         foreach ($d in (Get-ChildItem $stagingDir -Directory -ErrorAction SilentlyContinue | Sort-Object Name)) {
             if (Test-Path (Join-Path $d.FullName 'begin.json')) { [void]$interrupted.Add((Get-SafeId $d.Name)) }
+            $jPath = Join-Path $d.FullName 'failure.json'
+            if (-not (Test-Path $jPath)) { continue }
+            $j = Read-JsonFile $jPath
+            $cause = [string](Get-Prop $j 'causeClass')
+            if ($FailureCauseClasses -notcontains $cause) { $cause = 'unknown_failure' }
+            $failures = 0
+            try { $failures = [int](Get-Prop $j 'failures') } catch { $failures = 0 }
+            [void]$failureJournals.Add([PSCustomObject]@{
+                captureId = (Get-SafeId $d.Name)
+                cause = $cause
+                failures = $failures
+                lastFailedAgeMin = (Get-AgeMin (ConvertTo-Stamp (Get-Prop $j 'lastFailedAt')))
+            })
         }
     }
 
@@ -228,6 +275,12 @@ function Get-ObservedState {
         unknownLeases = $unknownLeases
         quarantined = @($quarantined.ToArray())
         quarantinedCount = $quarantined.Count
+        recoveryRequired = @($recoveryRequired.ToArray())
+        recoveryRequiredCount = $recoveryRequired.Count
+        recoveryRequiredThreshold = $RecoveryRequiredFailures
+        blocked = @($blocked.ToArray())
+        failureJournals = @($failureJournals.ToArray())
+        failureJournalCount = $failureJournals.Count
         attemptCapped = @($attemptCapped.ToArray())
         attemptCappedCount = $attemptCapped.Count
         interrupted = @($interrupted.ToArray())
@@ -262,10 +315,17 @@ $LogEventPatterns = @(
     @{ label = 'quarantine';          re = '^QUARANTINE ' },
     @{ label = 'quarantine_released'; re = '^quarantine released' },
     @{ label = 'quarantine_hold';     re = '^quarantine hold ' },
+    # 반복 실패 잠금 (TSK-000531). 격리와 별도 라벨이어야 한다 — 격리는 '한 번 더 해 보자'이고
+    # 이것은 '같은 방법으로는 안 된다'라서 운영자가 취할 행동이 다르다.
+    @{ label = 'recovery_required';   re = '^RECOVERY REQUIRED ' },
+    @{ label = 'recovery_hold';       re = '^recovery hold ' },
+    @{ label = 'staging_reconciled';  re = '^stale staging marker reconciled ' },
     @{ label = 'loop_done';           re = '^processing loop done' },
     @{ label = 'lock';                re = '^(lock exists|stale lock)' },
     @{ label = 'lease';               re = '^(claim held by|stale lease reclaimed|claim race lost|claim write failed|lease lost during processing)' },
-    @{ label = 'interrupted';         re = '^interrupted attempt' },
+    # 'interrupted attempt(s)…' 뿐 아니라 복구·건너뜀 줄까지 같은 라벨로 잡는다. 예전에는
+    # 'interrupted deep output restored'가 어느 패턴에도 걸리지 않아 처리기 출력으로 오인돼 버려졌다.
+    @{ label = 'interrupted';         re = '^interrupted ' },
     @{ label = 'failure_warning';     re = '^WARNING: 3\+' },
     @{ label = 'unsafe_capture_name'; re = '^WARNING: ' },
     @{ label = 'codex_missing';       re = '^codex.exe not found' },
@@ -339,6 +399,8 @@ $reported = [PSCustomObject]@{
     lockExists = $null
     activeClaims = $null
     quarantinedCount = $null
+    recoveryRequiredCount = $null
+    recoveryRequiredThreshold = $null
     interruptedCount = $null
     pushConfigured = $null
     pushPendingCount = $null
@@ -369,6 +431,8 @@ if ($null -ne $h) {
     $reported.lockExists = Get-Prop $h 'lockExists'
     $reported.activeClaims = Get-Prop $h 'activeClaims'
     $reported.quarantinedCount = Get-Prop $h 'quarantinedCount'
+    $reported.recoveryRequiredCount = Get-Prop $h 'recoveryRequiredCount'
+    $reported.recoveryRequiredThreshold = Get-Prop $h 'recoveryRequiredThreshold'
     $reported.interruptedCount = Get-Prop $h 'interruptedCount'
     $reported.pushConfigured = Get-Prop $h 'pushConfigured'
     $reported.pushPendingCount = Get-Prop $h 'pushPendingCount'
@@ -453,6 +517,9 @@ if ($null -ne $procMap) {
 
 # state 디렉터리 관측값은 health 파일이 없거나 낡아도 지금의 사실이다.
 if ($observed.quarantinedCount -gt 0) { Sev 2 'quarantined_captures' }
+# 반복 실패 잠금은 별도 사유다. 격리는 사람이 다시 보내면 풀리지만 이것은 풀리지 않는다 —
+# 두 상태를 한 사유로 묶으면 운영자가 '앱에서 다시 보내면 되겠지'로 잘못 읽는다.
+if ($observed.recoveryRequiredCount -gt 0) { Sev 2 'recovery_required_captures' }
 if ($observed.expiredLeases -gt 0) { Sev 1 'expired_lease' }
 if ($observed.interruptedCount -gt 0) { Sev 1 'interrupted_attempt' }
 if ($observed.unreadableItemFiles -gt 0) { Sev 1 'unreadable_state_file' }
@@ -569,7 +636,27 @@ if (-not $observed.stateDir) {
     Write-Host ("attemptCapped      : " + $aLine + "  (attempts >= " + $MaxAttempts + ")")
     $iLine = [string]$observed.interruptedCount
     if ($observed.interruptedCount -gt 0) { $iLine = $iLine + "  [" + ((@($observed.interrupted)) -join ', ') + "]" }
-    Write-Host ("interrupted        : " + $iLine + "  (commit marker 없는 attempt)")
+    Write-Host ("interrupted        : " + $iLine + "  (commit marker 없는 attempt = 죽은 실행)")
+    # 반복 실패 잠금과 그 임계값. 임계값이 없으면 '실패 6회'가 몇 번 남았다는 뜻인지 알 수 없다.
+    $threshold = $observed.recoveryRequiredThreshold
+    if ($null -ne $reported.recoveryRequiredThreshold) { $threshold = $reported.recoveryRequiredThreshold }
+    Write-Host ("recoveryRequired   : " + $observed.recoveryRequiredCount +
+        "  (같은 원인 연속 실패 " + (Show $threshold) + "회에서 잠긴다 — requeue로는 풀리지 않는다)")
+    foreach ($b in @($observed.blocked)) {
+        $stateText = if ($b.recoveryRequired) { '복구 필요' } else { '격리' }
+        $sinceText = 'unknown'
+        if ($null -ne $b.sinceAgeMin) { $sinceText = ("{0:N1} min 전부터" -f $b.sinceAgeMin) }
+        Write-Host ("  - " + $b.captureId + "  " + $stateText + "  cause=" + $b.cause +
+            "  attempts=" + $b.attempts + "/" + $MaxAttempts +
+            "  repeatFailures=" + $b.repeatFailures + "/" + (Show $threshold) + "  " + $sinceText)
+    }
+    # 정상 실패 영수증(끝난 attempt). 중단(begin marker)과 다른 상태다.
+    Write-Host ("failure receipts   : " + $observed.failureJournalCount + "  (실패로 닫힌 attempt — 중단과 다르다)")
+    foreach ($j in @($observed.failureJournals)) {
+        $ageText = 'unknown'
+        if ($null -ne $j.lastFailedAgeMin) { $ageText = ("{0:N1} min 전" -f $j.lastFailedAgeMin) }
+        Write-Host ("  - " + $j.captureId + "  cause=" + $j.cause + "  누적 " + $j.failures + "회  마지막 " + $ageText)
+    }
 }
 if ($null -eq $observed.logWriteFailure) {
     Write-Host ("log write          : ok  (쓰기 실패 흔적 없음)")

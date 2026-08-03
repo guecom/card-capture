@@ -480,8 +480,16 @@ function promptSurfaceFingerprint(surf) {
      `Interaction/`을 허용하는 프롬프트를 실행 중이고, 그 지문이 아래 값이다.
      **사람이 클론을 갱신하고 워처를 재시작하면 이 상수를 다시 null로 되돌려라.**
      그때까지 vault 계약의 8-2 (f)가 전환 구간을 정의한다 — 그 실행의 allowlist에 `Encounter/`가
-     없으면 Encounter를 만들지 말고, `Interaction/`으로 대신 쓰지도 말고, 캡처는 정상 완료한다. */
-var PENDING_DEPLOY_LIVE_SURFACE_SHA256 = '6018b3489e377c87f91d994c1ee740c7ab7378c08ff38d1a17ce6580755d2080';
+     없으면 Encounter를 만들지 말고, `Interaction/`으로 대신 쓰지도 말고, 캡처는 정상 완료한다.
+   2026-08-04: **배포 완료.** 게이트가 스스로 "운영 클론이 이미 저장소와 같다"고 FAIL하고 있었다 —
+     선언만 남고 대상이 사라진 상태다. 실측: 운영 클론
+     `C:\Users\gueco\Kairen_Build_Workspace\card-capture\watcher\CardCapture_Watcher.ps1`이
+     2026-08-02 20:16:14에 갱신됐고, 그 뒤 2026-08-03 16:44:15에 워처 프로세스(PID 38248)가 새로 떴다
+     — 지금 실행 중인 것이 그 파일이다. 프롬프트 영역 지문도 저장소와 같다. 선언을 null로 되돌려
+     엄격 동일성으로 복귀한다.
+     TSK-000531의 워처 변경(실패 저널·stale marker 조정·requeue 차단)은 프롬프트 영역을 건드리지
+     않는다. 그래서 그 배포가 끝나기 전에도 이 지문은 같고, 선언을 다시 세울 이유가 없다. */
+var PENDING_DEPLOY_LIVE_SURFACE_SHA256 = null;
 
 runCase('premise-live-watcher', '게이트가 읽는 워처 소스와 형제 클론(운영 실행본)의 차이가 선언된 배포 대기분과 정확히 같다', function () {
   var live = process.env.CARDCAPTURE_LIVE_WATCHER ||
