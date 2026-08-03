@@ -30,6 +30,16 @@ $StateDir = Join-Path $LogDir 'state'
 # 새 정책 수치를 발명하지 않는다.
 $LeaseMinutes = 30
 $MaxAttempts = 3
+# 반복 실패 잠금 임계값. 새 수치를 발명하지 않고 **기존 격리 정책에서 유도한다**.
+# 격리는 사람에게 재시도 기회를 정확히 한 번 준다: requeue가 receivedAt을 갱신하면 입력
+# fingerprint가 달라지고 Test-CaptureQuarantined가 예산을 $MaxAttempts만큼 재충전한다.
+# 그래서 한 캡처가 **같은 원인으로** 쓸 수 있는 전체 예산은
+#   첫 예산 $MaxAttempts + 격리가 주는 재충전 1회분 $MaxAttempts = 2 x $MaxAttempts 다.
+# 그 뒤의 requeue는 같은 실패를 한 번 더 반복할 뿐이다 — 조용히 받으면 사용자는 아무 일도
+# 일어나지 않는 버튼을 계속 누른다. 그 지점부터는 받지 않고 '복구 필요'로 확정한다.
+# (2026-08-04 실측 근거: PER-000418 조사 receipt는 requeue 2회 x processor exit 1 3회 =
+#  연속 실패 6회에서 멈춰 있었고, 그 상태에서도 앱은 아무 반응 없는 '다시 처리'만 보여 줬다.)
+$RecoveryRequiredFailures = ($MaxAttempts * 2)
 # 처리기 로그 보존 시간. 여기서도 새 수치를 발명하지 않는다 — 기존 두 임계값에서 유도한다.
 # 한 캡처의 재시도 예산은 유한하다: 시도 상한 $MaxAttempts(3)회 × 시도당 lease 상한
 # $LeaseMinutes(30분) = 90분이 워처가 한 캡처를 놓고 움직일 수 있는 최대 구간이고,
@@ -299,6 +309,14 @@ function Get-CaptureState($captureId) {
         captureId = $safe; attempts = 0; lastError = ''; lastAttemptAt = ''
         quarantined = $false; quarantineReason = ''; quarantineFingerprint = ''; quarantinedAt = ''
         lastCommitAt = ''; lastCommitFingerprint = ''
+        # 아래 넷은 requeue가 재충전하지 못하는 durable 사실이다.
+        #   quarantineCause  — 닫힌 enum(Get-FailureCauseClass). 자유 문자열 quarantineReason과 달리
+        #                      진단·사용자 표면에 그대로 나가도 안전하다.
+        #   repeatCause/repeatFailures — 같은 원인이 몇 번 연속으로 실패했는가. requeue로 초기화되지
+        #                      않고 오직 commit·checkpoint(= 실제 진전)에서만 0으로 돌아간다.
+        #   recoveryRequired — 반복 실패가 $RecoveryRequiredFailures에 닿아 requeue를 더는 받지 않는 상태.
+        quarantineCause = ''; repeatCause = ''; repeatFailures = 0
+        recoveryRequired = $false; recoveryRequiredAt = ''; recoveryCause = ''
     }
     foreach ($k in $defaults.Keys) {
         if ($null -eq $s.PSObject.Properties[$k]) {
@@ -316,16 +334,32 @@ function Set-CaptureState($state) {
     catch { Write-Log ("state write failed for " + $safe + ": " + $_.Exception.Message) }
 }
 
-function Set-CaptureQuarantine($captureId, $fingerprint, $reason, $attempts) {
+function Set-CaptureQuarantine($captureId, $fingerprint, $reason, $attempts, $causeClass = '') {
     $s = Get-CaptureState $captureId
     $s.quarantined = $true
     $s.quarantineReason = [string]$reason
+    $s.quarantineCause = [string]$causeClass
     $s.quarantineFingerprint = [string]$fingerprint
     $s.quarantinedAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
     $s.attempts = [int]$attempts
     Set-CaptureState $s
-    Write-Log ("QUARANTINE " + $captureId + " attempts=" + $attempts + " reason=" + $reason +
+    Write-Log ("QUARANTINE " + $captureId + " attempts=" + $attempts + " cause=" + $causeClass + " reason=" + $reason +
         " — 캡처는 그대로 두고 큐에서만 뺀다. 웹앱에서 다시 보내면(receivedAt 갱신) 자동 해제된다.")
+}
+
+# 반복 실패 잠금. 여기서부터는 requeue가 예산을 재충전하지 못한다 (Test-CaptureQuarantined 첫 분기).
+# 격리와 다른 상태다: 격리는 '한 번 더 해 보자'이고, 이것은 '같은 방법으로는 안 된다'이다.
+function Set-CaptureRecoveryRequired($captureId, $causeClass, $attempts) {
+    $s = Get-CaptureState $captureId
+    if ($s.recoveryRequired -eq $true) { return $false }
+    $s.recoveryRequired = $true
+    $s.recoveryCause = [string]$causeClass
+    $s.recoveryRequiredAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    Set-CaptureState $s
+    Write-Log ("RECOVERY REQUIRED " + $captureId + " cause=" + $causeClass + " repeatFailures=" +
+        [int]$s.repeatFailures + "/" + $RecoveryRequiredFailures + " attempts=" + [int]$attempts +
+        " — 같은 원인으로 예산을 두 번 소진했다. 이 receipt는 requeue를 더 받지 않는다(사람 복구 필요).")
+    return $true
 }
 
 function Clear-CaptureQuarantine($captureId, $reason) {
@@ -348,6 +382,18 @@ function Clear-CaptureQuarantine($captureId, $reason) {
 # 반대로 '사람 개입 없이' 예산이 재충전되면 bounded retry 계약이 무너진다 — 아래가 그 경계다.
 function Test-CaptureQuarantined($captureId, $fingerprint) {
     $s = Get-CaptureState $captureId
+    # 결정적 requeue 차단. 같은 원인으로 예산을 두 번 소진한 receipt는 fingerprint가 달라져도
+    # 다시 큐에 들어가지 않는다 — 세 번째 예산도 같은 자리에서 같은 이유로 타 없어질 뿐이고,
+    # 그동안 사용자는 아무 반응 없는 '다시 처리'를 계속 누르게 된다.
+    # 사람이 원인을 고친 뒤 state\items\<captureId>.json 을 지우면 이 잠금이 풀린다.
+    if ($s.recoveryRequired -eq $true) {
+        if (-not $script:QuarantineHoldLogged.ContainsKey([string]$captureId)) {
+            $script:QuarantineHoldLogged[[string]$captureId] = $true
+            Write-Log ("recovery hold " + $captureId + " cause=" + [string]$s.recoveryCause +
+                " — 복구 필요 상태다, requeue를 받지 않는다")
+        }
+        return $true
+    }
     if ($s.quarantined -ne $true) { return $false }
     # 빈 fingerprint는 '입력이 달라졌다'가 아니라 '지금은 알 수 없다'다 (동기화 중 부분 기록,
     # 파싱 실패, 파일 잠김). 이걸 새 입력으로 취급하면 capture.json을 한 번 못 읽을 때마다
@@ -505,6 +551,8 @@ function Complete-CaptureStaging($captureId, $inputFingerprint, $outputFingerpri
     catch { Write-Log ("staging commit write failed for " + $captureId + ": " + $_.Exception.Message); return $null }
     Remove-Item (Join-Path $d 'begin.json') -Force -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $d 'deep-output-backup.json') -Force -ErrorAction SilentlyContinue
+    # 진전이 있었다 = 지난 실패 영수증은 더 이상 지금의 사실이 아니다.
+    Remove-Item (Join-Path $d 'failure.json') -Force -ErrorAction SilentlyContinue
     return $p
 }
 
@@ -532,6 +580,8 @@ function Complete-CaptureCheckpoint($captureId) {
     if (-not $d) { return $false }
     Remove-Item (Join-Path $d 'begin.json') -Force -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $d 'deep-output-backup.json') -Force -ErrorAction SilentlyContinue
+    # checkpoint도 진전이다. 다음 slice가 실패하면 그때 새 영수증을 쓴다.
+    Remove-Item (Join-Path $d 'failure.json') -Force -ErrorAction SilentlyContinue
     return $true
 }
 
@@ -553,6 +603,279 @@ function Get-CaptureCommitMarker($captureId) {
     $p = Join-Path (Join-Path (Join-Path $StateDir 'staging') $safe) 'commit.json'
     if (-not (Test-Path $p)) { return $null }
     try { return (Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { return $null }
+}
+
+# ---------------------------------------------------------------------------
+# 실패 저널 (TSK-000531)
+#   여기가 고치는 결함: **정상 실패와 프로세스 사망이 디스크에 같은 흔적을 남겼다.**
+#   예전 실패 경로는 rollback backup만 지우고 begin.json은 그대로 뒀다. 그래서
+#     (a) 다음 스윕이 그 begin.json을 '중단된 attempt'로 읽고,
+#     (b) 이미 지워진 backup을 복구하려다 조용히 실패하고,
+#     (c) interruptedCount가 영원히 내려가지 않아 health가 사실이 아닌 값을 말한다.
+#   이제 실패는 begin.json과 backup을 **함께 닫고** 그 자리에 failure.json 영수증을 남긴다.
+#   남는 흔적이 상태를 결정한다:
+#     failure.json 있고 begin.json 없음  = 정상 실패 (끝난 attempt, 원인이 기록됐다)
+#     begin.json 있음                    = commit 전에 죽은 attempt (진짜 중단)
+#     begin.json 있고 backup 없음        = 옛 버전이 남긴 stale marker 또는 standard lane crash
+#                                          → 불가능한 복구를 시도하지 않고 조정(reconcile)한다
+#   저널에 들어가는 것은 원인 분류·시도 수·시각뿐이다. Person 내용·명함 원문·토큰은 넣지 않는다.
+# ---------------------------------------------------------------------------
+
+# 실패 원인 분류. **닫힌 enum**이다 — health 출력과 사용자 표면은 이 값만 쓴다.
+# 자유 문자열(lastError·quarantineReason)은 상태 파일에만 남고 진단·사용자 표면으로 나가지 않는다.
+function Get-FailureCauseClass($reason, $exitCode) {
+    $r = [string]$reason
+    $code = 0
+    try { $code = [int]$exitCode } catch { $code = 0 }
+    if ($code -eq 124 -or $r -eq 'processor_exit_124') { return 'processor_timeout' }
+    if ($r -like 'processor_exit_*') { return 'processor_failed' }
+    if ($r -eq 'checkpoint_budget_snapshot_failed' -or $r -like '*budget_charge_failed*') { return 'internal_state_failed' }
+    if ($r -like 'commit_incomplete_*') { return 'result_incomplete' }
+    if ($r -like 'interrupted_*') { return 'interrupted_attempt' }
+    return 'unknown_failure'
+}
+
+$FailureCauseClasses = @('processor_failed','processor_timeout','result_incomplete','internal_state_failed','interrupted_attempt','unknown_failure')
+
+function Get-CaptureFailureJournalPath($captureId) {
+    $d = Resolve-CaptureStaging $captureId
+    if (-not $d) { return $null }
+    return (Join-Path $d 'failure.json')
+}
+
+# 누적 카운터는 기존 저널에서 이어 받는다. 한 attempt의 결과 한 줄이 아니라 '이 receipt가 지금까지
+# 어떻게 실패해 왔는가'가 운영자에게 필요한 사실이기 때문이다.
+function Write-CaptureFailureJournal($captureId, $attempt, $causeClass, $reason, $quarantined, $recoveryRequired, $startedAt) {
+    $p = Get-CaptureFailureJournalPath $captureId
+    if (-not $p) { return $false }
+    $prev = $null
+    if (Test-Path $p) { try { $prev = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $prev = $null } }
+    $now = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    $failures = 1
+    $sameCause = 1
+    $firstAt = $now
+    if ($prev) {
+        try { $failures = [int]$prev.failures + 1 } catch { $failures = 1 }
+        if ([string]$prev.causeClass -eq [string]$causeClass) {
+            try { $sameCause = [int]$prev.sameCauseFailures + 1 } catch { $sameCause = 1 }
+        }
+        if ([string]$prev.firstFailedAt) { $firstAt = [string]$prev.firstFailedAt }
+    }
+    $journal = [PSCustomObject]@{
+        version = 'card-capture-failure-v1'
+        captureId = [string]$captureId
+        attempt = [int]$attempt
+        causeClass = [string]$causeClass
+        # 워처가 자기 소스의 닫힌 리터럴로 만든 문자열이다 (processor_exit_<int> / commit_incomplete_<verdict>).
+        # 캡처 내용은 들어갈 수 없다. 그래도 진단 표면은 causeClass만 내보낸다.
+        reason = [string]$reason
+        failures = [int]$failures
+        sameCauseFailures = [int]$sameCause
+        recoveryThreshold = [int]$RecoveryRequiredFailures
+        quarantined = [bool]$quarantined
+        recoveryRequired = [bool]$recoveryRequired
+        attemptStartedAt = [string]$startedAt
+        firstFailedAt = [string]$firstAt
+        lastFailedAt = $now
+    }
+    try { ($journal | ConvertTo-Json) | Out-File -Encoding utf8 $p; return $true }
+    catch { Write-Log ("failure journal write failed for " + $captureId + ": " + $_.Exception.Message); return $false }
+}
+
+# 실패한 attempt를 닫는다: begin.json과 rollback backup을 **함께** 치우고 영수증을 남긴다.
+# 둘 중 하나만 치우면 다음 스윕이 존재하지 않는 backup을 복구하려 든다(이 lane이 고치는 결함).
+function Close-CaptureStagingFailure($captureId, $attempt, $causeClass, $reason, $quarantined, $recoveryRequired) {
+    $d = Resolve-CaptureStaging $captureId
+    if (-not $d) { return $false }
+    $startedAt = ''
+    $beginPath = Join-Path $d 'begin.json'
+    if (Test-Path $beginPath) {
+        try { $startedAt = [string](Get-Content $beginPath -Raw -Encoding UTF8 | ConvertFrom-Json).startedAt } catch { $startedAt = '' }
+    }
+    $written = Write-CaptureFailureJournal $captureId $attempt $causeClass $reason $quarantined $recoveryRequired $startedAt
+    Remove-Item $beginPath -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $d 'deep-output-backup.json') -Force -ErrorAction SilentlyContinue
+    return $written
+}
+
+function Clear-CaptureFailureJournal($captureId) {
+    $p = Get-CaptureFailureJournalPath $captureId
+    if ($p) { Remove-Item $p -Force -ErrorAction SilentlyContinue }
+}
+
+# 지금 살아 있는 attempt인가. 조정(reconcile)은 남이 처리 중인 항목의 marker를 건드리면 안 된다.
+# 판정은 New-CaptureClaim의 회수 규칙과 같다: 읽히면 leaseExpiresAt, 못 읽으면 파일 나이.
+function Test-CaptureClaimActive($captureId) {
+    $safe = Get-SafeCaptureId $captureId
+    if (-not $safe) { return $false }
+    $p = Join-Path (Join-Path $StateDir 'claims') ($safe + '.claim.json')
+    if (-not (Test-Path $p)) { return $false }
+    $c = $null
+    try { $c = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $c = $null }
+    if ($c -and $c.leaseExpiresAt) {
+        try { return ([datetime]$c.leaseExpiresAt -gt (Get-Date)) } catch { return $false }
+    }
+    try { return ((((Get-Date) - (Get-Item $p).LastWriteTime).TotalMinutes) -le $LeaseMinutes) } catch { return $false }
+}
+
+# 시작·스윕마다 도는 조정. 여러 번 돌려도 안전해야 한다(같은 marker를 두 번 조정하지 않는다).
+#   backup 있음 + 복구 성공 → 복구하고 marker를 닫는다 (예전에는 begin.json이 그대로 남았다)
+#   backup 있음 + 복구 실패 → marker를 남긴다. 진짜 미복구 상태이고 사람이 봐야 한다
+#   backup 없음            → 불가능한 복구를 시도하지 않는다. 조정 영수증을 남기고 marker를 닫는다.
+#                            (옛 버전이 남긴 stale marker, 또는 backup을 뜨지 않는 standard lane crash.
+#                             재시도는 marker가 아니라 capture 자체의 처리 자격이 끌고 간다.)
+function Repair-InterruptedCaptures {
+    $ids = @(Get-InterruptedCaptures)
+    if ($ids.Count -eq 0) { return @() }
+    Write-Log ("interrupted attempt(s) without commit marker from a previous run: " + ($ids -join ', '))
+    $reconciled = New-Object System.Collections.ArrayList
+    foreach ($captureId in $ids) {
+        $safe = Get-SafeCaptureId $captureId
+        if (-not $safe) { continue }
+        if (Test-CaptureClaimActive $safe) {
+            Write-Log ('interrupted marker skipped ' + $safe + ' — 지금 살아 있는 claim이 있다(진행 중인 attempt)')
+            continue
+        }
+        $staging = Resolve-CaptureStaging $safe
+        if (-not $staging) { continue }
+        $beginPath = Join-Path $staging 'begin.json'
+        if (-not (Test-Path $beginPath)) { continue }
+        $attempt = 0
+        try { $attempt = [int](Get-Content $beginPath -Raw -Encoding UTF8 | ConvertFrom-Json).attempt } catch { $attempt = 0 }
+        $backupPath = Join-Path $staging 'deep-output-backup.json'
+        $hadBackup = Test-Path $backupPath
+        $captureDir = Join-Path $Inbox $safe
+        if ($hadBackup) {
+            if ((Test-Path $captureDir) -and (Restore-DeepRollbackBackup $safe $captureDir)) {
+                $null = Close-CaptureStagingFailure $safe $attempt 'interrupted_attempt' 'interrupted_restored' $false $false
+                Write-Log ('interrupted deep output restored before retry: ' + $safe + ' — staging marker를 함께 닫았다')
+                [void]$reconciled.Add($safe)
+            } else {
+                Write-Log ('interrupted restore FAILED ' + $safe + ' — marker를 남긴다(사람 복구 필요)')
+            }
+            continue
+        }
+        $null = Close-CaptureStagingFailure $safe $attempt 'interrupted_attempt' 'interrupted_no_backup' $false $false
+        Write-Log ('stale staging marker reconciled ' + $safe +
+            ' — backup이 없어 복구할 것이 없다. 불가능한 복구를 시도하지 않고 marker를 닫는다(재시도는 캡처 자격이 끌고 간다).')
+        [void]$reconciled.Add($safe)
+    }
+    return $reconciled.ToArray()
+}
+
+# ---------------------------------------------------------------------------
+# capture.json 복구 영수증
+#   워처 상태(state\)는 이 기기 안에만 있다. 사용자는 폰에서 목록을 본다 — 그 사이를 잇는 유일한
+#   길이 캡처 폴더의 capture.json이다(`attention`이 이미 같은 길을 쓴다).
+#   여기에 쓰는 것은 닫힌 enum과 숫자·시각뿐이다. 입력 fingerprint에 들어가는 필드는 건드리지
+#   않으므로(Get-CaptureFingerprint 참조) 이 영수증을 쓴다고 재시도 예산이 재충전되지 않는다.
+# ---------------------------------------------------------------------------
+function Set-CaptureRecoveryReceipt($captureId, $dir, $receipt) {
+    $safe = Get-SafeCaptureId $captureId
+    if (-not $safe) { return $false }
+    $json = Get-CaptureJson $dir
+    if (-not $json) { return $false }
+    $meta = $null
+    try { $meta = Get-Content -LiteralPath $json.FullName -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $false }
+    if (-not $meta) { return $false }
+    $existing = $meta.PSObject.Properties['recovery']
+    if ($null -eq $receipt) {
+        if ($null -eq $existing) { return $true }   # 없는 것을 지우려고 파일을 쓰지 않는다
+        $meta.PSObject.Properties.Remove('recovery')
+    } else {
+        if ($existing) { $existing.Value = $receipt }
+        else { $meta | Add-Member -NotePropertyName recovery -NotePropertyValue $receipt }
+    }
+    $text = ''
+    try { $text = ($meta | ConvertTo-Json -Depth 32) } catch { return $false }
+    # 직렬화가 원본을 잘라먹지 않았는지 확인한 뒤에만 쓴다. capture.json은 서버 계약이라
+    # 여기서 망가뜨리면 캡처 자체를 잃는다.
+    $roundTrip = $null
+    try { $roundTrip = $text | ConvertFrom-Json } catch { return $false }
+    if (-not $roundTrip -or [string]$roundTrip.captureId -cne [string]$meta.captureId -or
+        [string]$roundTrip.status -cne [string]$meta.status) { return $false }
+    $temp = $json.FullName + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    try {
+        [IO.File]::WriteAllText($temp, $text, (New-Object Text.UTF8Encoding($false)))
+        Move-Item -LiteralPath $temp -Destination $json.FullName -Force
+        return $true
+    } catch {
+        Remove-Item $temp -Force -ErrorAction SilentlyContinue
+        return $false
+    }
+}
+
+# 워처 상태 파일의 시각은 'yyyy-MM-dd HH:mm:ss'(로컬)다. 그 문자열을 그대로 브라우저로 보내면
+# 안 된다 — iOS Safari의 Date.parse는 공백으로 구분된 이 형식을 NaN으로 돌려주고, 그러면 폰에서
+# 경과 표시가 조용히 사라진다. '멈춘 것에 경과가 없는 것'이 이 lane이 고치는 결함 그 자체다.
+# capture.json의 다른 시각 필드(attention.requestedAt·processedAt)와 같은 ISO(UTC)로 맞춘다.
+function ConvertTo-ReceiptTimestamp($stamp) {
+    $s = [string]$stamp
+    if (-not $s) { return '' }
+    $parsed = [datetime]::MinValue
+    if ([datetime]::TryParse($s, [ref]$parsed)) { return $parsed.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+    return ''
+}
+
+# 사용자에게 보일 영수증 한 벌. kind는 둘뿐이다 —
+#   retry_scheduled   일시 실패, 아직 예산이 남아 워처가 다시 시도한다
+#   recovery_required 반복 실패, 같은 방법으로는 안 된다 (앱은 '다시 처리'를 없앤다)
+function New-CaptureRecoveryReceipt($kind, $causeClass, $attempts, $repeatFailures, $since) {
+    return [PSCustomObject]@{
+        kind = [string]$kind
+        reasonCode = [string]$causeClass
+        attempts = [int]$attempts
+        failures = [int]$repeatFailures
+        threshold = [int]$RecoveryRequiredFailures
+        since = (ConvertTo-ReceiptTimestamp $since)
+    }
+}
+
+# 진전이 있었을 때만 실패 이력을 지운다. requeue는 여기를 통과하지 못한다 — 그것이 이 lane의 요지다.
+function Reset-CaptureFailureState($state) {
+    $state.attempts = 0
+    $state.lastError = ''
+    $state.repeatCause = ''
+    $state.repeatFailures = 0
+    $state.quarantineCause = ''
+    $state.recoveryRequired = $false
+    $state.recoveryCause = ''
+    $state.recoveryRequiredAt = ''
+    return $state
+}
+
+# 실패한 attempt 하나를 기록하는 **유일한 지점**. 실패 경로가 둘(처리 실패 / checkpoint 기록 실패)
+# 이므로 함수로 묶는다 — 갈라지면 한쪽만 begin.json을 닫는 예전 결함이 그대로 재발한다.
+function Register-CaptureFailure($captureId, $dir, $fingerprint, $attempt, $reason, $exitCode, $forceQuarantine) {
+    $cause = Get-FailureCauseClass $reason $exitCode
+    $st = Get-CaptureState $captureId
+    $st.attempts = [int]$st.attempts + 1
+    $st.lastError = [string]$reason
+    $st.lastAttemptAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    if ([string]$st.repeatCause -eq [string]$cause) { $st.repeatFailures = [int]$st.repeatFailures + 1 }
+    else { $st.repeatCause = [string]$cause; $st.repeatFailures = 1 }
+    Set-CaptureState $st
+    $recovery = ([int]$st.repeatFailures -ge [int]$RecoveryRequiredFailures)
+    $quarantine = ($recovery -or [bool]$forceQuarantine -or ([int]$st.attempts -ge [int]$MaxAttempts))
+    if ($quarantine) { Set-CaptureQuarantine $captureId $fingerprint $reason $st.attempts $cause }
+    if ($recovery) { $null = Set-CaptureRecoveryRequired $captureId $cause $st.attempts }
+    # begin.json·rollback backup·영수증은 **한 번에** 닫는다.
+    $null = Close-CaptureStagingFailure $captureId $attempt $cause $reason $quarantine $recovery
+    $after = Get-CaptureState $captureId
+    $kind = if ($recovery) { 'recovery_required' } else { 'retry_scheduled' }
+    $since = if ($recovery) { [string]$after.recoveryRequiredAt }
+             elseif ($quarantine) { [string]$after.quarantinedAt }
+             else { [string]$after.lastAttemptAt }
+    if ($dir) {
+        $null = Set-CaptureRecoveryReceipt $captureId $dir (New-CaptureRecoveryReceipt $kind $cause $after.attempts $after.repeatFailures $since)
+    }
+    return [PSCustomObject]@{
+        cause = [string]$cause
+        attempts = [int]$after.attempts
+        repeatFailures = [int]$after.repeatFailures
+        quarantined = [bool]$quarantine
+        recoveryRequired = [bool]$recovery
+    }
 }
 
 # Deep processor는 capture 폴더만 쓸 수 있게 별도 sandbox root에서 실행한다. 그래도
@@ -1120,13 +1443,34 @@ function Write-Health {
     if ($backlog.Count -gt 0) {
         $oldest = [math]::Round(((Get-Date) - ($backlog | Sort-Object mtime | Select-Object -First 1).mtime).TotalMinutes, 1)
     }
+    # 격리·복구 필요 현황은 건수만으로는 읽을 수 없다 — 어느 receipt가, 왜, 언제부터인지가
+    # 있어야 운영자가 다음 행동을 고른다. 원인은 닫힌 enum(quarantineCause)만 내보낸다.
     $quarantined = 0
+    $recoveryRequired = 0
+    $quarantineDetail = New-Object System.Collections.ArrayList
     $itemsDir = Join-Path $StateDir 'items'
     if (Test-Path $itemsDir) {
-        foreach ($f in (Get-ChildItem $itemsDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
+        foreach ($f in (Get-ChildItem $itemsDir -Filter '*.json' -ErrorAction SilentlyContinue | Sort-Object Name)) {
             try {
                 $s = Get-Content $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-                if ($s.quarantined -eq $true) { $quarantined++ }
+                $isQ = ($s.quarantined -eq $true)
+                $isR = ($s.recoveryRequired -eq $true)
+                if ($isQ) { $quarantined++ }
+                if ($isR) { $recoveryRequired++ }
+                if ($isQ -or $isR) {
+                    $cause = [string]$s.quarantineCause
+                    if ($isR -and [string]$s.recoveryCause) { $cause = [string]$s.recoveryCause }
+                    if ($FailureCauseClasses -notcontains $cause) { $cause = 'unknown_failure' }
+                    $since = if ($isR -and [string]$s.recoveryRequiredAt) { [string]$s.recoveryRequiredAt } else { [string]$s.quarantinedAt }
+                    [void]$quarantineDetail.Add([PSCustomObject]@{
+                        captureId = [string]$s.captureId
+                        cause = $cause
+                        attempts = [int]$s.attempts
+                        repeatFailures = [int]$s.repeatFailures
+                        recoveryRequired = [bool]$isR
+                        since = $since
+                    })
+                }
             } catch {}
         }
     }
@@ -1157,6 +1501,11 @@ function Write-Health {
         workerId = $WorkerId
         activeClaims = $claims
         quarantinedCount = $quarantined
+        # 반복 실패 잠금 상태와 그 임계값. 임계값을 함께 내야 운영자가 '몇 번 남았는지'를 읽는다.
+        recoveryRequiredCount = $recoveryRequired
+        recoveryRequiredThreshold = [int]$RecoveryRequiredFailures
+        maxAttempts = [int]$MaxAttempts
+        quarantineDetail = @($quarantineDetail.ToArray())
         interruptedCount = @(Get-InterruptedCaptures).Count
         pushConfigured = (Test-Path -LiteralPath $PushConf)
         pushPendingCount = $pushPending
@@ -1168,7 +1517,9 @@ function Write-Health {
         logDroppedTotal = [int]$script:LogDroppedTotal
         inbox = $Inbox
     }
-    try { $h | ConvertTo-Json | Out-File -Encoding utf8 $HealthFile } catch {}
+    # -Depth 필수: quarantineDetail은 객체 배열이라 기본 depth 2에서는 "@{captureId=…}" 문자열로
+    # 뭉개져 진단이 읽을 수 없는 값이 된다.
+    try { $h | ConvertTo-Json -Depth 6 | Out-File -Encoding utf8 $HealthFile } catch {}
 }
 
 # ---------------------------------------------------------------------------
@@ -1693,18 +2044,10 @@ function Invoke-Processing {
     $script:LastRunStart = Get-Date
     Write-Health
     $null = Remove-ExpiredProcessorLogs   # 새 처리기 로그를 만들기 전에 만료분을 먼저 치운다
-    # 이전 생에서 commit 전에 죽은 attempt를 먼저 기록한다. lease 만료 후 회수되어 bounded retry로 이어진다.
-    $interrupted = @(Get-InterruptedCaptures)
-    if ($interrupted.Count -gt 0) {
-        Write-Log ("interrupted attempt(s) without commit marker from a previous run: " + ($interrupted -join ', '))
-        foreach ($captureId in $interrupted) {
-            $safeInterrupted = Get-SafeCaptureId $captureId
-            $captureDir = if ($safeInterrupted) { Join-Path $Inbox $safeInterrupted } else { $null }
-            if ($captureDir -and (Test-Path $captureDir) -and (Restore-DeepRollbackBackup $safeInterrupted $captureDir)) {
-                Write-Log ('interrupted deep output restored before retry: ' + $safeInterrupted)
-            }
-        }
-    }
+    # 이전 생에서 commit 전에 죽은 attempt를 먼저 조정한다. lease 만료 후 회수되어 bounded retry로 이어진다.
+    # 복구할 backup이 없는 marker(옛 버전이 남긴 stale marker 포함)는 불가능한 복구를 시도하지 않고
+    # 영수증을 남기며 닫는다 — 여러 번 돌려도 같은 결과다.
+    $null = Repair-InterruptedCaptures
     # quick-pass: 대기 캡처 전체의 이름을 웹검색 없이 빠르게 채워 폰에 즉시 표시(ISS-000051)
     Invoke-QuickExtract
     # deep: 카드별로 한 건씩 처리 — 카드마다 claim → staging begin → 처리 → commit 판정 → commit marker.
@@ -1821,8 +2164,6 @@ function Invoke-Processing {
             $quarantinedNow = $false
             if (($exit -eq 0) -and $verdict.ok) {
                 $st = Get-CaptureState $itemId
-                $st.attempts = 0
-                $st.lastError = ''
                 $script:ConsecutiveFailures = 0
                 $done++
                 if ($verdict.partial) {
@@ -1832,17 +2173,17 @@ function Invoke-Processing {
                         Write-Log ('research checkpoint budget snapshot failed — ' + $itemId)
                         if ($isDeep -and $deepWorkspaceSnapshotReady) { $null = Restore-DeepWorkspaceSnapshot $item.dir $deepWorkspaceSnapshot }
                         else { $null = Restore-DeepOutputSnapshot $item.dir $deepOutputSnapshot $true }
-                        Remove-DeepRollbackBackup $itemId
                         $failed = $true
                         $reason = 'checkpoint_budget_snapshot_failed'
                         $done--
-                        $st.attempts = [int]$st.attempts + 1
-                        $st.lastError = $reason
-                        $st.lastAttemptAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-                        Set-CaptureState $st
                         $script:ConsecutiveFailures++
-                        if ([int]$st.attempts -ge [int]$MaxAttempts) {
-                            Set-CaptureQuarantine $itemId $item.fingerprint $reason $st.attempts
+                        # 처리 실패와 같은 기록 경로를 쓴다 — begin.json·backup·영수증이 함께 닫힌다.
+                        $outcome = Register-CaptureFailure $itemId $item.dir $item.fingerprint $claim.attempt $reason 0 $false
+                        Write-Log ("card FAILED " + $itemId + " reason=" + $reason + " cause=" + $outcome.cause +
+                            " attempts=" + $outcome.attempts + "/" + $MaxAttempts + " repeatFailures=" +
+                            $outcome.repeatFailures + "/" + $RecoveryRequiredFailures +
+                            " consecutiveFailures=" + $script:ConsecutiveFailures)
+                        if ($outcome.quarantined) {
                             $quarantinedNow = $true
                             $null = Queue-PushEvent $itemId 'recovery_required' $item.fingerprint $pushRoutingSnapshot
                         }
@@ -1850,15 +2191,21 @@ function Invoke-Processing {
                 }
                 if ($verdict.partial -and -not $failed) {
                     $null = Complete-CaptureCheckpoint $itemId
+                    $null = Reset-CaptureFailureState $st
                     Set-CaptureState $st
+                    $script:QuarantineHoldLogged.Remove([string]$itemId)
+                    $null = Set-CaptureRecoveryReceipt $itemId $item.dir $null
                     Write-Log ("research checkpoint — " + $itemId + " (next slice will resume)")
                 } elseif (-not $failed) {
                     $null = Complete-CaptureStaging $itemId $item.fingerprint (Get-CaptureFingerprint $item.dir)
                     $budgetPath = Resolve-ResearchBudgetPath $itemId
                     if ($budgetPath) { Remove-Item $budgetPath -Force -ErrorAction SilentlyContinue }
+                    $null = Reset-CaptureFailureState $st
                     $st.lastCommitAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
                     $st.lastCommitFingerprint = [string]$item.fingerprint
                     Set-CaptureState $st
+                    $script:QuarantineHoldLogged.Remove([string]$itemId)
+                    $null = Set-CaptureRecoveryReceipt $itemId $item.dir $null
                     Write-Log ("card done — 처리됨: " + $itemId + " (status=" + $verdict.status + ")")
                     $pushKind = Get-CommittedPushKind $itemId $verdict.status
                     if ($pushKind) { $null = Queue-PushEvent $itemId $pushKind (Get-CaptureFingerprint $item.dir) $pushRoutingSnapshot }
@@ -1868,19 +2215,17 @@ function Invoke-Processing {
                 # 실패하면 pre-run truth로 되돌린다. 다음 sweep이 재시도할 수 있다.
                 if ($isDeep -and $deepWorkspaceSnapshotReady) { $null = Restore-DeepWorkspaceSnapshot $item.dir $deepWorkspaceSnapshot }
                 else { $null = Restore-DeepOutputSnapshot $item.dir $deepOutputSnapshot $true }
-                if ($isDeep) { Remove-DeepRollbackBackup $itemId }
                 $reason = 'commit_incomplete_' + [string]$verdict.reason
                 if ($exit -ne 0) { $reason = 'processor_exit_' + [string]$exit }
-                $st = Get-CaptureState $itemId
-                $st.attempts = [int]$st.attempts + 1
-                $st.lastError = $reason
-                $st.lastAttemptAt = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-                Set-CaptureState $st
                 $script:ConsecutiveFailures++
-                Write-Log ("card FAILED " + $itemId + " reason=" + $reason + " attempts=" + $st.attempts + "/" + $MaxAttempts +
+                # 정상 실패의 유일한 기록 경로. begin.json과 rollback backup을 함께 닫고 failure.json을
+                # 남긴다 — 예전에는 backup만 지워 다음 스윕이 '중단됨'으로 오독했다(이 lane의 2차 결함).
+                $outcome = Register-CaptureFailure $itemId $item.dir $item.fingerprint $claim.attempt $reason $exit $budgetChargeFailed
+                Write-Log ("card FAILED " + $itemId + " reason=" + $reason + " cause=" + $outcome.cause +
+                    " attempts=" + $outcome.attempts + "/" + $MaxAttempts + " repeatFailures=" +
+                    $outcome.repeatFailures + "/" + $RecoveryRequiredFailures +
                     " consecutiveFailures=" + $script:ConsecutiveFailures)
-                if ($budgetChargeFailed -or [int]$st.attempts -ge [int]$MaxAttempts) {
-                    Set-CaptureQuarantine $itemId $item.fingerprint $reason $st.attempts
+                if ($outcome.quarantined) {
                     $quarantinedNow = $true
                     $null = Queue-PushEvent $itemId 'recovery_required' $item.fingerprint $pushRoutingSnapshot
                 }

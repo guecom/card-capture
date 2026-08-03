@@ -4,6 +4,7 @@ import type {
   ActionResponse,
   DocumentResponse,
   ListResponse,
+  ManualPersonPayload,
   PersonTarget,
   RuntimeConfig,
   SearchResponse,
@@ -64,6 +65,42 @@ export function toUploadPayload(item: CaptureQueueItem, config: RuntimeConfig): 
     researchInstruction: item.researchInstruction ?? null,
     images: item.images,
   };
+}
+
+/**
+ * 직접 입력 접수 payload (ISS-000231 / DEC-000103).
+ *
+ * 사진 경로와 **같은 멱등 장치**를 쓴다 — 새 장치를 만들지 않는다. 클라이언트가 만든
+ * `captureId`가 서버 폴더 이름이 되고, 서버는 내용 지문으로 같은 접수를 알아본다.
+ * 그래서 연타·타임아웃 뒤 재시도·앱 재시작 뒤 재전송이 전부 job 하나로 수렴한다.
+ */
+export function toManualPersonPayload(item: CaptureQueueItem, config: RuntimeConfig): ManualPersonPayload {
+  return {
+    action: 'manualperson',
+    k: config.token,
+    captureId: item.captureId,
+    capturedAt: item.capturedAt,
+    event: item.event ?? '',
+    note: item.note ?? '',
+    text: String(item.manualText ?? '').trim().slice(0, 2000),
+  };
+}
+
+/**
+ * 배포된 GAS가 직접 입력을 아직 모를 때 나오는 서버 코드 (ISS-000231).
+ *
+ * `Code.gs`는 사람이 따로 재배포해야 반영된다 — 앱만 새로 올라간 구간이 반드시 생긴다.
+ * 그때 옛 서버는 `action`을 못 알아보고 업로드 경로로 떨어져 "사진이 없다"고 거절한다.
+ * 그 거절을 그대로 두면 사용자에게는 원인 없는 실패로 보이고, 조용히 성공으로 바꾸면
+ * 접수되지 않은 등록이 접수된 것처럼 남는다. 둘 다 하지 않고 **분명한 코드**로 바꿔 둔다.
+ */
+const MANUAL_INTAKE_UNSUPPORTED_REASONS = new Set(['no_images', 'unknown_action', 'bad_action']);
+
+/** 서버가 아직 직접 입력을 받을 준비가 안 된 상태에서 나온 실패인가. */
+export const MANUAL_INTAKE_NOT_DEPLOYED = 'manual_intake_not_deployed';
+
+export function manualIntakeUnsupported(reason: unknown): boolean {
+  return MANUAL_INTAKE_UNSUPPORTED_REASONS.has(String(reason ?? ''));
 }
 
 async function getJson<T>(url: string): Promise<T> {
@@ -135,12 +172,19 @@ export class UploadError extends Error {
   }
 }
 
+/**
+ * 대기열 항목 하나를 서버로 보낸다.
+ *
+ * 사진이든 직접 입력이든 **이 함수 하나**를 지난다. 전송로를 둘로 나누면 잠금·대조·재시도·
+ * 실패 분류(FI-016)가 두 벌이 되고, 둘 중 한쪽만 고쳐지는 날이 온다.
+ */
 export async function uploadCapture(config: RuntimeConfig, item: CaptureQueueItem): Promise<void> {
+  const manual = item.intake === 'manual_person';
   let response: Response;
   try {
     response = await fetch(normalizedBase(config.apiUrl), {
       method: 'POST',
-      body: JSON.stringify(toUploadPayload(item, config)),
+      body: JSON.stringify(manual ? toManualPersonPayload(item, config) : toUploadPayload(item, config)),
     });
   } catch (error) {
     throw new UploadError('ambiguous', error instanceof Error ? error.message : 'network_failed');
@@ -156,7 +200,11 @@ export async function uploadCapture(config: RuntimeConfig, item: CaptureQueueIte
     throw new UploadError('ambiguous', 'unreadable_response');
   }
 
-  if (!result.ok) throw new UploadError('rejected', result.error ?? 'upload_failed');
+  if (result.ok) return;
+  // 서버가 아직 직접 입력을 모른다. 실패는 실패로 두되, 사람이 무엇을 해야 하는지 알 수 있는
+  // 코드로 바꾼다 — 여기서 성공으로 바꾸면 접수되지 않은 등록이 접수된 것처럼 남는다.
+  if (manual && manualIntakeUnsupported(result.error)) throw new UploadError('rejected', MANUAL_INTAKE_NOT_DEPLOYED);
+  throw new UploadError('rejected', result.error ?? 'upload_failed');
 }
 
 /**

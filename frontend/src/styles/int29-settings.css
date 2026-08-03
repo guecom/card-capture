@@ -1,0 +1,634 @@
+/* 설정 화면 (ISS-000217 · DEC-000093 — Kairen-Ref: TSK-000532)
+   ================================================================
+   founder: "설정에 ... 전반적으로 좀 많이 어색해." / "이 제품이 허접한가"를 판정하는 화면.
+
+   이 파일이 소유하는 것: 설정 탭 안의 모든 시각 규칙. `app.css`에 흩어져 있던 설정 전용
+   규칙(`.settings-summary`·`.gallery-*`·`.notify-*`·`.help-*`·`.build-*`·`.theme-*`·
+   `.advanced-toggle`·`.api-endpoint-locked`)은 이쪽으로 옮기고 그쪽에서 지웠다.
+
+   ── 글자 크기 바닥이 이 파일의 첫 번째 규칙이다 ──
+   이전 설정 화면은 57개 텍스트 요소 중 46개가 12.5px 이하였다. 원인 둘:
+     (a) Ionic의 전역 `small { font-size: 75% }` — `<small>`을 쓰면 그 자리에서 바로 작아진다.
+     (b) `<p>`·`<button>`에 크기를 지정하지 않으면 상속·기본값이 그대로 굳는다.
+   그래서 이 파일은 **`<small>`을 한 번도 쓰지 않고**, 텍스트를 담는 모든 선택자에 크기를
+   명시한다. 바닥은 13px이고 `int29-settings.spec.ts`의 가독성 스윕이 매번 다시 잰다.
+
+   ── 좁은 폭 ──
+   `<input>`은 HTML `size` 기본값(20)에서 오는 고유 폭이 있고, 그 폭은 글자 크기에 비례한다.
+   글자를 키우면 320px에서 칸이 화면 밖으로 밀린다 — 예전에 22개 요소가 그렇게 나갔다.
+   그래서 모든 입력 칸에 `width: 100%; min-width: 0; box-sizing: border-box`를 준다.
+
+   색·모서리·그림자는 토큰만 쓴다. 하드코딩하면 다크 팔레트에서 혼자 남는다. */
+
+.int29-settings {
+  display: grid;
+  gap: 22px;
+}
+
+/* ── 묶음 ── */
+.int29-group {
+  display: grid;
+  gap: 11px;
+}
+
+.int29-group-label {
+  margin: 0 2px;
+  color: var(--cc-ink);
+  font-size: 15px;
+  font-weight: 780;
+  letter-spacing: -0.02em;
+}
+
+.int29-card {
+  display: grid;
+  gap: 14px;
+  padding: 20px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-xl);
+  background: var(--cc-surface);
+  box-shadow: var(--cc-elev-2);
+}
+
+.int29-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.int29-card-head strong {
+  flex: 1;
+  min-width: 0;
+  color: var(--cc-ink);
+  font-size: 16px;
+  font-weight: 780;
+  letter-spacing: -0.025em;
+}
+
+.int29-card-head svg {
+  flex: 0 0 auto;
+  color: var(--cc-muted);
+}
+
+.int29-lede {
+  margin: 0;
+  color: var(--cc-muted);
+  font-size: 14px;
+  line-height: 1.65;
+  word-break: keep-all;
+}
+
+.int29-lede b,
+.int29-note b {
+  color: var(--cc-ink);
+  font-weight: 760;
+}
+
+/* 카드 맨 아래 한 줄짜리 사실. 조작이 아니라 읽는 글이지만 **읽을 수 있어야** 한다. */
+.int29-note {
+  margin: 0;
+  color: var(--cc-muted);
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: keep-all;
+}
+
+/* ── 상태 알약 ── */
+.int29-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  padding: 5px 11px;
+  border-radius: var(--cc-r-pill);
+  background: var(--cc-quiet);
+  color: var(--cc-muted);
+  font-size: 13px;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+.int29-pill.is-on {
+  background: var(--cc-teal-soft);
+  color: var(--cc-teal-ink);
+}
+
+.int29-pill.is-warn {
+  background: rgba(138, 106, 39, 0.12);
+  color: var(--cc-warn);
+}
+
+/* ── 계정·연결: 한 sheet 안에서 전부 보이고 전부 고쳐진다 ── */
+.int29-fields {
+  display: grid;
+  gap: 14px;
+}
+
+.int29-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.int29-field > label,
+.int29-field-label {
+  color: var(--cc-ink);
+  font-size: 13.5px;
+  font-weight: 720;
+}
+
+.int29-field input,
+.int29-field textarea {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  min-height: 48px;
+  padding: 12px 14px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-sunken);
+  color: var(--cc-ink);
+  /* 16px 미만이면 iOS Safari가 칸을 누를 때 화면을 확대한다. */
+  font: inherit;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.int29-field textarea {
+  resize: none;
+  overflow-wrap: anywhere;
+}
+
+.int29-field input::placeholder {
+  color: var(--cc-muted);
+  opacity: 1;
+}
+
+.int29-field input:focus-visible,
+.int29-field textarea:focus-visible {
+  outline: 3px solid rgba(var(--cc-accent), 0.32);
+  outline-offset: 1px;
+  border-color: rgba(var(--cc-accent), 0.5);
+}
+
+.int29-field-help {
+  margin: 0;
+  color: var(--cc-muted);
+  font-size: 13px;
+  line-height: 1.55;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+/* 배포본에서는 연결 주소를 바꿀 수 없다 (TSK-000302).
+   값의 글자색은 그대로 둔다 — 지금 어디에 연결됐는지 읽으라고 남긴 값이라 흐려지면 안 된다.
+   커서와 리사이즈 손잡이만 없애 "여기 타이핑하세요"로 읽히지 않게 한다. */
+.int29-field textarea[readonly] {
+  cursor: default;
+  background: var(--cc-quiet);
+}
+
+.int29-locked-reason {
+  display: flex;
+  gap: 7px;
+  align-items: flex-start;
+  margin: 0;
+  color: var(--cc-muted);
+  font-size: 13px;
+  line-height: 1.55;
+  word-break: keep-all;
+}
+
+.int29-locked-reason svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+/* 저장 줄. 바뀐 것이 있을 때만 안내가 뜨고, 버튼은 늘 같은 자리에 있다 —
+   자리를 옮기는 버튼은 "방금 눌렀는데 어디 갔지"를 만든다. */
+.int29-save-row {
+  display: grid;
+  gap: 9px;
+}
+
+.int29-dirty {
+  margin: 0;
+  color: var(--cc-warn);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* ── 조작 ── */
+.int29-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 48px;
+  padding: 0 16px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-solid);
+  color: var(--cc-blue);
+  font: inherit;
+  font-size: 14.5px;
+  font-weight: 720;
+  letter-spacing: -0.02em;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.int29-action.is-primary {
+  border-color: transparent;
+  background: rgb(var(--cc-accent));
+  color: var(--cc-on-accent);
+  box-shadow: 0 4px 12px rgba(var(--cc-accent), 0.22);
+}
+
+.int29-action.is-danger {
+  border-color: rgba(165, 72, 72, 0.35);
+  color: var(--cc-danger);
+}
+
+.int29-action[disabled],
+.int29-action[aria-disabled='true'] {
+  background: var(--cc-quiet);
+  border-color: var(--cc-line);
+  color: var(--cc-muted);
+  box-shadow: none;
+  cursor: default;
+  opacity: 1;
+}
+
+.int29-action:focus-visible {
+  outline: 3px solid rgba(var(--cc-accent), 0.4);
+  outline-offset: 2px;
+}
+
+.int29-action .spinning {
+  animation: cc-spin 900ms linear infinite;
+}
+
+.int29-action-row {
+  display: grid;
+  gap: 9px;
+}
+
+/* ── 고르는 값 (촬영 방법) ──
+   체크박스 하나로 "쓰지 않기"를 켜고 끄던 자리다. 부정형 토글은 켠 상태가 무엇인지 매번
+   두 번 생각하게 만든다. 이제 고르는 것은 **두 가지 촬영 방법**이고, 각각의 결과가 붙어 있다. */
+.int29-choice {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.int29-choice > legend {
+  padding: 0;
+  margin: 0 0 10px;
+  color: var(--cc-ink);
+  font-size: 13.5px;
+  font-weight: 720;
+}
+
+.int29-option {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  min-height: 60px;
+  padding: 14px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-soft);
+  cursor: pointer;
+}
+
+/* 고른 값 표시는 React가 붙이는 클래스가 소유한다. `:has()`는 뒤에서 거들 뿐이다 —
+   선택자 목록 안에 `:has()`를 섞으면 그것을 모르는 엔진에서 **목록 전체**가 무효가 되므로
+   두 규칙을 절대 합치지 않는다. */
+.int29-option.is-selected {
+  border-color: rgba(var(--cc-accent), 0.5);
+  background: var(--cc-blue-soft);
+}
+
+.int29-option:has(input:checked) {
+  border-color: rgba(var(--cc-accent), 0.5);
+  background: var(--cc-blue-soft);
+}
+
+.int29-option:has(input:focus-visible) {
+  outline: 3px solid rgba(var(--cc-accent), 0.4);
+  outline-offset: 2px;
+}
+
+.int29-option input {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  margin: 1px 0 0;
+  accent-color: rgb(var(--cc-accent));
+}
+
+.int29-option-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.int29-option-copy strong {
+  color: var(--cc-ink);
+  font-size: 14.5px;
+  font-weight: 760;
+}
+
+.int29-option-copy span {
+  color: var(--cc-muted);
+  font-size: 13px;
+  line-height: 1.55;
+  word-break: keep-all;
+}
+
+/* ── 알림 ──
+   현재 상태 한 줄 → 다음 행동 하나 → 알림이 오는 경우. 그 밖의 내부 사정은 적지 않는다. */
+.int29-state {
+  display: grid;
+  gap: 6px;
+  padding: 13px 14px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-soft);
+}
+
+.int29-state strong {
+  color: var(--cc-ink);
+  font-size: 14.5px;
+  font-weight: 760;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+/* 차단·미지원처럼 앱 밖에서만 풀 수 있는 상태에서는 **그 밖의 절차**를 적는다.
+   "차단됨"만 말하면 사용자는 앱 안에서 방법을 찾다가 포기한다. */
+.int29-fix {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.int29-fix li {
+  display: flex;
+  gap: 8px;
+  color: var(--cc-muted);
+  font-size: 13px;
+  line-height: 1.55;
+  word-break: keep-all;
+}
+
+.int29-fix li::before {
+  flex: 0 0 auto;
+  color: var(--cc-blue);
+  content: '·';
+  font-weight: 800;
+}
+
+.int29-scope {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.int29-scope li {
+  display: grid;
+  gap: 3px;
+}
+
+.int29-scope strong {
+  color: var(--cc-ink);
+  font-size: 14px;
+  font-weight: 760;
+}
+
+.int29-scope span {
+  color: var(--cc-muted);
+  font-size: 13px;
+  line-height: 1.55;
+  word-break: keep-all;
+}
+
+.int29-scope-label {
+  margin: 0;
+  color: var(--cc-ink);
+  font-size: 13.5px;
+  font-weight: 720;
+}
+
+/* ── 화면 테마 ── */
+.int29-theme {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.int29-theme button {
+  display: grid;
+  gap: 4px;
+  align-content: center;
+  min-width: 0;
+  min-height: 66px;
+  padding: 10px 6px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-solid-soft);
+  color: var(--cc-muted);
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+}
+
+.int29-theme button strong {
+  color: var(--cc-ink);
+  font-size: 14px;
+  font-weight: 760;
+}
+
+.int29-theme button span {
+  font-size: 13px;
+  line-height: 1.35;
+  word-break: keep-all;
+}
+
+.int29-theme button.on {
+  border-color: rgba(var(--cc-accent), 0.45);
+  background: var(--cc-blue-soft);
+}
+
+.int29-theme button.on strong {
+  color: var(--cc-blue);
+}
+
+.int29-theme button:focus-visible {
+  outline: 3px solid rgba(var(--cc-accent), 0.4);
+  outline-offset: 2px;
+}
+
+/* ── 데이터·개인정보 ── */
+.int29-boundary {
+  display: flex;
+  gap: 13px;
+  padding: 18px;
+  border-radius: var(--cc-r-lg);
+  background: #edf7f5;
+  color: #1c7168;
+}
+
+.int29-boundary > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.int29-boundary-copy {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.int29-boundary strong {
+  font-size: 14px;
+  font-weight: 780;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+.int29-boundary p {
+  margin: 0;
+  color: #3f6d68;
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.int29-boundary b {
+  color: #16584f;
+  font-weight: 760;
+}
+
+/* ── 버전·문제 알리기 ──
+   founder: "버전 같은 거는 좀 크게 잘 보이게 써 있으면 좋겠어."
+   통화하면서 눈으로 찾지 않고 바로 읽을 수 있는 크기다. 빌드 식별자는 대조용이라
+   고정폭으로 두되, 같이 읽을 수 있도록 충분히 크게 남긴다. */
+.int29-version {
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  padding: 18px 12px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-lg);
+  background: var(--cc-soft);
+  text-align: center;
+}
+
+.int29-version-eyebrow {
+  color: var(--cc-muted);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.int29-version-number {
+  color: var(--cc-ink);
+  font-size: 40px;
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: -0.04em;
+}
+
+.int29-version-build {
+  color: var(--cc-muted);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.int29-version-build code {
+  color: var(--cc-ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  overflow-wrap: anywhere;
+}
+
+/* 복사 결과·안내는 낭독기에도 알려야 한다 (`role="status"`). 빈 상태에서 자리를 차지하지 않는다. */
+.int29-status {
+  margin: 0;
+  color: var(--cc-blue);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.55;
+  word-break: keep-all;
+}
+
+.int29-status:empty {
+  display: none;
+}
+
+/* 메일 앱도 클립보드도 없는 기기의 마지막 경로: 눈으로 보고 직접 긁어 갈 수 있게 그대로 편다. */
+.int29-report-text {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  min-height: 190px;
+  padding: 12px 14px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-sunken);
+  color: var(--cc-ink);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+/* ── 다크 ──
+   라이트에 하드코딩된 teal 배경만 다시 만든다. 나머지는 전부 토큰이라 자동으로 따라온다. */
+:root[data-theme='dark'] .int29-boundary {
+  background: rgba(31, 143, 130, 0.14);
+  color: var(--cc-teal-ink);
+}
+
+:root[data-theme='dark'] .int29-boundary p {
+  color: var(--cc-muted);
+}
+
+:root[data-theme='dark'] .int29-boundary b {
+  color: var(--cc-teal-ink);
+}
+
+:root[data-theme='dark'] .int29-pill.is-warn {
+  background: rgba(226, 183, 109, 0.16);
+  color: var(--cc-warn);
+}
+
+:root[data-theme='dark'] .int29-action.is-danger {
+  border-color: rgba(214, 109, 96, 0.4);
+}
+
+/* ── 아주 좁은 폭 (320px) ──
+   세 칸 테마 선택은 그대로 두되(글자가 줄바꿈으로 들어간다) 카드 여백만 줄인다. */
+@media (max-width: 359px) {
+  .int29-card {
+    padding: 16px;
+  }
+
+  .int29-version-number {
+    font-size: 34px;
+  }
+}

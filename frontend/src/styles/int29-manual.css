@@ -1,0 +1,408 @@
+/* 직접 입력 (자연어 인물 등록) — Kairen-Ref: TSK-000533 / ISS-000231 / DEC-000103
+ *
+ * 이 파일이 따로 있는 이유: `app.css`는 모든 lane이 함께 쓰는 파일이라 새 규칙을 그 안에
+ * 얹으면 병합이 서로를 덮는다. 여기 있는 선택자는 전부 `.manual-`로 시작하거나 그 안에서만
+ * 살아, 다른 표면의 규칙과 겹치지 않는다.
+ *
+ * 색·모서리·그림자는 어느 것도 손으로 박지 않는다 — 다크 팔레트가 통째로 바뀌어도
+ * 같이 따라가야 하고, 다크 대비 게이트(4.5:1 / 3:1)가 그 위에서 판정한다.
+ */
+
+/* ── 1차 진입: 명함 촬영과 같은 줄, 같은 무게 ─────────────────────────────
+   founder 판정 (INT-000029): 하위 메뉴도 별도 탭도 아니다. 두 칸은 같은 grid에 있고
+   같은 최소 높이를 갖는다 — 한쪽만 커지면 위계가 생긴다. */
+.primary-entries {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  align-items: stretch;
+}
+.primary-entries > .shot-main,
+.primary-entries > .manual-main {
+  min-height: 170px;
+  margin: 0;
+}
+
+.manual-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(var(--cc-accent), 0.2);
+  border-radius: var(--cc-r-lg);
+  background: rgba(var(--cc-accent), 0.05);
+  color: var(--cc-blue);
+  font-size: 15px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  text-align: center;
+  word-break: keep-all;
+}
+.manual-main .manual-main-icon {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: var(--cc-r-md);
+  color: var(--cc-on-accent);
+  background: linear-gradient(145deg, rgb(var(--cc-accent)), rgb(var(--cc-accent-deep)));
+  box-shadow: 0 7px 16px rgba(var(--cc-accent), 0.2);
+}
+.manual-main .manual-main-sub {
+  color: var(--cc-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+/* 쓰다 만 초안이 있으면 그 사실만 말한다 — 내용은 여기서 미리 보여 주지 않는다. */
+.manual-main .manual-main-resume {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: var(--cc-r-pill);
+  background: rgba(var(--cc-accent), 0.14);
+  color: var(--cc-blue-ink);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+/* ── 시트 ─────────────────────────────────────────────────────────────
+   높이·위치는 Ionic의 breakpoint 기계가 소유한다. 여기서 `--height`나 `align-items`를 덮으면
+   sheet 변환과 다퉈 내용이 화면 밖으로 밀린다(실측). 색·모서리만 정한다. */
+ion-modal.manual-sheet {
+  --border-radius: var(--cc-r-xl) var(--cc-r-xl) 0 0;
+  --background: var(--cc-page);
+  --box-shadow: var(--cc-elev-2);
+}
+/* 스크롤은 `ion-content` 하나만 한다 — 안쪽에 두 번째 스크롤 상자를 만들면 좁은 화면에서
+   시트가 갇힌다. */
+.manual-sheet-body {
+  display: grid;
+  gap: 14px;
+  padding: 18px 16px calc(18px + var(--cc-safe-bottom));
+}
+.manual-sheet-head {
+  display: grid;
+  gap: 5px;
+}
+.manual-sheet-head .manual-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--cc-teal);
+  font-size: 12px;
+  font-weight: 800;
+}
+.manual-sheet-head h2 {
+  margin: 0;
+  color: var(--cc-ink);
+  font-size: 20px;
+  letter-spacing: -0.035em;
+  word-break: keep-all;
+}
+.manual-sheet-head p {
+  margin: 0;
+  color: var(--cc-muted);
+  font-size: 12.5px;
+  line-height: 1.55;
+  word-break: keep-all;
+}
+
+.manual-field {
+  display: grid;
+  gap: 6px;
+}
+.manual-field .manual-label {
+  color: var(--cc-ink);
+  font-size: 12.5px;
+  font-weight: 780;
+}
+.manual-sheet ion-textarea.manual-input {
+  --background: var(--cc-solid);
+  --color: var(--cc-ink);
+  --placeholder-color: var(--cc-muted);
+  --placeholder-opacity: 1;
+  --padding-start: 13px;
+  --padding-end: 13px;
+  --padding-top: 12px;
+  --padding-bottom: 12px;
+  min-height: 148px;
+  border: 1.5px solid var(--cc-line);
+  border-radius: var(--cc-r-md);
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+.manual-field-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 10px;
+}
+.manual-field-foot .manual-tip {
+  flex: 1 1 160px;
+  min-width: 0;
+  color: var(--cc-muted);
+  font-size: 11px;
+  line-height: 1.45;
+  word-break: keep-all;
+}
+/* 상한이 가까울 때만 나타난다 — 늘 떠 있는 카운터는 "더 써야 한다"는 압박이 된다. */
+.manual-field-foot .manual-budget {
+  color: var(--cc-muted);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.manual-field-foot .manual-budget.over {
+  color: var(--cc-danger);
+}
+
+/* 무엇을 단서로 읽었는지 되읽어 준다. 사용자가 적은 표기 그대로 보여 준다. */
+.manual-evidence {
+  display: grid;
+  gap: 6px;
+  padding: 12px 13px;
+  border: 1px solid rgba(var(--cc-accent), 0.16);
+  border-radius: var(--cc-r-md);
+  background: rgba(var(--cc-accent), 0.05);
+}
+.manual-evidence strong {
+  color: var(--cc-ink);
+  font-size: 12px;
+  font-weight: 780;
+}
+.manual-evidence ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.manual-evidence li {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: var(--cc-r-pill);
+  background: var(--cc-solid);
+  color: var(--cc-blue-ink);
+  font-size: 11.5px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.manual-evidence .manual-evidence-note {
+  margin: 0;
+  color: var(--cc-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+.manual-context {
+  display: grid;
+  gap: 6px;
+  padding: 12px 13px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-solid-soft);
+}
+.manual-context strong {
+  color: var(--cc-ink);
+  font-size: 12px;
+  font-weight: 780;
+}
+.manual-context p {
+  margin: 0;
+  color: var(--cc-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+.manual-scope {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+.manual-scope p {
+  margin: 0;
+  padding-left: 15px;
+  position: relative;
+  color: var(--cc-muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+  word-break: keep-all;
+}
+.manual-scope p::before {
+  position: absolute;
+  left: 0;
+  content: "·";
+  color: var(--cc-blue);
+  font-weight: 800;
+}
+
+/* 막힌 이유. 버튼을 죽이는 대신 여기서 말한다. */
+.manual-refusal {
+  margin: 0;
+  padding: 11px 13px;
+  border: 1px solid var(--cc-danger);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-danger-soft);
+  color: var(--cc-danger);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.55;
+  word-break: keep-all;
+}
+
+.manual-actions {
+  display: grid;
+  gap: 8px;
+}
+.manual-actions .manual-secondary {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-solid);
+  color: var(--cc-muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+/* ── 접수 영수증 ─────────────────────────────────────────────────────── */
+.manual-receipt {
+  display: grid;
+  gap: 10px;
+}
+.manual-receipt .manual-receipt-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.manual-receipt .manual-receipt-icon {
+  display: grid;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: var(--cc-r-md);
+  background: var(--cc-teal-soft);
+  color: var(--cc-teal-ink);
+}
+.manual-receipt .manual-receipt-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.manual-receipt .manual-receipt-copy strong {
+  color: var(--cc-ink);
+  font-size: 15px;
+  letter-spacing: -0.03em;
+}
+.manual-receipt .manual-receipt-copy small {
+  color: var(--cc-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+.manual-receipt blockquote {
+  margin: 0;
+  padding: 11px 13px;
+  border: 1px solid var(--cc-line);
+  border-left: 3px solid rgba(var(--cc-accent), 0.45);
+  border-radius: var(--cc-r-sm);
+  background: var(--cc-solid);
+  color: var(--cc-ink);
+  font-size: 12.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.manual-receipt .manual-next {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.manual-receipt .manual-next li {
+  position: relative;
+  padding-left: 15px;
+  color: var(--cc-muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+  word-break: keep-all;
+}
+.manual-receipt .manual-next li::before {
+  position: absolute;
+  left: 0;
+  content: "→";
+  color: var(--cc-blue);
+  font-weight: 700;
+}
+/* 전송이 막혔을 때. 실패를 성공처럼 칠하지 않는다. */
+.manual-receipt .manual-blocked {
+  margin: 0;
+  padding: 11px 13px;
+  border: 1px solid var(--cc-warn);
+  border-radius: var(--cc-r-md);
+  background: rgba(var(--cc-accent), 0.05);
+  color: var(--cc-warn);
+  font-size: 11.5px;
+  font-weight: 650;
+  line-height: 1.55;
+  word-break: keep-all;
+}
+
+/* ── 다크 ───────────────────────────────────────────────────────────── */
+:root[data-theme="dark"] .manual-sheet ion-textarea.manual-input {
+  --background: var(--cc-sunken);
+  border-color: var(--cc-line);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+:root[data-theme="dark"] .manual-evidence li {
+  background: var(--cc-solid);
+  color: var(--cc-blue);
+}
+:root[data-theme="dark"] .manual-refusal {
+  background: rgba(165, 72, 72, 0.16);
+}
+
+/* 좁은 화면: 두 칸이 나란히 서면 글자가 갇힌다 — 아이콘을 줄이고 줄바꿈을 허용한다.
+   칸을 세로로 쌓지는 않는다. 쌓는 순간 아래쪽이 부차적으로 읽혀 위계가 무너진다. */
+@media (max-width: 359px) {
+  .primary-entries {
+    gap: 8px;
+  }
+  .primary-entries > .shot-main,
+  .primary-entries > .manual-main {
+    min-height: 156px;
+    padding: 10px 6px;
+    font-size: 13.5px;
+  }
+  .manual-main .manual-main-icon {
+    width: 40px;
+    height: 40px;
+  }
+  .manual-main .manual-main-sub {
+    font-size: 10.5px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ion-modal.manual-sheet {
+    --transition: none;
+  }
+}

@@ -85,9 +85,28 @@ export async function deleteQueueItem(captureId: string): Promise<void> {
   }
 }
 
-/** 저장된 항목이 원본과 같은 사진을 담고 있는지 (FI-032 read-back 판정 기준). */
-function storesSameImages(stored: CaptureQueueItem | undefined, item: CaptureQueueItem): boolean {
+/**
+ * 이 항목의 payload가 사진인가 글인가 (ISS-000231).
+ * 값이 없는 예전 항목은 전부 사진이다 — 이 필드가 생기기 전에 저장됐기 때문이다.
+ */
+function isManualIntake(item: Partial<CaptureQueueItem> | null | undefined): boolean {
+  return item?.intake === 'manual_person';
+}
+
+function manualPayloadOf(item: Partial<CaptureQueueItem> | null | undefined): string {
+  return String(item?.manualText ?? '').trim();
+}
+
+/**
+ * 저장된 항목이 원본과 같은 payload를 담고 있는지 (FI-032 read-back 판정 기준).
+ * 직접 입력은 사진이 없으므로 원문 글이 같은지를 본다 — 사진 기준으로 판정하면
+ * 아무것도 확인하지 않고 "저장됐다"고 말하게 된다.
+ */
+function storesSamePayload(stored: CaptureQueueItem | undefined, item: CaptureQueueItem): boolean {
   if (!stored || stored.captureId !== item.captureId) return false;
+  if (isManualIntake(item)) {
+    return isManualIntake(stored) && String(stored.manualText ?? '') === String(item.manualText ?? '');
+  }
   if (stored.images.length !== item.images.length) return false;
   return item.images.every((image, index) => {
     const persisted = stored.images[index];
@@ -96,7 +115,7 @@ function storesSameImages(stored: CaptureQueueItem | undefined, item: CaptureQue
 }
 
 /**
- * 쓰고 나서 **다시 읽어** 같은 사진이 들어갔는지 확인한다 (FI-032).
+ * 쓰고 나서 **다시 읽어** 같은 내용이 들어갔는지 확인한다 (FI-032).
  * transaction이 commit됐다는 것만으로 "폰을 넣어도 안전하다"고 말하지 않는다 —
  * 저장 공간 압박이나 저장소 오류에서 commit 뒤 항목이 비어 있는 경우가 실제로 있다.
  */
@@ -113,7 +132,7 @@ export async function putQueueItemVerified(item: CaptureQueueItem): Promise<Capt
   } catch (error) {
     throw new QueueWriteError('verify', error);
   }
-  if (!storesSameImages(stored, item)) throw new QueueWriteError('verify', stored);
+  if (!storesSamePayload(stored, item)) throw new QueueWriteError('verify', stored);
   return stored as CaptureQueueItem;
 }
 
@@ -146,7 +165,12 @@ function damageOf(value: unknown): QueueDamage[] {
   if (!item || !VALID_STATES.has(String(item.state))) damage.push('bad_state');
   if (!item || !Array.isArray(item.images)) damage.push('no_images');
   // 전송이 끝난 항목은 원본이 정리돼 사진이 비어 있는 것이 정상이다.
-  else if (item.state !== 'sent' && !item.images.some((image) => image?.dataB64)) damage.push('empty_payload');
+  // 직접 입력은 사진이 **처음부터** 없다 — 원문 글이 payload이므로 그것으로 판정한다.
+  // 사진 기준을 그대로 두면 직접 입력이 전부 손상으로 격리돼 전송조차 시도되지 않는다.
+  else if (item.state !== 'sent') {
+    const hasPayload = isManualIntake(item) ? Boolean(manualPayloadOf(item)) : item.images.some((image) => image?.dataB64);
+    if (!hasPayload) damage.push('empty_payload');
+  }
   return damage;
 }
 
@@ -256,6 +280,8 @@ export function undoRefusalOf(item: CaptureQueueItem | undefined): UndoRefusal |
   if (!item) return 'missing';
   // reconciledAt/sentAt은 "서버가 갖고 있다"는 기록이다 — state만 보면 판정이 헐거워진다.
   if (item.state === 'sent' || item.sentAt || item.reconciledAt) return 'already_sent';
+  // 직접 입력에는 되돌릴 촬영 화면이 없다 — 사진이 없으므로 여기서 `no_original`로 떨어진다.
+  // 의도한 결과다. 반쯤 동작하는 되돌리기를 내미느니 아예 내밀지 않는다 (ISS-000231).
   if (!item.images.some((image) => image.dataB64)) return 'no_original';
   return null;
 }

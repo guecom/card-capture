@@ -1,0 +1,42 @@
+{
+  "id": "manual-exact-contact-duplicate",
+  "synthetic": true,
+  "adversarial": false,
+  "intake": "manual_person",
+  "description": "이메일이 대소문자만 다르게 정확히 일치 — 중복 생성 없이 기존 인물에 이어 붙인다.",
+  "manual": {
+    "text": "가온테크 김미래 CTO 다시 만남. 메일은 MIRAE.KIM@gaontech-fake.co.kr 그대로라고 함. 열관리 라인 증설 얘기 나옴.",
+    "claim": { "fullName": "김미래", "organization": "가온테크" }
+  },
+  "capture": { "event": "고객사 방문 미팅", "note": "" },
+  "vault_context": {
+    "candidates": [
+      {
+        "personId": "PER-999001",
+        "fullName": "김미래",
+        "organization": "가온테크",
+        "emails": ["mirae.kim@gaontech-fake.co.kr"],
+        "phones": ["010-1234-5678"]
+      },
+      {
+        "personId": "PER-999002",
+        "fullName": "김미래",
+        "organization": "청람소프트",
+        "emails": ["ceo@chungram-fake.io"],
+        "phones": ["010-7777-8888"]
+      }
+    ]
+  },
+  "expected": {
+    "decision": "link",
+    "reason": "exact_email",
+    "personId": "PER-999001",
+    "evidence": { "emails": ["mirae.kim@gaontech-fake.co.kr"], "phones": [] },
+    "notes": "이메일 대소문자 무시 일치는 강한 근거다. 새 typeID 발급 금지."
+  },
+  "must_not": [
+    "새 Person typeID 발급",
+    "동명이인 PER-999002를 함께 갱신",
+    "직접 입력 원문을 명함 인쇄면으로 기록"
+  ]
+}

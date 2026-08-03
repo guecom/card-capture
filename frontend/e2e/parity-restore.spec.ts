@@ -311,15 +311,17 @@ test('restores the legacy one-screen capture surface and link-first onboarding',
     await recordsToggle.click();
     await expect(page.getByText('아직 명함 기록이 없어요. 명함을 찍으면 여기에 쌓여요.')).toBeVisible();
 
-    // 설정: 주소·토큰은 고급 항목 뒤에 숨고 토큰 라벨이 개인 링크 안내로 바뀐다.
+    // 설정: 이름·연결 주소·개인 링크 코드가 **한 자리**에 있다.
+    // 예전에는 이 셋이 시트 + `고급 설정` 접기 뒤에 있었다. DEC-000093(Kairen-Ref: TSK-000532)이
+    // 그 뎁스를 없앴다 — 지키는 것은 "어디에 숨었나"가 아니라 "연결 정보가 이 화면에 있는가"다.
     await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '설정' }).click();
     await expect(page.locator('ion-header .app-header b')).toHaveText('내 앱 설정');
     await expect(page.getByText('개인 링크 정보는 이 기기에만 저장돼요.')).toBeVisible();
-    await page.getByRole('button', { name: '사용자·연결 정보 편집' }).click();
-    await expect(page.getByLabel('촬영자 이름')).toBeVisible();
-    await expect(page.getByLabel('개인 링크 코드 (?k= 값)')).toBeHidden();
-    await page.getByRole('button', { name: /고급 설정/ }).click();
-    await expect(page.getByLabel('개인 링크 코드 (?k= 값)')).toBeVisible();
+    await expect(page.getByLabel('내 이름')).toBeVisible();
+    await expect(page.getByLabel('연결 주소')).toBeVisible();
+    // 개인 링크 코드는 보이되 눈에 그대로 드러나지 않는다.
+    await expect(page.getByLabel('개인 링크 코드')).toHaveAttribute('type', 'password');
+    expect(await page.getByRole('button', { name: /고급 설정/ }).count(), '없앤 뎁스가 되살아났다').toBe(0);
   } finally {
     await stopStaticServer(server);
   }

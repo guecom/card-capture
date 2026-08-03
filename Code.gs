@@ -33,6 +33,8 @@
  *   GET ?action=requeue&k=토큰&captureId=ID   → 구버전 앱 호환용 재처리 요청
  *   POST {action:'correction', k, captureId, text} → 수정 요청 저장 + 재처리 대기 전환
  *   POST {action:'addnote', k, text, captureId|person} → 사후 메모 접수(-note 캡처로 파이프라인 재사용)
+ *   POST {action:'manualperson', k, captureId, capturedAt, event, note, text} → 직접 입력 접수
+ *        (이미지 없음. type: 'manual_person' capture.json 하나만 쓰고 기존 처리 파이프라인이 집어간다)
  *   POST {action:'researchinstruction', k, text, captureId|person} → owner-only 조사 지시 접수
  *   POST {action:'pushsubscribe', k, keyId, subscription} → 현재 토큰 subject에 Web Push 구독 등록
  *   POST {action:'pushunsubscribe', k, endpoint}   → 현재 토큰 subject의 구독 철회
@@ -104,6 +106,11 @@ function requeue_(token, captureId) {
       alreadyTerminal: true,
       processedAt: meta.processedAt || ''
     });
+  }
+  /* 같은 원인으로 예산을 다 쓴 영수증은 서버도 거절한다 — 워처가 어차피 무시할 요청에
+     200을 돌려주면 화면이 "접수됐다"고 거짓말하게 된다 (TSK-000531). */
+  if (meta.recovery && String(meta.recovery.kind || '') === 'recovery_required') {
+    return json_({ ok: false, error: 'recovery_required', captureId: cid });
   }
   var cache = CacheService.getScriptCache();
   var key = 'rq_' + cid;
@@ -600,6 +607,21 @@ function listCaptures_(token, limitParam, offsetParam) {
         requestedAt: attentionAt.slice(0, 40)
       };
     }
+    /* 반복 실패로 잠긴 영수증은 화면이 알아야 `다시 처리`를 내밀지 않는다 (TSK-000531).
+       투영은 allowlist다 — 워처가 쓴 closed enum만 통과시키고, 원인 문자열을 그대로 흘리지 않는다. */
+    if (meta.recovery && !isTerminalMeta_(meta) &&
+        ['retry_scheduled', 'recovery_required'].indexOf(String(meta.recovery.kind || '')) >= 0 &&
+        ['processor_failed', 'processor_timeout', 'result_incomplete', 'internal_state_failed', 'unknown_failure']
+          .indexOf(String(meta.recovery.reasonCode || '')) >= 0) {
+      item.recovery = {
+        kind: String(meta.recovery.kind),
+        reasonCode: String(meta.recovery.reasonCode),
+        attempts: Number(meta.recovery.attempts) || 0,
+        failures: Number(meta.recovery.failures) || 0,
+        threshold: Number(meta.recovery.threshold) || 0,
+        since: String(meta.recovery.since || '').slice(0, 40)
+      };
+    }
     if (meta.researchInstruction) {
       item.researchInstruction = {
         mode: meta.researchInstruction.mode || 'standard',
@@ -685,6 +707,7 @@ function doPost(e) {
     if (req.action === 'requeue') return requeue_(req.k, req.captureId);
     if (req.action === 'correction') return correction_(req);
     if (req.action === 'addnote') return addNote_(req);
+    if (req.action === 'manualperson') return manualPerson_(req);
     if (req.action === 'researchinstruction') return researchInstruction_(req);
     var name = capturerFor_(req.k);
     if (!name) return json_({ ok: false, error: 'invalid_token' });
@@ -804,6 +827,144 @@ function doPost(e) {
   } catch (err) {
     return json_({ ok: false, error: 'server_error', detail: String(err) });
   }
+}
+
+/* 직접 입력 — 명함 사진 없이 자연어로 사람을 접수한다 (ISS-000231 / DEC-000103).
+
+   founder 요구(INT-000029): "수기로 입력하면 그것을 마치 명함의 정보들을 검색하는 것처럼
+   진행해 주는 게 있었으면 좋겠어."
+
+   왜 addNote_처럼 새 폴더를 만들지 않고 업로드와 같은 폴더 계약을 쓰는가:
+   직접 입력은 **인물 접수**다(메모는 이미 있는 Person에 붙이는 것이다). 그래서 클라이언트가
+   만든 captureId가 그대로 폴더 이름이 되고, 사진 업로드와 **같은 멱등 장치**를 쓴다 —
+   같은 captureId + 같은 내용 지문이면 아무것도 다시 쓰지 않는다. 연타·타임아웃 뒤 재시도가
+   두 번째 job을 만들지 않게 하는 것이 이 계약의 전부다.
+
+   신원 근거(이메일·전화)는 **클라이언트가 보낸 값을 쓰지 않고 서버가 원문에서 다시 뽑는다.**
+   그 근거 하나가 기존 Person에 자동으로 이어 붙일 권한이기 때문이다 — 위조 가능한 자리에
+   두면 유효 토큰 보유자가 아무 Person에나 붙을 수 있다. 클라이언트의 추출은 화면 되읽기 전용이다. */
+function manualPerson_(req) {
+  var name = capturerFor_(req.k);
+  if (!name) return json_({ ok: false, error: 'invalid_token' });
+  if (!withinDailyLimit_(req.k)) return json_({ ok: false, error: 'daily_limit' });
+  var text = String(req.text || '').trim().slice(0, 2000);
+  if (!text) return json_({ ok: false, error: 'empty_text' });
+
+  var inboxId = CONF.getProperty('INBOX_FOLDER_ID');
+  if (!inboxId) return json_({ ok: false, error: 'not_configured' });
+  var inbox = DriveApp.getFolderById(inboxId);
+  var captureId = sanitizeId_(req.captureId) || newId_();
+
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  var folder;
+  var existed;
+  try {
+    var it = inbox.getFoldersByName(captureId);
+    existed = it.hasNext();
+    folder = existed ? it.next() : inbox.createFolder(captureId);
+  } finally {
+    lock.releaseLock();
+  }
+
+  var prior = existed ? readJsonFile_(folder) : null;
+  /* 남의 캡처 폴더에 덮어쓸 수 없다 (FI-009). */
+  if (prior && prior.capturer && prior.capturer !== name && !isOwner_(name)) {
+    return json_({ ok: false, error: 'capture_conflict' });
+  }
+  /* 사진 캡처를 글로 덮어쓰지 않는다. 같은 id가 다른 종류로 오면 둘 다 지키기 위해 거절한다. */
+  if (prior && String(prior.type || 'capture') !== 'manual_person') {
+    return json_({ ok: false, error: 'capture_type_conflict' });
+  }
+
+  var fingerprint = manualFingerprint_(req, text);
+  if (prior && prior.uploadFingerprint && prior.uploadFingerprint === fingerprint) {
+    /* 완전히 같은 접수가 다시 왔다 — 응답만 유실된 재전송이다. capture.json을 다시 쓰지 않는다.
+       다시 쓰면 status가 received로 되돌아가 이미 끝난 처리가 처음부터 다시 돈다 (FI-010/FI-015). */
+    return json_({
+      ok: true,
+      captureId: captureId,
+      type: 'manual_person',
+      files: [],
+      deduped: true,
+      status: prior.status || 'received',
+      processedAt: prior.processedAt || ''
+    });
+  }
+
+  var manualPushSubjectId = pushSubjectId_(req.k);
+  var meta = {
+    captureId: captureId,
+    type: 'manual_person',
+    capturer: name,
+    pushSubjectId: manualPushSubjectId,
+    pushRoutingTag: pushRoutingTag_(captureId, manualPushSubjectId),
+    capturedAt: String(req.capturedAt || ''),
+    receivedAt: new Date().toISOString(),
+    event: String(req.event || '').slice(0, 200),
+    note: String(req.note || '').slice(0, 2000),
+    /* 사용자가 적은 원문. untrusted 데이터이며 지시로 승격하지 않는다 (PROCESSING_CONTRACT.md). */
+    manualText: text,
+    /* 이 주장의 출처. 명함 인쇄면이 아니라 사람의 기억이다 — 확신도를 같게 다루면 브리핑이
+       "명함에 그렇게 적혀 있었다"고 말하게 된다. */
+    claimSource: 'user-provided',
+    identityEvidence: manualIdentityEvidence_(text),
+    files: [],
+    uploadFingerprint: fingerprint,
+    status: 'received'
+  };
+  if (prior && isTerminalMeta_(prior)) {
+    /* 내용이 실제로 달라진 재접수다. 처리를 다시 돌리는 것은 맞지만 조용한 되돌림으로 남기지 않는다. */
+    meta.requeueRequested = true;
+    meta.previousStatus = prior.status || '';
+    meta.previousProcessedAt = prior.processedAt || '';
+    if (prior.person) meta.previousPerson = prior.person;
+  }
+  upsertFile_(folder, 'capture.json',
+    Utilities.newBlob(JSON.stringify(meta, null, 2), 'application/json', 'capture.json'));
+
+  return json_({ ok: true, captureId: captureId, type: 'manual_person', files: [] });
+}
+
+/* 직접 입력 내용 지문 (FI-010과 같은 역할).
+   원문이 최대 2,000자라 그대로 담지 않고 해시로 줄인다 — 원문은 이미 manualText에 있다. */
+function manualFingerprint_(req, text) {
+  return 'manual-' + sha256Hex_([
+    String(req.capturedAt || ''),
+    String(req.event || '').slice(0, 200),
+    String(req.note || '').slice(0, 2000),
+    text
+  ].join('#'));
+}
+
+/* 원문에서 신원 근거를 뽑는다. 여기가 authoritative다 — 클라이언트 값은 쓰지 않는다.
+
+   좁게 잡는다: 국내 표기(0으로 시작, 9~14자리)로 환원되는 번호만 근거로 인정한다.
+   날짜나 주문번호가 전화번호로 통과하면 엉뚱한 사람에게 자동 연결된다. 근거를 놓쳐 새 인물이
+   하나 더 생기는 쪽이, 잘못 병합되는 쪽보다 언제나 낫다. */
+var MANUAL_EMAIL_RE_ = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+/g;
+var MANUAL_PHONE_RE_ = /\+?\d[\d\s.\-()]{7,}\d/g;
+
+function manualNormalizedPhone_(value) {
+  var digits = String(value || '').replace(/[^0-9]/g, '');
+  if (digits.indexOf('82') === 0) digits = '0' + digits.slice(2);
+  return /^0\d{8,13}$/.test(digits) ? digits : '';
+}
+
+function manualIdentityEvidence_(text) {
+  var source = String(text || '');
+  var emails = [];
+  (source.match(MANUAL_EMAIL_RE_) || []).forEach(function (raw) {
+    var value = String(raw).toLowerCase();
+    if (emails.indexOf(value) < 0) emails.push(value);
+  });
+  var phones = [];
+  /* 이메일 안의 숫자가 번호로 잡히면 안 된다 — 먼저 지우고 찾는다. */
+  (source.replace(MANUAL_EMAIL_RE_, ' ').match(MANUAL_PHONE_RE_) || []).forEach(function (raw) {
+    var value = manualNormalizedPhone_(raw);
+    if (value && phones.indexOf(value) < 0) phones.push(value);
+  });
+  return { emails: emails, phones: phones, source: 'server_derived' };
 }
 
 /* 사후 메모 — 사람을 만난 뒤(회의 후·나중에 기억났을 때) Person에 붙일 메모를 접수한다.

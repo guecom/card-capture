@@ -1,0 +1,42 @@
+{
+  "id": "manual-conflicting-identity",
+  "synthetic": true,
+  "adversarial": false,
+  "intake": "manual_person",
+  "description": "단서가 서로 다른 사람을 가리킴 — 이메일은 A, 전화는 B. 어느 쪽도 갱신하지 않는다.",
+  "manual": {
+    "text": "메신저에서 받은 그대로 옮김: 김미래 mirae.kim@gaontech-fake.co.kr / 010-7777-8888 로 연락하면 된다고 함. 어느 쪽이 맞는지는 확인 못 함.",
+    "claim": { "fullName": "김미래" }
+  },
+  "capture": { "event": "소개 자리", "note": "" },
+  "vault_context": {
+    "candidates": [
+      {
+        "personId": "PER-999001",
+        "fullName": "김미래",
+        "organization": "가온테크",
+        "emails": ["mirae.kim@gaontech-fake.co.kr"],
+        "phones": ["010-1234-5678"]
+      },
+      {
+        "personId": "PER-999002",
+        "fullName": "김미래",
+        "organization": "청람소프트",
+        "emails": ["ceo@chungram-fake.io"],
+        "phones": ["010-7777-8888"]
+      }
+    ]
+  },
+  "expected": {
+    "decision": "new",
+    "reason": "conflicting_evidence",
+    "evidence": { "emails": ["mirae.kim@gaontech-fake.co.kr"], "phones": ["01077778888"] },
+    "notes": "모순은 둘 중 하나를 고르는 근거가 아니다. 두 기존 인물의 바이트를 하나도 바꾸지 않고 새 후보로 등록하며 충돌을 명시적으로 남긴다."
+  },
+  "must_not": [
+    "PER-999001 갱신",
+    "PER-999002 갱신",
+    "두 인물을 동일인으로 병합",
+    "충돌을 기록하지 않고 조용히 한쪽 선택"
+  ]
+}

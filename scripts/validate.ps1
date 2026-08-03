@@ -25,7 +25,7 @@ $required = @(
   'docs/vendor/paddleocr/ppocrv5_korean_dict.txt','docs/vendor/ort/ort-wasm-simd-threaded.wasm','docs/vendor/ort/ort-wasm-simd-threaded.mjs',
   'docs/vendor/cardquad/lcnet100_h_e_bifpn_256_fp32.onnx','docs/vendor/cardquad/LICENSE','docs/vendor/cardquad/README.md',
   'watcher/CardCapture_Watcher.ps1','watcher/CardCapture_Health.ps1','watcher/push/package.json','watcher/push/package-lock.json','watcher/push/push-sender.mjs','watcher/push/Initialize-CardCapturePush.ps1','watcher/tests/watcher-tests.ps1','watcher/tests/watcher-protocol-tests.ps1','watcher/tests/health-tests.ps1','watcher/tests/log-pii-tests.ps1','watcher/tests/push-tests.ps1',
-  'eval/README.md','eval/run-eval.ps1','eval/upload-idempotency.test.js','eval/upload-filename-allowlist.test.js','eval/upload-content-type.test.js','eval/public-runtime-credential.test.js','eval/build-reproducibility.test.js','eval/version-sync.test.js','eval/persondoc-owner.test.js','eval/prompt-injection.test.js','eval/gas-sandbox.js','eval/gas-push-policy.test.js','eval/push-sender.test.js','eval/golden-capture.test.js','eval/adversarial-capture.test.js','eval/camera-quality.test.js','eval/page-syntax.test.js','eval/server-syntax.test.js','eval/ocr-browser-smoke.html','scripts/validate.ps1'
+  'eval/README.md','eval/run-eval.ps1','eval/upload-idempotency.test.js','eval/upload-filename-allowlist.test.js','eval/upload-content-type.test.js','eval/public-runtime-credential.test.js','eval/build-reproducibility.test.js','eval/version-sync.test.js','eval/persondoc-owner.test.js','eval/prompt-injection.test.js','eval/manual-person-intake.test.js','eval/gas-sandbox.js','eval/gas-push-policy.test.js','eval/push-sender.test.js','eval/golden-capture.test.js','eval/adversarial-capture.test.js','eval/camera-quality.test.js','eval/page-syntax.test.js','eval/server-syntax.test.js','eval/ocr-browser-smoke.html','scripts/validate.ps1'
 )
 $missing = @($required | Where-Object { -not (Test-Path (Join-Path $root $_)) })
 if ($missing.Count -gt 0) { Fail ("required files missing: " + ($missing -join ', ')) } else { Pass 'required files present' }
@@ -167,6 +167,8 @@ if ($null -eq $node) {
   if ($LASTEXITCODE -ne 0) { Fail 'persondoc owner path gate failed' } else { Pass 'persondoc owner deterministic tests passed' }
   & $node.Source (Join-Path $root 'eval\prompt-injection.test.js')
   if ($LASTEXITCODE -ne 0) { Fail 'prompt-injection containment gate failed' } else { Pass 'prompt-injection containment gate passed' }
+  & $node.Source (Join-Path $root 'eval\manual-person-intake.test.js')
+  if ($LASTEXITCODE -ne 0) { Fail 'manual person intake gate failed' } else { Pass 'manual person intake deterministic tests passed' }
   # 두 번 빌드해 바이트 비교한다. frontend 의존성이 있어야만 의미가 있다.
   if (Test-Path (Join-Path $root 'frontend\node_modules\vite\bin\vite.js')) {
     & $node.Source (Join-Path $root 'eval\build-reproducibility.test.js')

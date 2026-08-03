@@ -1,5 +1,14 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { buildQueuedCapture, createCaptureId, restoredDraftOf } from './capture-item';
+import {
+  RECOVERY_REASON_COPY,
+  buildQueuedCapture,
+  captureFlowStateOf,
+  captureRecoveryOf,
+  createCaptureId,
+  recoveryElapsedText,
+  restoredDraftOf,
+} from './capture-item';
+import type { BriefItem } from '../contracts/capture';
 import { clearTrace, traceOf } from './trace';
 
 describe('captured-image queue contract', () => {
@@ -159,5 +168,105 @@ describe('a new capture starts its own traceable journey (FI-021)', () => {
     for (const value of ['김민서', '2026 로보월드 부스 A-12', '예전 동료', '공장장 직속, 다음 주 자료 보내기', 'front']) {
       expect(serialized).not.toContain(value);
     }
+  });
+});
+
+// ── 기다리는 자리의 상태 (TSK-000531 / ISS-000232) ───────────────────────────
+// founder 실측 2026-08-04: 조사 receipt가 워처에서 연속 6회 실패로 멈춰 있는 동안에도
+// 화면은 아무 일도 하지 않는 `다시 처리 요청`만 보여 줬다. 여기서 잠그는 것은
+// (1) 워처가 증명한 상태만 화면에 닿는다, (2) 그 상태에서는 죽은 버튼을 두지 않는다.
+describe('watcher recovery receipt', () => {
+  const receipt = (extra: Record<string, unknown> = {}) => ({
+    captureId: '20260803-090000-r1',
+    status: 'received',
+    recovery: {
+      kind: 'recovery_required',
+      reasonCode: 'processor_failed',
+      attempts: 3,
+      failures: 6,
+      threshold: 6,
+      since: '2026-08-04T00:00:00.000Z',
+      ...extra,
+    },
+  }) as unknown as BriefItem;
+
+  it('narrows the watcher receipt to the closed contract', () => {
+    expect(captureRecoveryOf(receipt())).toEqual({
+      kind: 'recovery_required',
+      reasonCode: 'processor_failed',
+      attempts: 3,
+      failures: 6,
+      threshold: 6,
+      since: '2026-08-04T00:00:00.000Z',
+    });
+  });
+
+  it('drops receipts the contract does not know — the list JSON is untrusted', () => {
+    expect(captureRecoveryOf(null)).toBeNull();
+    expect(captureRecoveryOf({ captureId: 'x', status: 'received' } as BriefItem)).toBeNull();
+    expect(captureRecoveryOf(receipt({ kind: 'please_show_this' }))).toBeNull();
+    expect(captureRecoveryOf(receipt({ reasonCode: '<script>alert(1)</script>' }))).toBeNull();
+    expect(captureRecoveryOf(receipt({ reasonCode: 'toString' }))).toBeNull();
+  });
+
+  it('coerces counters instead of trusting them', () => {
+    const parsed = captureRecoveryOf(receipt({ attempts: '3', failures: -9, threshold: null }));
+    expect(parsed).toMatchObject({ attempts: 3, failures: 0, threshold: 0 });
+  });
+
+  it('never renders the machine reason code to the user', () => {
+    for (const [code, copy] of Object.entries(RECOVERY_REASON_COPY)) {
+      expect(copy.cause).not.toContain(code);
+      expect(copy.action).not.toContain(code);
+      expect(copy.cause.length).toBeGreaterThan(0);
+      expect(copy.action.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('says how long it has been stuck, and stays silent when it cannot tell', () => {
+    const now = Date.parse('2026-08-04T03:30:00.000Z');
+    expect(recoveryElapsedText('2026-08-04T03:29:40.000Z', now)).toBe('방금부터');
+    expect(recoveryElapsedText('2026-08-04T03:00:00.000Z', now)).toBe('30분째');
+    expect(recoveryElapsedText('2026-08-04T00:00:00.000Z', now)).toBe('3시간째');
+    expect(recoveryElapsedText('2026-08-01T00:00:00.000Z', now)).toBe('3일째');
+    expect(recoveryElapsedText('', now)).toBeNull();
+    expect(recoveryElapsedText('nonsense', now)).toBeNull();
+  });
+
+  it('removes the requeue affordance only in the state that proves it is dead', () => {
+    const stuck = captureFlowStateOf({ status: 'received', recovery: captureRecoveryOf(receipt()) });
+    expect(stuck.state).toBe('recovery_required');
+    expect(stuck.canRequeue).toBe(false);
+
+    const retrying = captureFlowStateOf({
+      status: 'received',
+      recovery: captureRecoveryOf(receipt({ kind: 'retry_scheduled', attempts: 1, failures: 1 })),
+    });
+    expect(retrying.state).toBe('retry_scheduled');
+    expect(retrying.canRequeue).toBe(true);
+    expect(retrying.note).toContain('1번째 시도');
+
+    const waiting = captureFlowStateOf({ status: 'received' });
+    expect(waiting).toEqual({ state: 'not_started', canRequeue: true, note: '' });
+    expect(captureFlowStateOf({ status: 'processing' }).state).toBe('processing');
+    expect(captureFlowStateOf({ status: 'processed' }).state).toBe('done');
+    expect(captureFlowStateOf({ status: 'skipped' }).state).toBe('done');
+  });
+
+  it('calls it delayed only from what this device actually observed', () => {
+    const observed = { stage: 'process', samples: 4, medianMs: 300_000, lowMs: 240_000, highMs: 600_000, spread: 1.2 };
+    // 관측 위끝(10분)을 넘겼다 = 관측된 사실. 지어낸 임계값이 아니다.
+    expect(captureFlowStateOf({ status: 'processing', elapsedMinutes: 40, stageStat: observed }).state).toBe('delayed');
+    expect(captureFlowStateOf({ status: 'processing', elapsedMinutes: 5, stageStat: observed }).state).toBe('processing');
+    // 표본이 없으면 지연이라고 말하지 않는다 — 없는 근거를 있는 척하지 않는다.
+    expect(captureFlowStateOf({
+      status: 'processing', elapsedMinutes: 999, stageStat: { ...observed, samples: 1 },
+    }).state).toBe('processing');
+    expect(captureFlowStateOf({ status: 'processing', elapsedMinutes: 999 }).state).toBe('processing');
+    // 워처가 증명한 상태가 관측 추정을 이긴다.
+    expect(captureFlowStateOf({
+      status: 'processing', elapsedMinutes: 999, stageStat: observed,
+      recovery: captureRecoveryOf(receipt()),
+    }).state).toBe('recovery_required');
   });
 });

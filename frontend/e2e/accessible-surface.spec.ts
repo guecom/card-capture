@@ -107,15 +107,9 @@ test('keeps the sheets usable at 320px, including their submit buttons', async (
     await openApp(page, origin);
 
     // 과거 회귀가 실제로 일어난 표면들이다 — 시트 안 버튼이 화면 밖으로 밀려 누를 수 없었다.
+    // `사용자·연결 정보` 시트는 DEC-000093으로 사라졌다(설정 본문에서 바로 편집한다).
+    // 그 자리의 320px 판정은 `int29-settings.spec.ts`가 설정 화면 전체에 대해 이어 간다.
     const sheets: Array<{ name: string; open: () => Promise<void>; submit: string }> = [
-      {
-        name: '사용자·연결 정보',
-        open: async () => {
-          await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '설정' }).click();
-          await page.getByRole('button', { name: '사용자·연결 정보 편집' }).click();
-        },
-        submit: '설정 저장',
-      },
       {
         name: '연결 해제',
         open: async () => {
@@ -212,13 +206,14 @@ test('announces status changes and returns focus after a dialog closes', async (
       .map((node) => node.textContent?.trim().slice(0, 40) ?? ''));
     expect(liveRegions.length, '상태를 알리는 live region이 없다').toBeGreaterThan(0);
 
+    // 설정에서 여는 시트는 이제 `연결 해제` 하나다 (DEC-000093 · Kairen-Ref: TSK-000532).
     await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '설정' }).click();
-    const trigger = page.getByRole('button', { name: '사용자·연결 정보 편집' });
+    const trigger = page.getByRole('button', { name: '연결 해제', exact: true });
     await trigger.click();
-    await expect(page.getByRole('button', { name: '설정 저장' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '연결 해제하기' })).toBeVisible();
 
-    await page.getByRole('button', { name: '닫기' }).click();
-    await expect(page.getByRole('button', { name: '설정 저장' })).toBeHidden();
+    await page.getByRole('button', { name: '취소' }).click();
+    await expect(page.getByRole('button', { name: '연결 해제하기' })).toBeHidden();
     // 시트를 닫으면 포커스가 시트를 연 버튼으로 돌아와야 한다 — 아니면 낭독기가 문서 처음으로 튕긴다.
     await expect(trigger).toBeFocused();
   } finally {

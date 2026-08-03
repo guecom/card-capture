@@ -5,8 +5,6 @@ import {
   IonFooter,
   IonHeader,
   IonInput,
-  IonItem,
-  IonList,
   IonModal,
   IonPage,
   IonSpinner,
@@ -16,7 +14,7 @@ import {
   IonToolbar,
   setupIonicReact,
 } from '@ionic/react';
-import { Bell, Camera, ChevronRight, CircleAlert, FileText, ImageOff, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, Waves } from 'lucide-react';
+import { Camera, ChevronRight, CircleAlert, FileText, LifeBuoy, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, Waves } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 릴리즈 버전은 저장소가 선언한 값 하나만 쓴다 (founder 지시 2026-07-27: "버전이 설정에 표기되었으면 함").
@@ -25,10 +23,14 @@ import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useS
 import { version as APP_VERSION } from '../package.json';
 import type { BriefItem, CaptureQueueItem, PersonTarget, QuickName, RuntimeConfig, SearchItem } from './contracts/capture';
 import { CameraCaptureModal, type CapturedSideMeta, type CardSide } from './components/CameraPreviewModal';
+import { ManualPersonEntry } from './components/ManualPersonSheet';
+import { RecoveryNotice } from './components/RecoveryNotice';
 import { StatusBadge } from './components/StatusBadge';
+import { SettingsPanel } from './components/SettingsPanel';
 import { MarkdownLite } from './components/MarkdownLite';
 import { ActionSection, ContactActions, PersonDocument } from './components/PersonDocument';
-import { AiExampleChips, AiScopeNote, AiStageRail, AiSurface, AiSurfaceHead } from './components/AiTaskSurface';
+import { AiScopeNote, AiStageRail, AiSurface, AiSurfaceHead } from './components/AiTaskSurface';
+import { focusCaptureProgress, ResearchComposer, type ResearchReceipt } from './components/ResearchComposer';
 import { addPersonNote, fetchServerCaptureIds, listBriefsUpTo, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
 import {
   contentEvidence,
@@ -41,13 +43,8 @@ import {
   elapsedLabel,
   RECALL_SCOPE_NOTE,
   recallStages,
-  RESEARCH_EXAMPLE_CHIPS,
   RESEARCH_PLACEHOLDER,
-  RESEARCH_SCOPE_DOES,
-  RESEARCH_SCOPE_LIMITS,
-  researchStages,
   type RecallStageKey,
-  type ResearchStageKey,
 } from './services/ai-stages';
 import { type CapturedCameraFrame, storedCameraFrame, thumbnailOf } from './services/camera';
 import {
@@ -64,19 +61,28 @@ import {
   SELF_RELATION_CHIPS,
   toggleChipValue,
 } from './services/capture-context';
-import { buildLegacyNote, buildQueuedCapture, parseLegacyNote, restoredDraftOf } from './services/capture-item';
+import {
+  buildLegacyNote,
+  buildQueuedCapture,
+  captureFlowStateOf,
+  captureRecoveryOf,
+  parseLegacyNote,
+  restoredDraftOf,
+} from './services/capture-item';
 import { actionErrorMessage, briefListTitle, briefNameMap, briefTitle, elapsedMinutesOf } from './services/brief-view';
 import {
+  CAPTURE_STAGE_KEYS,
   captureAttentionOf,
   captureProgress,
   captureStageStats,
   lastUpdatedText,
+  stageIndexOf,
   syncCaptureStageTelemetry,
 } from './services/capture-progress';
 import { refreshCadenceMs } from './services/refresh-cadence';
 import { createRefreshOrchestrator, refreshIdleText, type RefreshStatus } from './services/refresh-orchestrator';
 import { stageWidthPercents } from './services/stage-weights';
-import { disablePushNotifications, enablePushNotifications, inspectPushState, type PushState, type PushStatus } from './services/push';
+import { disablePushNotifications, enablePushNotifications, inspectPushState, type PushState } from './services/push';
 import { contactCardFromBrief } from './services/contacts';
 import { getOpenCvWorker, prefetchOpenCv } from './services/opencv';
 import { getCardQuadModelWorker, prefetchCardQuadModelAssets } from './services/card-quad-model';
@@ -158,23 +164,6 @@ const screenTitles: Record<Tab, string> = {
   activity: '처리 진행',
   people: '사람 찾기',
   settings: '내 앱 설정',
-};
-
-/* 알림 상태 문구. 상태마다 "지금 무엇이 사실인지"와 "그래서 무엇을 할 수 있는지"를 함께 말한다.
-   `error`·`offline`이라도 캡처와 처리는 그대로라는 것을 반드시 밝힌다 — 알림은 부가 통로이고,
-   그것이 실패했다고 사용자가 자기 명함이 사라졌다고 오해하면 안 된다 (ISS-000045). */
-const pushStatusCopy: Record<PushStatus, { title: string; body: string }> = {
-  checking: { title: '알림 상태를 확인하고 있어요', body: '브라우저와 전송 서버가 연결되는지 확인합니다.' },
-  disconnected: { title: '개인 링크 연결이 필요해요', body: '먼저 받은 개인 링크로 이 기기를 연결해 주세요.' },
-  unsupported: { title: '이 브라우저는 닫힌 앱 알림을 지원하지 않아요', body: '진행 화면을 열면 최신 상태를 계속 확인할 수 있습니다.' },
-  denied: { title: '브라우저에서 알림이 차단됐어요', body: 'Chrome의 이 사이트 설정에서 알림을 허용한 뒤 다시 확인해 주세요.' },
-  offline: { title: '오프라인이라 알림 설정을 확인할 수 없어요', body: '이 기기에서 끄기는 가능하며, 연결되면 서버 상태를 다시 확인합니다.' },
-  server_disabled: { title: '안전한 전송 준비가 아직 끝나지 않았어요', body: 'VAPID 전송이 활성화되기 전에는 진행 화면이 정확한 기준입니다.' },
-  capable: { title: '닫힌 앱 알림을 켤 수 있어요', body: '버튼을 누를 때만 브라우저가 알림 권한을 요청합니다.' },
-  off: { title: '닫힌 앱 알림이 꺼져 있어요', body: '원할 때 다시 켤 수 있고, 언제든 이 기기에서 해제할 수 있습니다.' },
-  subscribed: { title: '닫힌 앱 알림이 켜져 있어요', body: '앱을 닫아도 꼭 확인해야 하는 세 경우에만 알려드립니다.' },
-  stale: { title: '알림 구독을 안전하게 정리하지 못했어요', body: '이 기기 구독이 남았을 수 있습니다. 연결 상태를 확인하고 다시 꺼 주세요.' },
-  error: { title: '알림 상태를 확인하지 못했어요', body: '캡처와 처리는 그대로입니다. 잠시 뒤 상태를 다시 확인해 주세요.' },
 };
 
 /* 사용자에게 보여 줄 "왜 확인이 필요한가". 서버의 `reasonCode`를 그대로 찍지 않는다 —
@@ -333,18 +322,16 @@ const API_ENDPOINT_LOCK_NOTE = '이 앱은 배포본에 박힌 주소 한 곳으
 function App() {
   const [tab, setTab] = useState<Tab>(initialTab);
   const [config, setConfig] = useState<RuntimeConfig>(boot.config);
-  const [draftConfig, setDraftConfig] = useState<RuntimeConfig>(config);
   const [signOutOpen, setSignOutOpen] = useState(false);
   const [briefs, setBriefs] = useState<BriefItem[]>(loadCachedBriefs);
   const [queue, setQueue] = useState<CaptureQueueItem[]>([]);
   const [damagedQueue, setDamagedQueue] = useState<DamagedQueueEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  // 다른 묶음에서 내려온 운영 설명은 `도움말·버전` 안에 접어 둔다 (ISS-000217 · DEC-000093).
-  // 기본이 접힘인 이유: 읽기만 하는 글이 조작과 같은 자리를 차지하던 것이 이번 결함의 내용이다.
-  const [settingsHelpOpen, setSettingsHelpOpen] = useState(false);
+  /* 설정 화면에는 더 이상 시트도 접기도 없다 (ISS-000217 · DEC-000093 — Kairen-Ref: TSK-000532).
+     이름·연결 주소·개인 링크 코드는 `SettingsPanel` 본문에서 바로 보이고 바로 고쳐지므로
+     `settingsOpen`·`advancedOpen`·`settingsHelpOpen` 세 상태가 함께 사라졌다. 편집 초안도
+     그 화면이 소유한다 — 앱이 초안을 들고 있으면 저장된 값과 화면이 갈라질 자리가 생긴다. */
   const [nameOnboardOpen, setNameOnboardOpen] = useState(false);
   const [nameDraft, setNameDraft] = useState('');
   const [query, setQuery] = useState('');
@@ -415,6 +402,9 @@ function App() {
   const [personActionComposer, setPersonActionComposer] = useState<PersonActionComposer | null>(null);
   const [personActionText, setPersonActionText] = useState('');
   const [personActionSubmitting, setPersonActionSubmitting] = useState(false);
+  // 시트에서 보낸 조사 요청이 **접수됐는가 / 접수에 실패했는가**. 접수 뒤의 처리 진행은
+  // 여기서 말하지 않는다 — 그건 명함 기록·진행의 블록이 소유한다 (TSK-000535).
+  const [personActionOutcome, setPersonActionOutcome] = useState<{ ok: boolean; reason?: string } | null>(null);
   const [queueEdit, setQueueEdit] = useState<CaptureQueueItem | null>(null);
   // 기다리게 하는 동작에는 예외 없이 "지금 하고 있다"가 붙어야 한다 (founder 원칙 2026-07-27).
   const [savingQueueEdit, setSavingQueueEdit] = useState(false);
@@ -1018,17 +1008,15 @@ function App() {
     else void runSearch(query);
   }
 
-  function commitSettings() {
-    const saved = saveRuntimeConfig(draftConfig);
+  function commitSettings(next: RuntimeConfig) {
+    const saved = saveRuntimeConfig(next);
     refreshSessionRef.current += 1;
     refreshQueuedSessionRef.current = null;
     setConfig(saved.config);
-    setDraftConfig(saved.config);
-    setSettingsOpen(false);
     // 거부한 주소는 조용히 무시하지 않는다 — 무엇이 왜 반영되지 않았는지 그대로 말한다.
     setMessage(saved.rejectedApi
       ? apiRejectionMessage[saved.rejectedApi.reason]
-      : '기존 Card Capture 설정과 같은 local storage에 저장했어요.');
+      : '이 기기에 저장했어요.');
   }
 
   function commitOnboardName() {
@@ -1054,7 +1042,6 @@ function App() {
     signOutDevice();
     const next: RuntimeConfig = { apiUrl: config.apiUrl, token: '', capturer: '' };
     setConfig(next);
-    setDraftConfig(next);
     setBriefs([]);
     setSearchResults([]);
     setRecentSearches([]);
@@ -1334,16 +1321,6 @@ function App() {
     });
   }, []);
 
-  // 예시 chip은 입력을 지우지 않고 덧붙인다 — 이미 쓴 문장을 날리면 안 된다.
-  const appendResearchExample = useCallback((value: string) => {
-    setResearchText((current) => {
-      const trimmed = current.trim();
-      if (!trimmed) return value;
-      if (trimmed.includes(value)) return current;
-      return `${trimmed}, ${value}`;
-    });
-  }, []);
-
   const openDocument = useCallback(async (title: string, target: { id?: string; captureId?: string }, noteTarget: PersonTarget | null) => {
     if (!configured) return;
     setDocumentTitle(title);
@@ -1381,16 +1358,19 @@ function App() {
 
   const promptNote = useCallback((target: PersonTarget) => {
     setPersonActionText('');
+    setPersonActionOutcome(null);
     setPersonActionComposer({ kind: 'note', target });
   }, []);
 
   const promptResearch = useCallback((target: PersonTarget) => {
     setPersonActionText('');
+    setPersonActionOutcome(null);
     setPersonActionComposer({ kind: 'research', target });
   }, []);
 
   const promptCorrection = useCallback((captureId: string) => {
     setPersonActionText('');
+    setPersonActionOutcome(null);
     setPersonActionComposer({ kind: 'correction', captureId });
   }, []);
 
@@ -1398,6 +1378,7 @@ function App() {
     if (personActionSubmitting) return;
     setPersonActionComposer(null);
     setPersonActionText('');
+    setPersonActionOutcome(null);
   }, [personActionSubmitting]);
 
   const submitPersonAction = useCallback(async () => {
@@ -1407,11 +1388,32 @@ function App() {
     if (personActionComposer.kind === 'note') {
       success = await runPersonAction(addPersonNote(config, personActionComposer.target, personActionText.trim()), '메모를 저장했어요 — 잠시 후 인물 기록에 반영됩니다');
     } else if (personActionComposer.kind === 'research') {
+      // 조사 요청만 `runPersonAction`을 거치지 않는다. 실패 사유와 접수 번호를 시트 안에서
+      // 그대로 보여 주고(접수 실패), 접수되면 그 요청의 **진행 블록**으로 손을 넘겨야 하기 때문이다.
       const submission = buildResearchInstruction(personActionText);
       if (!submission) {
-        setMessage('조사할 내용을 조금 더 구체적으로 적어주세요');
+        setPersonActionOutcome({ ok: false, reason: '조사할 내용을 적거나 조사 항목을 골라 주세요.' });
       } else {
-        success = await runPersonAction(submitResearchInstruction(config, personActionComposer.target, submission.raw), '조사 요청을 접수했어요');
+        try {
+          const response = await submitResearchInstruction(config, personActionComposer.target, submission.raw);
+          if (!response.ok) throw new Error(response.error ?? 'request_failed');
+          setMessage(response.receiptId ? `조사 요청을 접수했어요 · receipt ${response.receiptId}` : '조사 요청을 접수했어요');
+          setPersonActionOutcome({ ok: true });
+          await refresh(true).catch(() => undefined);
+          // 접수된 요청은 서버가 자기 captureId(= receiptId)로 기록을 만든다. 그 블록이 진행을
+          // 소유하므로 시트를 닫고 그리로 데려간다. 아직 목록에 없으면 이 사람의 기존 기록으로 간다.
+          setTab('activity');
+          setRecordsCollapsed(false);
+          setDocumentOpen(false);
+          const primary = String(response.receiptId ?? '');
+          const fallback = String(personActionComposer.target.captureId ?? '');
+          void focusCaptureProgress(primary).then((landed) => {
+            if (!landed && fallback && fallback !== primary) void focusCaptureProgress(fallback);
+          });
+          success = true;
+        } catch (error) {
+          setPersonActionOutcome({ ok: false, reason: actionErrorMessage(error) });
+        }
       }
     } else {
       success = await runPersonAction(requestCorrection(config, personActionComposer.captureId, personActionText.trim()), '수정 요청을 보냈어요 — 다음 처리에서 확인합니다');
@@ -1420,8 +1422,9 @@ function App() {
     if (success) {
       setPersonActionComposer(null);
       setPersonActionText('');
+      setPersonActionOutcome(null);
     }
-  }, [config, personActionComposer, personActionSubmitting, personActionText, runPersonAction]);
+  }, [config, personActionComposer, personActionSubmitting, personActionText, refresh, runPersonAction]);
 
   const retryProcessing = useCallback(async (captureId: string) => {
     if (requeueingId) return;
@@ -1451,13 +1454,20 @@ function App() {
     const retrying = retryingId === item.captureId;
     // 이름을 모르는 것은 정상 결과다 — 끝난 인식을 `대기`로 적으면 거짓말이 된다 (FI-067).
     const displayName = queueRowName(processedName, item.quickName);
-    const contextLine = queueContextLine(item);
+    // 직접 입력에는 촬영한 면이 없다 — 사진 캡처의 `앞면`을 그대로 쓰면 목록이 거짓말을 한다.
+    // 대신 적어 둔 글의 첫 줄을 맥락 자리에 보여 준다 (ISS-000231).
+    const manualIntake = item.intake === 'manual_person';
+    const contextLine = [manualIntake ? item.disp ?? '' : '', queueContextLine(item)].filter(Boolean).join(' · ');
     // 뒷면이 실제로 담겼는지 목록에서 바로 보이게 한다 — 예전에는 편집 화면을 열어야만 확인됐다.
-    const sideLabel = queueNamedImageSource(item, 'back.jpg') ? '앞·뒷면' : '앞면';
+    const sideLabel = manualIntake ? '직접 입력' : queueNamedImageSource(item, 'back.jpg') ? '앞·뒷면' : '앞면';
     return (
-      <article className="queue-row" key={item.captureId}>
+      // 아직 서버 기록이 없는 촬영도 브리핑 카드와 **같은 이름표**(`capture-<id>`)를 단다. 알림·조사
+      // 접수 뒤 "그 촬영으로 데려가기"가 처리 전 항목에서도 성립해야 하기 때문이다 (TSK-000535).
+      <article className="queue-row" key={item.captureId} id={`capture-${item.captureId}`}>
         <button className="queue-row-main" type="button" onClick={() => setQueueEdit(normalizedQueueItem(structuredClone(item)))}>
-          {imageSource ? <img src={imageSource} alt="명함 앞면 미리보기" /> : <span className="queue-placeholder"><Camera aria-hidden="true" size={18} /></span>}
+          {imageSource
+            ? <img src={imageSource} alt="명함 앞면 미리보기" />
+            : <span className="queue-placeholder">{manualIntake ? <PenLine aria-hidden="true" size={18} /> : <Camera aria-hidden="true" size={18} />}</span>}
           <div className="row-copy">
             <strong>{displayName}</strong>
             <span>{contextLine || formatMoment(item.capturedAt)} · {sideLabel} · {queueProgressOf(item).headline}</span>
@@ -1498,6 +1508,16 @@ function App() {
     // 서버가 "사람이 손대야 넘어간다"고 표시한 항목. 재시도로는 풀리지 않으므로 다시 처리 버튼과
     // 다른 행동을 준다 (ISS-000045: 알림 3종 중 `내용 확인`이 여는 자리).
     const attention = captureAttentionOf(item);
+    // 워처가 남긴 실패 영수증 (TSK-000531). `attention`이 "사람이 내용을 보완해야 한다"라면
+    // 이쪽은 "시스템이 같은 자리에서 반복해 멈췄다"다 — 사용자가 할 수 있는 일이 서로 다르다.
+    const recovery = captureRecoveryOf(item);
+    const flow = captureFlowStateOf({
+      status: item.status,
+      recovery,
+      elapsedMinutes: minutes,
+      // 지연 판정의 근거는 지어낸 임계값이 아니라 이 기기가 실제로 본 이 단계의 보통 범위다.
+      stageStat: stageStats[CAPTURE_STAGE_KEYS[stageIndexOf({ brief: item, queue: local })] ?? ''] ?? null,
+    });
     const title = briefTitle(item);
     // 목록에는 "이름 — 한 줄 요약"을 보여 준다 (founder 판정 2026-07-26: 전부 "이런 분이에요"라 구분이 안 됨).
     const listTitle = briefListTitle(item);
@@ -1515,7 +1535,9 @@ function App() {
           </div>
           {attention
             ? <span className="status-badge status-attention"><CircleAlert aria-hidden="true" size={13} strokeWidth={2.2} />확인 필요</span>
-            : <StatusBadge status={item.status} />}
+            : flow.state === 'recovery_required'
+              ? <span className="status-badge status-recovery"><LifeBuoy aria-hidden="true" size={13} strokeWidth={2.2} />복구 필요</span>
+              : <StatusBadge status={item.status} />}
           <ChevronRight className={expanded ? 'expanded' : ''} aria-hidden="true" size={17} />
         </button>
         {/* 사람이 손대야 넘어가는 항목. 단계 막대와 같은 문장을 두 번 찍지 않는다 — 여기는
@@ -1548,10 +1570,16 @@ function App() {
                 </li>
               ))}
             </ol>
+            {/* 표준 진행 문구가 말하지 않는 것만 한 줄 덧붙인다 — 일시 실패로 재시도가 예정돼 있거나,
+                이 기기가 실제로 본 보통 범위를 넘겼을 때. 지어낸 임계값은 쓰지 않는다. */}
+            {flow.note && <small className="int29-flow-note" role="status">{flow.note}</small>}
             {/* 예전에는 이 행동이 `progress.late`, 즉 경과 시간이 임의 기준을 넘었을 때만 나타났다.
                 그 기준은 관측이 아니라 지어낸 값이었고, 정작 사용자가 "멈춘 것 같다"고 느끼는
-                시점과 맞지도 않았다. 기다리는 동안에는 언제나 손이 닿게 둔다 (ISS-000050). */}
-            {!progress.done && (
+                시점과 맞지도 않았다. 기다리는 동안에는 언제나 손이 닿게 둔다 (ISS-000050).
+                단 하나의 예외가 `복구 필요`다: 워처가 같은 원인으로 예산을 두 번 소진한 receipt의
+                requeue를 더 받지 않으므로, 그 자리에 이 버튼을 두면 눌러도 아무 일도 일어나지
+                않는다 — founder가 실제로 겪은 그 상태다 (TSK-000531). 아래 복구 안내가 대신 선다. */}
+            {!progress.done && flow.canRequeue && (
               <div className="stage-actions">
                 {/* 접근 이름은 고정한다 — 보이는 글자가 진행에 따라 바뀌어도 낭독기·자동화가 같은 버튼을 계속 가리킨다. */}
                 <button
@@ -1565,6 +1593,11 @@ function App() {
               </div>
             )}
           </div>
+        )}
+        {/* 진행 소유권은 위의 단계 막대에 있다. 여기는 그 막대가 말할 수 없는 것 —
+            '왜 멈췄고 지금 무엇을 할 수 있나' — 만 말한다. */}
+        {recovery && flow.state === 'recovery_required' && (
+          <RecoveryNotice captureId={item.captureId} recovery={recovery} contactEmail="guecom90@gmail.com" />
         )}
         {expanded && (
           <div className="brief-detail">
@@ -1624,6 +1657,33 @@ function App() {
 
   // ── 캡처 탭: legacy 작업 화면 — 촬영·맥락·완료·명함 기록(통합)이 한 스크롤 ──
   function renderCapture() {
+    /**
+     * 촬영 탭의 조사 요청은 `완료`가 제출이다. 그래서 접수 결과도 방금 저장한 그 촬영이 말한다 —
+     * 새 상태를 만들지 않고 이미 있는 사실(대기열 항목)에서 읽는다 (TSK-000535).
+     *  - 저장 중 → `submitting`
+     *  - 저장됐고 그 촬영이 조사 요청을 싣고 있다 → `접수 확인` + 진행 블록으로 가는 손잡이
+     *  - 그 촬영의 전송이 실패했다 → `접수 실패`. 적어 둔 내용과 고른 항목은 그대로 남아 있다.
+     */
+    const carriedResearch = showLastSaved && lastSavedItem?.researchInstruction ? lastSavedItem : null;
+    const researchReceipt: ResearchReceipt = !carriedResearch
+      ? { state: 'idle' }
+      : carriedResearch.state === 'failed'
+        ? {
+          state: 'failed',
+          reason: actionErrorMessage(carriedResearch.err),
+          retryLabel: '다시 보내기',
+          onRetry: () => void retryQueueItem(carriedResearch),
+        }
+        : {
+          state: 'accepted',
+          note: configured
+            ? '이 폰에 저장했어요. 전송이 끝나면 아래 명함 기록의 블록이 진행을 이어서 보여 줍니다.'
+            : '이 폰에 저장했어요. 연결되면 자동으로 보내고, 진행은 아래 명함 기록의 블록이 보여 줍니다.',
+          onOpenProgress: () => {
+            setRecordsCollapsed(false);
+            void focusCaptureProgress(carriedResearch.captureId);
+          },
+        };
     return (
       <div className="cc-stack">
         {setupBannerMessage && (
@@ -1639,15 +1699,35 @@ function App() {
             <span className="capture-sub">사진 한 장이면 끝 — 정리·브리핑은 시스템이 해요</span>
           </div>
 
+          {/* 사람을 등록하는 입구는 둘이고 **위계가 같다** (INT-000029 / DEC-000103):
+              명함을 찍거나, 기억나는 대로 적거나. 직접 입력을 하위 메뉴로 내리면 "명함이 있을 때만
+              쓰는 앱"이 되고, 명함을 못 받은 자리(대부분의 자리)가 통째로 빠진다.
+              앞면을 이미 찍은 뒤에는 그 촬영을 마치는 것이 지금 할 일이므로 미리보기가 자리를
+              그대로 쓴다 — 반쯤 진행된 등록 두 개가 서로 다투지 않게 한다. */}
           {frontFrame ? (
             <button className="shot-main filled" type="button" onClick={() => setCameraSession({ side: 'front', withChoice: true })}>
               <img src={frontFrame.dataUrl} alt="앞면 미리보기" />
             </button>
           ) : (
-            <button className="shot-main" type="button" onClick={() => setCameraSession({ side: 'front', withChoice: true })}>
-              <span className="shot-icon" aria-hidden="true"><Camera size={24} /></span>
-              <span>명함 앞면 촬영</span>
-            </button>
+            <div className="primary-entries">
+              <button className="shot-main" type="button" onClick={() => setCameraSession({ side: 'front', withChoice: true })}>
+                <span className="shot-icon" aria-hidden="true"><Camera size={24} /></span>
+                <span>명함 앞면 촬영</span>
+              </button>
+              <ManualPersonEntry
+                configured={configured}
+                context={{ event, relKairen, relSelf }}
+                queue={queue}
+                onQueued={(item) => {
+                  setQueue((current) => [item, ...current].sort((a, b) => b.captureId.localeCompare(a.captureId)));
+                  // 기기 저장이 확인된 시점의 사실만 말한다. 서버 접수는 아직 일어나지 않았다 (FI-031).
+                  setMessage(configured
+                    ? '직접 입력을 이 폰에 저장했어요 — 전송은 알아서 이어갑니다.'
+                    : '직접 입력을 이 폰에 저장했어요 — 연결되면 자동으로 전송합니다.');
+                  if (configured) void flushPendingQueue();
+                }}
+              />
+            </div>
           )}
 
           {frontFrame && (
@@ -1728,24 +1808,18 @@ function App() {
             )}
           </section>
 
-          {/* 조사 지시는 메모가 아니라 AI에게 맡기는 일이다 — 표면·표식·단계를 그렇게 보이게 한다
-              (INT-000015 Feedback item 002). 권한은 기존 owner-only public-research-v1 그대로다. */}
+          {/* 조사 지시는 메모가 아니라 AI에게 맡기는 일이다 — 표면·표식·경계를 그렇게 보이게 한다
+              (INT-000015 Feedback item 002). 권한은 기존 owner-only public-research-v1 그대로다.
+              작성 자리는 `작성 · 선택 · 제출 · 접수 확인/실패`까지만 소유한다 (TSK-000535). */}
           {researchInstructionEnabled && (
-            <AiSurface className="research-request" state={queueing ? 'active' : 'idle'}>
-              <AiSurfaceHead title="AI 조사 요청" badge="소유자 전용" helper="묻기 껄끄럽지만 알아야 하는 것까지 맡기세요. 공개된 근거로 판단하고 확신도를 함께 적습니다." />
-              <IonTextarea
-                aria-label="AI 조사 요청"
-                maxlength={2000}
-                autoGrow
-                placeholder={RESEARCH_PLACEHOLDER}
-                value={researchText}
-                onIonInput={(inputEvent) => setResearchText(String(inputEvent.detail.value ?? ''))}
-              />
-              <AiExampleChips examples={RESEARCH_EXAMPLE_CHIPS} onPick={appendResearchExample} label="조사 요청 예시" />
-              <AiStageRail stages={researchStages('draft')} label="AI 조사 요청 진행 단계" />
-              <AiScopeNote>{RESEARCH_SCOPE_DOES}</AiScopeNote>
-              <AiScopeNote limit>{RESEARCH_SCOPE_LIMITS}</AiScopeNote>
-            </AiSurface>
+            <ResearchComposer
+              helper="묻기 껄끄럽지만 알아야 하는 것까지 맡기세요. 공개된 근거로 판단하고 확신도를 함께 적습니다."
+              placeholder={RESEARCH_PLACEHOLDER}
+              busy={queueing}
+              value={researchText}
+              onChange={setResearchText}
+              receipt={researchReceipt}
+            />
           )}
 
           <IonButton className="primary-action" expand="block" disabled={!frontFrame || queueing} onClick={() => void completeCapture()}>{queueing ? '저장 중…' : '완료'}</IonButton>
@@ -1791,7 +1865,7 @@ function App() {
   function renderActivity() {
     return (
       <div className="cc-stack">
-        {!configured && <EmptyState title="연결 설정이 필요해요" body="받으신 개인 링크(?k=토큰 포함)로 접속하면 같은 진행 상태를 읽습니다." action="설정 열기" onAction={() => { setDraftConfig(config); setSettingsOpen(true); }} />}
+        {!configured && <EmptyState title="연결 설정이 필요해요" body="받으신 개인 링크(?k=토큰 포함)로 접속하면 같은 진행 상태를 읽습니다." action="설정 열기" onAction={() => setTab('settings')} />}
         {/* `복구 필요` 알림을 눌러 들어온 자리. 무엇이 멈췄는지가 아니라 **무엇이 안전한지**를 먼저
             말한다 — 사용자가 알림을 받고 가장 먼저 걱정하는 것은 사진이 날아갔는가다.
             watcher 내부 어휘(`quarantine` 등)는 화면에 절대 나오지 않는다 (ISS-000045). */}
@@ -2031,7 +2105,7 @@ function App() {
             ))}
           </div>
         )}
-        {(!configured || !ownerCanSeeAll) && <EmptyState title="소유자 연결이 필요해요" body="Person 검색은 기존과 동일하게 owner token에서만 동작합니다." action="설정 열기" onAction={() => { setDraftConfig(config); setSettingsOpen(true); }} />}
+        {(!configured || !ownerCanSeeAll) && <EmptyState title="소유자 연결이 필요해요" body="Person 검색은 기존과 동일하게 owner token에서만 동작합니다." action="설정 열기" onAction={() => setTab('settings')} />}
         {/* 빠른 검색도 왕복이 있는 일이다. 버튼 글자만 바뀌면 결과 자리는 예전 화면 그대로라
             "눌린 건가?"가 남는다. 여기서 진행을 결과 자리에 둔다 — 진행률은 알 수 없으므로
             지어내지 않고, 무엇을 찾는 중인지와 얼마나 지났는지만 말한다. */}
@@ -2055,189 +2129,31 @@ function App() {
   }
 
   function renderSettings() {
-    /* 알림 조작의 판정. `detail === 'local_subscription'`은 서버에 닿지 못했어도 이 기기에는
-       구독이 남아 있다는 뜻이라, 차단·오프라인 상태에서도 **끄기는 반드시 닿을 수 있어야 한다.**
-       끌 방법이 없는 알림은 사용자가 통제권을 잃었다고 느끼는 지점이다 (ISS-000045). */
-    const pushHasLocalSubscription = pushState.detail === 'local_subscription';
-    const pushCopy = pushHasLocalSubscription
-      ? pushState.status === 'offline'
-        ? { title: '오프라인 · 이 기기 구독은 남아 있어요', body: '지금 이 기기에서 먼저 끌 수 있고, 만료된 서버 등록은 전송 때 안전하게 정리됩니다.' }
-        : pushState.status === 'denied'
-          ? { title: '차단됐지만 이전 기기 구독이 남아 있어요', body: '브라우저 차단과 별개로 이 기기 구독을 안전하게 정리할 수 있습니다.' }
-          : { title: '전송은 멈췄고 이 기기 구독이 남아 있어요', body: '새 알림은 보내지 않으며, 원하면 이 기기 구독도 바로 정리할 수 있습니다.' }
-      : pushState.status === 'stale' && pushState.detail === 'key_changed'
-        ? { title: '알림 전송 키가 바뀌었어요', body: '기존 구독을 교체해 다시 연결하면 새 키로 안전하게 갱신됩니다.' }
-        : pushState.status === 'stale' && pushState.detail === 'registration_missing'
-          ? { title: '이 기기 알림을 다시 연결해야 해요', body: '브라우저 구독은 남아 있지만 서버 연결이 없습니다. 다시 연결하면 안전하게 복구됩니다.' }
-          : pushStatusCopy[pushState.status];
-    const pushCanToggle = ['capable', 'off', 'subscribed'].includes(pushState.status)
-      || pushState.status === 'stale'
-      || pushHasLocalSubscription;
-    const pushCanRetry = ['denied', 'offline', 'error'].includes(pushState.status);
-    const pushTurningOff = pushState.status === 'subscribed'
-      || pushHasLocalSubscription
-      || (pushState.status === 'stale' && pushState.detail === 'cleanup_pending');
-    const pushActionLabel = pushTurningOff
-      ? '이 기기 알림 끄기'
-      : pushState.status === 'stale' ? '알림 안전하게 다시 연결' : '닫힌 앱 알림 켜기';
-    // 확인이 아직 끝나지 않았는데 "켤 수 없어요"라고 단정하면 막다른 골목이 된다 —
-    // 확인 중에는 확인 중이라고만 말한다 (ISS-000217).
-    const pushSettling = pushBusy || pushState.status === 'checking';
+    /* ISS-000217 · DEC-000093 (Kairen-Ref: TSK-000532) — 설정 화면 전체는 `SettingsPanel`이 소유한다.
+       여기 남기는 것은 **앱 상태와의 연결**뿐이다. 화면 문구·구조·시각 규칙이 이 파일에 섞여 있으면
+       설정 한 줄을 고칠 때마다 앱 전체가 열리고, 화면을 재는 게이트가 무엇을 잡는지도 흐려진다. */
     return (
-      // ISS-000217 · DEC-000093: 설정의 최상위는 **사용자가 하려는 일** 여섯 갈래로 묶는다.
-      // 예전에는 고를 수 있는 값과 읽기만 하는 운영 설명이 같은 무게로 나란히 있어,
-      // "여기서 내가 무엇을 정할 수 있는가"가 화면에서 보이지 않았다. 그래서
-      //   - 각 묶음에는 **지속되는 선택 · 명시적인 데이터 조작 · 문제를 알릴 때 필요한 값**만 남기고,
-      //   - 옮겨 온 운영 설명은 `도움말·버전`의 접기 하나로 모았다.
-      // 묶음 머리에 01~06 같은 번호는 붙이지 않는다 — 순서가 없는 묶음이 사양서처럼 읽힌다.
-      // 카드·간격·글자 위계는 지금 화면의 것을 그대로 쓴다. 바뀐 것은 무엇이 어디 속하느냐뿐이다.
-      <div className="cc-stack">
-        <section className="settings-group" aria-labelledby="settings-job-account">
-          <h2 className="settings-group-label" id="settings-job-account">계정·연결</h2>
-          <section className="surface-card settings-summary">
-            <div><span>사용자</span><strong>{config.capturer || '이름을 입력해 주세요'}</strong></div>
-            <div><span>명함 연결</span><strong>{configured ? '연결됨' : (config.token ? '연결 주소 확인 필요' : '개인 링크로 접속해 주세요')}</strong></div>
-            <div><span>개인 링크</span><strong>{config.token ? '이 기기에 저장됨' : '아직 저장되지 않음'}</strong></div>
-            <IonButton fill="outline" expand="block" onClick={() => { setDraftConfig(config); setAdvancedOpen(false); setSettingsOpen(true); }}>사용자·연결 정보 편집</IonButton>
-          </section>
-        </section>
-
-        <section className="settings-group" aria-labelledby="settings-job-capture">
-          <h2 className="settings-group-label" id="settings-job-capture">캡처·처리</h2>
-          {/* ISS-000102: 갤러리 사본은 OS 기본 카메라 앱만 만든다. 지울 수 없는 것을 지운다고 말하지 않는다.
-              원본 정리 시점 같은 운영 설명은 도움말로 내려갔다 — 여기 남은 건 고르는 값과 그 결과뿐이다. */}
-          <section className="surface-card gallery-card">
-            <div className="gallery-head"><ImageOff aria-hidden="true" size={17} /><strong>명함 사진과 갤러리</strong></div>
-            <p>카이렌 카메라로 찍은 명함은 <b>휴대폰 갤러리에 저장되지 않아요.</b></p>
-            <label className="gallery-toggle">
-              <input
-                type="checkbox"
-                checked={galleryFree}
-                onChange={(changeEvent) => { const next = changeEvent.target.checked; setGalleryFree(next); saveGalleryFree(next); }}
-              />
-              <span>
-                <strong>기본 카메라 앱 쓰지 않기</strong>
-                <small>{galleryFree
-                  ? '켜짐 — 촬영 화면에서 기본 카메라 앱 버튼을 숨깁니다. 카메라가 열리지 않는 기기에서는 예외로 보여 줘요.'
-                  : '꺼짐 — 기본 카메라 앱으로도 찍을 수 있어요. 그 사진은 갤러리에 남고 카이렌이 지울 수 없습니다.'}</small>
-              </span>
-            </label>
-            <small className="gallery-foot">이미 갤러리에 쌓인 사진은 앱이 지울 수 없어요 — 휴대폰 갤러리에서 직접 지워 주세요.</small>
-          </section>
-        </section>
-
-        <section className="settings-group" aria-labelledby="settings-job-notify">
-          <h2 className="settings-group-label" id="settings-job-notify">알림</h2>
-          {/* 알림을 켜고 끄는 조작은 이 카드가 소유한다 (INT-000025 · `services/push.ts`).
-              조작이 붙기 전에도 이 자리가 비어 보이지 않는 이유: 켤지 말지는 **언제 오는지**와
-              **무엇이 담기는지**를 알아야 고를 수 있는 선택이라, 그 둘이 조작과 한 카드에 있어야 한다.
-              세 갈래는 화면에서 지어낸 분류가 아니라 watcher가 실제로 보내는 kind와 1:1이다
-              (final_result · human_input_required · recovery_required). 네 번째 갈래를 만들지 않는다. */}
-          <section className="surface-card notify-card">
-            <div className="notify-head"><Bell aria-hidden="true" size={17} /><strong>닫힌 앱 알림</strong></div>
-            <div className="notify-state" role="status" aria-live="polite" aria-busy={pushSettling}>
-              <strong>{pushCopy.title}</strong>
-              <p>{pushCopy.body}</p>
-            </div>
-            <ul className="notify-scope" aria-label="알림이 오는 경우">
-              <li><strong>최종 결과</strong><span>처리가 끝나 결과를 볼 수 있을 때</span></li>
-              <li><strong>내용 확인</strong><span>사진·이름 등 사람의 보완이 필요할 때</span></li>
-              <li><strong>복구 필요</strong><span>문제를 확인하고 다시 이어가야 할 때</span></li>
-            </ul>
-            {/* 상태를 아직 확인하는 중에는 확인 중이라고만 말한다. 확인이 끝나기 전에 "켤 수 없어요"를
-                내밀면 잠시 뒤 켤 수 있는 기기에서도 사용자가 포기한다. */}
-            {pushSettling ? (
-              <button className="notify-action is-settling" type="button" aria-busy disabled>
-                <RefreshCw className="spinning" aria-hidden="true" size={16} />
-                {pushBusy ? '안전하게 반영 중…' : '알림 상태 확인 중…'}
-              </button>
-            ) : (
-              <>
-                {pushCanToggle && (
-                  <button className={`notify-action ${pushTurningOff ? 'is-on' : ''}`} type="button" onClick={() => void handlePushToggle()}>
-                    <Bell aria-hidden="true" size={16} />{pushActionLabel}
-                  </button>
-                )}
-                {pushCanRetry && <button className="notify-retry" type="button" onClick={() => void refreshPushState()}>상태 다시 확인</button>}
-                {!pushCanToggle && !pushCanRetry && <button className="notify-action is-disabled" type="button" disabled>현재 이 기기에서 알림을 켤 수 없어요</button>}
-              </>
-            )}
-            <small className="notify-foot">알림에는 이름·회사·메모를 넣지 않습니다. 빠른 이름 인식이나 일반 처리 단계는 알리지 않으며, 알림 실패가 캡처 상태를 바꾸지 않습니다.</small>
-          </section>
-        </section>
-
-        <section className="settings-group" aria-labelledby="settings-job-display">
-          <h2 className="settings-group-label" id="settings-job-display">화면</h2>
-          {/* INT-000016 항목 003: 시스템 자동 추종만으로는 부족하다 — 직접 고르고, 고른 값은 이 기기에 남는다. */}
-          <section className="surface-card theme-card">
-            <div className="theme-head"><SunMoon aria-hidden="true" size={17} /><strong>화면 테마</strong></div>
-            <p>어두운 곳에서는 다크로 바꿔 보세요. 고른 값은 이 기기에 저장돼요.</p>
-            <div className="theme-choice" role="radiogroup" aria-label="화면 테마">
-              {THEME_CHOICES.map((choice) => (
-                <button
-                  key={choice.value}
-                  type="button"
-                  role="radio"
-                  aria-checked={theme === choice.value}
-                  className={theme === choice.value ? 'on' : ''}
-                  onClick={() => { setTheme(choice.value); saveThemePreference(choice.value); }}
-                >
-                  <strong>{choice.label}</strong>
-                  <small>{choice.hint}</small>
-                </button>
-              ))}
-            </div>
-            <small className="theme-foot">
-              지금 보이는 화면은 <b>{resolvedTheme === 'dark' ? '다크' : '라이트'}</b>예요{theme === 'system' ? ' — 폰 설정을 따라갑니다.' : '.'}
-            </small>
-            {/* DEC-000093: `화면 움직임`은 고르는 값이 아니다. 폰의 `움직임 줄이기`가 언제나 이기므로
-                선택지 대신 그 사실 한 줄만 남긴다 — 화면이 조용해진 이유를 여전히 여기서 읽을 수 있다. */}
-            <small className="theme-foot">화면의 움직임은 휴대폰의 <b>움직임 줄이기</b> 설정을 항상 따라갑니다.</small>
-          </section>
-        </section>
-
-        <section className="settings-group" aria-labelledby="settings-job-data">
-          <h2 className="settings-group-label" id="settings-job-data">데이터·개인정보</h2>
-          <section className="boundary-note">
-            <ShieldCheck aria-hidden="true" size={20} />
-            <div>
-              <strong>개인 링크 정보는 이 기기에만 저장돼요.</strong>
-              <p>연결 정보는 저장소나 로그에 넣지 않습니다.</p>
-              {/* FI-004·005: 어디로 보내지는지와, 주소창에서 코드를 지웠다는 사실을 그대로 말한다. */}
-              <p className="boundary-origin">명함과 개인 링크 코드는 <b>{trustedApiHost}</b> 로만 전송돼요. 다른 주소를 붙인 링크는 무시합니다.</p>
-              <p className="boundary-origin">개인 링크로 열면 주소창의 코드를 <b>즉시 지웁니다</b> — 방문 기록·화면 공유에 남지 않아요.</p>
-            </div>
-          </section>
-          {/* FI-007: 폰을 넘기거나 링크를 회수할 때 이 기기의 사본을 끊는 경로.
-              되돌릴 수 없는 조작이므로 무엇이 지워지고 무엇이 남는지를 누르기 전에 말한다. */}
-          <section className="surface-card signout-card">
-            <div className="signout-head"><strong>이 기기에서 연결 해제</strong></div>
-            <p>개인 링크 코드와 이 기기에 저장된 브리핑 사본·검색 기록·만남 맥락을 지웁니다. <b>전송을 기다리는 촬영은 지우지 않아요.</b></p>
-            <IonButton fill="outline" color="danger" expand="block" disabled={!config.token} onClick={() => setSignOutOpen(true)}>연결 해제</IonButton>
-          </section>
-        </section>
-
-        <section className="settings-group" aria-labelledby="settings-job-help">
-          <h2 className="settings-group-label" id="settings-job-help">도움말·버전</h2>
-          <section className="surface-card help-card">
-            <button className="section-toggle" type="button" aria-expanded={settingsHelpOpen} onClick={() => setSettingsHelpOpen((value) => !value)}>
-              <span className="caret" aria-hidden="true">{settingsHelpOpen ? '▾' : '▸'}</span> 이 앱이 어떻게 동작하는지
-            </button>
-            {settingsHelpOpen && (
-              <div className="help-body">
-                <p>촬영한 명함은 앱 안에만 두었다가, 전송이 확인되면 10분 뒤 원본을 지우고 목록용 작은 썸네일만 남깁니다.</p>
-                <p>전파가 약하면 촬영을 이 기기에 저장했다가, 연결이 돌아오거나 앱으로 되돌아올 때 자동으로 다시 보냅니다.</p>
-                <p>연결에 문제가 있을 때만 <b>사용자·연결 정보 편집</b>의 고급 설정에서 연결 주소와 개인 링크 코드를 직접 확인하세요.</p>
-              </div>
-            )}
-            {/* 두 값은 서로 다른 일을 한다. 버전은 사람이 말하기 위한 것이고(“2.12.0 쓰고 있어요”),
-                소스 식별자는 그 화면이 정확히 어느 소스에서 나왔는지 저장소에서 다시 계산해 대조하기
-                위한 것이다. 하나만으로는 문제를 알릴 수도, 확인할 수도 없다. */}
-            <p className="build-line">버전 {APP_VERSION} · 빌드 {__CARD_CAPTURE_BUILD_ID__}</p>
-            <p className="build-note">문제를 알리실 때 이 두 줄을 함께 알려 주세요. 버전은 이 앱이 나온 릴리즈 이름이고, 빌드는 그 화면을 만든 소스를 가리킵니다.</p>
-          </section>
-        </section>
-      </div>
+      <SettingsPanel
+        config={config}
+        configured={configured}
+        apiEndpointEditable={apiEndpointEditable}
+        apiEndpointLockNote={API_ENDPOINT_LOCK_NOTE}
+        trustedApiHost={trustedApiHost}
+        onSaveConfig={commitSettings}
+        galleryFree={galleryFree}
+        onGalleryFreeChange={(next) => { setGalleryFree(next); saveGalleryFree(next); }}
+        theme={theme}
+        resolvedTheme={resolvedTheme}
+        onThemeChange={(next) => { setTheme(next); saveThemePreference(next); }}
+        pushState={pushState}
+        pushBusy={pushBusy}
+        onPushToggle={() => void handlePushToggle()}
+        onPushRefresh={() => void refreshPushState()}
+        onSignOut={() => setSignOutOpen(true)}
+        currentScreen={screenTitles[tab]}
+        appVersion={APP_VERSION}
+        buildId={__CARD_CAPTURE_BUILD_ID__}
+      />
     );
   }
 
@@ -2308,51 +2224,37 @@ function App() {
             </div>
           </IonContent>
         </IonModal>
-
-        <IonModal isOpen={settingsOpen} onDidDismiss={() => setSettingsOpen(false)} initialBreakpoint={0.78} breakpoints={[0, 0.78, 1]}>
-          <IonHeader><IonToolbar><IonTitle>사용자·연결 정보</IonTitle><IonButton slot="end" fill="clear" onClick={() => setSettingsOpen(false)}>닫기</IonButton></IonToolbar></IonHeader>
-          <IonContent className="ion-padding">
-            <IonList inset>
-              <IonItem><IonInput label="촬영자 이름" labelPlacement="stacked" value={draftConfig.capturer} onIonInput={(inputEvent) => setDraftConfig((value) => ({ ...value, capturer: String(inputEvent.detail.value ?? '') }))} /></IonItem>
-            </IonList>
-            <p className="modal-copy">개인 링크로 접속하면 연결 정보가 자동으로 입력됩니다. 평소에는 사용자 이름만 바꾸면 됩니다.</p>
-            <button className="advanced-toggle" type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((value) => !value)}>{advancedOpen ? '▾' : '▸'} 고급 설정</button>
-            {advancedOpen && (
-              <IonList inset>
-                {apiEndpointEditable ? (
-                  <IonItem><IonInput label="연결 주소 (GAS API)" labelPlacement="stacked" type="url" value={draftConfig.apiUrl} onIonInput={(inputEvent) => setDraftConfig((value) => ({ ...value, apiUrl: String(inputEvent.detail.value ?? '') }))} /></IonItem>
-                ) : (
-                  // 배포본에서는 읽기 전용이다 — 숨기지는 않는다. "지금 어디에 연결돼 있는가"는
-                  // 사용자가 알 권리다 (Kairen-Ref: TSK-000302).
-                  // `IonInput`(한 줄 <input>)이 아니라 `IonTextarea`를 쓰는 이유: Apps Script 배포본
-                  // 주소는 100자가 넘어 한 줄 칸에는 앞 1/3만 보이고, 읽기 전용 칸에서 나머지를
-                  // 확인하려면 폰에서 칸 안을 문질러 스크롤해야 한다. 그러면 "계속 보여 준다"가 거짓이 된다.
-                  // `readonly` + `helperText`는 두 컴포넌트가 같은 방식으로 처리한다 — 낭독기는 읽기 전용
-                  // 상태를 읽고, `helperText`는 Ionic이 `aria-describedby`로 이어 준다.
-                  <IonItem className="api-endpoint-locked"><IonTextarea label="연결 주소 (GAS API)" labelPlacement="stacked" readonly autoGrow rows={1} value={draftConfig.apiUrl} helperText={API_ENDPOINT_LOCK_NOTE} /></IonItem>
-                )}
-                <IonItem><IonInput label="개인 링크 코드 (?k= 값)" labelPlacement="stacked" type="password" value={draftConfig.token} onIonInput={(inputEvent) => setDraftConfig((value) => ({ ...value, token: String(inputEvent.detail.value ?? '') }))} /></IonItem>
-              </IonList>
-            )}
-            <IonButton expand="block" disabled={!draftConfig.capturer.trim()} onClick={commitSettings}>설정 저장</IonButton>
-          </IonContent>
-        </IonModal>
-        <IonModal className="person-action-modal" isOpen={Boolean(personActionComposer)} onDidDismiss={closePersonActionComposer} initialBreakpoint={personActionComposer?.kind === 'research' ? 0.92 : 0.62} breakpoints={[0, 0.62, 0.92]}>
+        {/* 조사 요청 시트만 **화면 전체**를 쓴다. 반쯤 열린 상태(0.92)에서는 `ion-content`의 아래 끝이
+            화면 밖에 있어서, 아래에 붙어 있는(`position: sticky; bottom: 0`) 접수 버튼이 화면 밖으로
+            잘린다 — 내용이 길어져 스크롤이 생기는 순간 재현된다 (INT-000015 002-b가 잡는 그 결함).
+            항목 블록이 생기며 이 표면은 언제나 스크롤이 생기므로, 잘릴 수 있는 중간 상태를 없앤다. */}
+        <IonModal
+          className="person-action-modal"
+          isOpen={Boolean(personActionComposer)}
+          onDidDismiss={closePersonActionComposer}
+          initialBreakpoint={personActionComposer?.kind === 'research' ? 1 : 0.62}
+          breakpoints={personActionComposer?.kind === 'research' ? [0, 1] : [0, 0.62, 0.92]}
+        >
           {personActionComposer && (
             <>
               <IonHeader><IonToolbar><IonTitle>{personActionCopy[personActionComposer.kind].title}</IonTitle><IonButton slot="end" fill="clear" disabled={personActionSubmitting} onClick={closePersonActionComposer}>취소</IonButton></IonToolbar></IonHeader>
               <IonContent className="ion-padding">
                 <div className="person-action-composer">
                   {personActionComposer.kind === 'research' ? (
-                    // 같은 AI 표면·표식·단계를 캡처 화면과 인물 카드에서 그대로 쓴다 (INT-000015 항목 002).
-                    <AiSurface className="research-request" state={personActionSubmitting ? 'active' : 'idle'}>
-                      <AiSurfaceHead title="AI 조사 요청" badge="소유자 전용" helper={personActionCopy.research.helper} />
-                      <IonTextarea aria-label="AI 조사 요청" autofocus autoGrow maxlength={2000} placeholder={personActionCopy.research.placeholder} value={personActionText} onIonInput={(inputEvent) => setPersonActionText(String(inputEvent.detail.value ?? ''))} />
-                      <AiExampleChips examples={RESEARCH_EXAMPLE_CHIPS} onPick={(value) => setPersonActionText((current) => (current.trim() ? (current.includes(value) ? current : `${current.trim()}, ${value}`) : value))} label="조사 요청 예시" />
-                      <AiStageRail stages={researchStages(personActionSubmitting ? 'received' : 'draft')} label="AI 조사 요청 진행 단계" />
-                      <AiScopeNote>{RESEARCH_SCOPE_DOES}</AiScopeNote>
-                      <AiScopeNote limit>{RESEARCH_SCOPE_LIMITS}</AiScopeNote>
-                    </AiSurface>
+                    // 촬영 화면과 인물 카드가 **같은 컴포넌트**를 쓴다 (INT-000015 항목 002).
+                    <ResearchComposer
+                      autofocus
+                      helper={personActionCopy.research.helper}
+                      placeholder={personActionCopy.research.placeholder}
+                      busy={personActionSubmitting}
+                      value={personActionText}
+                      onChange={setPersonActionText}
+                      receipt={personActionOutcome === null
+                        ? { state: 'idle' }
+                        : personActionOutcome.ok
+                          ? { state: 'accepted', note: '요청을 접수했어요. 진행은 명함 기록·진행의 블록이 이어서 보여 줍니다.' }
+                          : { state: 'failed', reason: personActionOutcome.reason ?? '요청에 실패했어요 — 다시 시도해 주세요', onRetry: () => void submitPersonAction() }}
+                    />
                   ) : (
                     <>
                       <span className="eyebrow">{personActionCopy[personActionComposer.kind].eyebrow}</span>
