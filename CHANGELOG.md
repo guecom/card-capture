@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+## v2.22.0 — 2026-08-03 — `release PR` (Kairen-Ref: TSK-000525; ISS-000225)
+
+### v2.19 사용자 경험 기준선으로 롤백
+
+- v2.20·v2.21에서 추가한 비동기 조사·알림·설정·진행 화면을 사용자-facing 앱에서 걷고, 검증된 v2.19 촬영·검색·브리핑 경험으로 복원했습니다.
+- 자동 촬영 순간의 손떨림·급이동 방지와 v2.19 camera gate를 그대로 복원했습니다.
+- 기존 `v2.19.0` tag는 움직이지 않습니다. 이 릴리스는 rollback provenance를 보존하는 새 `v2.22.0`입니다.
+- GAS·watcher·Web Push credential·Script Property·운영 데이터는 되돌리거나 변경하지 않았습니다. v2.20 이후 서버·watcher 보안 하드닝은 현재 운영 기준으로 유지합니다.
+- 공개 endpoint의 단일 원본은 현재 보안 경계인 `config/public-runtime.json`을 유지하고, 폐기된 standalone legacy 앱을 다시 배포하지 않습니다.
+
+MVP build/testability gate comes before customer proof.
+
 ## v2.21.0 — 2026-08-03 — `release PR` (Kairen-Ref: TSK-000524; ISS-000225, INT-000025 재실행)
 
 ### 화면을 읽을 수 있게, 진행 막대가 실제 시간을 말하게

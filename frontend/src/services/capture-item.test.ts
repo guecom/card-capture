@@ -73,7 +73,6 @@ describe('restoring a taken-back capture into the camera draft (FI-049)', () => 
       relKairen: '부품 공급사',
       memo: '공장장 직속',
       quickName: { name: '김민서', source: 'user_corrected', confidence: 0, confirmed: true, recognizedAt: '2026-07-27T03:00:00.000Z' },
-      researchInstruction: { raw: '공개 결과물 확인', mode: 'standard', requestId: 'request-00000007' },
     });
 
     expect(restoredDraftOf(item)).toEqual({
@@ -84,7 +83,6 @@ describe('restoring a taken-back capture into the camera draft (FI-049)', () => 
       relKairen: '부품 공급사',
       memo: '공장장 직속',
       quickName: { name: '김민서', source: 'user_corrected', confidence: 0, confirmed: true, recognizedAt: '2026-07-27T03:00:00.000Z' },
-      researchInstruction: { raw: '공개 결과물 확인', mode: 'standard', requestId: 'request-00000007' },
     });
   });
 

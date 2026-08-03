@@ -5,7 +5,6 @@ import type {
   DocumentResponse,
   ListResponse,
   PersonTarget,
-  ResearchInstruction,
   RuntimeConfig,
   SearchResponse,
   UploadPayload,
@@ -67,17 +66,13 @@ export function toUploadPayload(item: CaptureQueueItem, config: RuntimeConfig): 
   };
 }
 
-async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(url, { cache: 'no-store', signal });
+async function getJson<T>(url: string): Promise<T> {
+  const response = await fetch(url, { cache: 'no-store' });
   return (await response.json()) as T;
 }
 
-/**
- * `signal`은 **취소용이지 정답 판정용이 아니다.** 늦게 도착한 응답을 버리는 판정은 세대 번호가
- * 한다 (`refresh-orchestrator.ts`). 여기서는 버려질 요청이 네트워크·배터리를 계속 쓰지 않게만 한다.
- */
-export async function listBriefs(config: RuntimeConfig, limit = 30, offset = 0, signal?: AbortSignal): Promise<ListResponse> {
-  return getJson<ListResponse>(buildListUrl(config, limit, Date.now(), offset), signal);
+export async function listBriefs(config: RuntimeConfig, limit = 30, offset = 0): Promise<ListResponse> {
+  return getJson<ListResponse>(buildListUrl(config, limit, Date.now(), offset));
 }
 
 /**
@@ -87,7 +82,7 @@ export async function listBriefs(config: RuntimeConfig, limit = 30, offset = 0, 
  * 되고, `hasMore`가 계속 참이라 `더 보기` 버튼은 눌러도 아무 일이 없는 죽은 버튼이 된다.
  * 실패한 페이지는 그대로 돌려준다 — 짧은 목록으로 위장하지 않는다.
  */
-export async function listBriefsUpTo(config: RuntimeConfig, wanted: number, signal?: AbortSignal): Promise<ListResponse> {
+export async function listBriefsUpTo(config: RuntimeConfig, wanted: number): Promise<ListResponse> {
   const target = Math.max(Math.trunc(wanted) || 0, 1);
   const items: BriefItem[] = [];
   const seen = new Set<string>();
@@ -95,9 +90,7 @@ export async function listBriefsUpTo(config: RuntimeConfig, wanted: number, sign
   let hasMore = false;
 
   for (let page = 0; page < LIST_PAGE_BUDGET; page += 1) {
-    // 이어 읽기 도중에 취소되면 다음 페이지를 시작하지 않는다 — 버려질 응답에 요청을 더 쓰지 않는다.
-    if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('aborted');
-    const response = await listBriefs(config, Math.min(target - items.length, LIST_PAGE_MAX), items.length, signal);
+    const response = await listBriefs(config, Math.min(target - items.length, LIST_PAGE_MAX), items.length);
     if (!response.ok) return response;
     meta = response;
     const pageItems = response.items ?? [];
@@ -220,8 +213,8 @@ export function addPersonNote(config: RuntimeConfig, target: PersonTarget, text:
   return postAction(config, { action: 'addnote', ...target, text: text.trim().slice(0, 2000) });
 }
 
-export function submitResearchInstruction(config: RuntimeConfig, target: PersonTarget, instruction: ResearchInstruction): Promise<ActionResponse> {
-  return postAction(config, { action: 'researchinstruction', ...target, instruction });
+export function submitResearchInstruction(config: RuntimeConfig, target: PersonTarget, text: string): Promise<ActionResponse> {
+  return postAction(config, { action: 'researchinstruction', ...target, text: text.trim().slice(0, 2000) });
 }
 
 export function requestCorrection(config: RuntimeConfig, captureId: string, text: string): Promise<ActionResponse> {

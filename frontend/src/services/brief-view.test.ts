@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { actionErrorMessage, briefListTitle, briefNameMap, briefTitle, elapsedMinutesOf, nameFromBrief } from './brief-view';
+import { actionErrorMessage, briefListTitle, briefNameMap, briefTitle, elapsedMinutesOf, nameFromBrief, pendingProgress } from './brief-view';
 import type { BriefItem } from '../contracts/capture';
 
 function item(overrides: Partial<BriefItem>): BriefItem {
@@ -58,6 +58,32 @@ describe('elapsedMinutesOf', () => {
 
   it('returns null for unparseable or absurd values', () => {
     expect(elapsedMinutesOf({ captureId: 'nope' }, Date.parse('2026-07-26T10:00:00+09:00'))).toBeNull();
+  });
+});
+
+describe('pendingProgress', () => {
+  it('returns null for terminal items', () => {
+    expect(pendingProgress(item({ status: 'processed' }), 10)).toBeNull();
+    expect(pendingProgress(item({ status: 'skipped' }), 10)).toBeNull();
+  });
+
+  it('describes stage 1 with the usual duration', () => {
+    const progress = pendingProgress(item({}), 2);
+    expect(progress?.late).toBe(false);
+    expect(progress?.text).toContain('1/3단계 이름 인식(OCR) 중 · 2분 경과');
+    expect(progress?.text).toContain('보통 3분');
+  });
+
+  it('describes stage 2 with a remaining estimate once named', () => {
+    const progress = pendingProgress(item({ contact: { name: '박민준' } }), 8);
+    expect(progress?.text).toContain('2/3단계');
+    expect(progress?.text).toContain('완료까지 약 6분 남음');
+  });
+
+  it('flags late items past 30 minutes', () => {
+    const progress = pendingProgress(item({ contact: { name: '박민준' } }), 45);
+    expect(progress?.late).toBe(true);
+    expect(progress?.text).toContain('평소(6~20분)보다 오래');
   });
 });
 

@@ -8,11 +8,16 @@ var policy = require('../docs/research-policy.js');
 var root = path.join(__dirname, '..');
 var fixtureDir = path.join(__dirname, 'research-fixtures');
 var server = fs.readFileSync(path.join(root, 'Code.gs'), 'utf8');
-// 조사 지시 접수 UI와 owner action은 현재 React 앱이 단독 소유한다.
-var page = fs.readFileSync(path.join(root, 'frontend', 'src', 'services', 'api.ts'), 'utf8')
-  + fs.readFileSync(path.join(root, 'frontend', 'src', 'App.tsx'), 'utf8')
-  + fs.readFileSync(path.join(root, 'frontend', 'src', 'components', 'ResearchComposer.tsx'), 'utf8')
-  + fs.readFileSync(path.join(root, 'frontend', 'src', 'components', 'AiTaskSurface.tsx'), 'utf8');
+// 조사 지시 접수 UI와 owner action은 현재 React 앱이 단독 소유한다. v2.19 rollback
+// baseline은 composer를 App.tsx 안에 두므로, 분리 컴포넌트는 존재할 때만 함께 읽는다.
+function readFrontend(relativePath) {
+  var full = path.join(root, 'frontend', 'src', relativePath);
+  return fs.existsSync(full) ? fs.readFileSync(full, 'utf8') : '';
+}
+var page = readFrontend(path.join('services', 'api.ts'))
+  + readFrontend('App.tsx')
+  + readFrontend(path.join('components', 'ResearchComposer.tsx'))
+  + readFrontend(path.join('components', 'AiTaskSurface.tsx'));
 var processing = fs.readFileSync(path.join(root, 'PROCESSING_CONTRACT.md'), 'utf8');
 var fixtures = fs.readdirSync(fixtureDir).filter(function (name) { return /\.json$/.test(name); })
   .map(function (name) { return JSON.parse(fs.readFileSync(path.join(fixtureDir, name), 'utf8')); });
