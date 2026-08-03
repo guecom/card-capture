@@ -16,9 +16,9 @@ import {
   IonToolbar,
   setupIonicReact,
 } from '@ionic/react';
-import { BellOff, BellRing, Camera, ChevronRight, CircleAlert, FileText, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, Waves } from 'lucide-react';
+import { ArrowUpRight, BellOff, BellRing, Camera, ChevronRight, CircleAlert, CircleHelp, CircleUser, FileText, History, Lock, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, Waves, WifiOff } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 // 릴리즈 버전은 저장소가 선언한 값 하나만 쓴다 (founder 지시 2026-07-27: "버전이 설정에 표기되었으면 함").
 // `package.json`은 이미 빌드 식별자의 해시 입력이므로 값이 바뀌면 식별자도 함께 바뀐다 —
 // 벽시계·환경변수와 달리 빌드마다 달라지지 않아 재현성 계약(eval/build-reproducibility.test.js)을 깨지 않는다.
@@ -43,8 +43,25 @@ import {
   elapsedLabel,
   RECALL_SCOPE_NOTE,
   recallStages,
+  researchRailFromBrief,
+  researchStageStats as readResearchStageStats,
+  researchStageWeighting,
+  syncResearchStageTelemetry,
   type RecallStageKey,
 } from './services/ai-stages';
+import {
+  REFRESH_BUSY_LABEL,
+  REFRESH_BUSY_TEXT,
+  REFRESH_FAILURE_TEXT,
+  REFRESH_IDLE_LABEL,
+  REFRESH_SUCCESS_HOLD_MS,
+  REFRESH_SUCCESS_TEXT,
+  refreshIdleText,
+  type RefreshState,
+} from './services/refresh-orchestrator';
+import { researchProgressView } from './services/research-progress-view';
+import { stageWidthPercents } from './services/stage-weights';
+import type { StageStat } from './services/stage-telemetry';
 import { type CapturedCameraFrame, storedCameraFrame, thumbnailOf } from './services/camera';
 import {
   QUICK_NAME_LATER_LABEL,
@@ -62,7 +79,7 @@ import {
 } from './services/capture-context';
 import { buildLegacyNote, buildQueuedCapture, parseLegacyNote, restoredDraftOf } from './services/capture-item';
 import { actionErrorMessage, briefListTitle, briefNameMap, briefTitle, elapsedMinutesOf } from './services/brief-view';
-import { captureAttentionOf, captureProgress } from './services/capture-progress';
+import { captureAttentionOf, captureProgress, captureStageStats, syncCaptureStageTelemetry } from './services/capture-progress';
 import { refreshCadenceMs } from './services/refresh-cadence';
 import { contactCardFromBrief } from './services/contacts';
 import { getOpenCvWorker, prefetchOpenCv } from './services/opencv';
@@ -199,9 +216,29 @@ function queueImageSource(item: CaptureQueueItem): string {
 // 화면이 요청하는 총 건수를 이만큼씩 키우고 `listBriefsUpTo`가 필요한 만큼 페이지를 이어 읽는다.
 const LIST_PAGE_STEP = 30;
 
+// 이만큼 지난 화면은 "오래 열어 둔 화면"으로 본다 — 돌아온 사람에게 지금 보는 것이
+// 언제 기준인지 먼저 말한다 (founder 시나리오: 한 시간 열어 둔 탭).
+const REFRESH_STALE_MS = 10 * 60_000;
+
 // 대기열 행에 보여 줄 단계 요약. 서버 응답이 아직 없으면 로컬 전송 상태만으로 계산한다.
-function queueProgressOf(item: CaptureQueueItem) {
-  return captureProgress({ queue: item, elapsedMinutes: elapsedMinutesOf(item) });
+function queueProgressOf(item: CaptureQueueItem, stageStats: Record<string, StageStat | null> | null) {
+  return captureProgress({ queue: item, elapsedMinutes: elapsedMinutesOf(item), stageStats });
+}
+
+/**
+ * 단계 막대의 칸 폭. 관측이 충분할 때만 소요시간 중앙값에 비례한다 (설계 계약 §3-2).
+ *
+ * 폭은 디자인 값이 아니라 **관측 데이터**라서 CSS가 아니라 여기서만 나올 수 있다.
+ * `AiStageRail`과 같은 판정·같은 `fr` 단위를 쓴다 — 두 막대가 다른 규칙으로 넓어지면
+ * 폭이라는 신호 자체가 뜻을 잃는다. 관측이 부족하면 균등 칸으로 되돌린다.
+ */
+function stageTrackStyle(progress: ReturnType<typeof captureProgress>): CSSProperties | undefined {
+  const { weighting } = progress;
+  const aligned = weighting.confident
+    && weighting.weights.length === progress.stages.length
+    && weighting.weights.every((weight, index) => weight.key === progress.stages[index].key);
+  if (!aligned) return undefined;
+  return { gridTemplateColumns: stageWidthPercents(weighting).map((percent) => `${percent}fr`).join(' ') };
 }
 
 function queueStateCopy(item: CaptureQueueItem): string {
@@ -306,8 +343,10 @@ const RESEARCH_NODE_LABELS: Record<ResearchEvidenceGraph['nodes'][number]['type'
 function ResearchRelationshipOverview({ graph }: { graph: ResearchEvidenceGraph }) {
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
   const claims = new Map(graph.claims.map((claim) => [claim.id, claim]));
+  // 이 구획은 v2.20.0에서 className이 아예 없어 브라우저 기본 서체·크기로 그려졌다 —
+  // 주변이 전부 앱 토큰을 쓰는데 여기만 span 16px / strong 12px로 위계가 뒤집혀 있었다.
   return (
-    <section aria-label="조사 관계와 타임라인 범위">
+    <section className="research-relationship" aria-label="조사 관계와 타임라인 범위">
       <div className="research-open">
         <strong>관계 지도</strong>
         <p>사람·조직·프로젝트·사건·주장·출처가 어떤 근거로 이어지는지 보여줍니다.</p>
@@ -321,11 +360,26 @@ function ResearchRelationshipOverview({ graph }: { graph: ResearchEvidenceGraph 
               <span>{RESEARCH_NODE_LABELS[source.type]} · {source.label}</span>
               <strong>{edge.label}</strong>
               <span>→ {RESEARCH_NODE_LABELS[target.type]} · {target.label}</span>
-              {source.type === 'source' && source.url && <a href={source.url} target="_blank" rel="noreferrer">원문 출처 열기</a>}
+              {/* 출처는 글자 조각이 아니라 누르는 자리다. 앱에 출처 링크 어휘는
+                  `.research-source-link` 하나뿐이다 (`ResearchEvidencePanel`과 같은 모양) —
+                  예전에는 같은 근거 화면 안에서 한쪽은 16px 파란 밑줄, 다른 쪽은 10px였다.
+                  접근 이름은 `원문 출처 열기` 그대로다 (int25-research T3). */}
+              {source.type === 'source' && source.url && (
+                <a
+                  className="research-source-link"
+                  href={source.url}
+                  target="_blank"
+                  rel="noopener noreferrer external"
+                >
+                  <span className="research-source-title">원문 출처 열기</span>
+                  <ArrowUpRight aria-hidden="true" size={13} />
+                </a>
+              )}
             </article>
           );
         })}
-        {!graph.edges.length && <p>검증된 관계가 아직 없습니다.</p>}
+        {/* 빈 상태도 "왜 비었는가"를 말한다 — 조사가 끝나도 검증을 통과한 관계가 없을 수 있다. */}
+        {!graph.edges.length && <p className="section-empty">아직 검증을 통과한 관계가 없어요. 근거가 하나로 모이면 여기에 쌓입니다.</p>}
       </div>
       <div className="research-open">
         <strong>타임라인 근거 범위</strong>
@@ -363,6 +417,8 @@ function App() {
   const [recoveryFocusId, setRecoveryFocusId] = useState(initialRecoveryFocus);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  // 다른 묶음에서 옮겨 온 운영 설명은 도움말 한 곳에 접어 둔다 (ISS-000217 해결 조건).
+  const [settingsHelpOpen, setSettingsHelpOpen] = useState(false);
   const [nameOnboardOpen, setNameOnboardOpen] = useState(false);
   const [nameDraft, setNameDraft] = useState('');
   const [query, setQuery] = useState('');
@@ -470,6 +526,17 @@ function App() {
   // 자동 새로고침 안내용: 마지막 갱신 시각과 현재 시각(1초 tick).
   const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
   const [clockTick, setClockTick] = useState(() => Date.now());
+  /**
+   * 단계별 실측 요약. 진행 막대의 칸 폭과 `보통 범위` 문구의 유일한 근거다 (설계 계약 §3).
+   * 서버는 이 값을 주지 않으므로 이 기기가 목록에서 본 것만 쌓는다 — 없으면 균등 칸으로
+   * 되돌아가고 범위도 말하지 않는다. 첫 render는 저장된 관측으로 시작한다.
+   */
+  const [stageStats, setStageStats] = useState<Record<string, StageStat | null>>(captureStageStats);
+  // 조사 rail은 캡처와 다른 단계 집합을 쓰므로 관측도 따로 읽는다.
+  const [researchStageStats, setResearchStageStats] = useState<Record<string, StageStat | null>>(readResearchStageStats);
+  // marker 칸(`draft`·`done`)은 소요시간이 없으므로 가중 판정에서 빼야 한다 —
+  // `researchStageWeighting`이 그 처리를 소유한다.
+  const researchWeighting = useMemo(() => researchStageWeighting(researchStageStats), [researchStageStats]);
   const [quickName, setQuickName] = useState<QuickName | null>(null);
   const [nameText, setNameText] = useState('');
   const [ocrState, setOcrState] = useState(QUICK_NAME_STATUS_COPY.idle);
@@ -776,6 +843,19 @@ function App() {
   // 처리 완료 브리핑의 이름을 로컬 캡처 행에 반영한다 (legacy briefNameMap).
   const processedNames = useMemo(() => briefNameMap(briefs), [briefs]);
 
+  // 목록이 바뀔 때마다 단계 관측을 기록하고 요약을 다시 읽는다. 저장은 실제로 바뀐 것이
+  // 있을 때만 일어난다 (`syncCaptureStageTelemetry`) — 폴링마다 localStorage를 쓰지 않는다.
+  useEffect(() => {
+    setStageStats(syncCaptureStageTelemetry({ briefs, queue }));
+  }, [briefs, queue]);
+
+  // 조사 rail도 같은 규칙으로 관측한다. 이것을 부르지 않으면 `researchStageWeighting`이
+  // 표본을 영원히 못 채워 조사 막대가 계속 `is-unmeasured`로 남는다 — 승인된 가중 막대가
+  // 코드에는 있고 화면에는 없는 상태가 된다 (ISS-000050).
+  useEffect(() => {
+    setResearchStageStats(syncResearchStageTelemetry({ briefs }));
+  }, [briefs]);
+
   // 만남 맥락: 접힌 상태에서 보여 줄 요약과, 최근에 실제로 쓴 만난 곳 chip.
   const contextValue = useMemo(() => ({ event, relKairen, relSelf, memo }), [event, memo, relKairen, relSelf]);
   const contextSummary = useMemo(() => captureContextSummary(contextValue), [contextValue]);
@@ -840,16 +920,37 @@ function App() {
     }));
   }, [feed, hasMoreBriefs, loadMoreBriefs, loading, loadingMore, refreshedAt]);
 
-  // 다음 갱신 시각을 지어내지 않는다. 자동 갱신 여부와 마지막 성공만 정직하게 보여 준다.
-  const sinceRefresh = refreshedAt === null ? null : (clockTick - refreshedAt) / 60_000;
-  const lastRefreshLabel = sinceRefresh === null ? '아직 갱신 전'
-    : sinceRefresh < 1 ? '마지막 갱신 방금'
-      : `마지막 갱신 ${Math.floor(sinceRefresh)}분 전`;
-  const refreshStatusText = loading ? '새로고침 중'
-    : refreshPhase === 'offline' ? '오프라인 · 연결되면 자동 재시도'
-      : refreshPhase === 'error' ? '갱신 실패 · 다시 시도'
-        : `자동 갱신 켜짐 · ${lastRefreshLabel}`;
+  /**
+   * 갱신 상태 문법 — 앱 전체가 같은 네 상태만 쓴다 (표면 설계 계약 §2).
+   *
+   *   idle      정적       `자동 갱신 켜짐 · N초 전`
+   *   in-flight 회전       `갱신 중`            (여기서만 회전한다)
+   *   success   2초 뒤 idle `방금 업데이트`
+   *   failure   정적 경고   `갱신 실패 · 다시 시도`
+   *
+   * 원래 결함(ISS-000050)은 **정책을 애니메이션으로 표현한 것**이었다. "자동 갱신이 켜져
+   * 있다"는 정적인 사실인데 아이콘이 계속 돌아 요청이 떠 있는 것처럼 보였다. 이제 회전은
+   * 실제 요청이 살아 있는 동안(`loading`)에만 존재한다. 다음 갱신 시각은 여전히 지어내지 않는다.
+   */
+  const sinceRefreshMs = refreshedAt === null ? null : Math.max(0, clockTick - refreshedAt);
+  const refreshState: SurfaceRefreshState = loading ? 'in-flight'
+    : refreshPhase === 'offline' ? 'offline'
+      : refreshPhase === 'error' ? 'failure'
+        : sinceRefreshMs !== null && sinceRefreshMs < REFRESH_SUCCESS_HOLD_MS ? 'success'
+          : 'idle';
+  const refreshStatusText = refreshState === 'in-flight' ? REFRESH_BUSY_TEXT
+    : refreshState === 'offline' ? '오프라인 · 연결되면 자동 재시도'
+      : refreshState === 'failure' ? REFRESH_FAILURE_TEXT
+        : refreshState === 'success' ? REFRESH_SUCCESS_TEXT
+          : refreshIdleText({ autoRefreshOn: configured, lastSuccessAgoMs: sinceRefreshMs });
   const autoRefreshHint = refreshStatusText;
+  // 오래 열어 둔 화면으로 돌아온 경우. 자동 갱신이 살아 있어도 마지막 성공이 오래됐다면
+  // 지금 보이는 목록이 언제 기준인지 먼저 말하고, 우선 갱신을 한 번 권한다.
+  const refreshStale = sinceRefreshMs !== null && sinceRefreshMs >= REFRESH_STALE_MS && refreshState !== 'in-flight';
+  // "얼마나 오래된 목록인가"라는 조각만 만든다. 갱신 상태 문구는 위의 한 문법이 소유한다.
+  const staleAgoLabel = sinceRefreshMs === null ? ''
+    : sinceRefreshMs < 3_600_000 ? `${Math.floor(sinceRefreshMs / 60_000)}분 전`
+      : `${Math.floor(sinceRefreshMs / 3_600_000)}시간 전`;
 
   // 지금 올리고 있는 촬영의 표시 이름. 없으면 빈 문자열이다.
   const sendingItem = useMemo(
@@ -882,9 +983,11 @@ function App() {
   const headerStatus = !configured ? '연결 필요 — 개인 링크로 열어주세요'
     // 실제로 올리고 있는 촬영이 있으면 그것이 가장 구체적인 사실이다.
     : sendingId ? `${sendingName || '명함'} 전송 중…`
-      : loading ? '최신 상태 확인 중…'
-        : pendingStatus ? `${pendingStatus} · ${autoRefreshHint}`
-          : feed.length > 0 ? `기록 ${feed.length}건 · ${autoRefreshHint}`
+      // 갱신 중이라고 해서 "몇 건이 처리 중인가"라는 사실을 감추지 않는다 —
+      // 두 문장은 서로 다른 축이고, 갱신 상태는 위의 한 문법으로 뒤에 붙인다.
+      : pendingStatus ? `${pendingStatus} · ${autoRefreshHint}`
+        : feed.length > 0 ? `기록 ${feed.length}건 · ${autoRefreshHint}`
+          : refreshState === 'in-flight' ? '최신 상태를 확인하고 있어요'
             : '첫 명함을 기다리고 있어요';
 
   const setupBannerMessage = !config.apiUrl
@@ -1525,7 +1628,7 @@ function App() {
           {imageSource ? <img src={imageSource} alt="명함 앞면 미리보기" /> : <span className="queue-placeholder"><Camera aria-hidden="true" size={18} /></span>}
           <div className="row-copy">
             <strong>{displayName}</strong>
-            <span>{contextLine || formatMoment(item.capturedAt)} · {sideLabel} · {queueProgressOf(item).headline}</span>
+            <span>{contextLine || formatMoment(item.capturedAt)} · {sideLabel} · {queueProgressOf(item, stageStats).headline}</span>
             {/* 위 줄은 "이 촬영이 4단계 중 몇 번째에 있는가"라는 자리 표시다. 지금 실제로 회선을
                 타고 있는 촬영은 이 줄이 따로 말한다 — 둘을 섞으면 다시 거짓 진행이 된다. */}
             {isSending && <small className="row-sending" role="status">지금 이 명함을 보내는 중…</small>}
@@ -1553,11 +1656,27 @@ function App() {
   function renderBriefCard(item: BriefItem, local: CaptureQueueItem | null) {
     const expanded = expandedBriefs.has(item.captureId);
     const minutes = elapsedMinutesOf(item);
-    const progress = captureProgress({ brief: item, queue: local, elapsedMinutes: minutes });
+    const progress = captureProgress({
+      brief: item,
+      queue: local,
+      elapsedMinutes: minutes,
+      // 칸 폭과 `보통 범위`는 이 기기가 실제로 본 소요시간에서만 나온다 (설계 계약 §3).
+      stageStats,
+      // "이 화면이 얼마나 오래된 사실을 보여 주는가"도 진행 문구가 함께 말한다.
+      refreshedAgoMs: sinceRefreshMs,
+    });
     const attention = captureAttentionOf(item);
     const title = briefTitle(item);
     // 목록에는 "이름 — 한 줄 요약"을 보여 준다 (founder 판정 2026-07-26: 전부 "이런 분이에요"라 구분이 안 됨).
-    const listTitle = briefListTitle(item);
+    const rawListTitle = briefListTitle(item);
+    /**
+     * 이름도, 만난 곳도, 브리핑도 아직 없는 카드는 `briefTitle`의 마지막 폴백이 captureId를
+     * 돌려준다. v2.20.0은 그것을 그대로 **사람 이름 자리**에 찍었다 — `20260803-092000-a3`가
+     * 이름으로, 그 앞 글자 `2`가 아바타로 나갔다. 촬영 번호는 지원 문의에 쓰는 참조값이지
+     * 사람 이름이 아니다. 모르는 것은 모른다고 쓰고, 번호는 번호 자리에 둔다.
+     */
+    const identityUnknown = rawListTitle === item.captureId;
+    const listTitle = identityUnknown ? '이름을 아직 읽지 못했어요' : rawListTitle;
     const contact = contactCardFromBrief(item, title.split(' — ')[0]);
     const briefBody = item.brief ? item.brief.split('\n').slice(1).join('\n') : '';
     const actionable = item.status === 'processed' && item.type !== 'note' && item.type !== 'research_instruction';
@@ -1565,13 +1684,43 @@ function App() {
     // 서버의 research-result.json은 신뢰 경계 밖이다. 검증을 통과한 graph만 복잡한 패널에
     // 넘기고, 손상된 중첩 데이터는 한 카드에서 닫아 화면 전체 crash/blank를 막는다.
     const researchEvidence = researchEvidenceView(item.researchEvidence);
+    /**
+     * 조사 receipt는 캡처 단계가 아니라 **조사 단계**를 진행으로 삼는다.
+     *
+     * v2.20.0의 rail에는 `공개 자료 조사 중`·`출처 정리 중`이 있었지만 어떤 서버 필드도 그
+     * 단계를 증명하지 않아 실제로는 켜지지 않았다. 지우는 대신 서버 phase
+     * (`planning|branching|triangulating|synthesizing|done`)를 rail에 매핑한다 (설계 계약 §3-5).
+     * 결과가 나온 뒤에는 진행을 계속 그리지 않는다 — 끝난 일은 결과가 말한다.
+     */
+    const researchRail = item.type === 'research_instruction' && !progress.done ? researchRailFromBrief(item) : null;
+    const researchLive = researchRail ? researchProgressView(item) : null;
+    /**
+     * 확인 필요 카드는 같은 문장을 **한 번만** 쓴다.
+     *
+     * v2.20.0에서는 `.attention-recovery`와 `.stage-track`이 **둘 다** `progress.headline`과
+     * `progress.detail`을 렌더했다. 아직 처리가 끝나지 않은(=`done`이 아닌) 확인 필요 카드에서는
+     * 두 블록이 함께 마운트되므로 `서버가 접수했어요` / `1시간 36분 경과 · 남은 시간은 아직 알 수
+     * 없어요`가 글자 그대로 두 번 쌓였다 — 한 항목짜리 빈 카드가 310px였던 이유다.
+     *
+     * 이제 축을 나눈다: 확인 필요 블록은 **사람이 할 일**을, 단계 막대는 **서버가 어디까지 왔는가**를
+     * 소유한다. 처리가 끝난 뒤에는 `captureProgress`가 확인 사유를 직접 주므로 그것을 그대로 쓴다
+     * (`int25-push` T2가 그 사유 문구를 고정한다). 그때는 단계 막대가 렌더되지 않아 겹치지 않는다.
+     */
+    const attentionHeadline = progress.done ? progress.headline : '내용 확인이 필요해요';
+    const attentionDetail = progress.done
+      ? progress.detail
+      : '자동 처리를 이어가려면 사람이 확인해 줘야 해요 — 아래에서 내용을 보완해 주세요.';
     return (
       <article className={`brief-card ${attention ? 'needs-attention' : ''}`} key={item.captureId} id={`capture-${item.captureId}`}>
         <button className="brief-summary" type="button" onClick={() => toggleBrief(item.captureId)} aria-expanded={expanded}>
-          <div className="avatar" aria-hidden="true">{listTitle.slice(0, 1)}</div>
+          <div className={`avatar ${identityUnknown ? 'avatar-unknown' : ''}`} aria-hidden="true">
+            {identityUnknown ? <Camera size={17} /> : listTitle.slice(0, 1)}
+          </div>
           <div className="row-copy">
             <strong>{listTitle}</strong>
             <span>{formatMoment(item.receivedAt || item.capturedAt)}{item.event ? ` · ${item.event}` : ''}{item.capturer ? ` · 촬영 ${item.capturer}` : ''}</span>
+            {/* 촬영 번호는 "이 촬영이 무엇인지" 물어볼 때 쓰는 참조값이다 — 이름 자리가 아니라 여기에 둔다. */}
+            {identityUnknown && <small className="capture-ref">촬영 번호 <code>{item.captureId}</code></small>}
           </div>
           {attention
             ? <span className="status-badge status-attention"><CircleAlert aria-hidden="true" size={13} strokeWidth={2.2} />확인 필요</span>
@@ -1582,8 +1731,8 @@ function App() {
           <section className="attention-recovery" aria-label="내용 확인 필요">
             <CircleAlert aria-hidden="true" size={18} />
             <div>
-              <strong>{progress.headline}</strong>
-              <p>{progress.detail}</p>
+              <strong>{attentionHeadline}</strong>
+              <p>{attentionDetail}</p>
             </div>
             <div className="attention-actions">
               <button type="button" onClick={() => local
@@ -1598,13 +1747,15 @@ function App() {
             </div>
           </section>
         )}
-        {!progress.done && (
+        {/* 한 카드에는 진행 어휘가 하나만 있어야 한다. 조사 receipt는 아래의 조사 막대가
+            더 구체적인 진실이므로, 일반 캡처 단계 막대를 겹쳐 그리지 않는다. */}
+        {!progress.done && !researchRail && (
           <div className={`stage-track ${progress.late ? 'late' : ''} ${progress.failed ? 'failed' : ''}`}>
             <div className="stage-head">
               <strong>{progress.headline}</strong>
               <span>{progress.detail}</span>
             </div>
-            <ol className="stage-dots" aria-label={progress.headline}>
+            <ol className="stage-dots" aria-label={progress.headline} style={stageTrackStyle(progress)}>
               {progress.stages.map((stage) => (
                 <li key={stage.key} className={`stage-${stage.state}`}>
                   <i aria-hidden="true" />
@@ -1627,12 +1778,36 @@ function App() {
             )}
           </div>
         )}
-        {item.type === 'research_instruction' && item.researchProgress && (
-          <div className="research-live-progress" role="status" aria-live="polite">
-            <strong>Deep Research · {item.researchProgress.phase || 'planning'}</strong>
-            <span>확인된 사실 {item.researchProgress.verifiedFacts || 0} · 충돌 {item.researchProgress.conflicts || 0} · 남은 질문 {item.researchProgress.openQuestions || 0}</span>
-            <small>분기 {item.researchProgress.branchCount ?? 0}/24 · 공개 출처 {item.researchProgress.sourceCount ?? 0} · 누적 {item.researchProgress.elapsedMinutes ?? 0}분</small>
-            <small>서버가 기록한 진행만 표시합니다. 남은 시간은 추정하지 않아요.</small>
+        {/* 조사 진행. v2.20.0은 여기에 `Deep Research · triangulating`이라는 영어 enum을 그대로
+            찍었고(전면 한국어 화면), 이름은 `progress`인데 막대가 없어 바로 위의 단계 막대와
+            서로 다른 두 진행 어휘가 한 카드에 겹쳤다.
+            이제 앱의 AI 진행 어휘(`AiStageRail`) 하나로 통일하고, 서버 phase는 등록소 한 곳
+            (`services/research-vocabulary`)에서 한국어로 옮겨 받는다. */}
+        {researchRail && (
+          <div className="research-live-progress">
+            {/* 어떤 조사인지 스스로 말한다. 읽는 이름은 한국어가 먼저 오고 제품명은 표식이다. */}
+            <span className="eyebrow">
+              {item.researchInstruction?.mode === 'deep_evidence_graph'
+                ? <>깊은 근거 조사 <span className="research-mode-tag">Deep Research</span></>
+                : '공개 정보 조사'}
+            </span>
+            <AiStageRail stages={researchRail.stages} label="조사 진행" weighting={researchWeighting} />
+            {/* 막대 칸보다 잘게 아는 것이 있으면 그것도 말한다 — 단, 칸을 늘리지는 않는다. */}
+            {researchRail.phaseLabel && <p className="research-phase-line">지금 <b>{researchRail.phaseLabel}</b></p>}
+            {researchRail.note && <p className="research-phase-note">{researchRail.note}</p>}
+            {/* 끝나기 전에도 "지금까지 무엇을 알아냈는가"를 보여 준다. 읽은 자료 수는 일한 양이지
+                알아낸 것이 아니라서 지표로 쓰지 않는다 (승인 회의에서 제외). */}
+            {researchLive?.countsFrom && (
+              <dl className="research-counts">
+                <div><dt>확인된 사실</dt><dd>{researchLive.verifiedFacts ?? 0}</dd></div>
+                <div><dt>남은 질문</dt><dd>{researchLive.openQuestions ?? 0}</dd></div>
+                <div><dt>어긋나는 근거</dt><dd>{researchLive.conflicts ?? 0}</dd></div>
+                {researchLive.coverage && <div><dt>훑은 기간</dt><dd>{researchLive.coverage.label}</dd></div>}
+              </dl>
+            )}
+            {researchLive?.elapsedMinutes !== null && researchLive?.elapsedMinutes !== undefined && (
+              <p className="research-phase-note">누적 {researchLive.elapsedMinutes}분 · 서버가 기록한 진행만 표시하고 남은 시간은 추정하지 않아요.</p>
+            )}
           </div>
         )}
         {expanded && (
@@ -1647,7 +1822,9 @@ function App() {
             )}
             {researchEvidence.kind === 'invalid' && (
               <section className="research-evidence" role="alert" aria-label="조사 결과 복구 안내">
-                <header><div><span className="eyebrow">Deep Research</span><h4>조사 결과를 안전하게 열지 못했어요</h4></div></header>
+                {/* 읽는 이름은 한국어가 먼저 온다. `Deep Research`는 이 mode의 제품명이라
+                    표식으로만 남긴다 (`ResearchComposer`와 같은 처리). */}
+                <header><div><span className="eyebrow">깊은 근거 조사 <span className="research-mode-tag">Deep Research</span></span><h4>조사 결과를 안전하게 열지 못했어요</h4></div></header>
                 <p className="document-error">서버 결과 형식이 확인되지 않아 근거를 숨겼습니다. 기존 기록은 그대로이며, 다시 확인하거나 새 조사를 요청할 수 있어요.</p>
                 <div className="stage-actions">
                   <button type="button" onClick={() => void manualRefresh()}><RefreshCw aria-hidden="true" size={13} />다시 확인</button>
@@ -1685,10 +1862,39 @@ function App() {
 
   function renderFeedBody() {
     const visible = feed.slice(0, feedLimit);
+    const hasContent = feed.length > 0;
     return (
       <>
-        {loading && feed.length === 0 && configured && <div className="center-state"><IonSpinner name="crescent" /><span>최신 상태 확인 중</span></div>}
-        {feed.length === 0 && !(loading && configured) && <p className="section-empty">아직 명함 기록이 없어요. 명함을 찍으면 여기에 쌓여요.</p>}
+        {/* 오래 열어 둔 화면으로 돌아온 경우. 목록을 조용히 옛 상태로 두지 않고, 지금 보이는 것이
+            언제 기준인지 먼저 말한 뒤 우선 갱신을 한 번 권한다 (founder 시나리오: 한 시간 열어 둔 탭). */}
+        {hasContent && refreshStale && refreshState !== 'failure' && refreshState !== 'offline' && (
+          <div className="feed-notice is-stale" role="status">
+            <History aria-hidden="true" size={15} />
+            <span>{staleAgoLabel} 확인한 목록이에요.</span>
+            <button type="button" disabled={!configured} onClick={() => void manualRefresh()}>지금 확인</button>
+          </div>
+        )}
+        {/* 오프라인. 기기에 남은 마지막 사본을 보여 주고 있다는 사실을 숨기지 않는다. */}
+        {configured && refreshState === 'offline' && (
+          <div className="feed-notice is-offline" role="status">
+            <WifiOff aria-hidden="true" size={15} />
+            <span>{hasContent
+              ? '오프라인이에요 — 이 기기에 저장된 마지막 기록을 보여 주고 있어요. 연결되면 자동으로 다시 확인합니다.'
+              : '오프라인이에요 — 연결되면 자동으로 기록을 받아옵니다. 촬영은 지금도 할 수 있고 기기에 저장돼요.'}</span>
+          </div>
+        )}
+        {/* 실패. 목록을 조용히 비우지 않는다 — 무엇이 남아 있는지와 다시 시도하는 길을 같이 준다. */}
+        {configured && refreshState === 'failure' && (
+          <div className="feed-notice is-failure" role="alert">
+            <CircleAlert aria-hidden="true" size={15} />
+            <span>{hasContent
+              ? '최신 상태를 받지 못했어요 — 아래는 마지막으로 확인된 기록이에요.'
+              : '기록을 불러오지 못했어요 — 연결을 확인하고 다시 시도해 주세요.'}</span>
+            <button type="button" onClick={() => void manualRefresh()}>다시 시도</button>
+          </div>
+        )}
+        {loading && !hasContent && configured && <div className="center-state"><IonSpinner name="crescent" /><span>최신 상태 확인 중</span></div>}
+        {!hasContent && !(loading && configured) && <p className="section-empty">아직 명함 기록이 없어요. 명함을 찍으면 여기에 쌓여요.</p>}
         {visible.map(renderFeedEntry)}
         {(feed.length > feedLimit || hasMoreBriefs) && (
           <button
@@ -1857,18 +2063,29 @@ function App() {
           )}
         </section>
 
-        <div className="section-toggle-row">
-          <button className="section-toggle" type="button" aria-expanded={!recordsCollapsed} onClick={toggleRecords}>
-            <span className="caret" aria-hidden="true">{recordsCollapsed ? '▸' : '▾'}</span> 명함 기록
-          </button>
+        {/* 명함 기록 구획.
+            v2.20.0에서는 한 줄 nowrap flex 안에 21px 토글 + 44px 버튼 + 14px 안내가 뒤섞여
+            (`.section-toggle-row`) 세 요소의 높이가 제각각이었다. 접기 토글은 글자 캐럿 `▸/▾`라
+            누를 곳이 21px밖에 없었다. 이제 제목 줄과 상태 줄을 나누고, 토글은 앱의 다른 접기
+            조작(`.context-toggle`)과 같은 아이콘·같은 회전을 쓴다. */}
+        <section className="records-section" aria-label="명함 기록">
+          <div className="records-head">
+            <button className="section-toggle" type="button" aria-expanded={!recordsCollapsed} onClick={toggleRecords}>
+              <ChevronRight className={recordsCollapsed ? '' : 'expanded'} aria-hidden="true" size={18} />
+              <span className="section-toggle-label">명함 기록</span>
+              {feed.length > 0 && <span className="section-count">{feed.length}</span>}
+            </button>
+            <RefreshControl
+              state={refreshState}
+              statusText={refreshStatusText}
+              disabled={!configured}
+              onRefresh={() => void manualRefresh()}
+            />
+          </div>
           {/* 이 구획의 진실만 쓴다. 지금 올리는 촬영이 있을 때만, 그리고 그것이 무엇인지 이름을 붙여서. */}
-          {sendingId && <span className="sending-note" role="status">{sendingName || '명함'} 전송 중…</span>}
-          <button className="inline-refresh" type="button" disabled={loading || !configured} onClick={() => void manualRefresh()}>
-            <RefreshCw className={loading ? 'spinning' : ''} aria-hidden="true" size={14} /> 새로고침
-          </button>
-          <span className="refresh-hint" role="status" aria-live="polite">{autoRefreshHint}</span>
-        </div>
-        {!recordsCollapsed && <div className="records-feed">{renderFeedBody()}</div>}
+          {sendingId && <p className="sending-note" role="status">{sendingName || '명함'} 전송 중…</p>}
+          {!recordsCollapsed && <div className="records-feed">{renderFeedBody()}</div>}
+        </section>
       </div>
     );
   }
@@ -1877,9 +2094,20 @@ function App() {
     return (
       <div className="cc-stack">
         {!configured && <EmptyState title="연결 설정이 필요해요" body="받으신 개인 링크(?k=토큰 포함)로 접속하면 같은 진행 상태를 읽습니다." action="설정 열기" onAction={() => { setDraftConfig(config); setSettingsOpen(true); }} />}
-        <section className={`surface-card refresh-console is-${refreshPhase}`} aria-label="진행 상태 갱신">
-          <div><strong>진행 상태</strong><span role="status" aria-live="polite">{refreshStatusText}</span></div>
-          <button type="button" disabled={loading || !configured} onClick={() => void manualRefresh()}><RefreshCw className={loading ? 'spinning' : ''} aria-hidden="true" size={16} /> {loading ? '확인 중…' : '진행 새로고침'}</button>
+        {/* 갱신 조작은 "무엇을 갱신하는가"를 말해야 한다. 예전에는 같은 `manualRefresh()`를 부르는
+            버튼이 네 화면에 여섯 개였고 어느 것도 범위를 말하지 않았다 (ISS-000050). */}
+        <section className={`surface-card refresh-console is-${refreshState}`} aria-label="진행 상태">
+          <div className="refresh-console-copy">
+            <strong>서버에서 처리 중인 명함</strong>
+            <span>{!configured ? '연결하면 여기에서 진행을 확인할 수 있어요'
+              : pendingStatus || (feed.length > 0 ? `기록 ${feed.length}건 · 기다리는 처리가 없어요` : '아직 접수된 명함이 없어요')}</span>
+          </div>
+          <RefreshControl
+            state={refreshState}
+            statusText={refreshStatusText}
+            disabled={!configured}
+            onRefresh={() => void manualRefresh()}
+          />
         </section>
         {recoveryFocusId && (
           <section className="surface-card recovery-notice" role="alert" aria-label="처리 복구 필요">
@@ -1892,7 +2120,7 @@ function App() {
                 <button type="button" disabled={!configured || requeueingId === recoveryFocusId} onClick={() => void retryProcessing(recoveryFocusId)}>
                   <RotateCcw aria-hidden="true" size={13} />{requeueingId === recoveryFocusId ? '요청하는 중…' : '이 항목 다시 처리'}
                 </button>
-                <button type="button" disabled={!configured || loading} onClick={() => void manualRefresh()}><RefreshCw aria-hidden="true" size={13} />최신 상태 확인</button>
+                {/* 이 안내 바로 위 구획이 이미 갱신을 소유한다 — 같은 화면에 두 번째 새로고침을 두지 않는다. */}
                 <button type="button" onClick={() => setRecoveryFocusId('')}>안내 닫기</button>
               </div>
             </div>
@@ -2177,42 +2405,41 @@ function App() {
     const pushActionLabel = pushTurningOff
       ? '이 기기 알림 끄기'
       : pushState.status === 'stale' ? '알림 안전하게 다시 연결' : '닫힌 앱 알림 켜기';
+    // 확인이 아직 끝나지 않았는데 "켤 수 없어요"라고 단정하면 막다른 골목이 된다 —
+    // 확인 중에는 확인 중이라고만 말한다 (ISS-000217).
+    const pushSettling = pushBusy || pushState.status === 'checking';
     return (
       <div className="settings-dashboard">
+        {/* 상단 바가 이미 `내 앱 설정`이라고 말한다 — 두 줄 아래에서 같은 말을 다시 하지 않는다. */}
         <header className="settings-intro">
-          <span className="eyebrow">내 앱 설정</span>
           <h2>필요한 일을 기준으로 정리했어요</h2>
-          <p>연결, 캡처, 알림, 화면, 개인정보, 도움말을 한 곳에서 확인합니다.</p>
         </header>
+        {/* 그룹 머리에 01~06을 붙이면 순서가 없는 묶음이 순서 있는 사양서처럼 읽힌다 (ISS-000217).
+            번호 대신 그림표로 각 묶음이 무엇에 관한 것인지 한눈에 구분한다. */}
         <div className="settings-job-grid">
           <section className="surface-card settings-job" aria-labelledby="settings-account">
-            <div className="settings-job-head"><span>01</span><div><h3 id="settings-account">계정·연결</h3><p>누가 어떤 개인 링크로 쓰는지</p></div></div>
+            <div className="settings-job-head"><span className="settings-job-icon" aria-hidden="true"><CircleUser size={18} /></span><div><h3 id="settings-account">계정·연결</h3><p>누가 어떤 개인 링크로 쓰는지</p></div></div>
             <dl className="settings-facts">
               <div><dt>사용자</dt><dd>{config.capturer || '이름을 입력해주세요'}</dd></div>
               <div><dt>명함 연결</dt><dd>{configured ? '연결됨' : '연결 필요'}</dd></div>
               <div><dt>개인 링크</dt><dd>{config.token ? '이 기기에 안전하게 저장됨' : '저장되지 않음'}</dd></div>
             </dl>
             <IonButton fill="outline" expand="block" onClick={() => { setDraftConfig(config); setAdvancedOpen(false); setSettingsOpen(true); }}>사용자·연결 정보 편집</IonButton>
-            <div className="settings-danger">
-              <strong>이 기기에서 연결 해제</strong>
-              <p>개인 링크와 기기 내 브리핑·검색 기록을 지웁니다. 서버 기록과 전송 대기 중인 촬영은 지우지 않습니다.</p>
-              <IonButton fill="outline" color="danger" expand="block" disabled={!config.token} onClick={() => setSignOutOpen(true)}>연결 해제</IonButton>
-            </div>
           </section>
 
           <section className="surface-card settings-job" aria-labelledby="settings-capture">
-            <div className="settings-job-head"><span>02</span><div><h3 id="settings-capture">캡처·처리</h3><p>촬영과 자동 처리 방식</p></div></div>
+            <div className="settings-job-head"><span className="settings-job-icon" aria-hidden="true"><Camera size={18} /></span><div><h3 id="settings-capture">캡처·처리</h3><p>촬영과 자동 처리 방식</p></div></div>
+            {/* 각 행은 제목 / 현재 값 / 조작으로 끝난다. 행마다 운영 설명을 덧붙이지 않는다 —
+                예전의 `.settings-explain` 문단과 여섯 번째 새로고침 버튼은 도움말과 진행 화면으로 옮겼다. */}
             <label className="gallery-toggle">
               <input type="checkbox" checked={galleryFree} onChange={(event) => { const next = event.target.checked; setGalleryFree(next); saveGalleryFree(next); }} />
               <span><strong>기본 카메라 앱 쓰지 않기</strong><small>{galleryFree ? '앱 안의 명함 카메라만 사용합니다.' : '기본 카메라 촬영도 선택할 수 있습니다. 그 사진은 갤러리에 남고 카이렌이 지울 수 없습니다.'}</small></span>
             </label>
-            <p className="settings-explain">촬영 원본은 전송 확인 뒤 기기에서 정리합니다. 진행 화면은 앱이 보일 때 자동 갱신되고, 언제든 직접 새로고침할 수 있습니다.</p>
-            <IonButton fill="outline" expand="block" disabled={loading} onClick={() => void manualRefresh()}><RefreshCw aria-hidden="true" size={16} /> {loading ? '상태 확인 중…' : '지금 처리 상태 확인'}</IonButton>
           </section>
 
           <section className="surface-card settings-job" aria-labelledby="settings-notifications">
-            <div className="settings-job-head"><span>03</span><div><h3 id="settings-notifications">알림</h3><p>꼭 개입할 때만 알려주기</p></div></div>
-            <div className={`notification-readiness state-${pushState.status}`} role="status" aria-live="polite" aria-busy={pushBusy || pushState.status === 'checking'}>
+            <div className="settings-job-head"><span className="settings-job-icon" aria-hidden="true"><BellRing size={18} /></span><div><h3 id="settings-notifications">알림</h3><p>꼭 개입할 때만 알려주기</p></div></div>
+            <div className={`notification-readiness state-${pushState.status}`} role="status" aria-live="polite" aria-busy={pushSettling}>
               <span className="notification-state-icon" aria-hidden="true">
                 {pushState.status === 'subscribed' ? <BellRing size={19} /> : <BellOff size={19} />}
               </span>
@@ -2223,20 +2450,30 @@ function App() {
               <li><strong>내용 확인</strong><span>사진·이름 등 사람의 보완이 필요할 때</span></li>
               <li><strong>복구 필요</strong><span>문제를 확인하고 다시 이어가야 할 때</span></li>
             </ul>
-            {pushCanToggle && (
-              <button className={`notification-action ${pushTurningOff ? 'is-on' : ''}`} type="button" aria-busy={pushBusy} disabled={pushBusy} onClick={() => void handlePushToggle()}>
-                {pushBusy ? <RefreshCw className="spinning" aria-hidden="true" size={16} /> : pushTurningOff ? <BellOff aria-hidden="true" size={16} /> : <BellRing aria-hidden="true" size={16} />}
-                {pushBusy ? '안전하게 반영 중…' : pushActionLabel}
+            {/* 상태를 아직 확인하는 중에는 확인 중이라고만 말한다. 확인이 끝나기 전에 "켤 수 없어요"를
+                내밀면 잠시 뒤 켤 수 있는 기기에서도 사용자가 포기한다. */}
+            {pushSettling ? (
+              <button className="notification-action is-settling" type="button" aria-busy disabled>
+                <RefreshCw className="spinning" aria-hidden="true" size={16} />
+                {pushBusy ? '안전하게 반영 중…' : '알림 상태 확인 중…'}
               </button>
+            ) : (
+              <>
+                {pushCanToggle && (
+                  <button className={`notification-action ${pushTurningOff ? 'is-on' : ''}`} type="button" onClick={() => void handlePushToggle()}>
+                    {pushTurningOff ? <BellOff aria-hidden="true" size={16} /> : <BellRing aria-hidden="true" size={16} />}
+                    {pushActionLabel}
+                  </button>
+                )}
+                {pushCanRetry && <button className="notification-retry" type="button" onClick={() => void refreshPushState()}>상태 다시 확인</button>}
+                {!pushCanToggle && !pushCanRetry && <button className="settings-disabled-action" type="button" disabled>현재 이 기기에서 알림을 켤 수 없어요</button>}
+              </>
             )}
-            {pushCanRetry && <button className="notification-retry" type="button" disabled={pushBusy} onClick={() => void refreshPushState()}>상태 다시 확인</button>}
-            {!pushCanToggle && !pushCanRetry && <button className="settings-disabled-action" type="button" disabled>현재 이 기기에서 알림을 켤 수 없어요</button>}
             <small>알림에는 이름·회사·메모를 넣지 않습니다. 빠른 이름 인식이나 일반 처리 단계는 알리지 않으며, 알림 실패가 캡처 상태를 바꾸지 않습니다.</small>
           </section>
 
           <section className="surface-card settings-job" aria-labelledby="settings-display">
-            <div className="settings-job-head"><span>04</span><div><h3 id="settings-display">화면</h3><p>읽기 편한 테마</p></div></div>
-            <div className="theme-head"><SunMoon aria-hidden="true" size={17} /><strong>화면 테마</strong></div>
+            <div className="settings-job-head"><span className="settings-job-icon" aria-hidden="true"><SunMoon size={18} /></span><div><h3 id="settings-display">화면</h3><p>읽기 편한 테마</p></div></div>
             <div className="theme-choice" role="radiogroup" aria-label="화면 테마">
               {THEME_CHOICES.map((choice) => (
                 <button key={choice.value} type="button" role="radio" aria-checked={theme === choice.value} className={theme === choice.value ? 'on' : ''} onClick={() => { setTheme(choice.value); saveThemePreference(choice.value); }}>
@@ -2244,28 +2481,48 @@ function App() {
                 </button>
               ))}
             </div>
+            {/* DEC-000093: `화면 움직임` 선택지는 두지 않는다. OS의 `움직임 줄이기`가 항상 이긴다. */}
             <small>지금은 <b>{resolvedTheme === 'dark' ? '다크' : '라이트'}</b> 화면입니다. 움직임은 휴대폰의 ‘움직임 줄이기’를 항상 존중합니다.</small>
           </section>
 
           <section className="surface-card settings-job" aria-labelledby="settings-data">
-            <div className="settings-job-head"><span>05</span><div><h3 id="settings-data">데이터·개인정보</h3><p>무엇이 어디로 가는지</p></div></div>
+            <div className="settings-job-head"><span className="settings-job-icon" aria-hidden="true"><Lock size={18} /></span><div><h3 id="settings-data">데이터·개인정보</h3><p>무엇이 어디로 가는지</p></div></div>
             <div className="boundary-note settings-boundary">
               <ShieldCheck aria-hidden="true" size={20} />
               <div>
                 <strong>개인 링크 정보는 이 기기에만 저장돼요.</strong>
                 <p>명함과 개인 링크 코드는 <b>{trustedApiHost}</b>로만 전송됩니다. 주소창의 코드는 바로 지워 화면 공유와 방문 기록에 남지 않게 합니다.</p>
-                <p>Deep Research도 공개·합법 출처만 사용합니다. 로그인 자료, 가족·집주소, 정치·종교·건강 추론은 차단합니다.</p>
               </div>
+            </div>
+            {/* 이 기기의 데이터를 지우는 일은 "데이터·개인정보"가 소유한다 — 예전에는 계정 묶음 안에
+                있었고, 그래서 이 묶음에는 조작이 하나도 없는 설명 카드만 남았다.
+                파괴적 동작은 결과를 먼저 말하고 확인을 받는다 (계약 §4). */}
+            <div className="settings-danger">
+              <strong>이 기기에서 연결 해제</strong>
+              <p>개인 링크와 기기 내 브리핑·검색 기록을 지웁니다. 서버 기록과 전송 대기 중인 촬영은 지우지 않습니다.</p>
+              <IonButton fill="outline" color="danger" expand="block" disabled={!config.token} onClick={() => setSignOutOpen(true)}>연결 해제</IonButton>
             </div>
           </section>
 
           <section className="surface-card settings-job" aria-labelledby="settings-help">
-            <div className="settings-job-head"><span>06</span><div><h3 id="settings-help">도움말·버전</h3><p>문제를 진단하고 알려줄 정보</p></div></div>
+            <div className="settings-job-head"><span className="settings-job-icon" aria-hidden="true"><CircleHelp size={18} /></span><div><h3 id="settings-help">도움말·버전</h3><p>문제를 진단하고 알려줄 정보</p></div></div>
             <div className="help-actions">
-              <button type="button" onClick={() => void manualRefresh()}><RefreshCw aria-hidden="true" size={16} /> 연결 다시 확인</button>
               <button type="button" onClick={() => { setTab('activity'); contentRef.current?.scrollToTop(250); }}><Waves aria-hidden="true" size={16} /> 진행 화면 열기</button>
             </div>
-            <p>문제가 계속되면 버전과 빌드 값을 함께 전달해주세요. 연결 주소나 개인 링크 코드는 보내지 마세요.</p>
+            {/* 다른 묶음에서 옮겨 온 운영 설명은 여기 한 곳에 모아 두고, 기본은 접어 둔다
+                (ISS-000217 해결 조건: read-only 상태·운영 설명은 더 적절한 surface로 이동한다). */}
+            <button className="settings-help-toggle" type="button" aria-expanded={settingsHelpOpen} onClick={() => setSettingsHelpOpen((value) => !value)}>
+              <ChevronRight className={settingsHelpOpen ? 'expanded' : ''} aria-hidden="true" size={16} />
+              <span>이 앱이 어떻게 동작하는지</span>
+            </button>
+            {settingsHelpOpen && (
+              <div className="settings-help-body">
+                <p>촬영 원본은 전송이 확인된 뒤 기기에서 정리합니다. 전파가 약하면 기기에 저장했다가 자동으로 다시 보냅니다.</p>
+                <p>진행 화면은 앱이 보일 때 자동으로 갱신되고, 각 목록의 <b>새로고침</b>으로 순서를 앞당길 수 있습니다.</p>
+                <p>Deep Research는 공개·합법 출처만 사용합니다. 로그인 자료, 가족·집주소, 정치·종교·건강 추론은 차단합니다.</p>
+                <p>문제가 계속되면 아래 버전과 빌드 값을 함께 전달해주세요. 연결 주소나 개인 링크 코드는 보내지 마세요.</p>
+              </div>
+            )}
             <p className="build-line">버전 {APP_VERSION} · 빌드 {__CARD_CAPTURE_BUILD_ID__}</p>
           </section>
         </div>
@@ -2280,15 +2537,12 @@ function App() {
           <IonToolbar>
             <div className="app-header">
               <span className="brand-mark" aria-hidden="true">K</span>
+              {/* 상단 바는 화면 이름과 한 줄 상태를 소유한다. 갱신 조작은 소유하지 않는다 —
+                  갱신할 목록을 가진 구획이 자기 새로고침을 하나씩 갖는다 (ISS-000050). */}
               <span className="app-header-copy">
                 <b>{screenTitles[tab]}</b>
                 <small role="status">{headerStatus}</small>
               </span>
-              {tab !== 'settings' && (
-                <button className="header-refresh" type="button" aria-label="최신 상태 확인" aria-busy={loading} onClick={() => void manualRefresh()}>
-                  <RefreshCw className={loading ? 'spinning' : ''} aria-hidden="true" size={17} />
-                </button>
-              )}
             </div>
           </IonToolbar>
         </IonHeader>
@@ -2463,6 +2717,50 @@ function App() {
 
 function EmptyState({ title, body, action, onAction }: { title: string; body: string; action?: string; onAction?: () => void }) {
   return <section className="empty-state"><span className="empty-icon"><ShieldCheck aria-hidden="true" size={23} /></span><h2>{title}</h2><p>{body}</p>{action && onAction && <button onClick={onAction}>{action}</button>}</section>;
+}
+
+/**
+ * 갱신할 목록을 가진 구획이 하나씩 갖는 새로고침 조작 (표면 설계 계약 §2).
+ *
+ * v2.20.0에는 같은 `manualRefresh()`를 부르는 조작이 네 화면에 여섯 개 있었다 —
+ * 상단 아이콘(캡처·진행·검색) + 캡처 인라인 + `진행 새로고침` + 설정의 `지금 처리 상태 확인`·
+ * `연결 다시 확인`. 어느 것도 무엇을 갱신하는지 말하지 않았고 이름도 두 벌이었다.
+ *
+ * 두 가지가 이 컴포넌트의 계약이다.
+ *  1. **회전은 실제 요청이 떠 있는 동안에만** 존재한다. 자동 갱신이 켜져 있다는 정책은 정적인
+ *     글자로 말한다 — 정책을 애니메이션으로 표현한 것이 ISS-000050의 원래 결함이다.
+ *  2. 요청이 떠 있어도 **누를 수 있다**. 이 버튼은 "지금 순번을 앞당겨 달라"는 뜻이고, 진행 중인
+ *     조회 뒤에 최신 조회를 한 번 더 예약한다(우선 갱신). 여기서 비활성화하면 사용자가 자기
+ *     작업 직후의 상태를 확인할 방법이 사라진다.
+ */
+// 상태 기계는 `services/refresh-orchestrator`가 소유한다. 화면이 하나 더 갖는 상태는 `offline`뿐이다 —
+// 오프라인은 "실패"가 아니라 "지금은 물어볼 수 없음"이라 재시도 문구를 내밀면 거짓말이 된다.
+type SurfaceRefreshState = RefreshState | 'offline';
+
+function RefreshControl({ state, statusText, disabled, onRefresh }: {
+  state: SurfaceRefreshState;
+  statusText: string;
+  disabled: boolean;
+  onRefresh: () => void;
+}) {
+  const busy = state === 'in-flight';
+  return (
+    <div className={`refresh-control is-${state}`}>
+      <button
+        className="refresh-action"
+        type="button"
+        aria-label={busy ? REFRESH_BUSY_LABEL : REFRESH_IDLE_LABEL}
+        aria-busy={busy}
+        disabled={disabled}
+        onClick={onRefresh}
+      >
+        <RefreshCw className={busy ? 'spinning' : ''} aria-hidden="true" size={16} />
+        <span>{REFRESH_IDLE_LABEL}</span>
+      </button>
+      {/* 실패는 낭독기가 즉시 알려야 하고(`alert`), 나머지는 하던 일을 끊지 않는다(`status`). */}
+      <span className="refresh-status" role={state === 'failure' ? 'alert' : 'status'}>{statusText}</span>
+    </div>
+  );
 }
 
 export default App;

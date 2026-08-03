@@ -96,10 +96,13 @@ function candidatePwa(): Plugin {
 const CACHE = ${JSON.stringify(cacheName)};
 const CACHE_PREFIX = 'cardcapture-next-';
 const SHELL = ${JSON.stringify(shell)};
+/* 알림 버튼 문구는 승인안(INT-000025 Thread 2 · DEC-000092) 그대로다. 잠금화면에서 버튼 하나만
+   보고도 무엇을 하러 들어가는지 알아야 하므로 '내용 보완'·'문제 확인' 같은 절단형은 쓰지 않는다.
+   문구·목적지는 이 워커가 소유한다 — 발신자 입력은 절대 여기에 닿지 않는다. */
 const PUSH_COPY = Object.freeze({
   final_result: Object.freeze({ title: '처리가 끝났어요', body: '최종 결과를 확인할 수 있어요.', action: '결과 보기' }),
-  human_input_required: Object.freeze({ title: '내용 확인이 필요해요', body: '앱에서 필요한 내용을 보완해 주세요.', action: '내용 보완' }),
-  recovery_required: Object.freeze({ title: '처리를 이어가야 해요', body: '앱에서 문제를 확인하고 다시 시도해 주세요.', action: '문제 확인' }),
+  human_input_required: Object.freeze({ title: '내용 확인이 필요해요', body: '앱에서 필요한 내용을 보완해 주세요.', action: '필요한 내용 보완' }),
+  recovery_required: Object.freeze({ title: '처리를 이어가야 해요', body: '앱에서 문제를 확인하고 다시 시도해 주세요.', action: '다시 시도·문제 보기' }),
 });
 const PUSH_TARGET = /^[A-Za-z0-9_-]{4,80}$/;
 const PUSH_EVENT_ID = /^pne-[a-f0-9]{64}$/;
