@@ -277,6 +277,12 @@ test('never lets undo fight with the next capture or with a capture the server a
   await page.route('https://api.example.test/**', async (route) => {
     const request = route.request();
     if (request.method() === 'POST') {
+      // 알림 구독 조회(`push*`)는 캡처 업로드가 아니다 — 섞이면 `undefined`가 목록을 오염시킨다.
+      const pushProbe = JSON.parse(request.postData() ?? '{}') as { action?: string };
+      if (pushProbe.action?.startsWith('push')) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, enabled: false }) });
+        return;
+      }
       posted.push(String((JSON.parse(request.postData() ?? '{}') as { captureId?: string }).captureId));
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
       return;

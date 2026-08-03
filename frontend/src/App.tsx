@@ -16,9 +16,9 @@ import {
   IonToolbar,
   setupIonicReact,
 } from '@ionic/react';
-import { Camera, ChevronRight, FileText, ImageOff, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, Waves } from 'lucide-react';
+import { Bell, Camera, ChevronRight, CircleAlert, FileText, ImageOff, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, Waves } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 릴리즈 버전은 저장소가 선언한 값 하나만 쓴다 (founder 지시 2026-07-27: "버전이 설정에 표기되었으면 함").
 // `package.json`은 이미 빌드 식별자의 해시 입력이므로 값이 바뀌면 식별자도 함께 바뀐다 —
 // 벽시계·환경변수와 달리 빌드마다 달라지지 않아 재현성 계약(eval/build-reproducibility.test.js)을 깨지 않는다.
@@ -66,8 +66,17 @@ import {
 } from './services/capture-context';
 import { buildLegacyNote, buildQueuedCapture, parseLegacyNote, restoredDraftOf } from './services/capture-item';
 import { actionErrorMessage, briefListTitle, briefNameMap, briefTitle, elapsedMinutesOf } from './services/brief-view';
-import { captureProgress, refreshHint } from './services/capture-progress';
+import {
+  captureAttentionOf,
+  captureProgress,
+  captureStageStats,
+  lastUpdatedText,
+  syncCaptureStageTelemetry,
+} from './services/capture-progress';
 import { refreshCadenceMs } from './services/refresh-cadence';
+import { createRefreshOrchestrator, refreshIdleText, type RefreshStatus } from './services/refresh-orchestrator';
+import { stageWidthPercents } from './services/stage-weights';
+import { disablePushNotifications, enablePushNotifications, inspectPushState, type PushState, type PushStatus } from './services/push';
 import { contactCardFromBrief } from './services/contacts';
 import { getOpenCvWorker, prefetchOpenCv } from './services/opencv';
 import { getCardQuadModelWorker, prefetchCardQuadModelAssets } from './services/card-quad-model';
@@ -107,7 +116,6 @@ import {
   loadRuntimeConfigDetailed,
   loadSectionCollapsed,
   loadStickyCaptureContext,
-  loadMotionPreference,
   loadThemePreference,
   saveCachedBriefs,
   saveGalleryFree,
@@ -116,14 +124,11 @@ import {
   saveRuntimeConfig,
   saveSectionCollapsed,
   saveStickyCaptureContext,
-  saveMotionPreference,
   saveThemePreference,
   signOutDevice,
-  type MotionPreference,
   type ThemePreference,
 } from './services/storage';
 import { applyTheme, resolveTheme, systemPrefersDark, THEME_CHOICES, watchSystemTheme } from './services/theme';
-import { applyMotion, MOTION_CHOICES, resolveMotion, systemPrefersReducedMotion, watchSystemMotion } from './services/motion';
 import { holdSafeAreaInset } from './services/viewport-shell';
 import { apiRejectionMessage, canEditApiEndpoint } from './services/api-origin';
 import { scrubCredentialParams } from './services/url-credentials';
@@ -154,6 +159,59 @@ const screenTitles: Record<Tab, string> = {
   people: '사람 찾기',
   settings: '내 앱 설정',
 };
+
+/* 알림 상태 문구. 상태마다 "지금 무엇이 사실인지"와 "그래서 무엇을 할 수 있는지"를 함께 말한다.
+   `error`·`offline`이라도 캡처와 처리는 그대로라는 것을 반드시 밝힌다 — 알림은 부가 통로이고,
+   그것이 실패했다고 사용자가 자기 명함이 사라졌다고 오해하면 안 된다 (ISS-000045). */
+const pushStatusCopy: Record<PushStatus, { title: string; body: string }> = {
+  checking: { title: '알림 상태를 확인하고 있어요', body: '브라우저와 전송 서버가 연결되는지 확인합니다.' },
+  disconnected: { title: '개인 링크 연결이 필요해요', body: '먼저 받은 개인 링크로 이 기기를 연결해 주세요.' },
+  unsupported: { title: '이 브라우저는 닫힌 앱 알림을 지원하지 않아요', body: '진행 화면을 열면 최신 상태를 계속 확인할 수 있습니다.' },
+  denied: { title: '브라우저에서 알림이 차단됐어요', body: 'Chrome의 이 사이트 설정에서 알림을 허용한 뒤 다시 확인해 주세요.' },
+  offline: { title: '오프라인이라 알림 설정을 확인할 수 없어요', body: '이 기기에서 끄기는 가능하며, 연결되면 서버 상태를 다시 확인합니다.' },
+  server_disabled: { title: '안전한 전송 준비가 아직 끝나지 않았어요', body: 'VAPID 전송이 활성화되기 전에는 진행 화면이 정확한 기준입니다.' },
+  capable: { title: '닫힌 앱 알림을 켤 수 있어요', body: '버튼을 누를 때만 브라우저가 알림 권한을 요청합니다.' },
+  off: { title: '닫힌 앱 알림이 꺼져 있어요', body: '원할 때 다시 켤 수 있고, 언제든 이 기기에서 해제할 수 있습니다.' },
+  subscribed: { title: '닫힌 앱 알림이 켜져 있어요', body: '앱을 닫아도 꼭 확인해야 하는 세 경우에만 알려드립니다.' },
+  stale: { title: '알림 구독을 안전하게 정리하지 못했어요', body: '이 기기 구독이 남았을 수 있습니다. 연결 상태를 확인하고 다시 꺼 주세요.' },
+  error: { title: '알림 상태를 확인하지 못했어요', body: '캡처와 처리는 그대로입니다. 잠시 뒤 상태를 다시 확인해 주세요.' },
+};
+
+/* 사용자에게 보여 줄 "왜 확인이 필요한가". 서버의 `reasonCode`를 그대로 찍지 않는다 —
+   `identity_ambiguous`는 사용자에게 아무 뜻도 아니고, 내부 어휘를 화면에 흘리는 것이기도 하다. */
+const attentionReasonCopy: Record<string, string> = {
+  unreadable_capture: '사진에서 글자를 읽지 못했어요',
+  missing_required_side: '명함의 다른 면이 더 필요해요',
+  identity_ambiguous: '누구의 명함인지 확정하지 못했어요',
+};
+
+/* 알림이 넘겨주는 값은 URL 파라미터 하나뿐이고, 그것도 captureId 모양일 때만 받는다.
+   알림 payload는 절대 목적지 URL을 주지 않는다 — 열 화면은 앱이 정한다 (ISS-000110 경계). */
+function initialNotificationFocus(): string {
+  const focus = new URLSearchParams(globalThis.location?.search ?? '').get('focus') ?? '';
+  return /^[A-Za-z0-9_-]{4,80}$/.test(focus) ? focus : '';
+}
+
+function initialRecoveryFocus(): string {
+  const search = new URLSearchParams(globalThis.location?.search ?? '');
+  return search.get('notice') === 'recovery_required' ? initialNotificationFocus() : '';
+}
+
+/**
+ * 단계 막대의 칸 폭. 관측이 충분할 때만 소요시간 중앙값에 비례한다 (DEC-000092).
+ *
+ * 폭은 디자인 값이 아니라 **관측 데이터**라서 CSS가 아니라 여기서만 나올 수 있다. 관측이
+ * 3회 미만이거나 편차가 크면 폭을 꾸미지 않고 균등 칸으로 되돌린다 — 그 경우 폭은 시간에 대해
+ * 아무 말도 하지 않으며, 대신 `progress.detail`이 그 사실을 글로 말한다.
+ */
+function stageTrackStyle(progress: ReturnType<typeof captureProgress>): CSSProperties | undefined {
+  const { weighting } = progress;
+  const aligned = weighting.confident
+    && weighting.weights.length === progress.stages.length
+    && weighting.weights.every((weight, index) => weight.key === progress.stages[index].key);
+  if (!aligned) return undefined;
+  return { gridTemplateColumns: stageWidthPercents(weighting).map((percent) => `${percent}fr`).join(' ') };
+}
 
 type SearchMode = 'quick' | 'recall';
 
@@ -284,6 +342,9 @@ function App() {
   const [message, setMessage] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  // 다른 묶음에서 내려온 운영 설명은 `도움말·버전` 안에 접어 둔다 (ISS-000217 · DEC-000093).
+  // 기본이 접힘인 이유: 읽기만 하는 글이 조작과 같은 자리를 차지하던 것이 이번 결함의 내용이다.
+  const [settingsHelpOpen, setSettingsHelpOpen] = useState(false);
   const [nameOnboardOpen, setNameOnboardOpen] = useState(false);
   const [nameDraft, setNameDraft] = useState('');
   const [query, setQuery] = useState('');
@@ -315,12 +376,9 @@ function App() {
   const [theme, setTheme] = useState<ThemePreference>(loadThemePreference);
   const [osPrefersDark, setOsPrefersDark] = useState(systemPrefersDark);
   const resolvedTheme = resolveTheme(theme, osPrefersDark);
-  // 화면 움직임 (founder 판정 2026-07-28). 폰의 `움직임 최소화`가 켜져 있으면 AI 표면의 빛이
-  // 하나도 그려지지 않는다 — 그건 결함이 아니라 존중이지만, **왜 안 보이는지 말해 주고 직접 켤 수도**
-  // 있어야 한다. 그래서 OS 설정은 기본값이지 잠금장치가 아니다.
-  const [motion, setMotion] = useState<MotionPreference>(loadMotionPreference);
-  const [osPrefersReducedMotion, setOsPrefersReducedMotion] = useState(systemPrefersReducedMotion);
-  const resolvedMotion = resolveMotion(motion, osPrefersReducedMotion);
+  // 화면 움직임에는 사용자 선택지를 두지 않는다 (ISS-000217 · DEC-000093). 움직임은 고르는 값이
+  // 아니라 제품의 동작이고, 폰의 `움직임 줄이기`는 예외 없이 존중한다 — 그 존중은 이제 JS 상태가
+  // 아니라 `app.css`의 `@media (prefers-reduced-motion: reduce)` 하나가 소유한다.
   /**
    * 지금 **실제로 서버에 올리고 있는** captureId. 없으면 보내는 중이 아니다 (FI-034).
    *
@@ -382,6 +440,19 @@ function App() {
   // 자동 새로고침 안내용: 마지막 갱신 시각과 현재 시각(1초 tick).
   const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
   const [clockTick, setClockTick] = useState(() => Date.now());
+  // 사용자가 직접 누르는 갱신의 상태. 자동 갱신이 켜져 있다는 사실과 **지금 요청이 오가는 중**은
+  // 서로 다른 사실이라 한 기호(회전)로 합치지 않는다 (ISS-000050 · DEC-000092).
+  const [refreshStatus, setRefreshStatus] = useState<RefreshStatus | null>(null);
+  // 단계별 관측 소요시간. 폭을 꾸미지 않고 실제로 재서 쓰기 위한 값이다.
+  const [stageStats, setStageStats] = useState(() => captureStageStats());
+  const [pushState, setPushState] = useState<PushState>({ status: 'checking' });
+  const [pushBusy, setPushBusy] = useState(false);
+  // 알림이 넘겨준 대상. 목록에 실제로 그 항목이 있을 때만 소비하고, 소비 즉시 주소창에서 지운다.
+  const notificationFocusRef = useRef(initialNotificationFocus());
+  // 알림이 가리킨 항목이 첫 페이지에 없을 수 있다. 유계로만 더 읽는다 — 무한히 거슬러 올라가면
+  // 지워진 항목을 가리키는 알림 하나가 목록 전체를 끝까지 당긴다.
+  const notificationFocusLoadsRef = useRef(0);
+  const [recoveryFocusId, setRecoveryFocusId] = useState(() => initialRecoveryFocus());
   const [quickName, setQuickName] = useState<QuickName | null>(null);
   const [nameText, setNameText] = useState('');
   const [ocrState, setOcrState] = useState(QUICK_NAME_STATUS_COPY.idle);
@@ -456,6 +527,9 @@ function App() {
         const hasMore = response.hasMore === true;
         setHasMoreBriefs(hasMore);
         setRefreshedAt(Date.now());
+        // 서버가 증명한 단계 전이만 관측으로 남긴다. 화면이 추측한 진행은 절대 표본이 되지 않는다 —
+        // 추측을 표본으로 삼으면 그 다음 추측이 자기 자신을 근거로 삼는다 (DEC-000092).
+        setStageStats(syncCaptureStageTelemetry({ briefs: nextBriefs, queue: integrity.healthy }));
         return { count: nextBriefs.length, hasMore };
       } finally {
         if (session === refreshSessionRef.current) setLoading(false);
@@ -473,16 +547,58 @@ function App() {
     await refresh(ensureFresh).catch(() => undefined);
   }, [refresh]);
 
+  /* 사용자가 직접 누르는 갱신(priority refresh). 브라우저 새로고침이 아니라 이 통로를 쓴다 —
+     페이지를 다시 읽으면 촬영 초안과 전송 대기 큐가 화면에서 사라진 것처럼 보인다.
+     늦게 도착한 이전 응답이 새 응답을 덮는 것은 다듬기가 아니라 정확성 결함이므로 세대로 막는다.
+     `refresh`는 render마다 새로 만들어지지만 orchestrator는 세대를 들고 있어야 해서
+     ref로 최신 함수만 넘긴다 (ISS-000050 · DEC-000092). */
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  const refreshOrchestrator = useMemo(() => createRefreshOrchestrator({
+    run: () => refreshRef.current(true),
+    onStatus: setRefreshStatus,
+  }), []);
+  // 성공 문구(`방금 업데이트`)를 잠깐 띄웠다 idle로 돌려보내는 것은 orchestrator가 판정한다.
+  useEffect(() => { refreshOrchestrator.tick(clockTick); }, [clockTick, refreshOrchestrator]);
+  // 연결이 바뀌면 떠 있던 갱신 결과는 새 연결에 속하지 않는다.
+  useEffect(() => { refreshOrchestrator.reset(); }, [refreshOrchestrator, refreshCallbackSession]);
+
+  /* 알림 상태 확인. 이 경로는 **권한 창을 절대 띄우지 않는다** — 창은 사용자가 켜기를 누를 때만
+     뜬다. 화면을 열자마자 권한을 묻는 앱이 되면 사용자는 내용을 알기 전에 거절하고, 한 번 거절된
+     권한은 브라우저 설정에 들어가야 되돌릴 수 있다 (ISS-000045). */
+  const refreshPushState = useCallback(async () => {
+    setPushState(await inspectPushState(config));
+  }, [config]);
+
+  useEffect(() => { void refreshPushState(); }, [refreshPushState]);
+
+  const handlePushToggle = useCallback(async () => {
+    if (pushBusy) return;
+    setPushBusy(true);
+    setPushState({ status: 'checking' });
+    // 끄기는 서버에 닿지 못해도 이 기기에서 먼저 끝난다 — 오프라인이라고 해제가 막히면 안 된다.
+    const turningOff = pushState.status === 'subscribed'
+      || pushState.detail === 'local_subscription'
+      || (pushState.status === 'stale' && pushState.detail === 'cleanup_pending');
+    // `enablePushNotifications`가 권한 창을 여므로 클릭 continuation에서 바로 호출한다.
+    // 사이에 다른 await를 끼우면 폰에서 사용자 조작 인정(transient activation)이 풀린다.
+    const next = turningOff ? await disablePushNotifications(config) : await enablePushNotifications(config);
+    setPushState(next);
+    setPushBusy(false);
+  }, [config, pushBusy, pushState]);
+
   // 수동 새로고침은 즉시 진행 토스트 → 완료/실패 토스트로 반응한다 (2026-07-26 실폰 피드백 7).
   const manualRefresh = useCallback(async () => {
     setMessage('새로고침 중…');
-    try {
-      await refresh(true);
-      setMessage((current) => current === '' || current === '새로고침 중…' ? '새로고침 완료 — 최신 상태예요' : current);
-    } catch (error) {
-      setMessage(`새로고침 실패: ${actionErrorMessage(error)}`);
+    const outcome = await refreshOrchestrator.request('priority');
+    // 내가 기다리는 사이 더 새로운 갱신이 화면을 이미 바꿨다면 이 결과로 덮어쓰지 않는다.
+    if (outcome.stale) return;
+    if (outcome.error) {
+      setMessage(`새로고침 실패: ${actionErrorMessage(outcome.error)}`);
+      return;
     }
-  }, [refresh]);
+    setMessage((current) => current === '' || current === '새로고침 중…' ? '새로고침 완료 — 최신 상태예요' : current);
+  }, [refreshOrchestrator]);
 
   // `예전 기록 더 보기` (FI-100). 서버가 offset·hasMore로 과거 기록 전체를 줄 수 있으므로
   // 화면도 끝까지 갈 수 있어야 한다. 무엇이 일어났는지는 낭독기에도 들리게 알린다.
@@ -626,12 +742,6 @@ function App() {
 
   useEffect(() => watchSystemTheme(setOsPrefersDark), []);
 
-  useEffect(() => {
-    applyMotion(resolveMotion(motion, osPrefersReducedMotion));
-  }, [motion, osPrefersReducedMotion]);
-
-  useEffect(() => watchSystemMotion(setOsPrefersReducedMotion), []);
-
   // 탭 바가 스크롤 중에 오르내리지 않도록 아래 safe-area 여백을 고정한다 (INT-000016 항목 001).
   useEffect(() => holdSafeAreaInset(), []);
 
@@ -678,12 +788,57 @@ function App() {
     return entries.sort((a, b) => b.id.localeCompare(a.id));
   }, [briefs, queue]);
 
-  // "언제 저절로 갱신되는지"를 화면에 그대로 보여 준다 (founder 판정 2026-07-26).
-  const sinceRefresh = refreshedAt === null ? null : (clockTick - refreshedAt) / 60_000;
-  const untilRefresh = refreshedAt === null
-    ? refreshIntervalMs / 1000
-    : Math.min(refreshIntervalMs / 1000, Math.max(0, (refreshIntervalMs - (clockTick - refreshedAt)) / 1000));
-  const autoRefreshHint = refreshHint(untilRefresh, sinceRefresh);
+  /* 알림 payload는 절대 목적지 URL을 주지 않고 허용된 captureId 하나만 준다. 목록에 실제 항목이
+     도착했을 때만 펼치고 포커스를 옮긴다. 소비하는 즉시 주소창에서 `focus`·`notice`를 지운다 —
+     남겨 두면 새로고침할 때마다 같은 알림이 다시 열리고, 공유된 주소가 남의 화면에서도 열린다. */
+  useEffect(() => {
+    const focusId = notificationFocusRef.current;
+    if (!focusId) return;
+    const consumeFocusParams = () => {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('focus');
+      url.searchParams.delete('notice');
+      window.history.replaceState(window.history.state, '', url.href);
+    };
+    const feedIndex = feed.findIndex((entry) => entry.id === focusId);
+    if (feedIndex < 0) {
+      if (hasMoreBriefs && notificationFocusLoadsRef.current < 3 && !loadingMore) {
+        notificationFocusLoadsRef.current += 1;
+        void loadMoreBriefs();
+      } else if (!loadingMore && !loading && refreshedAt !== null) {
+        // 끝내 못 찾았다. 그래도 진행 화면은 열어 준다 — 알림을 눌렀는데 아무 일도 없으면 안 된다.
+        notificationFocusRef.current = '';
+        setTab('activity');
+        consumeFocusParams();
+      }
+      return;
+    }
+
+    if (!feed[feedIndex].brief) return;
+    notificationFocusRef.current = '';
+    setTab('activity');
+    setRecordsCollapsed(false);
+    setFeedLimit((current) => Math.max(current, feedIndex + 1));
+    setExpandedBriefs((current) => new Set(current).add(focusId));
+    consumeFocusParams();
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      const card = document.getElementById(`capture-${focusId}`);
+      card?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      card?.querySelector<HTMLButtonElement>('.brief-summary')?.focus({ preventScroll: true });
+    }));
+  }, [feed, hasMoreBriefs, loadMoreBriefs, loading, loadingMore, refreshedAt]);
+
+  /* 갱신 상태 한 줄. 예전에는 `N초 뒤 자동 새로고침` 카운트다운이었는데, 그 숫자는 **지켜지지
+     않는 약속**이었다 — 탭이 가려지면 타이머가 멈추고, 요청이 늦으면 0에서 머문다. 남은 시간을
+     지어내지 않고 지금 아는 사실만 말한다: 자동 갱신이 켜져 있다는 것과 마지막으로 언제 받았는지.
+     요청이 실제로 오가는 중일 때만 `갱신 중`, 끝나면 `방금 업데이트`/`갱신 실패 · 다시 시도`.
+     (ISS-000050 · DEC-000092: 가짜 정밀 ETA 금지) */
+  const lastRefreshAgoMs = refreshedAt === null ? null : clockTick - refreshedAt;
+  const autoRefreshHint = refreshStatus && refreshStatus.state !== 'idle'
+    ? refreshStatus.text
+    : refreshIdleText({ autoRefreshOn: configured, lastSuccessAgoMs: lastRefreshAgoMs });
+  const refreshBusy = refreshStatus?.busy === true;
+  const refreshActionLabel = refreshStatus?.label ?? '새로고침';
 
   // 지금 올리고 있는 촬영의 표시 이름. 없으면 빈 문자열이다.
   const sendingItem = useMemo(
@@ -892,6 +1047,10 @@ function App() {
   function commitSignOut() {
     refreshSessionRef.current += 1;
     refreshQueuedSessionRef.current = null;
+    // 개인 링크를 끊은 뒤에도 이 기기가 알림을 계속 받으면 안 된다. 서버에 닿지 못해도 브라우저
+    // 구독은 이 기기에서 먼저 끊기므로 네트워크 상태와 무관하게 호출한다 (ISS-000045).
+    void disablePushNotifications(config);
+    setPushState({ status: 'disconnected' });
     signOutDevice();
     const next: RuntimeConfig = { apiUrl: config.apiUrl, token: '', capturer: '' };
     setConfig(next);
@@ -1273,13 +1432,16 @@ function App() {
       setMessage(response.alreadyTerminal
         ? (response.status === 'skipped' ? '이미 건너뜀으로 마감됐어요' : '이미 처리가 끝났어요 — 최신 상태로 바꿀게요')
         : response.deduped ? '이미 다시 처리 중이에요' : '다시 처리를 요청했어요 — 몇 분 안에 처리돼요');
+      // 복구 안내는 그 항목을 실제로 다시 걸었으면 역할이 끝났다. 남겨 두면 이미 처리한 일을
+      // 계속 재촉하는 화면이 된다.
+      if (recoveryFocusId === captureId) setRecoveryFocusId('');
       await refresh(true).catch(() => undefined);
     } catch (error) {
       setMessage(`재처리 실패: ${actionErrorMessage(error)}`);
     } finally {
       setRequeueingId('');
     }
-  }, [config, refresh, requeueingId]);
+  }, [config, recoveryFocusId, refresh, requeueingId]);
 
   function renderQueueRow(item: CaptureQueueItem) {
     const imageSource = queueImageSource(item);
@@ -1326,7 +1488,16 @@ function App() {
   function renderBriefCard(item: BriefItem, local: CaptureQueueItem | null) {
     const expanded = expandedBriefs.has(item.captureId);
     const minutes = elapsedMinutesOf(item);
-    const progress = captureProgress({ brief: item, queue: local, elapsedMinutes: minutes });
+    const progress = captureProgress({
+      brief: item,
+      queue: local,
+      elapsedMinutes: minutes,
+      stageStats,
+      refreshedAgoMs: lastRefreshAgoMs,
+    });
+    // 서버가 "사람이 손대야 넘어간다"고 표시한 항목. 재시도로는 풀리지 않으므로 다시 처리 버튼과
+    // 다른 행동을 준다 (ISS-000045: 알림 3종 중 `내용 확인`이 여는 자리).
+    const attention = captureAttentionOf(item);
     const title = briefTitle(item);
     // 목록에는 "이름 — 한 줄 요약"을 보여 준다 (founder 판정 2026-07-26: 전부 "이런 분이에요"라 구분이 안 됨).
     const listTitle = briefListTitle(item);
@@ -1335,23 +1506,41 @@ function App() {
     const actionable = item.status === 'processed' && item.type !== 'note' && item.type !== 'research_instruction';
     const localContext = local ? queueContextLine(local) : '';
     return (
-      <article className="brief-card" key={item.captureId}>
+      <article className={`brief-card ${attention ? 'needs-attention' : ''}`} key={item.captureId} id={`capture-${item.captureId}`}>
         <button className="brief-summary" type="button" onClick={() => toggleBrief(item.captureId)} aria-expanded={expanded}>
           <div className="avatar" aria-hidden="true">{listTitle.slice(0, 1)}</div>
           <div className="row-copy">
             <strong>{listTitle}</strong>
             <span>{formatMoment(item.receivedAt || item.capturedAt)}{item.event ? ` · ${item.event}` : ''}{item.capturer ? ` · 촬영 ${item.capturer}` : ''}</span>
           </div>
-          <StatusBadge status={item.status} />
+          {attention
+            ? <span className="status-badge status-attention"><CircleAlert aria-hidden="true" size={13} strokeWidth={2.2} />확인 필요</span>
+            : <StatusBadge status={item.status} />}
           <ChevronRight className={expanded ? 'expanded' : ''} aria-hidden="true" size={17} />
         </button>
+        {/* 사람이 손대야 넘어가는 항목. 단계 막대와 같은 문장을 두 번 찍지 않는다 — 여기는
+            `무엇을 해야 하는지`만, 아래 막대는 `서버가 어디까지 갔는지`만 말한다. */}
+        {attention && (
+          <section className="attention-recovery" aria-label="내용 확인 필요">
+            <div className="attention-copy">
+              <strong>내용 확인이 필요해요</strong>
+              <p>{attentionReasonCopy[attention.reasonCode] ?? '확인이 조금 더 필요해요'}</p>
+            </div>
+            <div className="attention-actions">
+              <button type="button" onClick={() => {
+                setExpandedBriefs((current) => new Set(current).add(item.captureId));
+                window.requestAnimationFrame(() => document.getElementById(`capture-${item.captureId}`)?.querySelector<HTMLButtonElement>('.brief-summary')?.focus());
+              }}><PenLine aria-hidden="true" size={13} />내용 보완</button>
+            </div>
+          </section>
+        )}
         {!progress.done && (
-          <div className={`stage-track ${progress.late ? 'late' : ''} ${progress.failed ? 'failed' : ''}`}>
+          <div className={`stage-track ${progress.failed ? 'failed' : ''}`}>
             <div className="stage-head">
               <strong>{progress.headline}</strong>
               <span>{progress.detail}</span>
             </div>
-            <ol className="stage-dots" aria-label={progress.headline}>
+            <ol className="stage-dots" aria-label={progress.headline} style={stageTrackStyle(progress)}>
               {progress.stages.map((stage) => (
                 <li key={stage.key} className={`stage-${stage.state}`}>
                   <i aria-hidden="true" />
@@ -1359,7 +1548,10 @@ function App() {
                 </li>
               ))}
             </ol>
-            {progress.late && (
+            {/* 예전에는 이 행동이 `progress.late`, 즉 경과 시간이 임의 기준을 넘었을 때만 나타났다.
+                그 기준은 관측이 아니라 지어낸 값이었고, 정작 사용자가 "멈춘 것 같다"고 느끼는
+                시점과 맞지도 않았다. 기다리는 동안에는 언제나 손이 닿게 둔다 (ISS-000050). */}
+            {!progress.done && (
               <div className="stage-actions">
                 {/* 접근 이름은 고정한다 — 보이는 글자가 진행에 따라 바뀌어도 낭독기·자동화가 같은 버튼을 계속 가리킨다. */}
                 <button
@@ -1600,6 +1792,25 @@ function App() {
     return (
       <div className="cc-stack">
         {!configured && <EmptyState title="연결 설정이 필요해요" body="받으신 개인 링크(?k=토큰 포함)로 접속하면 같은 진행 상태를 읽습니다." action="설정 열기" onAction={() => { setDraftConfig(config); setSettingsOpen(true); }} />}
+        {/* `복구 필요` 알림을 눌러 들어온 자리. 무엇이 멈췄는지가 아니라 **무엇이 안전한지**를 먼저
+            말한다 — 사용자가 알림을 받고 가장 먼저 걱정하는 것은 사진이 날아갔는가다.
+            watcher 내부 어휘(`quarantine` 등)는 화면에 절대 나오지 않는다 (ISS-000045). */}
+        {recoveryFocusId && (
+          <section className="surface-card recovery-notice" role="alert" aria-label="처리 복구 필요">
+            <div className="recovery-notice-icon"><CircleAlert aria-hidden="true" size={20} /></div>
+            <div className="recovery-notice-copy">
+              <span>복구가 필요한 명함</span>
+              <strong>자동 처리가 여러 번 완료되지 않았어요</strong>
+              <p>원본과 기존 기록은 그대로입니다. 아래에서 다시 처리를 요청하면 이 항목만 안전하게 재시도합니다.</p>
+              <div className="stage-actions">
+                <button type="button" disabled={!configured || requeueingId === recoveryFocusId} onClick={() => void retryProcessing(recoveryFocusId)}>
+                  <RotateCcw aria-hidden="true" size={13} />{requeueingId === recoveryFocusId ? '요청하는 중…' : '이 항목 다시 처리'}
+                </button>
+                <button type="button" onClick={() => setRecoveryFocusId('')}>안내 닫기</button>
+              </div>
+            </div>
+          </section>
+        )}
         {/* FI-025: 손상 항목을 조용히 지우지도, 큐 전체를 막게 두지도 않는다. */}
         {damagedQueue.length > 0 && (
           <section className="surface-card damaged-card" role="status">
@@ -1844,107 +2055,188 @@ function App() {
   }
 
   function renderSettings() {
+    /* 알림 조작의 판정. `detail === 'local_subscription'`은 서버에 닿지 못했어도 이 기기에는
+       구독이 남아 있다는 뜻이라, 차단·오프라인 상태에서도 **끄기는 반드시 닿을 수 있어야 한다.**
+       끌 방법이 없는 알림은 사용자가 통제권을 잃었다고 느끼는 지점이다 (ISS-000045). */
+    const pushHasLocalSubscription = pushState.detail === 'local_subscription';
+    const pushCopy = pushHasLocalSubscription
+      ? pushState.status === 'offline'
+        ? { title: '오프라인 · 이 기기 구독은 남아 있어요', body: '지금 이 기기에서 먼저 끌 수 있고, 만료된 서버 등록은 전송 때 안전하게 정리됩니다.' }
+        : pushState.status === 'denied'
+          ? { title: '차단됐지만 이전 기기 구독이 남아 있어요', body: '브라우저 차단과 별개로 이 기기 구독을 안전하게 정리할 수 있습니다.' }
+          : { title: '전송은 멈췄고 이 기기 구독이 남아 있어요', body: '새 알림은 보내지 않으며, 원하면 이 기기 구독도 바로 정리할 수 있습니다.' }
+      : pushState.status === 'stale' && pushState.detail === 'key_changed'
+        ? { title: '알림 전송 키가 바뀌었어요', body: '기존 구독을 교체해 다시 연결하면 새 키로 안전하게 갱신됩니다.' }
+        : pushState.status === 'stale' && pushState.detail === 'registration_missing'
+          ? { title: '이 기기 알림을 다시 연결해야 해요', body: '브라우저 구독은 남아 있지만 서버 연결이 없습니다. 다시 연결하면 안전하게 복구됩니다.' }
+          : pushStatusCopy[pushState.status];
+    const pushCanToggle = ['capable', 'off', 'subscribed'].includes(pushState.status)
+      || pushState.status === 'stale'
+      || pushHasLocalSubscription;
+    const pushCanRetry = ['denied', 'offline', 'error'].includes(pushState.status);
+    const pushTurningOff = pushState.status === 'subscribed'
+      || pushHasLocalSubscription
+      || (pushState.status === 'stale' && pushState.detail === 'cleanup_pending');
+    const pushActionLabel = pushTurningOff
+      ? '이 기기 알림 끄기'
+      : pushState.status === 'stale' ? '알림 안전하게 다시 연결' : '닫힌 앱 알림 켜기';
+    // 확인이 아직 끝나지 않았는데 "켤 수 없어요"라고 단정하면 막다른 골목이 된다 —
+    // 확인 중에는 확인 중이라고만 말한다 (ISS-000217).
+    const pushSettling = pushBusy || pushState.status === 'checking';
     return (
+      // ISS-000217 · DEC-000093: 설정의 최상위는 **사용자가 하려는 일** 여섯 갈래로 묶는다.
+      // 예전에는 고를 수 있는 값과 읽기만 하는 운영 설명이 같은 무게로 나란히 있어,
+      // "여기서 내가 무엇을 정할 수 있는가"가 화면에서 보이지 않았다. 그래서
+      //   - 각 묶음에는 **지속되는 선택 · 명시적인 데이터 조작 · 문제를 알릴 때 필요한 값**만 남기고,
+      //   - 옮겨 온 운영 설명은 `도움말·버전`의 접기 하나로 모았다.
+      // 묶음 머리에 01~06 같은 번호는 붙이지 않는다 — 순서가 없는 묶음이 사양서처럼 읽힌다.
+      // 카드·간격·글자 위계는 지금 화면의 것을 그대로 쓴다. 바뀐 것은 무엇이 어디 속하느냐뿐이다.
       <div className="cc-stack">
-        <section className="surface-card settings-summary">
-          <div><span>사용자</span><strong>{config.capturer || '이름을 입력해 주세요'}</strong></div>
-          <div><span>명함 연결</span><strong>{configured ? '연결됨' : (config.token ? '연결 주소 확인 필요' : '개인 링크로 접속해 주세요')}</strong></div>
-          <div><span>개인 링크</span><strong>{config.token ? '이 기기에 저장됨' : '아직 저장되지 않음'}</strong></div>
-          <IonButton fill="outline" expand="block" onClick={() => { setDraftConfig(config); setAdvancedOpen(false); setSettingsOpen(true); }}>사용자·연결 정보 편집</IonButton>
+        <section className="settings-group" aria-labelledby="settings-job-account">
+          <h2 className="settings-group-label" id="settings-job-account">계정·연결</h2>
+          <section className="surface-card settings-summary">
+            <div><span>사용자</span><strong>{config.capturer || '이름을 입력해 주세요'}</strong></div>
+            <div><span>명함 연결</span><strong>{configured ? '연결됨' : (config.token ? '연결 주소 확인 필요' : '개인 링크로 접속해 주세요')}</strong></div>
+            <div><span>개인 링크</span><strong>{config.token ? '이 기기에 저장됨' : '아직 저장되지 않음'}</strong></div>
+            <IonButton fill="outline" expand="block" onClick={() => { setDraftConfig(config); setAdvancedOpen(false); setSettingsOpen(true); }}>사용자·연결 정보 편집</IonButton>
+          </section>
         </section>
-        {/* INT-000016 항목 003: 시스템 자동 추종만으로는 부족하다 — 직접 고르고, 고른 값은 이 기기에 남는다. */}
-        <section className="surface-card theme-card">
-          <div className="theme-head"><SunMoon aria-hidden="true" size={17} /><strong>화면 테마</strong></div>
-          <p>어두운 곳에서는 다크로 바꿔 보세요. 고른 값은 이 기기에 저장돼요.</p>
-          <div className="theme-choice" role="radiogroup" aria-label="화면 테마">
-            {THEME_CHOICES.map((choice) => (
-              <button
-                key={choice.value}
-                type="button"
-                role="radio"
-                aria-checked={theme === choice.value}
-                className={theme === choice.value ? 'on' : ''}
-                onClick={() => { setTheme(choice.value); saveThemePreference(choice.value); }}
-              >
-                <strong>{choice.label}</strong>
-                <small>{choice.hint}</small>
+
+        <section className="settings-group" aria-labelledby="settings-job-capture">
+          <h2 className="settings-group-label" id="settings-job-capture">캡처·처리</h2>
+          {/* ISS-000102: 갤러리 사본은 OS 기본 카메라 앱만 만든다. 지울 수 없는 것을 지운다고 말하지 않는다.
+              원본 정리 시점 같은 운영 설명은 도움말로 내려갔다 — 여기 남은 건 고르는 값과 그 결과뿐이다. */}
+          <section className="surface-card gallery-card">
+            <div className="gallery-head"><ImageOff aria-hidden="true" size={17} /><strong>명함 사진과 갤러리</strong></div>
+            <p>카이렌 카메라로 찍은 명함은 <b>휴대폰 갤러리에 저장되지 않아요.</b></p>
+            <label className="gallery-toggle">
+              <input
+                type="checkbox"
+                checked={galleryFree}
+                onChange={(changeEvent) => { const next = changeEvent.target.checked; setGalleryFree(next); saveGalleryFree(next); }}
+              />
+              <span>
+                <strong>기본 카메라 앱 쓰지 않기</strong>
+                <small>{galleryFree
+                  ? '켜짐 — 촬영 화면에서 기본 카메라 앱 버튼을 숨깁니다. 카메라가 열리지 않는 기기에서는 예외로 보여 줘요.'
+                  : '꺼짐 — 기본 카메라 앱으로도 찍을 수 있어요. 그 사진은 갤러리에 남고 카이렌이 지울 수 없습니다.'}</small>
+              </span>
+            </label>
+            <small className="gallery-foot">이미 갤러리에 쌓인 사진은 앱이 지울 수 없어요 — 휴대폰 갤러리에서 직접 지워 주세요.</small>
+          </section>
+        </section>
+
+        <section className="settings-group" aria-labelledby="settings-job-notify">
+          <h2 className="settings-group-label" id="settings-job-notify">알림</h2>
+          {/* 알림을 켜고 끄는 조작은 이 카드가 소유한다 (INT-000025 · `services/push.ts`).
+              조작이 붙기 전에도 이 자리가 비어 보이지 않는 이유: 켤지 말지는 **언제 오는지**와
+              **무엇이 담기는지**를 알아야 고를 수 있는 선택이라, 그 둘이 조작과 한 카드에 있어야 한다.
+              세 갈래는 화면에서 지어낸 분류가 아니라 watcher가 실제로 보내는 kind와 1:1이다
+              (final_result · human_input_required · recovery_required). 네 번째 갈래를 만들지 않는다. */}
+          <section className="surface-card notify-card">
+            <div className="notify-head"><Bell aria-hidden="true" size={17} /><strong>닫힌 앱 알림</strong></div>
+            <div className="notify-state" role="status" aria-live="polite" aria-busy={pushSettling}>
+              <strong>{pushCopy.title}</strong>
+              <p>{pushCopy.body}</p>
+            </div>
+            <ul className="notify-scope" aria-label="알림이 오는 경우">
+              <li><strong>최종 결과</strong><span>처리가 끝나 결과를 볼 수 있을 때</span></li>
+              <li><strong>내용 확인</strong><span>사진·이름 등 사람의 보완이 필요할 때</span></li>
+              <li><strong>복구 필요</strong><span>문제를 확인하고 다시 이어가야 할 때</span></li>
+            </ul>
+            {/* 상태를 아직 확인하는 중에는 확인 중이라고만 말한다. 확인이 끝나기 전에 "켤 수 없어요"를
+                내밀면 잠시 뒤 켤 수 있는 기기에서도 사용자가 포기한다. */}
+            {pushSettling ? (
+              <button className="notify-action is-settling" type="button" aria-busy disabled>
+                <RefreshCw className="spinning" aria-hidden="true" size={16} />
+                {pushBusy ? '안전하게 반영 중…' : '알림 상태 확인 중…'}
               </button>
-            ))}
-          </div>
-          <small className="theme-foot">
-            지금 보이는 화면은 <b>{resolvedTheme === 'dark' ? '다크' : '라이트'}</b>예요{theme === 'system' ? ' — 폰 설정을 따라갑니다.' : '.'}
-          </small>
+            ) : (
+              <>
+                {pushCanToggle && (
+                  <button className={`notify-action ${pushTurningOff ? 'is-on' : ''}`} type="button" onClick={() => void handlePushToggle()}>
+                    <Bell aria-hidden="true" size={16} />{pushActionLabel}
+                  </button>
+                )}
+                {pushCanRetry && <button className="notify-retry" type="button" onClick={() => void refreshPushState()}>상태 다시 확인</button>}
+                {!pushCanToggle && !pushCanRetry && <button className="notify-action is-disabled" type="button" disabled>현재 이 기기에서 알림을 켤 수 없어요</button>}
+              </>
+            )}
+            <small className="notify-foot">알림에는 이름·회사·메모를 넣지 않습니다. 빠른 이름 인식이나 일반 처리 단계는 알리지 않으며, 알림 실패가 캡처 상태를 바꾸지 않습니다.</small>
+          </section>
         </section>
-        {/* founder 판정 2026-07-28: "여전히 하이라이팅이 안 나옴".
-            폰이 `움직임 최소화`를 켜고 있으면 AI 표면의 빛은 한 픽셀도 그려지지 않는다(실측 확인).
-            그건 존중이지만 **말없이 사라지면 고장으로 읽힌다** — 지금 상태를 적고, 직접 켤 수 있게 한다. */}
-        <section className="surface-card theme-card">
-          <div className="theme-head"><Waves aria-hidden="true" size={17} /><strong>화면 움직임</strong></div>
-          <p>AI가 맡은 자리(<b>AI 조사 요청</b>·<b>AI 사람 찾기</b>)는 평소에도 은은한 빛이 지나갑니다. 고른 값은 이 기기에 저장돼요.</p>
-          <div className="theme-choice" role="radiogroup" aria-label="화면 움직임">
-            {MOTION_CHOICES.map((choice) => (
-              <button
-                key={choice.value}
-                type="button"
-                role="radio"
-                aria-checked={motion === choice.value}
-                className={motion === choice.value ? 'on' : ''}
-                onClick={() => { setMotion(choice.value); saveMotionPreference(choice.value); }}
-              >
-                <strong>{choice.label}</strong>
-                <small>{choice.hint}</small>
-              </button>
-            ))}
-          </div>
-          <small className="theme-foot">
-            지금은 <b>{resolvedMotion === 'on' ? '움직이는 중' : '멈춰 있음'}</b>이에요
-            {motion === 'system'
-              ? (osPrefersReducedMotion
-                ? ' — 이 폰이 움직임 최소화를 켜 두어서 빛이 멈춰 있습니다. 여기서 켜기를 고르면 앱에서만 다시 움직여요.'
-                : ' — 폰 설정을 따라갑니다.')
-              : '.'}
-          </small>
+
+        <section className="settings-group" aria-labelledby="settings-job-display">
+          <h2 className="settings-group-label" id="settings-job-display">화면</h2>
+          {/* INT-000016 항목 003: 시스템 자동 추종만으로는 부족하다 — 직접 고르고, 고른 값은 이 기기에 남는다. */}
+          <section className="surface-card theme-card">
+            <div className="theme-head"><SunMoon aria-hidden="true" size={17} /><strong>화면 테마</strong></div>
+            <p>어두운 곳에서는 다크로 바꿔 보세요. 고른 값은 이 기기에 저장돼요.</p>
+            <div className="theme-choice" role="radiogroup" aria-label="화면 테마">
+              {THEME_CHOICES.map((choice) => (
+                <button
+                  key={choice.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={theme === choice.value}
+                  className={theme === choice.value ? 'on' : ''}
+                  onClick={() => { setTheme(choice.value); saveThemePreference(choice.value); }}
+                >
+                  <strong>{choice.label}</strong>
+                  <small>{choice.hint}</small>
+                </button>
+              ))}
+            </div>
+            <small className="theme-foot">
+              지금 보이는 화면은 <b>{resolvedTheme === 'dark' ? '다크' : '라이트'}</b>예요{theme === 'system' ? ' — 폰 설정을 따라갑니다.' : '.'}
+            </small>
+            {/* DEC-000093: `화면 움직임`은 고르는 값이 아니다. 폰의 `움직임 줄이기`가 언제나 이기므로
+                선택지 대신 그 사실 한 줄만 남긴다 — 화면이 조용해진 이유를 여전히 여기서 읽을 수 있다. */}
+            <small className="theme-foot">화면의 움직임은 휴대폰의 <b>움직임 줄이기</b> 설정을 항상 따라갑니다.</small>
+          </section>
         </section>
-        {/* ISS-000102: 갤러리 사본은 OS 기본 카메라 앱만 만든다. 지울 수 없는 것을 지운다고 말하지 않는다. */}
-        <section className="surface-card gallery-card">
-          <div className="gallery-head"><ImageOff aria-hidden="true" size={17} /><strong>명함 사진과 갤러리</strong></div>
-          <p>카이렌 카메라로 찍은 명함은 <b>휴대폰 갤러리에 저장되지 않아요.</b> 앱 안에만 두었다가 전송이 확인되면 10분 뒤 원본을 지우고 목록용 작은 썸네일만 남깁니다.</p>
-          <label className="gallery-toggle">
-            <input
-              type="checkbox"
-              checked={galleryFree}
-              onChange={(changeEvent) => { const next = changeEvent.target.checked; setGalleryFree(next); saveGalleryFree(next); }}
-            />
-            <span>
-              <strong>기본 카메라 앱 쓰지 않기</strong>
-              <small>{galleryFree
-                ? '켜짐 — 촬영 화면에서 기본 카메라 앱 버튼을 숨깁니다. 카메라가 열리지 않는 기기에서는 예외로 보여 줘요.'
-                : '꺼짐 — 기본 카메라 앱으로도 찍을 수 있어요. 그 사진은 갤러리에 남고 카이렌이 지울 수 없습니다.'}</small>
-            </span>
-          </label>
-          <small className="gallery-foot">이미 갤러리에 쌓인 사진은 앱이 지울 수 없어요 — 휴대폰 갤러리에서 직접 지워 주세요.</small>
+
+        <section className="settings-group" aria-labelledby="settings-job-data">
+          <h2 className="settings-group-label" id="settings-job-data">데이터·개인정보</h2>
+          <section className="boundary-note">
+            <ShieldCheck aria-hidden="true" size={20} />
+            <div>
+              <strong>개인 링크 정보는 이 기기에만 저장돼요.</strong>
+              <p>연결 정보는 저장소나 로그에 넣지 않습니다.</p>
+              {/* FI-004·005: 어디로 보내지는지와, 주소창에서 코드를 지웠다는 사실을 그대로 말한다. */}
+              <p className="boundary-origin">명함과 개인 링크 코드는 <b>{trustedApiHost}</b> 로만 전송돼요. 다른 주소를 붙인 링크는 무시합니다.</p>
+              <p className="boundary-origin">개인 링크로 열면 주소창의 코드를 <b>즉시 지웁니다</b> — 방문 기록·화면 공유에 남지 않아요.</p>
+            </div>
+          </section>
+          {/* FI-007: 폰을 넘기거나 링크를 회수할 때 이 기기의 사본을 끊는 경로.
+              되돌릴 수 없는 조작이므로 무엇이 지워지고 무엇이 남는지를 누르기 전에 말한다. */}
+          <section className="surface-card signout-card">
+            <div className="signout-head"><strong>이 기기에서 연결 해제</strong></div>
+            <p>개인 링크 코드와 이 기기에 저장된 브리핑 사본·검색 기록·만남 맥락을 지웁니다. <b>전송을 기다리는 촬영은 지우지 않아요.</b></p>
+            <IonButton fill="outline" color="danger" expand="block" disabled={!config.token} onClick={() => setSignOutOpen(true)}>연결 해제</IonButton>
+          </section>
         </section>
-        <section className="boundary-note">
-          <ShieldCheck aria-hidden="true" size={20} />
-          <div>
-            <strong>개인 링크 정보는 이 기기에만 저장돼요.</strong>
-            <p>연결 정보는 저장소나 로그에 넣지 않습니다. 연결에 문제가 있을 때만 고급 설정에서 직접 확인하세요.</p>
-            {/* FI-004·005: 어디로 보내지는지와, 주소창에서 코드를 지웠다는 사실을 그대로 말한다. */}
-            <p className="boundary-origin">명함과 개인 링크 코드는 <b>{trustedApiHost}</b> 로만 전송돼요. 다른 주소를 붙인 링크는 무시합니다.</p>
-            <p className="boundary-origin">개인 링크로 열면 주소창의 코드를 <b>즉시 지웁니다</b> — 방문 기록·화면 공유에 남지 않아요.</p>
-          </div>
+
+        <section className="settings-group" aria-labelledby="settings-job-help">
+          <h2 className="settings-group-label" id="settings-job-help">도움말·버전</h2>
+          <section className="surface-card help-card">
+            <button className="section-toggle" type="button" aria-expanded={settingsHelpOpen} onClick={() => setSettingsHelpOpen((value) => !value)}>
+              <span className="caret" aria-hidden="true">{settingsHelpOpen ? '▾' : '▸'}</span> 이 앱이 어떻게 동작하는지
+            </button>
+            {settingsHelpOpen && (
+              <div className="help-body">
+                <p>촬영한 명함은 앱 안에만 두었다가, 전송이 확인되면 10분 뒤 원본을 지우고 목록용 작은 썸네일만 남깁니다.</p>
+                <p>전파가 약하면 촬영을 이 기기에 저장했다가, 연결이 돌아오거나 앱으로 되돌아올 때 자동으로 다시 보냅니다.</p>
+                <p>연결에 문제가 있을 때만 <b>사용자·연결 정보 편집</b>의 고급 설정에서 연결 주소와 개인 링크 코드를 직접 확인하세요.</p>
+              </div>
+            )}
+            {/* 두 값은 서로 다른 일을 한다. 버전은 사람이 말하기 위한 것이고(“2.12.0 쓰고 있어요”),
+                소스 식별자는 그 화면이 정확히 어느 소스에서 나왔는지 저장소에서 다시 계산해 대조하기
+                위한 것이다. 하나만으로는 문제를 알릴 수도, 확인할 수도 없다. */}
+            <p className="build-line">버전 {APP_VERSION} · 빌드 {__CARD_CAPTURE_BUILD_ID__}</p>
+            <p className="build-note">문제를 알리실 때 이 두 줄을 함께 알려 주세요. 버전은 이 앱이 나온 릴리즈 이름이고, 빌드는 그 화면을 만든 소스를 가리킵니다.</p>
+          </section>
         </section>
-        {/* FI-007: 폰을 넘기거나 링크를 회수할 때 이 기기의 사본을 끊는 경로. */}
-        <section className="surface-card signout-card">
-          <div className="signout-head"><strong>이 기기에서 연결 해제</strong></div>
-          <p>개인 링크 코드와 이 기기에 저장된 브리핑 사본·검색 기록·만남 맥락을 지웁니다. <b>전송을 기다리는 촬영은 지우지 않아요.</b></p>
-          <IonButton fill="outline" color="danger" expand="block" disabled={!config.token} onClick={() => setSignOutOpen(true)}>연결 해제</IonButton>
-        </section>
-        {/* 두 값은 서로 다른 일을 한다. 버전은 사람이 말하기 위한 것이고(“2.12.0 쓰고 있어요”),
-            소스 식별자는 그 화면이 정확히 어느 소스에서 나왔는지 저장소에서 다시 계산해 대조하기
-            위한 것이다. 하나만으로는 문제를 알릴 수도, 확인할 수도 없다. */}
-        <p className="build-line">버전 {APP_VERSION} · 빌드 {__CARD_CAPTURE_BUILD_ID__}</p>
-        <p className="build-note">문제를 알리실 때 이 두 줄을 함께 알려 주세요. 버전은 이 앱이 나온 릴리즈 이름이고, 빌드는 그 화면을 만든 소스를 가리킵니다.</p>
       </div>
     );
   }

@@ -154,11 +154,13 @@ test('renders brief markdown, extracted contacts, staged progress and legacy tit
     await expect(page.getByText('Alice Kim — 이런 분이에요'), '목록은 고정 문구 대신 요약을 보여 준다').toHaveCount(0);
     // note receipt는 legacy처럼 "메모 → 대상"으로 표시된다.
     await expect(page.getByText('메모 → PER-000001 Alice Kim')).toBeVisible();
-    // 진행 표시는 "몇 단계 중 몇 단계 · 경과 · 남은 시간 · 보통 얼마"를 함께 보여준다 (TSK-000249).
-    // 기기에서 미리 채운 quickName만 있고 서버 contact는 아직 없으므로 "이름·정보 인식" 단계다.
-    await expect(page.getByText('4단계 중 3단계 · 이름·정보 인식 중')).toBeVisible();
-    await expect(page.getByText(/8분 경과 · 약 \d+분 남음 · 보통 6~20분/)).toBeVisible();
-    await expect(page.locator('.stage-dots li.stage-active').first()).toHaveText(/이름·정보 인식/);
+    // 서버가 실제로 증명한 상태와 관측 경과만 보여 준다 (DEC-000092).
+    // 예전에는 `약 N분 남음 · 보통 6~20분`까지 적었는데 그 범위는 관측이 아니라 하드코딩이었고,
+    // 기기에 미리 채워진 quickName을 **서버 처리 단계의 증거로 오인**해 한 단계를 앞질러 표시했다.
+    // 남은 시간을 모를 때는 모른다고 말한다 — 지어낸 정밀도가 이 화면의 신뢰를 깎던 원인이다.
+    await expect(page.getByText('서버가 접수했어요')).toBeVisible();
+    await expect(page.getByText('8분 경과 · 남은 시간은 아직 알 수 없어요')).toBeVisible();
+    await expect(page.locator('.stage-dots li.stage-active').first()).toHaveText('서버 접수');
 
     await page.getByRole('button', { name: /^Alice Kim — / }).click();
     // 마크다운이 원문 덤프가 아니라 실제 표·불릿으로 렌더링된다 (escaped pipe 포함).

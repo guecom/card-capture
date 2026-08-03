@@ -138,6 +138,12 @@ test('boots from personal-link parameters and retries a failed local capture whe
 
   await page.route('https://api.example.test/**', async (route) => {
     if (route.request().method() === 'POST') {
+      // 알림 구독 조회(`push*`)는 캡처 업로드가 아니다 — 세면 "한 번만 올린다" 판정이 무너진다.
+      const pushProbe = JSON.parse(route.request().postData() ?? '{}') as { action?: string };
+      if (pushProbe.action?.startsWith('push')) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, enabled: false }) });
+        return;
+      }
       postCount += 1;
       postBodies.push(JSON.parse(route.request().postData() ?? '{}') as Record<string, unknown>);
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
@@ -184,7 +190,8 @@ test('boots from personal-link parameters and retries a failed local capture whe
     await expect.poll(() => postCount).toBe(1);
     await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '진행' }).click();
     await expect(page.getByText('Queue Fixture', { exact: true })).toBeVisible();
-    await expect(page.getByText(/4단계 중 2단계 · 서버 접수 중/)).toBeVisible();
+    // 서버가 증명한 상태를 그대로 말한다 — 단계 번호는 진행률처럼 읽히지만 시간을 뜻하지 않았다.
+    await expect(page.getByText('서버가 접수했어요')).toBeVisible();
     await page.getByRole('button', { name: /Queue Fixture/ }).click();
     await page.getByLabel('어디서 만났는지', { exact: true }).fill('Edited Expo');
     await page.getByLabel('메모', { exact: true }).fill('Edited memo');
@@ -206,6 +213,12 @@ test('restores brief, profile, contact, search, and post-processing actions', as
   await page.route('https://api.example.test/**', async (route) => {
     const request = route.request();
     if (request.method() === 'POST') {
+      // 알림 구독 조회(`push*`)는 사용자 조작이 만든 action이 아니다.
+      const pushProbe = JSON.parse(request.postData() ?? '{}') as { action?: string };
+      if (pushProbe.action?.startsWith('push')) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, enabled: false }) });
+        return;
+      }
       actionBodies.push(JSON.parse(request.postData() ?? '{}') as Record<string, unknown>);
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, receiptId: 'receipt-e2e' }) });
       return;
@@ -343,7 +356,7 @@ test('captures front and back with context into the local queue without uploadin
     await page.getByRole('button', { name: '완료', exact: true }).click();
     // 저장이 확인된 뒤에만, 그리고 이 기기 저장 사실만 말한다 (FI-031·032).
     await expect(page.getByText('이 폰에 저장했어요 — 이제 폰을 넣어도 됩니다. 연결되면 자동으로 전송합니다.', { exact: false })).toBeVisible();
-    await expect(page.locator('.queue-row', { hasText: '김카이렌' })).toContainText('4단계 중 1단계 · 사진 전송 중');
+    await expect(page.locator('.queue-row', { hasText: '김카이렌' })).toContainText('기기에서 전송을 기다려요');
     const queueReceipt = await page.evaluate(async () => {
       const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {
         const request = indexedDB.open('cardcapture', 1);

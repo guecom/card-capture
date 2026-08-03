@@ -232,6 +232,16 @@ test('does not show one personal link code the cached records of another', async
   let ownerListed = false;
 
   await page.route('https://api.example.test/**', async (route) => {
+    // 알림 구독 조회(`push*`)는 `k`를 query가 아니라 본문에 담는다. 아래 token 검사는 query만
+    // 보므로 걸러 내지 않으면 이 POST가 응답도 abort도 받지 못한 채 매달려 `networkidle`이
+    // 영원히 오지 않는다 — 자격 경계와 무관한 이유로 게이트가 멈춘다.
+    if (route.request().method() === 'POST') {
+      const body = JSON.parse(route.request().postData() ?? '{}') as { action?: string };
+      if (body.action?.startsWith('push')) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, enabled: false }) });
+        return;
+      }
+    }
     const token = new URL(route.request().url()).searchParams.get('k');
     if (token !== 'owner-token') {
       // guest 세션에서는 서버가 응답하지 않는다 — 화면에 남는 것은 오직 이 기기의 캐시뿐이다.

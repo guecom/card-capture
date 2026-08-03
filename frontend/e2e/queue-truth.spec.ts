@@ -133,6 +133,12 @@ test('quarantines a damaged entry without deleting it or blocking the rest', asy
   const posted: string[] = [];
   await page.route('https://api.example.test/**', async (route) => {
     if (route.request().method() === 'POST') {
+      // 알림 구독 조회(`push*`)는 캡처 업로드가 아니다 — 섞이면 `undefined`가 중복 판정을 오염시킨다.
+      const pushProbe = JSON.parse(route.request().postData() ?? '{}') as { action?: string };
+      if (pushProbe.action?.startsWith('push')) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, enabled: false }) });
+        return;
+      }
       posted.push(String((JSON.parse(route.request().postData() ?? '{}') as { captureId?: string }).captureId));
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
       return;
@@ -174,6 +180,12 @@ test('sends each pending capture once even when two tabs are open', async ({ con
   const posted: string[] = [];
   await context.route('https://api.example.test/**', async (route) => {
     if (route.request().method() === 'POST') {
+      // 알림 구독 조회(`push*`)는 캡처 업로드가 아니다 — 섞이면 `undefined`가 중복 판정을 오염시킨다.
+      const pushProbe = JSON.parse(route.request().postData() ?? '{}') as { action?: string };
+      if (pushProbe.action?.startsWith('push')) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, enabled: false }) });
+        return;
+      }
       posted.push(String((JSON.parse(route.request().postData() ?? '{}') as { captureId?: string }).captureId));
       // 두 탭이 겹칠 시간을 만든다 — 잠금이 없으면 여기서 두 번째 전송이 끼어든다.
       await new Promise((wait) => setTimeout(wait, 900));

@@ -72,6 +72,13 @@ test('does not upload the same capture again after the answer was lost', async (
 
   await page.route('https://api.example.test/**', async (route) => {
     if (route.request().method() === 'POST') {
+      // 알림 구독 조회(`push*`)는 캡처 업로드가 아니다. 걸러 내지 않으면 captureId 없는 POST가
+      // `undefined`로 목록에 섞이고, 아래 접수 플래그까지 켜서 중복 판정 자체를 무너뜨린다.
+      const pushProbe = JSON.parse(route.request().postData() ?? '{}') as { action?: string };
+      if (pushProbe.action?.startsWith('push')) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, enabled: false }) });
+        return;
+      }
       posts.push(String((JSON.parse(route.request().postData() ?? '{}') as { captureId?: string }).captureId));
       serverHasCapture = true;
       // 응답을 돌려주지 않고 연결을 끊는다 — 앱은 접수 여부를 알 수 없다.
@@ -132,6 +139,13 @@ test('still retries when the server truly never received it', async ({ page }) =
 
   await page.route('https://api.example.test/**', async (route) => {
     if (route.request().method() === 'POST') {
+      // 알림 구독 조회(`push*`)는 캡처 업로드가 아니다. 걸러 내지 않으면 captureId 없는 POST가
+      // `undefined`로 목록에 섞이고, 아래 접수 플래그까지 켜서 중복 판정 자체를 무너뜨린다.
+      const pushProbe = JSON.parse(route.request().postData() ?? '{}') as { action?: string };
+      if (pushProbe.action?.startsWith('push')) {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, enabled: false }) });
+        return;
+      }
       posts.push(String((JSON.parse(route.request().postData() ?? '{}') as { captureId?: string }).captureId));
       if (!acceptNext) {
         acceptNext = true;

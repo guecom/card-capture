@@ -1,7 +1,17 @@
 /* Generated candidate service worker — Kairen-Ref: TSK-000221 */
-const CACHE = "cardcapture-next-82691bd5";
+const CACHE = "cardcapture-next-d3409320";
 const CACHE_PREFIX = 'cardcapture-next-';
-const SHELL = ["./","./index.html","./assets/card-quad-worker-CyKoAx66.js","./assets/index-BbEYIhC3.css","./assets/index-C9tMNOSf.js","./assets/ionic-vendor-BbPQ-9pK.js","./assets/ionic-vendor-CUyx59f3.js","./assets/ionic-vendor-CVTHxLll.css","./assets/ionic-vendor-CiU0rtkT.js","./assets/ionic-vendor-CuW4BYHQ.js","./assets/ionic-vendor-DgmhXxri.js","./assets/ionic-vendor-DhlaSbu9.js","./assets/ionic-vendor-R6P8vIhy.js","./assets/ionic-vendor-eZh_lIPl.js","./assets/ionic-vendor-t8msffeW.js","./assets/opencv-worker-BsNyODJz.js","./assets/quickocr-worker-D49k7F60.js","./assets/react-vendor-6WJR2M2w.js","./assets/react-vendor-BSh_wd36.js","./assets/react-vendor-CoIdssN8.js","./assets/react-vendor-q_3Li6vY.js","./assets/rolldown-runtime-BgaNhQyE.js","./assets/vendor-BQ0mZAgW.js","./assets/vendor-pMrAHhNn.js","./assets/vendor-y8VdGQCW.js"];
+const SHELL = ["./","./index.html","./assets/card-quad-worker-CyKoAx66.js","./assets/index-Bvin7mfJ.js","./assets/index-KIQkJ6Qc.css","./assets/ionic-vendor-BbPQ-9pK.js","./assets/ionic-vendor-CUyx59f3.js","./assets/ionic-vendor-CVTHxLll.css","./assets/ionic-vendor-CiU0rtkT.js","./assets/ionic-vendor-CuW4BYHQ.js","./assets/ionic-vendor-DgmhXxri.js","./assets/ionic-vendor-DhlaSbu9.js","./assets/ionic-vendor-R6P8vIhy.js","./assets/ionic-vendor-eZh_lIPl.js","./assets/ionic-vendor-t8msffeW.js","./assets/opencv-worker-BsNyODJz.js","./assets/quickocr-worker-D49k7F60.js","./assets/react-vendor-6WJR2M2w.js","./assets/react-vendor-BSh_wd36.js","./assets/react-vendor-CoIdssN8.js","./assets/react-vendor-q_3Li6vY.js","./assets/rolldown-runtime-BgaNhQyE.js","./assets/vendor-CO86DMo4.js","./assets/vendor-DGX_0lfv.js","./assets/vendor-_SVfAgz6.js"];
+/* 알림 버튼 문구는 승인안(INT-000025 Thread 2 · DEC-000092) 그대로다. 잠금화면에서 버튼 하나만
+   보고도 무엇을 하러 들어가는지 알아야 하므로 '내용 보완'·'문제 확인' 같은 절단형은 쓰지 않는다.
+   문구·목적지는 이 워커가 소유한다 — 발신자 입력은 절대 여기에 닿지 않는다. */
+const PUSH_COPY = Object.freeze({
+  final_result: Object.freeze({ title: '처리가 끝났어요', body: '최종 결과를 확인할 수 있어요.', action: '결과 보기' }),
+  human_input_required: Object.freeze({ title: '내용 확인이 필요해요', body: '앱에서 필요한 내용을 보완해 주세요.', action: '필요한 내용 보완' }),
+  recovery_required: Object.freeze({ title: '처리를 이어가야 해요', body: '앱에서 문제를 확인하고 다시 시도해 주세요.', action: '다시 시도·문제 보기' }),
+});
+const PUSH_TARGET = /^[A-Za-z0-9_-]{4,80}$/;
+const PUSH_EVENT_ID = /^pne-[a-f0-9]{64}$/;
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -18,6 +28,70 @@ self.addEventListener('message', (event) => {
     event.ports[0].postMessage({ type: 'CC_PONG', cache: CACHE });
   }
 });
+
+/* Push text and destinations are owned by this service worker, never by sender input.
+   A notification payload may select one of three kinds and optionally identify a bounded capture.
+   Names, companies, notes, quick-name results, arbitrary stages, and absolute URLs are ignored. */
+self.addEventListener('push', (event) => {
+  event.waitUntil((async () => {
+    let payload = null;
+    try { payload = event.data ? event.data.json() : null; } catch { return; }
+    if (!payload || typeof payload !== 'object' || payload.v !== 1 || !PUSH_EVENT_ID.test(payload.eventId || '')) return;
+    if (typeof payload.kind !== 'string' || !Object.prototype.hasOwnProperty.call(PUSH_COPY, payload.kind)) return;
+    const copy = PUSH_COPY[payload.kind];
+    const target = typeof payload.target === 'string' && PUSH_TARGET.test(payload.target) ? payload.target : '';
+    const notice = payload.kind === 'recovery_required' ? '&notice=recovery_required' : '';
+    const route = target
+      ? './?view=activity&focus=' + encodeURIComponent(target) + notice
+      : './?view=activity';
+    await self.registration.showNotification(copy.title, {
+      body: copy.body,
+      tag: 'cc-' + payload.eventId,
+      renotify: false,
+      requireInteraction: false,
+      icon: new URL('../icon-192.png', self.registration.scope).href,
+      badge: new URL('../icon-192.png', self.registration.scope).href,
+      data: { route: route },
+      actions: [{ action: 'open', title: copy.action }],
+    });
+  })());
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil((async () => {
+    const fallback = new URL('./?view=activity', self.registration.scope);
+    let target = fallback;
+    try {
+      const candidate = new URL(event.notification.data?.route || '', self.registration.scope);
+      const scope = new URL(self.registration.scope);
+      if (candidate.origin === self.location.origin
+          && candidate.pathname.startsWith(scope.pathname)
+          && candidate.searchParams.get('view') === 'activity'
+          && (!candidate.searchParams.has('focus') || PUSH_TARGET.test(candidate.searchParams.get('focus') || ''))) {
+        target = candidate;
+      }
+    } catch { /* use bounded fallback */ }
+
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const scope = new URL(self.registration.scope);
+    for (const client of windows) {
+      const current = new URL(client.url);
+      if (current.origin !== self.location.origin || !current.pathname.startsWith(scope.pathname)) continue;
+      try { if ('navigate' in client) await client.navigate(target.href); } catch { /* focus current client */ }
+      await client.focus();
+      return;
+    }
+    await self.clients.openWindow(target.href);
+  })());
+});
+
+/* 'pushsubscriptionchange' 핸들러는 **일부러 없다**. 브라우저가 구독을 회전시키면 새 endpoint를
+   서버 registry에 다시 등록해야 하는데, 그 호출에는 개인 링크 코드(k)가 필요하다. 워커에 그 코드를
+   들여오는 순간 ISS-000110에서 막은 credential 경계가 다시 뚫린다. 대신 앱이 다음에 열릴 때
+   push.ts의 inspectPushState가 'stale'/'registration_missing'으로 잡아 사용자가 명시적으로
+   다시 켜게 하고, 죽은 endpoint는 sender의 404/410 → pushretire가 정리한다. 그때까지 브리핑은
+   기존 pull 조회로 그대로 도달한다. 여기서 재구독을 자동화하지 마라. */
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
