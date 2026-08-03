@@ -46,6 +46,18 @@ Web Push를 되돌릴 때는 code rollback 전에도 `PUSH_NOTIFICATIONS_ENABLED
 
 ## Verified Baselines
 
+### v2.22.0 @ `8c69f78` — 검증 2026-08-03 (agent:kairen.codex, Kairen-Ref: TSK-000525 / ISS-000225) — **v2.19 frontend rollback · Code.gs·watcher 무변경 · actual phone NOT RUN**
+
+- repository: annotated release tag `v2.22.0` → merge commit `8c69f785faa92646b8fd7c98852a996258c3dd5b`(main). 롤백 PR은 [#75](https://github.com/guecom/card-capture/pull/75)이고 승인·검증된 exact PR head는 `e25bac7e1a2e56d043ab0811f3160f38e06531a3`다. 기존 `v2.19.0` tag는 움직이지 않았다. GitHub Release는 draft·prerelease가 아닌 Latest 정식 release로 발행됐다.
+- human gate: founder가 2026-08-03 `카이렌 카드 캡처 v2.19로 되돌려서 릴리즈해줘.`라고 지시해 frontend rollback, PR, exact-head merge, 새 불변 tag, GitHub Release와 Pages publication을 승인했다. 이 승인은 actual-phone PASS, GAS 재배포, watcher 재기동, credential·Script Property·production data 변경 승인이 아니다.
+- CI: exact PR head `e25bac7…`의 required `Validate` run `30796519000` SUCCESS — Vitest 31 files / 337 tests PASS, Chrome E2E 101/101 PASS, repository validator `fail=0 warn=0`, Pages source identity `src-2772a6bd35b7`. 로컬 exact-head build·typecheck와 `git diff --check`도 PASS했다.
+- independent review: 첫 head는 은퇴한 `legacy.html`을 가리키는 Settings 링크와 이를 놓치는 회귀 gate를 P1/P2로 찾아 FAIL했다. 최종 head는 링크와 dead CSS를 제거하고 `App.tsx`와 committed JS/CSS asset을 gate가 함께 읽도록 보강했다. exact-head 재검토는 P0/P1/P2 finding 0으로 PASS했다.
+- Pages: live 파일과 merge commit 파일의 LF-normalized SHA-256이 일치한다 — `docs/index.html` `90ac1ad2077d21eb6b1d5779dc8d7f8af039aa473b2dd4cac071404192a5ff1d`, `docs/sw.js` `5fc49d5dc741a2dc50ff33770dd452790578da1dcac7731b176c324d32ea3221`, `docs/next/index.html` `2e99cbae42ace40a5d2a714b52bd28d5363f97e90b29c27768dc4d881729d28e`, `docs/next/sw.js` `00e05f548f44de4308b474b7cc78f811093812d4002d7153d6b64f207129d140`, active JS `docs/next/assets/index-C9tMNOSf.js` `2b9cd322ce9a3a9acc73f24115ece3639c8654f252594278b794f095e525b448`, CSS `docs/next/assets/index-BbEYIhC3.css` `6121eaf14a75dc0e644a6e0d190a811715f3471495cdcfa5b68326c5bc005fe3`. live active JS가 앱 버전 `2.22.0`을 포함한다.
+- 이번 변경의 machine-observable behavior: 사용자-facing frontend source·test·Pages artifact를 `v2.19.0`의 검증된 카메라·캡처·검색·상세 동작 기준으로 복원했다. v2.20/v2.21에서 추가된 비동기 조사·Push 설정·진행 telemetry UI는 current frontend에서 제거했지만 current public-runtime endpoint와 legacy-retirement 보안 경계는 유지했다.
+- **GAS deployment·watcher: 해당 없음.** `224531db…..8c69f78…`에서 `Code.gs`, `watcher/`, Web Push config/credential, `config/public-runtime.json`, Script Properties와 production data를 바꾸지 않았다. GAS 재배포와 watcher 재기동을 실행하지 않았고 현재 운영 상태를 이번 frontend rollback의 새 PASS로 재분류하지 않는다.
+- 실기기 판정: **미완료.** founder phone에서 steady capture, 손떨림·급이동 reject, 실제 crop, owner-token read/write와 Android Push 회귀를 다시 실행하지 않았다. 따라서 이 release evidence는 actual-phone PASS·MVP gate PASS·customer proof가 아니다. MVP build/testability gate comes before customer proof.
+- rollback: PR #75 merge commit `8c69f78…`을 revert하고 같은 Pages 절차로 재배포한다. 기존 tag를 움직이거나 재사용하지 않는다. 서버·watcher·credential·data rollback은 없다.
+
 ### v2.20.0 @ `f85f737` — 검증 2026-08-02 (agent:kairen.codex, Kairen-Ref: TSK-000496 / INT-000025) — **Code.gs·watcher 변경 / Web Push ON · Android NOT RUN**
 
 - repository: release tag `v2.20.0` → merge commit `f85f737c4920ac7ce4bdc2f58f7fa847522af0e5`(main). 구현 PR은 [#71](https://github.com/guecom/card-capture/pull/71)이고 승인·검증된 exact PR head는 `44c083221d7f7b45180eb217c31abf343511bd41`다. GitHub Release는 draft·prerelease가 아닌 정식 release로 발행됐다.
