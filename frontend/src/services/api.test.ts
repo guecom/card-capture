@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CaptureQueueItem, RuntimeConfig } from '../contracts/capture';
-import { addPersonNote, buildDocumentUrl, buildListUrl, buildSearchUrl, fetchServerCaptureIds, isTerminalStatus, listBriefsUpTo, requestCorrection, submitResearchInstruction, toUploadPayload, uploadCapture, UploadError } from './api';
+import { addPersonNote, buildDocumentUrl, buildListUrl, buildSearchUrl, fetchServerCaptureIds, isTerminalStatus, listBriefsUpTo, manualIntakeUnsupported, MANUAL_INTAKE_NOT_DEPLOYED, requestCorrection, submitResearchInstruction, toManualPersonPayload, toUploadPayload, uploadCapture, UploadError } from './api';
 
 const config: RuntimeConfig = {
   apiUrl: 'https://script.google.com/macros/s/example/exec',
@@ -268,5 +268,92 @@ describe('reconcile reads the whole server list before deciding a capture is mis
     expect(await fetchServerCaptureIds(pagedConfig)).toEqual(
       new Set(Array.from({ length: 42 }, (_unused, index) => `synthetic-${String(index + 1).padStart(4, '0')}`)),
     );
+  });
+});
+
+/* 직접 입력 (ISS-000231 / DEC-000103).
+   전송로는 사진과 **한 곳**을 지난다 — 나누면 잠금·대조·재시도·실패 분류가 두 벌이 된다. */
+describe('manual person intake shares one send path with photo captures', () => {
+  const manualConfig: RuntimeConfig = { apiUrl: 'https://api.example.test/exec', token: 'fixture-token', capturer: 'Fixture Owner' };
+  const manualItem: CaptureQueueItem = {
+    captureId: '20260804-010203-abcd',
+    capturedAt: '2026-08-04T01:02:03.000Z',
+    intake: 'manual_person',
+    manualText: '가온테크 김미래 CTO, mirae.kim@gaontech-fake.co.kr',
+    identityEvidence: { emails: ['mirae.kim@gaontech-fake.co.kr'], phones: [], phoneDisplays: [] },
+    event: '전시회·박람회',
+    note: '나와의 관계: 오늘 처음',
+    relSelf: '오늘 처음',
+    relKairen: '',
+    memo: '',
+    images: [],
+    quickName: null,
+    researchInstruction: null,
+    state: 'queued',
+    tries: 0,
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('serializes the manual action without the capturer or client-derived evidence', () => {
+    // capturer는 서버가 토큰에서 정한다. 근거는 서버가 원문에서 다시 뽑는다 — 보내면 위조 표면이 된다.
+    expect(toManualPersonPayload(manualItem, manualConfig)).toEqual({
+      action: 'manualperson',
+      k: 'fixture-token',
+      captureId: '20260804-010203-abcd',
+      capturedAt: '2026-08-04T01:02:03.000Z',
+      event: '전시회·박람회',
+      note: '나와의 관계: 오늘 처음',
+      text: '가온테크 김미래 CTO, mirae.kim@gaontech-fake.co.kr',
+    });
+  });
+
+  it('sends the manual payload through uploadCapture, not a second sender', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) });
+    vi.stubGlobal('fetch', fetchMock);
+    await uploadCapture(manualConfig, manualItem);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).action).toBe('manualperson');
+  });
+
+  it('keeps the same captureId across retries so the server can dedupe', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) });
+    vi.stubGlobal('fetch', fetchMock);
+    await uploadCapture(manualConfig, manualItem);
+    await uploadCapture(manualConfig, { ...manualItem, tries: 1 });
+    const ids = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)).captureId);
+    expect(new Set(ids).size, '재시도마다 id가 바뀌면 서버가 job을 하나로 접을 수 없다').toBe(1);
+  });
+
+  it('turns an older backend refusal into an actionable code instead of a silent success', async () => {
+    // Code.gs는 사람이 따로 재배포한다. 옛 서버는 action을 모르고 업로드 경로로 떨어져 no_images로 거절한다.
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: false, error: 'no_images' }) });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(uploadCapture(manualConfig, manualItem)).rejects.toMatchObject({
+      kind: 'rejected',
+      message: MANUAL_INTAKE_NOT_DEPLOYED,
+    });
+  });
+
+  it('does not relabel an unrelated refusal as a deployment problem', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: false, error: 'daily_limit' }) });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(uploadCapture(manualConfig, manualItem)).rejects.toMatchObject({ kind: 'rejected', message: 'daily_limit' });
+  });
+
+  it('keeps photo captures on the photo payload — no_images stays a plain refusal there', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: false, error: 'no_images' }) });
+    vi.stubGlobal('fetch', fetchMock);
+    const photo: CaptureQueueItem = { ...manualItem, intake: undefined, manualText: undefined, images: [] };
+    await expect(uploadCapture(manualConfig, photo)).rejects.toMatchObject({ kind: 'rejected', message: 'no_images' });
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).action).toBeUndefined();
+  });
+
+  it('recognizes exactly the refusals that mean the backend has not been redeployed', () => {
+    expect(manualIntakeUnsupported('no_images')).toBe(true);
+    expect(manualIntakeUnsupported('unknown_action')).toBe(true);
+    expect(manualIntakeUnsupported('daily_limit')).toBe(false);
+    expect(manualIntakeUnsupported(undefined)).toBe(false);
   });
 });

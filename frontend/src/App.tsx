@@ -25,6 +25,7 @@ import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useS
 import { version as APP_VERSION } from '../package.json';
 import type { BriefItem, CaptureQueueItem, PersonTarget, QuickName, RuntimeConfig, SearchItem } from './contracts/capture';
 import { CameraCaptureModal, type CapturedSideMeta, type CardSide } from './components/CameraPreviewModal';
+import { ManualPersonEntry } from './components/ManualPersonSheet';
 import { StatusBadge } from './components/StatusBadge';
 import { MarkdownLite } from './components/MarkdownLite';
 import { ActionSection, ContactActions, PersonDocument } from './components/PersonDocument';
@@ -1451,13 +1452,18 @@ function App() {
     const retrying = retryingId === item.captureId;
     // 이름을 모르는 것은 정상 결과다 — 끝난 인식을 `대기`로 적으면 거짓말이 된다 (FI-067).
     const displayName = queueRowName(processedName, item.quickName);
-    const contextLine = queueContextLine(item);
+    // 직접 입력에는 촬영한 면이 없다 — 사진 캡처의 `앞면`을 그대로 쓰면 목록이 거짓말을 한다.
+    // 대신 적어 둔 글의 첫 줄을 맥락 자리에 보여 준다 (ISS-000231).
+    const manualIntake = item.intake === 'manual_person';
+    const contextLine = [manualIntake ? item.disp ?? '' : '', queueContextLine(item)].filter(Boolean).join(' · ');
     // 뒷면이 실제로 담겼는지 목록에서 바로 보이게 한다 — 예전에는 편집 화면을 열어야만 확인됐다.
-    const sideLabel = queueNamedImageSource(item, 'back.jpg') ? '앞·뒷면' : '앞면';
+    const sideLabel = manualIntake ? '직접 입력' : queueNamedImageSource(item, 'back.jpg') ? '앞·뒷면' : '앞면';
     return (
       <article className="queue-row" key={item.captureId}>
         <button className="queue-row-main" type="button" onClick={() => setQueueEdit(normalizedQueueItem(structuredClone(item)))}>
-          {imageSource ? <img src={imageSource} alt="명함 앞면 미리보기" /> : <span className="queue-placeholder"><Camera aria-hidden="true" size={18} /></span>}
+          {imageSource
+            ? <img src={imageSource} alt="명함 앞면 미리보기" />
+            : <span className="queue-placeholder">{manualIntake ? <PenLine aria-hidden="true" size={18} /> : <Camera aria-hidden="true" size={18} />}</span>}
           <div className="row-copy">
             <strong>{displayName}</strong>
             <span>{contextLine || formatMoment(item.capturedAt)} · {sideLabel} · {queueProgressOf(item).headline}</span>
@@ -1639,15 +1645,35 @@ function App() {
             <span className="capture-sub">사진 한 장이면 끝 — 정리·브리핑은 시스템이 해요</span>
           </div>
 
+          {/* 사람을 등록하는 입구는 둘이고 **위계가 같다** (INT-000029 / DEC-000103):
+              명함을 찍거나, 기억나는 대로 적거나. 직접 입력을 하위 메뉴로 내리면 "명함이 있을 때만
+              쓰는 앱"이 되고, 명함을 못 받은 자리(대부분의 자리)가 통째로 빠진다.
+              앞면을 이미 찍은 뒤에는 그 촬영을 마치는 것이 지금 할 일이므로 미리보기가 자리를
+              그대로 쓴다 — 반쯤 진행된 등록 두 개가 서로 다투지 않게 한다. */}
           {frontFrame ? (
             <button className="shot-main filled" type="button" onClick={() => setCameraSession({ side: 'front', withChoice: true })}>
               <img src={frontFrame.dataUrl} alt="앞면 미리보기" />
             </button>
           ) : (
-            <button className="shot-main" type="button" onClick={() => setCameraSession({ side: 'front', withChoice: true })}>
-              <span className="shot-icon" aria-hidden="true"><Camera size={24} /></span>
-              <span>명함 앞면 촬영</span>
-            </button>
+            <div className="primary-entries">
+              <button className="shot-main" type="button" onClick={() => setCameraSession({ side: 'front', withChoice: true })}>
+                <span className="shot-icon" aria-hidden="true"><Camera size={24} /></span>
+                <span>명함 앞면 촬영</span>
+              </button>
+              <ManualPersonEntry
+                configured={configured}
+                context={{ event, relKairen, relSelf }}
+                queue={queue}
+                onQueued={(item) => {
+                  setQueue((current) => [item, ...current].sort((a, b) => b.captureId.localeCompare(a.captureId)));
+                  // 기기 저장이 확인된 시점의 사실만 말한다. 서버 접수는 아직 일어나지 않았다 (FI-031).
+                  setMessage(configured
+                    ? '직접 입력을 이 폰에 저장했어요 — 전송은 알아서 이어갑니다.'
+                    : '직접 입력을 이 폰에 저장했어요 — 연결되면 자동으로 전송합니다.');
+                  if (configured) void flushPendingQueue();
+                }}
+              />
+            </div>
           )}
 
           {frontFrame && (

@@ -1,0 +1,34 @@
+{
+  "id": "manual-sparse-recall",
+  "synthetic": true,
+  "adversarial": false,
+  "intake": "manual_person",
+  "description": "세 단어짜리 회상 — 이름도 연락처도 없다. 추측해서 기존 인물에 붙이지 않는다.",
+  "manual": {
+    "text": "어제 만난 로보틱스 대표",
+    "claim": {}
+  },
+  "capture": { "event": "전시회·박람회", "note": "Kairen과의 관계: 잠재 고객" },
+  "vault_context": {
+    "candidates": [
+      {
+        "personId": "PER-999001",
+        "fullName": "김미래",
+        "organization": "가온테크",
+        "emails": ["mirae.kim@gaontech-fake.co.kr"],
+        "phones": ["010-1234-5678"]
+      }
+    ]
+  },
+  "expected": {
+    "decision": "new",
+    "reason": "weak_evidence",
+    "evidence": { "emails": [], "phones": [] },
+    "notes": "단서가 부족한 것은 실패가 아니라 정상 결과다. 새 인물 후보로 등록하고 모르는 것은 모른다고 남긴다."
+  },
+  "must_not": [
+    "기존 PER-999001에 병합",
+    "이름·회사·연락처를 추측해서 채우기",
+    "claim source를 business-card로 기록"
+  ]
+}

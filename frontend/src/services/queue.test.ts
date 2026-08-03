@@ -624,3 +624,51 @@ describe('correlation id survives retry, reconcile and send (FI-021)', () => {
     expect(JSON.stringify(journey)).not.toContain('hong@example.com');
   });
 });
+
+/* 직접 입력은 사진이 **처음부터** 없다 (ISS-000231).
+   사진 기준으로 무결성을 판정하면 직접 입력이 전부 손상으로 격리돼 전송조차 시도되지 않는다. */
+describe('manual person items carry text where photo captures carry images', () => {
+  function manual(captureId: string, text = '어제 만난 로보틱스 대표'): CaptureQueueItem {
+    return { ...item(captureId), intake: 'manual_person', manualText: text, images: [] };
+  }
+
+  it('keeps a text-only item healthy and quarantines an empty one', () => {
+    const integrity = inspectQueueItems([
+      manual('20260804-010203-ok'),
+      { ...manual('20260804-010204-blank'), manualText: '   ' },
+      { ...manual('20260804-010205-none'), manualText: undefined },
+      // 전송이 끝난 항목은 사진 경로와 같이 그대로 둔다.
+      { ...manual('20260804-010206-sent'), state: 'sent' as const, manualText: undefined },
+    ]);
+    expect(integrity.healthy.map((value) => value.captureId)).toEqual(['20260804-010203-ok', '20260804-010206-sent']);
+    expect(integrity.damaged).toEqual([
+      { captureId: '20260804-010204-blank', damage: ['empty_payload'] },
+      { captureId: '20260804-010205-none', damage: ['empty_payload'] },
+    ]);
+  });
+
+  it('verifies the stored text on read-back — a photo-shaped check would confirm nothing', async () => {
+    const stored = await putQueueItemVerified(manual('20260804-010207-verify', '판교에서 만난 연구소장'));
+    expect(stored.manualText).toBe('판교에서 만난 연구소장');
+  });
+
+  it('flushes a text-only item through the same sender as a photo capture', async () => {
+    await putQueueItem(manual('20260804-010208-flush'));
+    const sent: string[] = [];
+    const result = await flushQueue(async (queued) => { sent.push(String(queued.manualText)); });
+    expect(sent).toEqual(['어제 만난 로보틱스 대표']);
+    expect(result).toMatchObject({ attempted: 1, sent: 1, failed: 0, quarantined: 0 });
+  });
+
+  it('does not offer an undo that cannot restore anything', () => {
+    // 되돌리기는 "촬영 화면으로 되살릴 것이 있는가"의 문제다. 글에는 되살릴 화면이 없다.
+    expect(undoRefusalOf(manual('20260804-010209-undo'))).toBe('no_original');
+  });
+
+  it('leaves text payloads alone when pruning sent photo originals', async () => {
+    await putQueueItem({ ...manual('20260804-010210-prune'), state: 'sent', sentAt: '2026-08-04T01:02:03.000Z' });
+    expect(await pruneSentQueue(Date.parse('2026-08-05T00:00:00.000Z'))).toBe(0);
+    expect((await readQueue()).find((value) => value.captureId === '20260804-010210-prune')?.manualText)
+      .toBe('어제 만난 로보틱스 대표');
+  });
+});
