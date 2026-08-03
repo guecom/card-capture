@@ -83,6 +83,12 @@ export interface ResearchEvidenceClaim {
   alternativeExplanation?: string;
 }
 
+/**
+ * 서버가 증명하는 Deep Research 단계 어휘 (`Code.gs` `researchProgress.phase`).
+ * 진행 rail은 이 값에만 근거해 단계를 진전시킨다 — 시간으로 전진하는 단계를 만들지 않는다.
+ */
+export type ResearchProgressPhase = 'planning' | 'branching' | 'triangulating' | 'synthesizing' | 'done';
+
 export interface ResearchTimelineEvent {
   date: string;
   label: string;
@@ -185,7 +191,7 @@ export interface BriefItem {
   capturer?: string;
   researchInstruction?: Pick<ResearchInstruction, 'mode' | 'purposes' | 'sourceAuthority' | 'policyVersion'>;
   researchProgress?: {
-    phase?: 'planning' | 'branching' | 'triangulating' | 'synthesizing' | 'done';
+    phase?: ResearchProgressPhase;
     verifiedFacts?: number;
     conflicts?: number;
     openQuestions?: number;

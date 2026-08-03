@@ -203,7 +203,7 @@ test('keeps background refresh silent on network failure and maps errors on manu
     await page.waitForTimeout(1_200);
     expect(await page.evaluate(() => document.querySelector('ion-toast')?.getAttribute('is-open'))).not.toBe('true');
     // 수동 새로고침은 한글로 안내한다.
-    await page.getByRole('button', { name: '최신 상태 확인', exact: true }).click();
+    await page.getByRole('button', { name: /새로고침/ }).click();
     await expect(page.getByText(/새로고침 실패: 네트워크 오류/)).toBeVisible();
   } finally {
     await stopStaticServer(server);

@@ -377,7 +377,7 @@ test('자동·수동·online 갱신이 겹쳐도 list 요청은 하나만 실행
 
     await goOnline(page);
     await expect.poll(() => harness.listInFlight, { timeout: 3_000 }).toBe(1);
-    await page.getByRole('button', { name: '최신 상태 확인' }).click();
+    await page.getByRole('button', { name: /새로고침/ }).click();
     await goOnline(page);
     // 이 사이 active 4초 tick도 한 번 온다. 모두 같은 in-flight promise를 공유해야 한다.
     await page.waitForTimeout(4_500);
@@ -407,13 +407,13 @@ test('작업 전 조회와 수동 확인이 겹치면 직후 한 번 더 읽어 
     harness.snapshotListOnRequest(true);
     harness.delayList(1_500);
     const before = harness.listRequests;
-    await page.getByRole('button', { name: '최신 상태 확인' }).click();
+    await page.getByRole('button', { name: /새로고침/ }).click();
     await expect.poll(() => harness.listInFlight).toBe(1);
 
     // 첫 요청이 시작된 뒤 서버에 새 receipt가 생긴다. 이때 누른 확인은 오래된 응답을 최신으로
     // 오인하지 않고, 현재 요청 직후의 trailing 조회까지 기다려야 한다.
     harness.setListResponse({ ...initial, items: [...initial.items, newReceipt] });
-    await page.getByRole('button', { name: '최신 상태 확인' }).click();
+    await page.getByRole('button', { name: /새로고침/ }).click();
     await expect(headerStatus(page)).toContainText('1건 처리 중', { timeout: 5_000 });
     expect(harness.listRequests).toBeGreaterThanOrEqual(before + 2);
     expect(harness.maxListInFlight).toBe(1);
@@ -471,9 +471,9 @@ test('이전 연결 waiter가 겹쳐도 새 토큰의 즉시 상태 조회를 �
     const before = harness.listRequests;
 
     // R0 뒤에 이전 session의 strong waiter를 먼저 붙인다.
-    await page.getByRole('button', { name: '최신 상태 확인' }).click();
+    await page.getByRole('button', { name: /새로고침/ }).click();
     await expect.poll(() => harness.listInFlight).toBe(1);
-    await page.getByRole('button', { name: '최신 상태 확인' }).click();
+    await page.getByRole('button', { name: /새로고침/ }).click();
 
     // R0가 끝나기 전에 token을 바꾸면 새 session effect도 같은 R0 뒤에 strong waiter를 붙인다.
     await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '설정' }).click();
@@ -581,7 +581,7 @@ test('다시 처리 요청은 누른 순간부터 접수될 때까지 그 사실
       }
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
     });
-    await page.getByRole('button', { name: '최신 상태 확인' }).click();
+    await page.getByRole('button', { name: /새로고침/ }).click();
 
     const button = page.getByRole('button', { name: /다시 처리 요청/ });
     await expect(button).toBeVisible();

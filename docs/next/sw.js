@@ -1,11 +1,14 @@
 /* Generated candidate service worker — Kairen-Ref: TSK-000221 */
-const CACHE = "cardcapture-next-47adb0dd";
+const CACHE = "cardcapture-next-eae9514f";
 const CACHE_PREFIX = 'cardcapture-next-';
-const SHELL = ["./","./index.html","./assets/card-quad-worker-CyKoAx66.js","./assets/index-DN0UUnJN.js","./assets/index-Dr4c27A3.css","./assets/ionic-vendor-BbPQ-9pK.js","./assets/ionic-vendor-CUyx59f3.js","./assets/ionic-vendor-CVTHxLll.css","./assets/ionic-vendor-CiU0rtkT.js","./assets/ionic-vendor-CuW4BYHQ.js","./assets/ionic-vendor-DgmhXxri.js","./assets/ionic-vendor-DhlaSbu9.js","./assets/ionic-vendor-R6P8vIhy.js","./assets/ionic-vendor-eZh_lIPl.js","./assets/ionic-vendor-t8msffeW.js","./assets/opencv-worker-BsNyODJz.js","./assets/quickocr-worker-D49k7F60.js","./assets/react-vendor-6WJR2M2w.js","./assets/react-vendor-BSh_wd36.js","./assets/react-vendor-CoIdssN8.js","./assets/react-vendor-q_3Li6vY.js","./assets/rolldown-runtime-BgaNhQyE.js","./assets/vendor-Bt6JXqjk.js","./assets/vendor-Cc6309p1.js","./assets/vendor-wNa3cmTx.js"];
+const SHELL = ["./","./index.html","./assets/card-quad-worker-CyKoAx66.js","./assets/index-DjBBnx7S.css","./assets/index-KIPReU3e.js","./assets/ionic-vendor-BbPQ-9pK.js","./assets/ionic-vendor-CUyx59f3.js","./assets/ionic-vendor-CVTHxLll.css","./assets/ionic-vendor-CiU0rtkT.js","./assets/ionic-vendor-CuW4BYHQ.js","./assets/ionic-vendor-DgmhXxri.js","./assets/ionic-vendor-DhlaSbu9.js","./assets/ionic-vendor-R6P8vIhy.js","./assets/ionic-vendor-eZh_lIPl.js","./assets/ionic-vendor-t8msffeW.js","./assets/opencv-worker-BsNyODJz.js","./assets/quickocr-worker-D49k7F60.js","./assets/react-vendor-6WJR2M2w.js","./assets/react-vendor-BSh_wd36.js","./assets/react-vendor-CoIdssN8.js","./assets/react-vendor-q_3Li6vY.js","./assets/rolldown-runtime-BgaNhQyE.js","./assets/vendor-C4OemGx0.js","./assets/vendor-Dhl_Irf8.js","./assets/vendor-M1M3Q8aM.js"];
+/* 알림 버튼 문구는 승인안(INT-000025 Thread 2 · DEC-000092) 그대로다. 잠금화면에서 버튼 하나만
+   보고도 무엇을 하러 들어가는지 알아야 하므로 '내용 보완'·'문제 확인' 같은 절단형은 쓰지 않는다.
+   문구·목적지는 이 워커가 소유한다 — 발신자 입력은 절대 여기에 닿지 않는다. */
 const PUSH_COPY = Object.freeze({
   final_result: Object.freeze({ title: '처리가 끝났어요', body: '최종 결과를 확인할 수 있어요.', action: '결과 보기' }),
-  human_input_required: Object.freeze({ title: '내용 확인이 필요해요', body: '앱에서 필요한 내용을 보완해 주세요.', action: '내용 보완' }),
-  recovery_required: Object.freeze({ title: '처리를 이어가야 해요', body: '앱에서 문제를 확인하고 다시 시도해 주세요.', action: '문제 확인' }),
+  human_input_required: Object.freeze({ title: '내용 확인이 필요해요', body: '앱에서 필요한 내용을 보완해 주세요.', action: '필요한 내용 보완' }),
+  recovery_required: Object.freeze({ title: '처리를 이어가야 해요', body: '앱에서 문제를 확인하고 다시 시도해 주세요.', action: '다시 시도·문제 보기' }),
 });
 const PUSH_TARGET = /^[A-Za-z0-9_-]{4,80}$/;
 const PUSH_EVENT_ID = /^pne-[a-f0-9]{64}$/;
