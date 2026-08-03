@@ -477,9 +477,7 @@ test('이전 연결 waiter가 겹쳐도 새 토큰의 즉시 상태 조회를 �
 
     // R0가 끝나기 전에 token을 바꾸면 새 session effect도 같은 R0 뒤에 strong waiter를 붙인다.
     await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '설정' }).click();
-    await page.getByRole('button', { name: '사용자·연결 정보 편집' }).click();
-    await page.getByRole('button', { name: /고급 설정/ }).click();
-    await page.getByLabel('개인 링크 코드 (?k= 값)').fill('next-token');
+    await page.getByLabel('개인 링크 코드').fill('next-token');
     await page.getByRole('button', { name: '설정 저장' }).click();
     harness.delayList(0);
 
@@ -521,12 +519,15 @@ test('설정이 사람이 말할 수 있는 버전과 대조할 수 있는 소�
   const harness = await boot(page);
   try {
     await page.getByRole('button', { name: '설정', exact: true }).click();
-    const line = page.locator('.build-line');
-    await expect(line).toBeVisible();
+    const number = page.locator('.int29-version-number');
+    await expect(number).toBeVisible();
     // 버전은 저장소가 선언한 값 그대로여야 한다 — 화면에만 있는 두 번째 진실을 만들지 않는다.
-    await expect(line).toContainText(`버전 ${declared.version}`);
+    await expect(number).toHaveText(declared.version);
+    // founder 2026-08: "버전 같은 거는 좀 크게 잘 보이게." 통화하며 읽는 값이므로 크기까지 잰다.
+    const size = await number.evaluate((node) => parseFloat(getComputedStyle(node).fontSize));
+    expect(size, `버전 글자가 작아 통화 중에 찾아야 한다 (${size}px)`).toBeGreaterThanOrEqual(28);
     // 소스 식별자는 그대로 남는다. 버전은 말하기 위한 것이고, 이 값은 대조하기 위한 것이다.
-    await expect(line).toContainText(/빌드 src-[0-9a-f]{12}/);
+    await expect(page.locator('.int29-version-build')).toContainText(/빌드 src-[0-9a-f]{12}/);
   } finally {
     await stopServer(harness.server);
   }

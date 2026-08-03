@@ -241,10 +241,11 @@ test('the camera keeps photos out of the phone gallery unless the owner opts in'
     expect(await camera.getByRole('button', { name: /기본 카메라 앱으로 찍기/ }).count()).toBe(0);
     await camera.getByRole('button', { name: '닫기' }).click();
 
-    // 끄면 다시 쓸 수 있지만, 갤러리에 남는다는 사실이 버튼에 그대로 붙는다.
+    // 기본 카메라 앱을 고르면 다시 쓸 수 있지만, 갤러리에 남는다는 사실이 그 선택지에 붙어 있다.
+    // (DEC-000093 · Kairen-Ref: TSK-000532 — 부정형 토글이 두 방법 중 고르기로 바뀌었다.)
     await page.getByRole('button', { name: '설정', exact: true }).click();
-    await page.getByRole('checkbox', { name: /기본 카메라 앱 쓰지 않기/ }).uncheck();
-    await expect(page.getByText(/그 사진은 갤러리에 남고 카이렌이 지울 수 없습니다/)).toBeVisible();
+    await page.getByRole('radio', { name: /기본 카메라 앱으로도 촬영/ }).check();
+    await expect(page.getByText(/휴대폰 갤러리에 사본이 남고, 이 앱은 그 사본을 지울 수 없어요/)).toBeVisible();
     await page.getByRole('button', { name: '캡처', exact: true }).click();
     await page.getByRole('button', { name: '명함 앞면 촬영' }).click();
     await expect(camera.getByRole('button', { name: /기본 카메라 앱으로 찍기 · 갤러리에 남아요/ })).toBeVisible();
