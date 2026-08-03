@@ -208,16 +208,27 @@ if ($badOcrHash.Count -gt 0) { $badOcrHash | ForEach-Object { Fail "on-device-as
 
 # ---------- 9. watcher 스위트 ----------
 # 반드시 -File 로 호출한다 — identity·다중 orphan 게이트가 실행 프로세스 자신의 command line을 읽는다.
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'watcher\tests\health-tests.ps1') | Out-Null
-if ($LASTEXITCODE -ne 0) { Fail 'watcher health dashboard tests failed' } else { Pass 'watcher health dashboard deterministic tests passed' }
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'watcher\tests\watcher-tests.ps1') | Out-Null
-if ($LASTEXITCODE -ne 0) { Fail 'watcher recovery/idempotency tests failed' } else { Pass 'watcher recovery/idempotency deterministic tests passed' }
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'watcher\tests\watcher-protocol-tests.ps1') | Out-Null
-if ($LASTEXITCODE -ne 0) { Fail 'watcher claim/lease/quarantine protocol tests failed' } else { Pass 'watcher claim/lease/quarantine protocol deterministic tests passed' }
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'watcher\tests\log-pii-tests.ps1') | Out-Null
-if ($LASTEXITCODE -ne 0) { Fail 'watcher log PII separation/retention tests failed' } else { Pass 'watcher log PII separation/retention deterministic tests passed' }
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'watcher\tests\push-tests.ps1') | Out-Null
-if ($LASTEXITCODE -ne 0) { Fail 'watcher Web Push outbox tests failed' } else { Pass 'watcher Web Push outbox deterministic tests passed' }
+#
+# 통과하면 조용하지만 **실패하면 어느 게이트가 깨졌는지 반드시 보여 준다.** 예전에는 다섯 스위트가
+# 전부 `| Out-Null`이라, CI에서 `watcher claim/lease/quarantine protocol tests failed` 한 줄만 남고
+# 92개 게이트 중 무엇이 왜 깨졌는지 로그에서 알 방법이 없었다 (2026-08-04 실제로 겪음).
+function Invoke-WatcherSuite {
+  param([string]$File, [string]$FailMessage, [string]$PassMessage)
+  $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root $File) 2>&1
+  if ($LASTEXITCODE -ne 0) {
+    $detail = @($out | Where-Object { $_ -match '^(fail|FAIL|\s*fail)|^summary:|^RESULT:' })
+    if ($detail.Count -eq 0) { $detail = @($out | Select-Object -Last 20) }
+    $detail | ForEach-Object { Write-Host ("    " + $_) }
+    Fail $FailMessage
+  } else {
+    Pass $PassMessage
+  }
+}
+Invoke-WatcherSuite 'watcher\tests\health-tests.ps1' 'watcher health dashboard tests failed' 'watcher health dashboard deterministic tests passed'
+Invoke-WatcherSuite 'watcher\tests\watcher-tests.ps1' 'watcher recovery/idempotency tests failed' 'watcher recovery/idempotency deterministic tests passed'
+Invoke-WatcherSuite 'watcher\tests\watcher-protocol-tests.ps1' 'watcher claim/lease/quarantine protocol tests failed' 'watcher claim/lease/quarantine protocol deterministic tests passed'
+Invoke-WatcherSuite 'watcher\tests\log-pii-tests.ps1' 'watcher log PII separation/retention tests failed' 'watcher log PII separation/retention deterministic tests passed'
+Invoke-WatcherSuite 'watcher\tests\push-tests.ps1' 'watcher Web Push outbox tests failed' 'watcher Web Push outbox deterministic tests passed'
 
 # ---------- summary ----------
 Write-Host ''
