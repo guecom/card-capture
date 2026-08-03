@@ -1,0 +1,249 @@
+/* AI 조사 요청 — 항목 선택(TSK-000536)과 접수 확인/실패(TSK-000535).
+   `ResearchComposer.tsx`가 이 파일을 자기 맨 위에서 불러온다. 공용 `app.css`에는 아무것도 더하지 않는다.
+
+   색은 전부 기존 토큰에서 온다. 한 곳만 예외인데(`--research-hint`), 그 값은 옆 규칙
+   `.ai-scope-note`가 이미 라이트 모드의 보조 글자에 쓰는 바로 그 값이다 — 같은 표면의 같은
+   위계에 다른 색을 새로 만들지 않으려고 그대로 가져왔다. 다크 모드는 `--cc-muted`로 넘긴다. */
+
+.research-scopes {
+  display: grid;
+  gap: 8px;
+  --research-hint: #4b5a70;
+}
+
+:root[data-theme="dark"] .research-scopes { --research-hint: var(--cc-muted); }
+
+/* 제목 · 개수 · 모두 선택이 한 줄에 있다가 좁아지면 접힌다. */
+.research-scope-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.research-scope-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--cc-ink);
+  font-size: 12px;
+  font-weight: 760;
+  letter-spacing: -0.02em;
+  word-break: keep-all;
+}
+
+/* 지금 몇 개가 골라져 있는지. 버튼과 떨어져 있어야 버튼의 접근 이름이 개수로 흔들리지 않는다. */
+.research-scope-count {
+  flex: 1 1 auto;
+  color: var(--cc-muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  word-break: keep-all;
+}
+
+.research-scope-all,
+.research-scope-clear {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 11px;
+  border: 1px solid rgba(var(--cc-accent), 0.28);
+  border-radius: var(--cc-r-md);
+  background: rgba(var(--cc-accent), 0.11);
+  color: var(--cc-blue-ink);
+  font-size: 11px;
+  font-weight: 780;
+  white-space: nowrap;
+}
+
+.research-scope-clear {
+  border-color: var(--cc-line);
+  background: var(--cc-solid-soft);
+  color: var(--cc-muted);
+  font-weight: 700;
+}
+
+/* 전부 골라진 상태는 버튼 글자(`모두 해제`)만으로도 읽히지만, 채워진 면으로 한 번 더 말한다. */
+.research-scope-all[aria-pressed="true"] {
+  border-color: rgba(var(--cc-accent), 0.55);
+  background: rgb(var(--cc-accent));
+  color: var(--cc-on-accent);
+}
+
+/* 일부만 고른 상태 — 반쯤 찬 면. 색만으로 말하지 않게 `aria-pressed="mixed"`가 함께 남는다. */
+.research-scope-all[aria-pressed="mixed"] {
+  border-color: rgba(var(--cc-accent), 0.45);
+  background:
+    linear-gradient(135deg, rgba(var(--cc-accent), 0.26) 0 50%, rgba(var(--cc-accent), 0.08) 50% 100%);
+}
+
+.research-scope-grid {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+}
+
+.research-scope-block {
+  display: grid;
+  min-height: 44px;
+  align-content: center;
+  gap: 2px;
+  padding: 8px 10px 8px 24px;
+  position: relative;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-solid-soft);
+  text-align: left;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.research-scope-block.on {
+  border-color: rgba(var(--cc-accent), 0.5);
+  background: rgba(var(--cc-accent), 0.14);
+}
+
+/* 켜짐/꺼짐을 색이 아니라 **글리프**로도 말한다 (색 의존 금지). */
+.research-scope-tick {
+  position: absolute;
+  top: 50%;
+  left: 8px;
+  width: 11px;
+  color: var(--cc-muted);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  text-align: center;
+  transform: translateY(-50%);
+}
+
+.research-scope-block.on .research-scope-tick { color: var(--cc-blue-ink); }
+
+.research-scope-name {
+  color: var(--cc-ink);
+  font-size: 11.5px;
+  font-weight: 740;
+  letter-spacing: -0.02em;
+  word-break: keep-all;
+}
+
+.research-scope-block.on .research-scope-name { color: var(--cc-blue-ink); }
+
+.research-scope-hint {
+  color: var(--research-hint);
+  font-size: 10px;
+  line-height: 1.4;
+  word-break: keep-all;
+}
+
+/* ── 보낼 문장 미리보기 ── */
+
+.research-preview {
+  display: grid;
+  gap: 3px;
+  padding: 9px 11px;
+  border: 1px dashed rgba(var(--cc-accent), 0.26);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-solid-faint);
+}
+
+.research-preview-label {
+  color: var(--cc-muted);
+  font-size: 9.5px;
+  font-weight: 780;
+  letter-spacing: 0.02em;
+}
+
+.research-preview-body,
+.research-preview-empty {
+  margin: 0;
+  /* 아주 긴 자유 입력이 접수 버튼을 화면 밖으로 밀지 않게 여기서 멈춘다. */
+  max-height: 96px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+.research-preview-body {
+  color: var(--cc-ink);
+  white-space: pre-wrap;
+}
+
+.research-preview-empty { color: var(--research-hint, var(--cc-muted)); }
+
+/* ── 접수 확인 / 접수 실패 ──
+   여기까지가 이 표면의 몫이다. 그 뒤의 처리 진행은 명함 기록·진행의 블록이 소유한다. */
+
+.research-receipt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 11px;
+  border-radius: var(--cc-r-md);
+}
+
+.research-receipt-mark { display: grid; flex: 0 0 auto; place-items: center; padding-top: 1px; }
+
+.research-receipt-copy { display: grid; flex: 1 1 140px; gap: 2px; }
+
+.research-receipt-copy strong {
+  font-size: 11.5px;
+  font-weight: 790;
+  letter-spacing: -0.02em;
+}
+
+.research-receipt-copy p {
+  margin: 0;
+  color: var(--cc-ink);
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+.research-receipt-keep { color: var(--research-hint, var(--cc-muted)) !important; }
+
+.research-receipt button {
+  min-height: 34px;
+  padding: 7px 12px;
+  border: 1px solid currentColor;
+  border-radius: var(--cc-r-md);
+  background: transparent;
+  font-size: 11px;
+  font-weight: 780;
+  white-space: nowrap;
+}
+
+.research-receipt.is-accepted {
+  background: var(--cc-teal-soft);
+  color: var(--cc-teal-ink);
+}
+
+.research-receipt.is-failed {
+  background: var(--cc-danger-soft);
+  color: var(--cc-danger);
+}
+
+/* ── 진행을 소유한 블록으로 넘어갔을 때의 잠깐의 표식 ──
+   상태가 아니라 "여기다"라고 가리키는 손짓이다. 스스로 사라진다 (JS가 4초 뒤 지운다). */
+
+[data-progress-handoff="on"] {
+  outline: 2px solid rgb(var(--cc-accent));
+  outline-offset: 2px;
+  border-radius: var(--cc-r-lg);
+  animation: research-handoff 1.1s ease-out 2;
+}
+
+@keyframes research-handoff {
+  0%, 100% { outline-color: rgb(var(--cc-accent)); }
+  50% { outline-color: rgba(var(--cc-accent), 0.25); }
+}
+
+/* 움직임을 줄인 폰에서는 깜빡임을 지우되 표식은 남긴다 — 어디로 넘어갔는지는 여전히 보여야 한다.
+   (전역 규칙이 이미 애니메이션을 멈추지만, 여기서는 그 다음이 중요하다: 테두리는 남는다.) */
+@media (prefers-reduced-motion: reduce) {
+  [data-progress-handoff="on"] { animation: none; }
+  .research-scope-block { transition: none; }
+}

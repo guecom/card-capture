@@ -212,11 +212,15 @@ test('reduced motion removes the movement but never the meaning', async ({ page 
       .length);
     expect(looping, '움직임을 끈 사용자에게도 무한 애니메이션이 돈다').toBe(0);
 
-    // 상태는 여전히 읽힌다 — 단계 이름과 표면 상태가 글자·속성으로 남는다.
+    // 상태는 여전히 읽힌다 — 표면 상태와 지금 고른 것이 글자·속성으로 남는다.
+    // (조사 요청의 처리 단계 막대는 TSK-000535로 사라졌다. 진행은 명함 기록·진행의 블록이 소유한다.)
     await expect(recall).toHaveAttribute('data-ai-state', 'idle');
-    await expect(page.locator('.ai-surface.research-request .ai-stage-path li.ai-stage-active')).toHaveCount(0);
     await page.getByRole('button', { name: '캡처', exact: true }).click();
-    await expect(page.locator('.ai-surface.research-request .ai-stage-path li.ai-stage-active')).toHaveText(/작성 중/);
+    const research = page.locator('.ai-surface.research-request');
+    await expect(research).toHaveAttribute('data-ai-state', 'idle');
+    await expect(research.locator('.research-scope-count')).toHaveText(/9개 중 0개 선택/);
+    await research.getByRole('button', { name: '모두 선택' }).click();
+    await expect(research.getByRole('button', { name: '모두 해제' })).toHaveAttribute('aria-pressed', 'true');
   } finally {
     harness.server.close();
   }

@@ -28,7 +28,8 @@ import { CameraCaptureModal, type CapturedSideMeta, type CardSide } from './comp
 import { StatusBadge } from './components/StatusBadge';
 import { MarkdownLite } from './components/MarkdownLite';
 import { ActionSection, ContactActions, PersonDocument } from './components/PersonDocument';
-import { AiExampleChips, AiScopeNote, AiStageRail, AiSurface, AiSurfaceHead } from './components/AiTaskSurface';
+import { AiScopeNote, AiStageRail, AiSurface, AiSurfaceHead } from './components/AiTaskSurface';
+import { focusCaptureProgress, ResearchComposer, type ResearchReceipt } from './components/ResearchComposer';
 import { addPersonNote, fetchServerCaptureIds, listBriefsUpTo, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
 import {
   contentEvidence,
@@ -41,13 +42,8 @@ import {
   elapsedLabel,
   RECALL_SCOPE_NOTE,
   recallStages,
-  RESEARCH_EXAMPLE_CHIPS,
   RESEARCH_PLACEHOLDER,
-  RESEARCH_SCOPE_DOES,
-  RESEARCH_SCOPE_LIMITS,
-  researchStages,
   type RecallStageKey,
-  type ResearchStageKey,
 } from './services/ai-stages';
 import { type CapturedCameraFrame, storedCameraFrame, thumbnailOf } from './services/camera';
 import {
@@ -415,6 +411,9 @@ function App() {
   const [personActionComposer, setPersonActionComposer] = useState<PersonActionComposer | null>(null);
   const [personActionText, setPersonActionText] = useState('');
   const [personActionSubmitting, setPersonActionSubmitting] = useState(false);
+  // 시트에서 보낸 조사 요청이 **접수됐는가 / 접수에 실패했는가**. 접수 뒤의 처리 진행은
+  // 여기서 말하지 않는다 — 그건 명함 기록·진행의 블록이 소유한다 (TSK-000535).
+  const [personActionOutcome, setPersonActionOutcome] = useState<{ ok: boolean; reason?: string } | null>(null);
   const [queueEdit, setQueueEdit] = useState<CaptureQueueItem | null>(null);
   // 기다리게 하는 동작에는 예외 없이 "지금 하고 있다"가 붙어야 한다 (founder 원칙 2026-07-27).
   const [savingQueueEdit, setSavingQueueEdit] = useState(false);
@@ -1334,16 +1333,6 @@ function App() {
     });
   }, []);
 
-  // 예시 chip은 입력을 지우지 않고 덧붙인다 — 이미 쓴 문장을 날리면 안 된다.
-  const appendResearchExample = useCallback((value: string) => {
-    setResearchText((current) => {
-      const trimmed = current.trim();
-      if (!trimmed) return value;
-      if (trimmed.includes(value)) return current;
-      return `${trimmed}, ${value}`;
-    });
-  }, []);
-
   const openDocument = useCallback(async (title: string, target: { id?: string; captureId?: string }, noteTarget: PersonTarget | null) => {
     if (!configured) return;
     setDocumentTitle(title);
@@ -1381,16 +1370,19 @@ function App() {
 
   const promptNote = useCallback((target: PersonTarget) => {
     setPersonActionText('');
+    setPersonActionOutcome(null);
     setPersonActionComposer({ kind: 'note', target });
   }, []);
 
   const promptResearch = useCallback((target: PersonTarget) => {
     setPersonActionText('');
+    setPersonActionOutcome(null);
     setPersonActionComposer({ kind: 'research', target });
   }, []);
 
   const promptCorrection = useCallback((captureId: string) => {
     setPersonActionText('');
+    setPersonActionOutcome(null);
     setPersonActionComposer({ kind: 'correction', captureId });
   }, []);
 
@@ -1398,6 +1390,7 @@ function App() {
     if (personActionSubmitting) return;
     setPersonActionComposer(null);
     setPersonActionText('');
+    setPersonActionOutcome(null);
   }, [personActionSubmitting]);
 
   const submitPersonAction = useCallback(async () => {
@@ -1407,11 +1400,32 @@ function App() {
     if (personActionComposer.kind === 'note') {
       success = await runPersonAction(addPersonNote(config, personActionComposer.target, personActionText.trim()), '메모를 저장했어요 — 잠시 후 인물 기록에 반영됩니다');
     } else if (personActionComposer.kind === 'research') {
+      // 조사 요청만 `runPersonAction`을 거치지 않는다. 실패 사유와 접수 번호를 시트 안에서
+      // 그대로 보여 주고(접수 실패), 접수되면 그 요청의 **진행 블록**으로 손을 넘겨야 하기 때문이다.
       const submission = buildResearchInstruction(personActionText);
       if (!submission) {
-        setMessage('조사할 내용을 조금 더 구체적으로 적어주세요');
+        setPersonActionOutcome({ ok: false, reason: '조사할 내용을 적거나 조사 항목을 골라 주세요.' });
       } else {
-        success = await runPersonAction(submitResearchInstruction(config, personActionComposer.target, submission.raw), '조사 요청을 접수했어요');
+        try {
+          const response = await submitResearchInstruction(config, personActionComposer.target, submission.raw);
+          if (!response.ok) throw new Error(response.error ?? 'request_failed');
+          setMessage(response.receiptId ? `조사 요청을 접수했어요 · receipt ${response.receiptId}` : '조사 요청을 접수했어요');
+          setPersonActionOutcome({ ok: true });
+          await refresh(true).catch(() => undefined);
+          // 접수된 요청은 서버가 자기 captureId(= receiptId)로 기록을 만든다. 그 블록이 진행을
+          // 소유하므로 시트를 닫고 그리로 데려간다. 아직 목록에 없으면 이 사람의 기존 기록으로 간다.
+          setTab('activity');
+          setRecordsCollapsed(false);
+          setDocumentOpen(false);
+          const primary = String(response.receiptId ?? '');
+          const fallback = String(personActionComposer.target.captureId ?? '');
+          void focusCaptureProgress(primary).then((landed) => {
+            if (!landed && fallback && fallback !== primary) void focusCaptureProgress(fallback);
+          });
+          success = true;
+        } catch (error) {
+          setPersonActionOutcome({ ok: false, reason: actionErrorMessage(error) });
+        }
       }
     } else {
       success = await runPersonAction(requestCorrection(config, personActionComposer.captureId, personActionText.trim()), '수정 요청을 보냈어요 — 다음 처리에서 확인합니다');
@@ -1420,8 +1434,9 @@ function App() {
     if (success) {
       setPersonActionComposer(null);
       setPersonActionText('');
+      setPersonActionOutcome(null);
     }
-  }, [config, personActionComposer, personActionSubmitting, personActionText, runPersonAction]);
+  }, [config, personActionComposer, personActionSubmitting, personActionText, refresh, runPersonAction]);
 
   const retryProcessing = useCallback(async (captureId: string) => {
     if (requeueingId) return;
@@ -1455,7 +1470,9 @@ function App() {
     // 뒷면이 실제로 담겼는지 목록에서 바로 보이게 한다 — 예전에는 편집 화면을 열어야만 확인됐다.
     const sideLabel = queueNamedImageSource(item, 'back.jpg') ? '앞·뒷면' : '앞면';
     return (
-      <article className="queue-row" key={item.captureId}>
+      // 아직 서버 기록이 없는 촬영도 브리핑 카드와 **같은 이름표**(`capture-<id>`)를 단다. 알림·조사
+      // 접수 뒤 "그 촬영으로 데려가기"가 처리 전 항목에서도 성립해야 하기 때문이다 (TSK-000535).
+      <article className="queue-row" key={item.captureId} id={`capture-${item.captureId}`}>
         <button className="queue-row-main" type="button" onClick={() => setQueueEdit(normalizedQueueItem(structuredClone(item)))}>
           {imageSource ? <img src={imageSource} alt="명함 앞면 미리보기" /> : <span className="queue-placeholder"><Camera aria-hidden="true" size={18} /></span>}
           <div className="row-copy">
@@ -1624,6 +1641,33 @@ function App() {
 
   // ── 캡처 탭: legacy 작업 화면 — 촬영·맥락·완료·명함 기록(통합)이 한 스크롤 ──
   function renderCapture() {
+    /**
+     * 촬영 탭의 조사 요청은 `완료`가 제출이다. 그래서 접수 결과도 방금 저장한 그 촬영이 말한다 —
+     * 새 상태를 만들지 않고 이미 있는 사실(대기열 항목)에서 읽는다 (TSK-000535).
+     *  - 저장 중 → `submitting`
+     *  - 저장됐고 그 촬영이 조사 요청을 싣고 있다 → `접수 확인` + 진행 블록으로 가는 손잡이
+     *  - 그 촬영의 전송이 실패했다 → `접수 실패`. 적어 둔 내용과 고른 항목은 그대로 남아 있다.
+     */
+    const carriedResearch = showLastSaved && lastSavedItem?.researchInstruction ? lastSavedItem : null;
+    const researchReceipt: ResearchReceipt = !carriedResearch
+      ? { state: 'idle' }
+      : carriedResearch.state === 'failed'
+        ? {
+          state: 'failed',
+          reason: actionErrorMessage(carriedResearch.err),
+          retryLabel: '다시 보내기',
+          onRetry: () => void retryQueueItem(carriedResearch),
+        }
+        : {
+          state: 'accepted',
+          note: configured
+            ? '이 폰에 저장했어요. 전송이 끝나면 아래 명함 기록의 블록이 진행을 이어서 보여 줍니다.'
+            : '이 폰에 저장했어요. 연결되면 자동으로 보내고, 진행은 아래 명함 기록의 블록이 보여 줍니다.',
+          onOpenProgress: () => {
+            setRecordsCollapsed(false);
+            void focusCaptureProgress(carriedResearch.captureId);
+          },
+        };
     return (
       <div className="cc-stack">
         {setupBannerMessage && (
@@ -1728,24 +1772,18 @@ function App() {
             )}
           </section>
 
-          {/* 조사 지시는 메모가 아니라 AI에게 맡기는 일이다 — 표면·표식·단계를 그렇게 보이게 한다
-              (INT-000015 Feedback item 002). 권한은 기존 owner-only public-research-v1 그대로다. */}
+          {/* 조사 지시는 메모가 아니라 AI에게 맡기는 일이다 — 표면·표식·경계를 그렇게 보이게 한다
+              (INT-000015 Feedback item 002). 권한은 기존 owner-only public-research-v1 그대로다.
+              작성 자리는 `작성 · 선택 · 제출 · 접수 확인/실패`까지만 소유한다 (TSK-000535). */}
           {researchInstructionEnabled && (
-            <AiSurface className="research-request" state={queueing ? 'active' : 'idle'}>
-              <AiSurfaceHead title="AI 조사 요청" badge="소유자 전용" helper="묻기 껄끄럽지만 알아야 하는 것까지 맡기세요. 공개된 근거로 판단하고 확신도를 함께 적습니다." />
-              <IonTextarea
-                aria-label="AI 조사 요청"
-                maxlength={2000}
-                autoGrow
-                placeholder={RESEARCH_PLACEHOLDER}
-                value={researchText}
-                onIonInput={(inputEvent) => setResearchText(String(inputEvent.detail.value ?? ''))}
-              />
-              <AiExampleChips examples={RESEARCH_EXAMPLE_CHIPS} onPick={appendResearchExample} label="조사 요청 예시" />
-              <AiStageRail stages={researchStages('draft')} label="AI 조사 요청 진행 단계" />
-              <AiScopeNote>{RESEARCH_SCOPE_DOES}</AiScopeNote>
-              <AiScopeNote limit>{RESEARCH_SCOPE_LIMITS}</AiScopeNote>
-            </AiSurface>
+            <ResearchComposer
+              helper="묻기 껄끄럽지만 알아야 하는 것까지 맡기세요. 공개된 근거로 판단하고 확신도를 함께 적습니다."
+              placeholder={RESEARCH_PLACEHOLDER}
+              busy={queueing}
+              value={researchText}
+              onChange={setResearchText}
+              receipt={researchReceipt}
+            />
           )}
 
           <IonButton className="primary-action" expand="block" disabled={!frontFrame || queueing} onClick={() => void completeCapture()}>{queueing ? '저장 중…' : '완료'}</IonButton>
@@ -2337,22 +2375,37 @@ function App() {
             <IonButton expand="block" disabled={!draftConfig.capturer.trim()} onClick={commitSettings}>설정 저장</IonButton>
           </IonContent>
         </IonModal>
-        <IonModal className="person-action-modal" isOpen={Boolean(personActionComposer)} onDidDismiss={closePersonActionComposer} initialBreakpoint={personActionComposer?.kind === 'research' ? 0.92 : 0.62} breakpoints={[0, 0.62, 0.92]}>
+        {/* 조사 요청 시트만 **화면 전체**를 쓴다. 반쯤 열린 상태(0.92)에서는 `ion-content`의 아래 끝이
+            화면 밖에 있어서, 아래에 붙어 있는(`position: sticky; bottom: 0`) 접수 버튼이 화면 밖으로
+            잘린다 — 내용이 길어져 스크롤이 생기는 순간 재현된다 (INT-000015 002-b가 잡는 그 결함).
+            항목 블록이 생기며 이 표면은 언제나 스크롤이 생기므로, 잘릴 수 있는 중간 상태를 없앤다. */}
+        <IonModal
+          className="person-action-modal"
+          isOpen={Boolean(personActionComposer)}
+          onDidDismiss={closePersonActionComposer}
+          initialBreakpoint={personActionComposer?.kind === 'research' ? 1 : 0.62}
+          breakpoints={personActionComposer?.kind === 'research' ? [0, 1] : [0, 0.62, 0.92]}
+        >
           {personActionComposer && (
             <>
               <IonHeader><IonToolbar><IonTitle>{personActionCopy[personActionComposer.kind].title}</IonTitle><IonButton slot="end" fill="clear" disabled={personActionSubmitting} onClick={closePersonActionComposer}>취소</IonButton></IonToolbar></IonHeader>
               <IonContent className="ion-padding">
                 <div className="person-action-composer">
                   {personActionComposer.kind === 'research' ? (
-                    // 같은 AI 표면·표식·단계를 캡처 화면과 인물 카드에서 그대로 쓴다 (INT-000015 항목 002).
-                    <AiSurface className="research-request" state={personActionSubmitting ? 'active' : 'idle'}>
-                      <AiSurfaceHead title="AI 조사 요청" badge="소유자 전용" helper={personActionCopy.research.helper} />
-                      <IonTextarea aria-label="AI 조사 요청" autofocus autoGrow maxlength={2000} placeholder={personActionCopy.research.placeholder} value={personActionText} onIonInput={(inputEvent) => setPersonActionText(String(inputEvent.detail.value ?? ''))} />
-                      <AiExampleChips examples={RESEARCH_EXAMPLE_CHIPS} onPick={(value) => setPersonActionText((current) => (current.trim() ? (current.includes(value) ? current : `${current.trim()}, ${value}`) : value))} label="조사 요청 예시" />
-                      <AiStageRail stages={researchStages(personActionSubmitting ? 'received' : 'draft')} label="AI 조사 요청 진행 단계" />
-                      <AiScopeNote>{RESEARCH_SCOPE_DOES}</AiScopeNote>
-                      <AiScopeNote limit>{RESEARCH_SCOPE_LIMITS}</AiScopeNote>
-                    </AiSurface>
+                    // 촬영 화면과 인물 카드가 **같은 컴포넌트**를 쓴다 (INT-000015 항목 002).
+                    <ResearchComposer
+                      autofocus
+                      helper={personActionCopy.research.helper}
+                      placeholder={personActionCopy.research.placeholder}
+                      busy={personActionSubmitting}
+                      value={personActionText}
+                      onChange={setPersonActionText}
+                      receipt={personActionOutcome === null
+                        ? { state: 'idle' }
+                        : personActionOutcome.ok
+                          ? { state: 'accepted', note: '요청을 접수했어요. 진행은 명함 기록·진행의 블록이 이어서 보여 줍니다.' }
+                          : { state: 'failed', reason: personActionOutcome.reason ?? '요청에 실패했어요 — 다시 시도해 주세요', onRetry: () => void submitPersonAction() }}
+                    />
                   ) : (
                     <>
                       <span className="eyebrow">{personActionCopy[personActionComposer.kind].eyebrow}</span>

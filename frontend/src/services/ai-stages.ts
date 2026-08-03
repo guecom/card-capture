@@ -61,17 +61,10 @@ export function researchStages(active: ResearchStageKey): AiStage[] {
 export const RESEARCH_SCOPE_DOES = '공개된 결과물(경력·논문·특허·발표·제품·기사·평가)을 근거로 판단까지 합니다. 근거와 확신도를 함께 적고, 모르는 건 모른다고 남겨요.';
 export const RESEARCH_SCOPE_LIMITS = '로그인이 필요한 자료, 정치·종교·건강 같은 사적 특성, 집주소·가족 같은 신상, 외부로 보내는 행동은 하지 않아요.';
 
-/** 요청 예시. 묻기 껄끄럽지만 실제로 필요한 판단을 먼저 꺼내 놓는다. */
-export const RESEARCH_EXAMPLE_CHIPS = [
-  '실력·전문성 추정',
-  '의사결정 권한',
-  '평판·레퍼런스',
-  '최근 성과와 실패',
-  '이해관계·경쟁 관계',
-  '최근 경력·이직',
-  '회사 소식·투자',
-  '나와의 접점',
-] as const;
+// 예전에는 여기 `RESEARCH_EXAMPLE_CHIPS`가 있었다 — 누르면 자유 입력칸에 글자를 덧붙이는 예시다.
+// founder 판정 2026-08-04로 그 여덟 개는 **켜고 끄는 조사 항목**이 됐고, 목록과 규칙은
+// `services/research-scope.ts`(`RESEARCH_SCOPES`)가 소유한다 (TSK-000536 / ISS-000082).
+// 여기에 다시 만들지 않는다 — 같은 목록이 두 곳에 있으면 화면과 제출 문장이 갈라진다.
 
 /** 무엇을 맡길 수 있는지 한 문장으로 보여 주는 기본 예시. */
 export const RESEARCH_PLACEHOLDER = '예: 이 사람 실력이 진짜인지 공개된 결과물로 판단해줘. 실제로 결정 권한이 있는 자리인지도.';
