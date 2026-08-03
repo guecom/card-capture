@@ -321,32 +321,65 @@ test('corner radii stay on a deliberate scale instead of blanket softness', asyn
   }
 });
 
-// ── 007: 폰이 움직임을 줄이면 앱은 그 선택을 언제나 존중한다 ──
+// ── 007: 폰이 움직임을 줄여도, 사용자가 켜기를 고르면 앱은 움직인다 ──
 //
-// OS의 `움직임 최소화`는 앱 설정보다 우선한다. 예전 `cc_motion` override는 제거했으며,
-// 설정 화면에는 다시 켜는 선택지를 노출하지 않는다.
-test('a phone that reduces motion always stops the light and ignores the retired override', async ({ page }) => {
+// founder 2차 판정 2026-07-28: "여전히 하이라이팅이 안 나옴".
+// 실측으로 원인을 갈랐다 — 폰이 `움직임 최소화`를 켜고 있으면 우리 빛은 한 픽셀도 그려지지 않았다
+// (그 조건에서 시간에 따른 픽셀 변화 0). 그건 결함이 아니라 존중이지만 **말없이 사라지면 고장으로
+// 읽힌다.** 그래서 OS 설정은 기본값이 되고, 설정에서 직접 켤 수 있어야 한다.
+//
+// 이 게이트가 지키는 계약은 셋이다:
+//   (a) 아무것도 고르지 않은 사람에게는 폰 설정이 그대로 존중된다 (지금까지의 약속을 깨지 않는다)
+//   (b) 그때 화면은 **왜** 멈춰 있는지 말한다
+//   (c) `켜기`를 고르면 폰이 여전히 줄이라고 해도 앱 안에서는 움직인다
+test('a phone that reduces motion stops the light, says so, and can be overridden', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.addInitScript(() => localStorage.setItem('cc_motion', 'on'));
   const harness = await boot(page, 'dark');
   try {
-    await expect(page.locator('html')).not.toHaveAttribute('data-motion', /.+/);
-    expect(await page.evaluate(() => localStorage.getItem('cc_motion'))).toBeNull();
-
+    // (a) 기본값 `시스템` — 폰이 줄이라고 하면 멈춘다.
+    await expect(page.locator('html')).toHaveAttribute('data-motion', 'off');
     const surface = page.locator('.ai-surface.research-request');
     const stopped = await surface.evaluate((node) => ({
       sweep: getComputedStyle(node, '::before').display,
       looping: node.getAnimations({ subtree: true })
         .filter((a) => a.playState === 'running' && (a.effect?.getComputedTiming().iterations ?? 1) === Infinity).length,
-      shadow: getComputedStyle(node).boxShadow,
     }));
     expect(stopped.sweep, '움직임을 줄인 폰에서 빛이 계속 그려진다').toBe('none');
     expect(stopped.looping, '움직임을 줄인 폰에서 무한 애니메이션이 돈다').toBe(0);
-    expect(stopped.shadow, '정지 상태에서 AI 표면의 의미까지 사라졌다').not.toBe('none');
 
+    // (b) 왜 멈춰 있는지 화면이 말한다.
     await page.getByRole('button', { name: '설정', exact: true }).click();
-    await expect(page.getByRole('radiogroup', { name: '화면 움직임' })).toHaveCount(0);
-    await expect(page.getByText('움직임은 휴대폰의 ‘움직임 줄이기’를 항상 존중합니다.')).toBeVisible();
+    const card = page.getByRole('radiogroup', { name: '화면 움직임' });
+    await expect(card).toBeVisible();
+    await expect(page.getByText(/움직임 최소화를 켜 두어서/)).toBeVisible();
+
+    // (c) 켜기를 고르면 폰 설정과 무관하게 앱 안에서 움직인다 — 이게 이번 판정의 핵심이다.
+    await card.getByRole('radio', { name: /켜기/ }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-motion', 'on');
+    await page.getByRole('button', { name: '캡처', exact: true }).click();
+    await surface.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(200);
+    const revived = await surface.evaluate((node) => ({
+      sweep: getComputedStyle(node, '::before').display,
+      looping: node.getAnimations({ subtree: true })
+        .filter((a) => a.playState === 'running' && (a.effect?.getComputedTiming().iterations ?? 1) === Infinity).length,
+    }));
+    expect(revived.sweep, '켜기를 골랐는데도 빛이 그려지지 않는다').not.toBe('none');
+    expect(revived.looping, '켜기를 골랐는데도 애니메이션이 돌지 않는다').toBeGreaterThan(0);
+
+    // 값이 아니라 픽셀로 확인한다 — 애니메이션이 "돈다"고 보고되면서 화면은 정지한 경우가 실제로 있었다.
+    const box = (await surface.boundingBox())!;
+    const clip = { x: Math.round(box.x) + 8, y: Math.round(box.y) + 2, width: Math.round(box.width) - 16, height: 10 };
+    const frames: Buffer[] = [];
+    for (let i = 0; i < 4; i += 1) { frames.push(await page.screenshot({ clip })); await page.waitForTimeout(800); }
+    let moved = 0;
+    for (let i = 0; i < frames.length; i += 1) {
+      for (let j = i + 1; j < frames.length; j += 1) moved = Math.max(moved, ...(await columnDeltas(page, frames[i], frames[j])));
+    }
+    expect(moved, `켜기를 골랐는데 화면이 실제로는 정지해 있다 (${moved}/255)`).toBeGreaterThanOrEqual(10);
+
+    // 고른 값은 이 기기에 남는다.
+    expect(await page.evaluate(() => localStorage.getItem('cc_motion'))).toBe('on');
   } finally {
     harness.server.close();
   }

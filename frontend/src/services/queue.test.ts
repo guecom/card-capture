@@ -90,26 +90,6 @@ describe('offline queue contract', () => {
     expect(sent.err).toBeUndefined();
   });
 
-  it('keeps an initial capture research requestId through an ambiguous upload retry', async () => {
-    const capture = {
-      ...item('20260802-120004-research'),
-      researchInstruction: { raw: '공개 결과물 확인', mode: 'standard' as const, requestId: 'request-00000011' },
-    };
-    await putQueueItem(capture);
-    const sentRequestIds: Array<string | undefined> = [];
-
-    await flushQueue(async (queued) => {
-      sentRequestIds.push(queued.researchInstruction?.requestId);
-      throw Object.assign(new Error('network_failed'), { kind: 'ambiguous' });
-    });
-    await flushQueue(async (queued) => {
-      sentRequestIds.push(queued.researchInstruction?.requestId);
-    }, async () => new Set());
-
-    expect(sentRequestIds).toEqual(['request-00000011', 'request-00000011']);
-    expect((await readQueue())[0].researchInstruction?.requestId).toBe('request-00000011');
-  });
-
   it('stamps the success receipt time so cleanup can only run after a real send', async () => {
     await putQueueItem(item('20260725-120005-e'));
     await flushQueue(async () => undefined);

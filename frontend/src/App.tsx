@@ -16,21 +16,19 @@ import {
   IonToolbar,
   setupIonicReact,
 } from '@ionic/react';
-import { ArrowUpRight, BellOff, BellRing, Camera, ChevronRight, CircleAlert, CircleHelp, CircleUser, FileText, History, Lock, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, Waves, WifiOff } from 'lucide-react';
+import { Camera, ChevronRight, FileText, ImageOff, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, Waves } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 릴리즈 버전은 저장소가 선언한 값 하나만 쓴다 (founder 지시 2026-07-27: "버전이 설정에 표기되었으면 함").
 // `package.json`은 이미 빌드 식별자의 해시 입력이므로 값이 바뀌면 식별자도 함께 바뀐다 —
 // 벽시계·환경변수와 달리 빌드마다 달라지지 않아 재현성 계약(eval/build-reproducibility.test.js)을 깨지 않는다.
 import { version as APP_VERSION } from '../package.json';
-import type { BriefItem, CaptureQueueItem, PersonTarget, QuickName, ResearchEvidenceGraph, RuntimeConfig, SearchItem } from './contracts/capture';
+import type { BriefItem, CaptureQueueItem, PersonTarget, QuickName, RuntimeConfig, SearchItem } from './contracts/capture';
 import { CameraCaptureModal, type CapturedSideMeta, type CardSide } from './components/CameraPreviewModal';
 import { StatusBadge } from './components/StatusBadge';
 import { MarkdownLite } from './components/MarkdownLite';
 import { ActionSection, ContactActions, PersonDocument } from './components/PersonDocument';
-import { AiScopeNote, AiStageRail, AiSurface, AiSurfaceHead } from './components/AiTaskSurface';
-import { ResearchComposer } from './components/ResearchComposer';
-import { ResearchEvidencePanel } from './components/ResearchEvidencePanel';
+import { AiExampleChips, AiScopeNote, AiStageRail, AiSurface, AiSurfaceHead } from './components/AiTaskSurface';
 import { addPersonNote, fetchServerCaptureIds, listBriefsUpTo, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
 import {
   contentEvidence,
@@ -43,25 +41,14 @@ import {
   elapsedLabel,
   RECALL_SCOPE_NOTE,
   recallStages,
-  researchRailFromBrief,
-  researchStageStats as readResearchStageStats,
-  researchStageWeighting,
-  syncResearchStageTelemetry,
+  RESEARCH_EXAMPLE_CHIPS,
+  RESEARCH_PLACEHOLDER,
+  RESEARCH_SCOPE_DOES,
+  RESEARCH_SCOPE_LIMITS,
+  researchStages,
   type RecallStageKey,
+  type ResearchStageKey,
 } from './services/ai-stages';
-import {
-  REFRESH_BUSY_LABEL,
-  REFRESH_BUSY_TEXT,
-  REFRESH_FAILURE_TEXT,
-  REFRESH_IDLE_LABEL,
-  REFRESH_SUCCESS_HOLD_MS,
-  REFRESH_SUCCESS_TEXT,
-  refreshIdleText,
-  type RefreshState,
-} from './services/refresh-orchestrator';
-import { researchProgressView } from './services/research-progress-view';
-import { stageWidthPercents } from './services/stage-weights';
-import type { StageStat } from './services/stage-telemetry';
 import { type CapturedCameraFrame, storedCameraFrame, thumbnailOf } from './services/camera';
 import {
   QUICK_NAME_LATER_LABEL,
@@ -79,7 +66,7 @@ import {
 } from './services/capture-context';
 import { buildLegacyNote, buildQueuedCapture, parseLegacyNote, restoredDraftOf } from './services/capture-item';
 import { actionErrorMessage, briefListTitle, briefNameMap, briefTitle, elapsedMinutesOf } from './services/brief-view';
-import { captureAttentionOf, captureProgress, captureStageStats, syncCaptureStageTelemetry } from './services/capture-progress';
+import { captureProgress, refreshHint } from './services/capture-progress';
 import { refreshCadenceMs } from './services/refresh-cadence';
 import { contactCardFromBrief } from './services/contacts';
 import { getOpenCvWorker, prefetchOpenCv } from './services/opencv';
@@ -110,37 +97,36 @@ import {
   runRecallSearch,
   serverFallbackTerm,
 } from './services/recall-search';
-import { buildResearchInstruction, createResearchRequestIdLifecycle, matchingPendingResearchRequestId, researchRequestFingerprint, researchTargetFingerprint, type ResearchFocusId, type ResearchMode, type ResearchPurpose } from './services/research';
-import { researchEvidenceView } from './services/research-result';
+import { buildResearchInstruction } from './services/research';
 import { recognizeQuickName } from './services/vision';
 import {
   loadCachedBriefs,
-  clearPendingPersonResearch,
   loadGalleryFree,
   loadOwnerFlags,
-  loadPendingPersonResearch,
   loadRecentSearches,
   loadRuntimeConfigDetailed,
   loadSectionCollapsed,
   loadStickyCaptureContext,
+  loadMotionPreference,
   loadThemePreference,
   saveCachedBriefs,
   saveGalleryFree,
   saveOwnerFlags,
-  savePendingPersonResearch,
   saveRecentSearch,
   saveRuntimeConfig,
   saveSectionCollapsed,
   saveStickyCaptureContext,
+  saveMotionPreference,
   saveThemePreference,
   signOutDevice,
+  type MotionPreference,
   type ThemePreference,
 } from './services/storage';
 import { applyTheme, resolveTheme, systemPrefersDark, THEME_CHOICES, watchSystemTheme } from './services/theme';
+import { applyMotion, MOTION_CHOICES, resolveMotion, systemPrefersReducedMotion, watchSystemMotion } from './services/motion';
 import { holdSafeAreaInset } from './services/viewport-shell';
 import { apiRejectionMessage, canEditApiEndpoint } from './services/api-origin';
 import { scrubCredentialParams } from './services/url-credentials';
-import { disablePushNotifications, enablePushNotifications, inspectPushState, type PushState, type PushStatus } from './services/push';
 
 setupIonicReact({ mode: 'ios' });
 
@@ -151,16 +137,6 @@ function initialTab(): Tab {
   if (view === 'search') return 'people';
   if (view === 'briefs' || view === 'activity') return 'activity';
   return 'capture';
-}
-
-function initialNotificationFocus(): string {
-  const focus = new URLSearchParams(globalThis.location?.search ?? '').get('focus') ?? '';
-  return /^[A-Za-z0-9_-]{4,80}$/.test(focus) ? focus : '';
-}
-
-function initialRecoveryFocus(): string {
-  const search = new URLSearchParams(globalThis.location?.search ?? '');
-  return search.get('notice') === 'recovery_required' ? initialNotificationFocus() : '';
 }
 
 const tabs: Array<{ id: Tab; label: string; icon: LucideIcon }> = [
@@ -177,20 +153,6 @@ const screenTitles: Record<Tab, string> = {
   activity: '처리 진행',
   people: '사람 찾기',
   settings: '내 앱 설정',
-};
-
-const pushStatusCopy: Record<PushStatus, { title: string; body: string }> = {
-  checking: { title: '알림 상태를 확인하고 있어요', body: '브라우저와 전송 서버가 연결되는지 확인합니다.' },
-  disconnected: { title: '개인 링크 연결이 필요해요', body: '먼저 받은 개인 링크로 이 기기를 연결해 주세요.' },
-  unsupported: { title: '이 브라우저는 닫힌 앱 알림을 지원하지 않아요', body: '진행 화면을 열면 최신 상태를 계속 확인할 수 있습니다.' },
-  denied: { title: '브라우저에서 알림이 차단됐어요', body: 'Chrome의 이 사이트 설정에서 알림을 허용한 뒤 다시 확인해 주세요.' },
-  offline: { title: '오프라인이라 알림 설정을 확인할 수 없어요', body: '이 기기에서 끄기는 가능하며, 연결되면 서버 상태를 다시 확인합니다.' },
-  server_disabled: { title: '안전한 전송 준비가 아직 끝나지 않았어요', body: 'VAPID 전송이 활성화되기 전에는 진행 화면이 정확한 기준입니다.' },
-  capable: { title: '닫힌 앱 알림을 켤 수 있어요', body: '버튼을 누를 때만 브라우저가 알림 권한을 요청합니다.' },
-  off: { title: '닫힌 앱 알림이 꺼져 있어요', body: '원할 때 다시 켤 수 있고, 언제든 이 기기에서 해제할 수 있습니다.' },
-  subscribed: { title: '닫힌 앱 알림이 켜져 있어요', body: '앱을 닫아도 꼭 확인해야 하는 세 경우에만 알려드립니다.' },
-  stale: { title: '알림 구독을 안전하게 정리하지 못했어요', body: '이 기기 구독이 남았을 수 있습니다. 연결 상태를 확인하고 다시 꺼 주세요.' },
-  error: { title: '알림 상태를 확인하지 못했어요', body: '캡처와 처리는 그대로입니다. 잠시 뒤 상태를 다시 확인해 주세요.' },
 };
 
 type SearchMode = 'quick' | 'recall';
@@ -216,29 +178,9 @@ function queueImageSource(item: CaptureQueueItem): string {
 // 화면이 요청하는 총 건수를 이만큼씩 키우고 `listBriefsUpTo`가 필요한 만큼 페이지를 이어 읽는다.
 const LIST_PAGE_STEP = 30;
 
-// 이만큼 지난 화면은 "오래 열어 둔 화면"으로 본다 — 돌아온 사람에게 지금 보는 것이
-// 언제 기준인지 먼저 말한다 (founder 시나리오: 한 시간 열어 둔 탭).
-const REFRESH_STALE_MS = 10 * 60_000;
-
 // 대기열 행에 보여 줄 단계 요약. 서버 응답이 아직 없으면 로컬 전송 상태만으로 계산한다.
-function queueProgressOf(item: CaptureQueueItem, stageStats: Record<string, StageStat | null> | null) {
-  return captureProgress({ queue: item, elapsedMinutes: elapsedMinutesOf(item), stageStats });
-}
-
-/**
- * 단계 막대의 칸 폭. 관측이 충분할 때만 소요시간 중앙값에 비례한다 (설계 계약 §3-2).
- *
- * 폭은 디자인 값이 아니라 **관측 데이터**라서 CSS가 아니라 여기서만 나올 수 있다.
- * `AiStageRail`과 같은 판정·같은 `fr` 단위를 쓴다 — 두 막대가 다른 규칙으로 넓어지면
- * 폭이라는 신호 자체가 뜻을 잃는다. 관측이 부족하면 균등 칸으로 되돌린다.
- */
-function stageTrackStyle(progress: ReturnType<typeof captureProgress>): CSSProperties | undefined {
-  const { weighting } = progress;
-  const aligned = weighting.confident
-    && weighting.weights.length === progress.stages.length
-    && weighting.weights.every((weight, index) => weight.key === progress.stages[index].key);
-  if (!aligned) return undefined;
-  return { gridTemplateColumns: stageWidthPercents(weighting).map((percent) => `${percent}fr`).join(' ') };
+function queueProgressOf(item: CaptureQueueItem) {
+  return captureProgress({ queue: item, elapsedMinutes: elapsedMinutesOf(item) });
 }
 
 function queueStateCopy(item: CaptureQueueItem): string {
@@ -330,74 +272,6 @@ if (boot.scrubUrl) scrubCredentialParams();
 const apiEndpointEditable = canEditApiEndpoint();
 const API_ENDPOINT_LOCK_NOTE = '이 앱은 배포본에 박힌 주소 한 곳으로만 연결해요. 그래서 여기서는 바꿀 수 없어요 — 다른 주소로 옮기려면 새 배포본이 필요합니다.';
 
-const RESEARCH_NODE_LABELS: Record<ResearchEvidenceGraph['nodes'][number]['type'], string> = {
-  person: '사람',
-  organization: '조직',
-  project: '프로젝트',
-  event: '사건',
-  claim: '주장',
-  source: '출처',
-};
-
-/** 숫자 요약만으로는 왜 연결됐는지 알 수 없으므로 검증된 edge와 timeline의 실제 주장을 함께 보여준다. */
-function ResearchRelationshipOverview({ graph }: { graph: ResearchEvidenceGraph }) {
-  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
-  const claims = new Map(graph.claims.map((claim) => [claim.id, claim]));
-  // 이 구획은 v2.20.0에서 className이 아예 없어 브라우저 기본 서체·크기로 그려졌다 —
-  // 주변이 전부 앱 토큰을 쓰는데 여기만 span 16px / strong 12px로 위계가 뒤집혀 있었다.
-  return (
-    <section className="research-relationship" aria-label="조사 관계와 타임라인 범위">
-      <div className="research-open">
-        <strong>관계 지도</strong>
-        <p>사람·조직·프로젝트·사건·주장·출처가 어떤 근거로 이어지는지 보여줍니다.</p>
-      </div>
-      <div className="research-evidence-list">
-        {graph.edges.map((edge) => {
-          const source = nodes.get(edge.sourceId)!;
-          const target = nodes.get(edge.targetId)!;
-          return (
-            <article key={edge.id}>
-              <span>{RESEARCH_NODE_LABELS[source.type]} · {source.label}</span>
-              <strong>{edge.label}</strong>
-              <span>→ {RESEARCH_NODE_LABELS[target.type]} · {target.label}</span>
-              {/* 출처는 글자 조각이 아니라 누르는 자리다. 앱에 출처 링크 어휘는
-                  `.research-source-link` 하나뿐이다 (`ResearchEvidencePanel`과 같은 모양) —
-                  예전에는 같은 근거 화면 안에서 한쪽은 16px 파란 밑줄, 다른 쪽은 10px였다.
-                  접근 이름은 `원문 출처 열기` 그대로다 (int25-research T3). */}
-              {source.type === 'source' && source.url && (
-                <a
-                  className="research-source-link"
-                  href={source.url}
-                  target="_blank"
-                  rel="noopener noreferrer external"
-                >
-                  <span className="research-source-title">원문 출처 열기</span>
-                  <ArrowUpRight aria-hidden="true" size={13} />
-                </a>
-              )}
-            </article>
-          );
-        })}
-        {/* 빈 상태도 "왜 비었는가"를 말한다 — 조사가 끝나도 검증을 통과한 관계가 없을 수 있다. */}
-        {!graph.edges.length && <p className="section-empty">아직 검증을 통과한 관계가 없어요. 근거가 하나로 모이면 여기에 쌓입니다.</p>}
-      </div>
-      <div className="research-open">
-        <strong>타임라인 근거 범위</strong>
-        <ol className="research-timeline">
-          {graph.timeline.map((event) => (
-            <li key={`${event.date}-${event.label}`}>
-              <time>{event.date}</time>
-              <strong>{event.label}</strong>
-              <small>{event.claimIds.map((claimId) => claims.get(claimId)?.summary).filter(Boolean).join(' · ')}</small>
-            </li>
-          ))}
-          {!graph.timeline.length && <li><strong>확인 가능한 시간축이 아직 없습니다.</strong></li>}
-        </ol>
-      </div>
-    </section>
-  );
-}
-
 function App() {
   const [tab, setTab] = useState<Tab>(initialTab);
   const [config, setConfig] = useState<RuntimeConfig>(boot.config);
@@ -407,18 +281,9 @@ function App() {
   const [queue, setQueue] = useState<CaptureQueueItem[]>([]);
   const [damagedQueue, setDamagedQueue] = useState<DamagedQueueEntry[]>([]);
   const [loading, setLoading] = useState(false);
-  const [refreshPhase, setRefreshPhase] = useState<'idle' | 'success' | 'error' | 'offline'>('idle');
   const [message, setMessage] = useState('');
-  const [pushState, setPushState] = useState<PushState>({ status: 'checking' });
-  const [pushBusy, setPushBusy] = useState(false);
-  const pushRunRef = useRef(0);
-  const notificationFocusRef = useRef(initialNotificationFocus());
-  const notificationFocusLoadsRef = useRef(0);
-  const [recoveryFocusId, setRecoveryFocusId] = useState(initialRecoveryFocus);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  // 다른 묶음에서 옮겨 온 운영 설명은 도움말 한 곳에 접어 둔다 (ISS-000217 해결 조건).
-  const [settingsHelpOpen, setSettingsHelpOpen] = useState(false);
   const [nameOnboardOpen, setNameOnboardOpen] = useState(false);
   const [nameDraft, setNameDraft] = useState('');
   const [query, setQuery] = useState('');
@@ -450,6 +315,12 @@ function App() {
   const [theme, setTheme] = useState<ThemePreference>(loadThemePreference);
   const [osPrefersDark, setOsPrefersDark] = useState(systemPrefersDark);
   const resolvedTheme = resolveTheme(theme, osPrefersDark);
+  // 화면 움직임 (founder 판정 2026-07-28). 폰의 `움직임 최소화`가 켜져 있으면 AI 표면의 빛이
+  // 하나도 그려지지 않는다 — 그건 결함이 아니라 존중이지만, **왜 안 보이는지 말해 주고 직접 켤 수도**
+  // 있어야 한다. 그래서 OS 설정은 기본값이지 잠금장치가 아니다.
+  const [motion, setMotion] = useState<MotionPreference>(loadMotionPreference);
+  const [osPrefersReducedMotion, setOsPrefersReducedMotion] = useState(systemPrefersReducedMotion);
+  const resolvedMotion = resolveMotion(motion, osPrefersReducedMotion);
   /**
    * 지금 **실제로 서버에 올리고 있는** captureId. 없으면 보내는 중이 아니다 (FI-034).
    *
@@ -465,8 +336,6 @@ function App() {
     const flags = loadOwnerFlags();
     return flags.seeAll && flags.researchInstructionEnabled;
   });
-  // Deep는 서버가 현재 연결에서 capability를 확인한 뒤에만 보인다. 오프라인 캐시로 권한을 추정하지 않는다.
-  const [deepResearchEnabled, setDeepResearchEnabled] = useState(false);
   // 화면이 서버에 요청하는 총 건수. `더 보기`를 누를 때마다 커지고 상한이 없다 —
   // 서버 한 페이지(100건) 안에서만 움직이면 101번째부터는 앱에서 존재하지 않는 것이 된다 (FI-100).
   const listWantedRef = useRef(LIST_PAGE_STEP);
@@ -487,13 +356,7 @@ function App() {
   const [documentNoteTarget, setDocumentNoteTarget] = useState<PersonTarget | null>(null);
   const [personActionComposer, setPersonActionComposer] = useState<PersonActionComposer | null>(null);
   const [personActionText, setPersonActionText] = useState('');
-  const [personResearchMode, setPersonResearchMode] = useState<ResearchMode>('standard');
-  const [personResearchPurposes, setPersonResearchPurposes] = useState<ResearchPurpose[]>(['meeting_preparation']);
-  const [personResearchFocusIds, setPersonResearchFocusIds] = useState<ResearchFocusId[]>([]);
   const [personActionSubmitting, setPersonActionSubmitting] = useState(false);
-  // 응답 유실 뒤 다시 누를 때도 같은 논리 조사 요청이다. 성공 receipt 또는 새 작성기만 ID를 닫는다.
-  const personResearchRequestRef = useRef<ReturnType<typeof createResearchRequestIdLifecycle> | null>(null);
-  if (!personResearchRequestRef.current) personResearchRequestRef.current = createResearchRequestIdLifecycle();
   const [queueEdit, setQueueEdit] = useState<CaptureQueueItem | null>(null);
   // 기다리게 하는 동작에는 예외 없이 "지금 하고 있다"가 붙어야 한다 (founder 원칙 2026-07-27).
   const [savingQueueEdit, setSavingQueueEdit] = useState(false);
@@ -514,29 +377,11 @@ function App() {
   const [relKairen, setRelKairen] = useState(sticky.relKairen);
   const [memo, setMemo] = useState('');
   const [researchText, setResearchText] = useState(sticky.research);
-  const [researchMode, setResearchMode] = useState<ResearchMode>('standard');
-  const [researchPurposes, setResearchPurposes] = useState<ResearchPurpose[]>(['meeting_preparation']);
-  const [researchFocusIds, setResearchFocusIds] = useState<ResearchFocusId[]>([]);
-  // capture queue가 재전송해도 envelope 안의 requestId가 유지된다. 로컬 저장 실패로 완료를
-  // 다시 눌러도 이 lifecycle이 같은 ID를 돌려준다.
-  const captureResearchRequestRef = useRef<ReturnType<typeof createResearchRequestIdLifecycle> | null>(null);
-  if (!captureResearchRequestRef.current) captureResearchRequestRef.current = createResearchRequestIdLifecycle();
   const [contextCollapsed, setContextCollapsed] = useState(() => loadSectionCollapsed('context', false));
   const [queueing, setQueueing] = useState(false);
   // 자동 새로고침 안내용: 마지막 갱신 시각과 현재 시각(1초 tick).
   const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
   const [clockTick, setClockTick] = useState(() => Date.now());
-  /**
-   * 단계별 실측 요약. 진행 막대의 칸 폭과 `보통 범위` 문구의 유일한 근거다 (설계 계약 §3).
-   * 서버는 이 값을 주지 않으므로 이 기기가 목록에서 본 것만 쌓는다 — 없으면 균등 칸으로
-   * 되돌아가고 범위도 말하지 않는다. 첫 render는 저장된 관측으로 시작한다.
-   */
-  const [stageStats, setStageStats] = useState<Record<string, StageStat | null>>(captureStageStats);
-  // 조사 rail은 캡처와 다른 단계 집합을 쓰므로 관측도 따로 읽는다.
-  const [researchStageStats, setResearchStageStats] = useState<Record<string, StageStat | null>>(readResearchStageStats);
-  // marker 칸(`draft`·`done`)은 소요시간이 없으므로 가중 판정에서 빼야 한다 —
-  // `researchStageWeighting`이 그 처리를 소유한다.
-  const researchWeighting = useMemo(() => researchStageWeighting(researchStageStats), [researchStageStats]);
   const [quickName, setQuickName] = useState<QuickName | null>(null);
   const [nameText, setNameText] = useState('');
   const [ocrState, setOcrState] = useState(QUICK_NAME_STATUS_COPY.idle);
@@ -562,16 +407,6 @@ function App() {
   const refreshCallbackSession = refreshSessionRef.current;
 
   const configured = Boolean(config.apiUrl && config.token);
-  const refreshPushState = useCallback(async (showChecking = true) => {
-    const run = ++pushRunRef.current;
-    if (showChecking) setPushState({ status: 'checking' });
-    const next = await inspectPushState(config);
-    if (run === pushRunRef.current) setPushState(next);
-  }, [config]);
-  const captureResearchNeedsPurpose = researchInstructionEnabled
-    && researchMode === 'deep_evidence_graph'
-    && !researchPurposes.length
-    && Boolean(researchText.trim() || researchFocusIds.length);
   const refreshIntervalMs = useMemo(() => refreshCadenceMs(briefs), [briefs]);
 
   // 자동 trigger끼리는 같은 요청을 공유한다. 반면 사용자의 확인이나 새 작업 직후 trigger가 이미
@@ -599,7 +434,6 @@ function App() {
     const request = (async (): Promise<{ count: number; hasMore: boolean } | null> => {
       setLoading(true);
       try {
-        if (configured && !navigator.onLine) throw new Error('offline');
         await pruneSentQueue();
         // 손상 항목은 화면·전송에서 빼되 기기에서 지우지 않는다 (FI-025).
         const integrity = await readQueueChecked();
@@ -616,23 +450,13 @@ function App() {
         saveCachedBriefs(nextBriefs);
         const seeAll = response.seeAll === true;
         const research = response.researchInstructionEnabled === true;
-        const deepResearch = seeAll && research && response.deepResearchEnabled === true;
         setOwnerCanSeeAll(seeAll);
         setResearchInstructionEnabled(seeAll && research);
-        setDeepResearchEnabled(deepResearch);
-        if (!deepResearch) {
-          setResearchMode('standard');
-          setPersonResearchMode('standard');
-        }
         saveOwnerFlags({ seeAll, researchInstructionEnabled: research });
         const hasMore = response.hasMore === true;
         setHasMoreBriefs(hasMore);
         setRefreshedAt(Date.now());
-        setRefreshPhase('success');
         return { count: nextBriefs.length, hasMore };
-      } catch (error) {
-        if (session === refreshSessionRef.current) setRefreshPhase(!navigator.onLine ? 'offline' : 'error');
-        throw error;
       } finally {
         if (session === refreshSessionRef.current) setLoading(false);
       }
@@ -651,10 +475,12 @@ function App() {
 
   // 수동 새로고침은 즉시 진행 토스트 → 완료/실패 토스트로 반응한다 (2026-07-26 실폰 피드백 7).
   const manualRefresh = useCallback(async () => {
+    setMessage('새로고침 중…');
     try {
       await refresh(true);
+      setMessage((current) => current === '' || current === '새로고침 중…' ? '새로고침 완료 — 최신 상태예요' : current);
     } catch (error) {
-      if (navigator.onLine) setMessage(`새로고침 실패: ${actionErrorMessage(error)}`);
+      setMessage(`새로고침 실패: ${actionErrorMessage(error)}`);
     }
   }, [refresh]);
 
@@ -800,28 +626,11 @@ function App() {
 
   useEffect(() => watchSystemTheme(setOsPrefersDark), []);
 
-  // 상태 확인은 권한 요청과 분리한다. 설정 화면 진입·네트워크 복귀·창 복귀에는 읽기만 하고,
-  // Notification.requestPermission()은 아래의 명시적 버튼 handler 안에서만 실행한다.
   useEffect(() => {
-    if (tab !== 'settings' || pushBusy) return undefined;
-    void refreshPushState();
-    const refreshOnReturn = () => void refreshPushState(false);
-    window.addEventListener('online', refreshOnReturn);
-    window.addEventListener('offline', refreshOnReturn);
-    window.addEventListener('focus', refreshOnReturn);
-    return () => {
-      pushRunRef.current += 1;
-      window.removeEventListener('online', refreshOnReturn);
-      window.removeEventListener('offline', refreshOnReturn);
-      window.removeEventListener('focus', refreshOnReturn);
-    };
-  }, [pushBusy, refreshPushState, tab]);
+    applyMotion(resolveMotion(motion, osPrefersReducedMotion));
+  }, [motion, osPrefersReducedMotion]);
 
-  useEffect(() => {
-    // DEC-000093: 과거 수동 override는 폐기하고 OS reduced-motion을 항상 존중한다.
-    localStorage.removeItem('cc_motion');
-    document.documentElement.removeAttribute('data-motion');
-  }, []);
+  useEffect(() => watchSystemMotion(setOsPrefersReducedMotion), []);
 
   // 탭 바가 스크롤 중에 오르내리지 않도록 아래 safe-area 여백을 고정한다 (INT-000016 항목 001).
   useEffect(() => holdSafeAreaInset(), []);
@@ -842,19 +651,6 @@ function App() {
 
   // 처리 완료 브리핑의 이름을 로컬 캡처 행에 반영한다 (legacy briefNameMap).
   const processedNames = useMemo(() => briefNameMap(briefs), [briefs]);
-
-  // 목록이 바뀔 때마다 단계 관측을 기록하고 요약을 다시 읽는다. 저장은 실제로 바뀐 것이
-  // 있을 때만 일어난다 (`syncCaptureStageTelemetry`) — 폴링마다 localStorage를 쓰지 않는다.
-  useEffect(() => {
-    setStageStats(syncCaptureStageTelemetry({ briefs, queue }));
-  }, [briefs, queue]);
-
-  // 조사 rail도 같은 규칙으로 관측한다. 이것을 부르지 않으면 `researchStageWeighting`이
-  // 표본을 영원히 못 채워 조사 막대가 계속 `is-unmeasured`로 남는다 — 승인된 가중 막대가
-  // 코드에는 있고 화면에는 없는 상태가 된다 (ISS-000050).
-  useEffect(() => {
-    setResearchStageStats(syncResearchStageTelemetry({ briefs }));
-  }, [briefs]);
 
   // 만남 맥락: 접힌 상태에서 보여 줄 요약과, 최근에 실제로 쓴 만난 곳 chip.
   const contextValue = useMemo(() => ({ event, relKairen, relSelf, memo }), [event, memo, relKairen, relSelf]);
@@ -882,75 +678,12 @@ function App() {
     return entries.sort((a, b) => b.id.localeCompare(a.id));
   }, [briefs, queue]);
 
-  // 알림 payload는 절대 URL을 주지 않고 허용된 captureId 하나만 준다. 목록에 실제 항목이
-  // 도착했을 때만 펼치고 포커스를 옮긴다. 오래된 기록은 유계로 세 번까지만 더 읽는다.
-  useEffect(() => {
-    const focusId = notificationFocusRef.current;
-    if (!focusId) return;
-    const feedIndex = feed.findIndex((entry) => entry.id === focusId);
-    if (feedIndex < 0) {
-      if (hasMoreBriefs && notificationFocusLoadsRef.current < 3 && !loadingMore) {
-        notificationFocusLoadsRef.current += 1;
-        void loadMoreBriefs();
-      } else if (!loadingMore && !loading && refreshedAt !== null) {
-        notificationFocusRef.current = '';
-        setTab('activity');
-        const url = new URL(window.location.href);
-        url.searchParams.delete('focus');
-        url.searchParams.delete('notice');
-        window.history.replaceState(window.history.state, '', url.href);
-      }
-      return;
-    }
-
-    if (!feed[feedIndex].brief) return;
-    notificationFocusRef.current = '';
-    setTab('activity');
-    setRecordsCollapsed(false);
-    setFeedLimit((current) => Math.max(current, feedIndex + 1));
-    setExpandedBriefs((current) => new Set(current).add(focusId));
-    const url = new URL(window.location.href);
-    url.searchParams.delete('focus');
-    url.searchParams.delete('notice');
-    window.history.replaceState(window.history.state, '', url.href);
-    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-      const card = document.getElementById(`capture-${focusId}`);
-      card?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-      card?.querySelector<HTMLButtonElement>('.brief-summary')?.focus({ preventScroll: true });
-    }));
-  }, [feed, hasMoreBriefs, loadMoreBriefs, loading, loadingMore, refreshedAt]);
-
-  /**
-   * 갱신 상태 문법 — 앱 전체가 같은 네 상태만 쓴다 (표면 설계 계약 §2).
-   *
-   *   idle      정적       `자동 갱신 켜짐 · N초 전`
-   *   in-flight 회전       `갱신 중`            (여기서만 회전한다)
-   *   success   2초 뒤 idle `방금 업데이트`
-   *   failure   정적 경고   `갱신 실패 · 다시 시도`
-   *
-   * 원래 결함(ISS-000050)은 **정책을 애니메이션으로 표현한 것**이었다. "자동 갱신이 켜져
-   * 있다"는 정적인 사실인데 아이콘이 계속 돌아 요청이 떠 있는 것처럼 보였다. 이제 회전은
-   * 실제 요청이 살아 있는 동안(`loading`)에만 존재한다. 다음 갱신 시각은 여전히 지어내지 않는다.
-   */
-  const sinceRefreshMs = refreshedAt === null ? null : Math.max(0, clockTick - refreshedAt);
-  const refreshState: SurfaceRefreshState = loading ? 'in-flight'
-    : refreshPhase === 'offline' ? 'offline'
-      : refreshPhase === 'error' ? 'failure'
-        : sinceRefreshMs !== null && sinceRefreshMs < REFRESH_SUCCESS_HOLD_MS ? 'success'
-          : 'idle';
-  const refreshStatusText = refreshState === 'in-flight' ? REFRESH_BUSY_TEXT
-    : refreshState === 'offline' ? '오프라인 · 연결되면 자동 재시도'
-      : refreshState === 'failure' ? REFRESH_FAILURE_TEXT
-        : refreshState === 'success' ? REFRESH_SUCCESS_TEXT
-          : refreshIdleText({ autoRefreshOn: configured, lastSuccessAgoMs: sinceRefreshMs });
-  const autoRefreshHint = refreshStatusText;
-  // 오래 열어 둔 화면으로 돌아온 경우. 자동 갱신이 살아 있어도 마지막 성공이 오래됐다면
-  // 지금 보이는 목록이 언제 기준인지 먼저 말하고, 우선 갱신을 한 번 권한다.
-  const refreshStale = sinceRefreshMs !== null && sinceRefreshMs >= REFRESH_STALE_MS && refreshState !== 'in-flight';
-  // "얼마나 오래된 목록인가"라는 조각만 만든다. 갱신 상태 문구는 위의 한 문법이 소유한다.
-  const staleAgoLabel = sinceRefreshMs === null ? ''
-    : sinceRefreshMs < 3_600_000 ? `${Math.floor(sinceRefreshMs / 60_000)}분 전`
-      : `${Math.floor(sinceRefreshMs / 3_600_000)}시간 전`;
+  // "언제 저절로 갱신되는지"를 화면에 그대로 보여 준다 (founder 판정 2026-07-26).
+  const sinceRefresh = refreshedAt === null ? null : (clockTick - refreshedAt) / 60_000;
+  const untilRefresh = refreshedAt === null
+    ? refreshIntervalMs / 1000
+    : Math.min(refreshIntervalMs / 1000, Math.max(0, (refreshIntervalMs - (clockTick - refreshedAt)) / 1000));
+  const autoRefreshHint = refreshHint(untilRefresh, sinceRefresh);
 
   // 지금 올리고 있는 촬영의 표시 이름. 없으면 빈 문자열이다.
   const sendingItem = useMemo(
@@ -983,11 +716,9 @@ function App() {
   const headerStatus = !configured ? '연결 필요 — 개인 링크로 열어주세요'
     // 실제로 올리고 있는 촬영이 있으면 그것이 가장 구체적인 사실이다.
     : sendingId ? `${sendingName || '명함'} 전송 중…`
-      // 갱신 중이라고 해서 "몇 건이 처리 중인가"라는 사실을 감추지 않는다 —
-      // 두 문장은 서로 다른 축이고, 갱신 상태는 위의 한 문법으로 뒤에 붙인다.
-      : pendingStatus ? `${pendingStatus} · ${autoRefreshHint}`
-        : feed.length > 0 ? `기록 ${feed.length}건 · ${autoRefreshHint}`
-          : refreshState === 'in-flight' ? '최신 상태를 확인하고 있어요'
+      : loading ? '최신 상태 확인 중…'
+        : pendingStatus ? `${pendingStatus} · ${autoRefreshHint}`
+          : feed.length > 0 ? `기록 ${feed.length}건 · ${autoRefreshHint}`
             : '첫 명함을 기다리고 있어요';
 
   const setupBannerMessage = !config.apiUrl
@@ -1161,9 +892,6 @@ function App() {
   function commitSignOut() {
     refreshSessionRef.current += 1;
     refreshQueuedSessionRef.current = null;
-    // 개인 링크를 지운 뒤에도 이 기기가 알림을 받으면 안 된다. 네트워크와 무관하게
-    // PushManager 구독을 먼저 무효화하고, 서버 정리는 전달해 둔 현재 token으로 best-effort 수행한다.
-    void disablePushNotifications(config);
     signOutDevice();
     const next: RuntimeConfig = { apiUrl: config.apiUrl, token: '', capturer: '' };
     setConfig(next);
@@ -1174,7 +902,6 @@ function App() {
     setRecallResult(null);
     setOwnerCanSeeAll(false);
     setResearchInstructionEnabled(false);
-    setDeepResearchEnabled(false);
     setEvent('');
     setRelSelf('');
     setRelKairen('');
@@ -1283,25 +1010,15 @@ function App() {
 
   const completeCapture = useCallback(async () => {
     if (!frontFrame || queueing) return;
-    if (captureResearchNeedsPurpose) {
-      setMessage('Deep Research 목적을 하나 이상 선택해 주세요');
-      return;
-    }
     setQueueing(true);
     try {
-      const researchDraft = researchInstructionEnabled
-        ? buildResearchInstruction(researchText, { mode: researchMode, purposes: researchPurposes, focusIds: researchFocusIds })
-        : null;
-      const researchInstruction = researchDraft
-        ? { ...researchDraft, requestId: captureResearchRequestRef.current!.current() }
-        : null;
       const item = buildQueuedCapture(frontFrame, {
         backFrame,
         event,
         relSelf,
         relKairen,
         memo,
-        researchInstruction,
+        researchInstruction: researchInstructionEnabled ? buildResearchInstruction(researchText) : null,
         quickName,
       });
       // 전송 후 원본이 정리돼도 목록에 남을 104px 썸네일 (legacy thumbOf).
@@ -1309,9 +1026,6 @@ function App() {
       // 저장했다고 말하기 전에 다시 읽어 사진이 온전한지 확인한다 (FI-032).
       // 이 확인을 통과하기 전에는 촬영 화면을 비우지 않는다 — 비우면 사진이 사라진다.
       await putQueueItemVerified(item);
-      // 로컬에 온전히 저장된 뒤 화면은 다음 capture draft로 넘어간다. 이후 전송 재시도는
-      // item.researchInstruction.requestId를 그대로 쓰고, 새 화면만 새 ID를 받는다.
-      captureResearchRequestRef.current!.markAccepted();
       setQueue((current) => [item, ...current].sort((a, b) => b.captureId.localeCompare(a.captureId)));
       // 방금 저장한 이 촬영을 즉시 되돌리거나 다시 열 수 있게 기억한다 (FI-049).
       setLastSavedId(item.captureId);
@@ -1335,7 +1049,7 @@ function App() {
     } finally {
       setQueueing(false);
     }
-  }, [backFrame, captureResearchNeedsPurpose, configured, event, flushPendingQueue, frontFrame, memo, queueing, quickName, relKairen, relSelf, researchFocusIds, researchInstructionEnabled, researchMode, researchPurposes, researchText, resetQuickName]);
+  }, [backFrame, configured, event, flushPendingQueue, frontFrame, memo, queueing, quickName, relKairen, relSelf, researchInstructionEnabled, researchText, resetQuickName]);
 
   /**
    * 방금 찍은 촬영을 대기열에서 빼서 촬영 화면으로 되돌린다 (FI-049).
@@ -1365,15 +1079,6 @@ function App() {
       setEvent((value) => value || draft.event);
       setRelSelf((value) => value || draft.relSelf);
       setRelKairen((value) => value || draft.relKairen);
-      if (draft.researchInstruction) {
-        setResearchText(draft.researchInstruction.raw);
-        setResearchMode(draft.researchInstruction.mode ?? 'standard');
-        setResearchPurposes(draft.researchInstruction.purposes ?? []);
-        setResearchFocusIds(draft.researchInstruction.focusIds ?? []);
-        captureResearchRequestRef.current!.resume(draft.researchInstruction.requestId);
-      } else {
-        captureResearchRequestRef.current!.beginNewDraft();
-      }
       if (draft.quickName?.name) {
         ocrSessionRef.current += 1;
         nameEditedRef.current = true;
@@ -1470,6 +1175,16 @@ function App() {
     });
   }, []);
 
+  // 예시 chip은 입력을 지우지 않고 덧붙인다 — 이미 쓴 문장을 날리면 안 된다.
+  const appendResearchExample = useCallback((value: string) => {
+    setResearchText((current) => {
+      const trimmed = current.trim();
+      if (!trimmed) return value;
+      if (trimmed.includes(value)) return current;
+      return `${trimmed}, ${value}`;
+    });
+  }, []);
+
   const openDocument = useCallback(async (title: string, target: { id?: string; captureId?: string }, noteTarget: PersonTarget | null) => {
     if (!configured) return;
     setDocumentTitle(title);
@@ -1511,21 +1226,7 @@ function App() {
   }, []);
 
   const promptResearch = useCallback((target: PersonTarget) => {
-    const targetFingerprint = researchTargetFingerprint(target);
-    const pending = loadPendingPersonResearch();
-    if (pending?.targetFingerprint === targetFingerprint) {
-      // Android가 modal을 연 채 page/process를 죽였어도 같은 대상의 작성기는 복구 후보다.
-      // 실제 재사용 여부는 submit 시 정규화된 request fingerprint까지 같을 때 확정한다.
-      personResearchRequestRef.current!.resume(pending.requestId);
-    } else {
-      // 다른 사람을 열었다면 별개의 논리 요청이다. 한 target의 ID가 다른 target으로 새지 않는다.
-      if (pending) clearPendingPersonResearch();
-      personResearchRequestRef.current!.beginNewDraft();
-    }
     setPersonActionText('');
-    setPersonResearchMode('standard');
-    setPersonResearchPurposes(['meeting_preparation']);
-    setPersonResearchFocusIds([]);
     setPersonActionComposer({ kind: 'research', target });
   }, []);
 
@@ -1536,52 +1237,22 @@ function App() {
 
   const closePersonActionComposer = useCallback(() => {
     if (personActionSubmitting) return;
-    if (personActionComposer?.kind === 'research') {
-      // 취소/뒤로가기는 사용자가 이 pending 요청을 버린 명시적 경계다.
-      clearPendingPersonResearch();
-      personResearchRequestRef.current!.beginNewDraft();
-    }
     setPersonActionComposer(null);
     setPersonActionText('');
-  }, [personActionComposer, personActionSubmitting]);
+  }, [personActionSubmitting]);
 
   const submitPersonAction = useCallback(async () => {
-    if (!personActionComposer || personActionSubmitting) return;
-    if (personActionComposer.kind !== 'research' && !personActionText.trim()) return;
+    if (!personActionComposer || !personActionText.trim() || personActionSubmitting) return;
     setPersonActionSubmitting(true);
     let success = false;
     if (personActionComposer.kind === 'note') {
       success = await runPersonAction(addPersonNote(config, personActionComposer.target, personActionText.trim()), '메모를 저장했어요 — 잠시 후 인물 기록에 반영됩니다');
     } else if (personActionComposer.kind === 'research') {
-      const researchDraft = buildResearchInstruction(personActionText, {
-        mode: personResearchMode,
-        purposes: personResearchPurposes,
-        focusIds: personResearchFocusIds,
-      });
-      if (!researchDraft) {
+      const submission = buildResearchInstruction(personActionText);
+      if (!submission) {
         setMessage('조사할 내용을 조금 더 구체적으로 적어주세요');
-      } else if (researchDraft.mode === 'deep_evidence_graph' && !researchDraft.purposes?.length) {
-        setMessage('Deep Research 목적을 하나 이상 선택해주세요');
       } else {
-        const targetFingerprint = researchTargetFingerprint(personActionComposer.target);
-        const requestFingerprint = researchRequestFingerprint(researchDraft);
-        const pending = loadPendingPersonResearch();
-        const reusableRequestId = matchingPendingResearchRequestId(pending, targetFingerprint, requestFingerprint);
-        if (reusableRequestId) {
-          personResearchRequestRef.current!.resume(reusableRequestId);
-        } else {
-          // 대상 또는 정규화된 내용이 달라졌다면 같은 requestId를 절대 재사용하지 않는다.
-          personResearchRequestRef.current!.beginNewDraft();
-        }
-        const requestId = personResearchRequestRef.current!.current();
-        // fetch보다 먼저 기록해야 Android/page kill이 정확히 이 ID를 복구한다.
-        savePendingPersonResearch({ version: 1, requestId, targetFingerprint, requestFingerprint });
-        const submission = { ...researchDraft, requestId };
-        success = await runPersonAction(submitResearchInstruction(config, personActionComposer.target, submission), '조사 요청을 접수했어요');
-        if (success) {
-          clearPendingPersonResearch();
-          personResearchRequestRef.current!.markAccepted();
-        }
+        success = await runPersonAction(submitResearchInstruction(config, personActionComposer.target, submission.raw), '조사 요청을 접수했어요');
       }
     } else {
       success = await runPersonAction(requestCorrection(config, personActionComposer.captureId, personActionText.trim()), '수정 요청을 보냈어요 — 다음 처리에서 확인합니다');
@@ -1591,7 +1262,7 @@ function App() {
       setPersonActionComposer(null);
       setPersonActionText('');
     }
-  }, [config, personActionComposer, personActionSubmitting, personActionText, personResearchFocusIds, personResearchMode, personResearchPurposes, runPersonAction]);
+  }, [config, personActionComposer, personActionSubmitting, personActionText, runPersonAction]);
 
   const retryProcessing = useCallback(async (captureId: string) => {
     if (requeueingId) return;
@@ -1602,14 +1273,13 @@ function App() {
       setMessage(response.alreadyTerminal
         ? (response.status === 'skipped' ? '이미 건너뜀으로 마감됐어요' : '이미 처리가 끝났어요 — 최신 상태로 바꿀게요')
         : response.deduped ? '이미 다시 처리 중이에요' : '다시 처리를 요청했어요 — 몇 분 안에 처리돼요');
-      if (recoveryFocusId === captureId) setRecoveryFocusId('');
       await refresh(true).catch(() => undefined);
     } catch (error) {
       setMessage(`재처리 실패: ${actionErrorMessage(error)}`);
     } finally {
       setRequeueingId('');
     }
-  }, [config, recoveryFocusId, refresh, requeueingId]);
+  }, [config, refresh, requeueingId]);
 
   function renderQueueRow(item: CaptureQueueItem) {
     const imageSource = queueImageSource(item);
@@ -1628,7 +1298,7 @@ function App() {
           {imageSource ? <img src={imageSource} alt="명함 앞면 미리보기" /> : <span className="queue-placeholder"><Camera aria-hidden="true" size={18} /></span>}
           <div className="row-copy">
             <strong>{displayName}</strong>
-            <span>{contextLine || formatMoment(item.capturedAt)} · {sideLabel} · {queueProgressOf(item, stageStats).headline}</span>
+            <span>{contextLine || formatMoment(item.capturedAt)} · {sideLabel} · {queueProgressOf(item).headline}</span>
             {/* 위 줄은 "이 촬영이 4단계 중 몇 번째에 있는가"라는 자리 표시다. 지금 실제로 회선을
                 타고 있는 촬영은 이 줄이 따로 말한다 — 둘을 섞으면 다시 거짓 진행이 된다. */}
             {isSending && <small className="row-sending" role="status">지금 이 명함을 보내는 중…</small>}
@@ -1656,106 +1326,32 @@ function App() {
   function renderBriefCard(item: BriefItem, local: CaptureQueueItem | null) {
     const expanded = expandedBriefs.has(item.captureId);
     const minutes = elapsedMinutesOf(item);
-    const progress = captureProgress({
-      brief: item,
-      queue: local,
-      elapsedMinutes: minutes,
-      // 칸 폭과 `보통 범위`는 이 기기가 실제로 본 소요시간에서만 나온다 (설계 계약 §3).
-      stageStats,
-      // "이 화면이 얼마나 오래된 사실을 보여 주는가"도 진행 문구가 함께 말한다.
-      refreshedAgoMs: sinceRefreshMs,
-    });
-    const attention = captureAttentionOf(item);
+    const progress = captureProgress({ brief: item, queue: local, elapsedMinutes: minutes });
     const title = briefTitle(item);
     // 목록에는 "이름 — 한 줄 요약"을 보여 준다 (founder 판정 2026-07-26: 전부 "이런 분이에요"라 구분이 안 됨).
-    const rawListTitle = briefListTitle(item);
-    /**
-     * 이름도, 만난 곳도, 브리핑도 아직 없는 카드는 `briefTitle`의 마지막 폴백이 captureId를
-     * 돌려준다. v2.20.0은 그것을 그대로 **사람 이름 자리**에 찍었다 — `20260803-092000-a3`가
-     * 이름으로, 그 앞 글자 `2`가 아바타로 나갔다. 촬영 번호는 지원 문의에 쓰는 참조값이지
-     * 사람 이름이 아니다. 모르는 것은 모른다고 쓰고, 번호는 번호 자리에 둔다.
-     */
-    const identityUnknown = rawListTitle === item.captureId;
-    const listTitle = identityUnknown ? '이름을 아직 읽지 못했어요' : rawListTitle;
+    const listTitle = briefListTitle(item);
     const contact = contactCardFromBrief(item, title.split(' — ')[0]);
     const briefBody = item.brief ? item.brief.split('\n').slice(1).join('\n') : '';
     const actionable = item.status === 'processed' && item.type !== 'note' && item.type !== 'research_instruction';
     const localContext = local ? queueContextLine(local) : '';
-    // 서버의 research-result.json은 신뢰 경계 밖이다. 검증을 통과한 graph만 복잡한 패널에
-    // 넘기고, 손상된 중첩 데이터는 한 카드에서 닫아 화면 전체 crash/blank를 막는다.
-    const researchEvidence = researchEvidenceView(item.researchEvidence);
-    /**
-     * 조사 receipt는 캡처 단계가 아니라 **조사 단계**를 진행으로 삼는다.
-     *
-     * v2.20.0의 rail에는 `공개 자료 조사 중`·`출처 정리 중`이 있었지만 어떤 서버 필드도 그
-     * 단계를 증명하지 않아 실제로는 켜지지 않았다. 지우는 대신 서버 phase
-     * (`planning|branching|triangulating|synthesizing|done`)를 rail에 매핑한다 (설계 계약 §3-5).
-     * 결과가 나온 뒤에는 진행을 계속 그리지 않는다 — 끝난 일은 결과가 말한다.
-     */
-    const researchRail = item.type === 'research_instruction' && !progress.done ? researchRailFromBrief(item) : null;
-    const researchLive = researchRail ? researchProgressView(item) : null;
-    /**
-     * 확인 필요 카드는 같은 문장을 **한 번만** 쓴다.
-     *
-     * v2.20.0에서는 `.attention-recovery`와 `.stage-track`이 **둘 다** `progress.headline`과
-     * `progress.detail`을 렌더했다. 아직 처리가 끝나지 않은(=`done`이 아닌) 확인 필요 카드에서는
-     * 두 블록이 함께 마운트되므로 `서버가 접수했어요` / `1시간 36분 경과 · 남은 시간은 아직 알 수
-     * 없어요`가 글자 그대로 두 번 쌓였다 — 한 항목짜리 빈 카드가 310px였던 이유다.
-     *
-     * 이제 축을 나눈다: 확인 필요 블록은 **사람이 할 일**을, 단계 막대는 **서버가 어디까지 왔는가**를
-     * 소유한다. 처리가 끝난 뒤에는 `captureProgress`가 확인 사유를 직접 주므로 그것을 그대로 쓴다
-     * (`int25-push` T2가 그 사유 문구를 고정한다). 그때는 단계 막대가 렌더되지 않아 겹치지 않는다.
-     */
-    const attentionHeadline = progress.done ? progress.headline : '내용 확인이 필요해요';
-    const attentionDetail = progress.done
-      ? progress.detail
-      : '자동 처리를 이어가려면 사람이 확인해 줘야 해요 — 아래에서 내용을 보완해 주세요.';
     return (
-      <article className={`brief-card ${attention ? 'needs-attention' : ''}`} key={item.captureId} id={`capture-${item.captureId}`}>
+      <article className="brief-card" key={item.captureId}>
         <button className="brief-summary" type="button" onClick={() => toggleBrief(item.captureId)} aria-expanded={expanded}>
-          <div className={`avatar ${identityUnknown ? 'avatar-unknown' : ''}`} aria-hidden="true">
-            {identityUnknown ? <Camera size={17} /> : listTitle.slice(0, 1)}
-          </div>
+          <div className="avatar" aria-hidden="true">{listTitle.slice(0, 1)}</div>
           <div className="row-copy">
             <strong>{listTitle}</strong>
             <span>{formatMoment(item.receivedAt || item.capturedAt)}{item.event ? ` · ${item.event}` : ''}{item.capturer ? ` · 촬영 ${item.capturer}` : ''}</span>
-            {/* 촬영 번호는 "이 촬영이 무엇인지" 물어볼 때 쓰는 참조값이다 — 이름 자리가 아니라 여기에 둔다. */}
-            {identityUnknown && <small className="capture-ref">촬영 번호 <code>{item.captureId}</code></small>}
           </div>
-          {attention
-            ? <span className="status-badge status-attention"><CircleAlert aria-hidden="true" size={13} strokeWidth={2.2} />확인 필요</span>
-            : <StatusBadge status={item.status} />}
+          <StatusBadge status={item.status} />
           <ChevronRight className={expanded ? 'expanded' : ''} aria-hidden="true" size={17} />
         </button>
-        {attention && (
-          <section className="attention-recovery" aria-label="내용 확인 필요">
-            <CircleAlert aria-hidden="true" size={18} />
-            <div>
-              <strong>{attentionHeadline}</strong>
-              <p>{attentionDetail}</p>
-            </div>
-            <div className="attention-actions">
-              <button type="button" onClick={() => local
-                ? setQueueEdit(normalizedQueueItem(structuredClone(local)))
-                : promptCorrection(item.captureId)}>
-                <PenLine aria-hidden="true" size={13} />내용 보완
-              </button>
-              <button type="button" onClick={() => {
-                if (!expanded) toggleBrief(item.captureId);
-                window.requestAnimationFrame(() => document.getElementById(`capture-${item.captureId}`)?.querySelector<HTMLButtonElement>('.brief-summary')?.focus());
-              }}>기록 확인</button>
-            </div>
-          </section>
-        )}
-        {/* 한 카드에는 진행 어휘가 하나만 있어야 한다. 조사 receipt는 아래의 조사 막대가
-            더 구체적인 진실이므로, 일반 캡처 단계 막대를 겹쳐 그리지 않는다. */}
-        {!progress.done && !researchRail && (
+        {!progress.done && (
           <div className={`stage-track ${progress.late ? 'late' : ''} ${progress.failed ? 'failed' : ''}`}>
             <div className="stage-head">
               <strong>{progress.headline}</strong>
               <span>{progress.detail}</span>
             </div>
-            <ol className="stage-dots" aria-label={progress.headline} style={stageTrackStyle(progress)}>
+            <ol className="stage-dots" aria-label={progress.headline}>
               {progress.stages.map((stage) => (
                 <li key={stage.key} className={`stage-${stage.state}`}>
                   <i aria-hidden="true" />
@@ -1763,7 +1359,7 @@ function App() {
                 </li>
               ))}
             </ol>
-            {!progress.done && (
+            {progress.late && (
               <div className="stage-actions">
                 {/* 접근 이름은 고정한다 — 보이는 글자가 진행에 따라 바뀌어도 낭독기·자동화가 같은 버튼을 계속 가리킨다. */}
                 <button
@@ -1778,60 +1374,10 @@ function App() {
             )}
           </div>
         )}
-        {/* 조사 진행. v2.20.0은 여기에 `Deep Research · triangulating`이라는 영어 enum을 그대로
-            찍었고(전면 한국어 화면), 이름은 `progress`인데 막대가 없어 바로 위의 단계 막대와
-            서로 다른 두 진행 어휘가 한 카드에 겹쳤다.
-            이제 앱의 AI 진행 어휘(`AiStageRail`) 하나로 통일하고, 서버 phase는 등록소 한 곳
-            (`services/research-vocabulary`)에서 한국어로 옮겨 받는다. */}
-        {researchRail && (
-          <div className="research-live-progress">
-            {/* 어떤 조사인지 스스로 말한다. 읽는 이름은 한국어가 먼저 오고 제품명은 표식이다. */}
-            <span className="eyebrow">
-              {item.researchInstruction?.mode === 'deep_evidence_graph'
-                ? <>깊은 근거 조사 <span className="research-mode-tag">Deep Research</span></>
-                : '공개 정보 조사'}
-            </span>
-            <AiStageRail stages={researchRail.stages} label="조사 진행" weighting={researchWeighting} />
-            {/* 막대 칸보다 잘게 아는 것이 있으면 그것도 말한다 — 단, 칸을 늘리지는 않는다. */}
-            {researchRail.phaseLabel && <p className="research-phase-line">지금 <b>{researchRail.phaseLabel}</b></p>}
-            {researchRail.note && <p className="research-phase-note">{researchRail.note}</p>}
-            {/* 끝나기 전에도 "지금까지 무엇을 알아냈는가"를 보여 준다. 읽은 자료 수는 일한 양이지
-                알아낸 것이 아니라서 지표로 쓰지 않는다 (승인 회의에서 제외). */}
-            {researchLive?.countsFrom && (
-              <dl className="research-counts">
-                <div><dt>확인된 사실</dt><dd>{researchLive.verifiedFacts ?? 0}</dd></div>
-                <div><dt>남은 질문</dt><dd>{researchLive.openQuestions ?? 0}</dd></div>
-                <div><dt>어긋나는 근거</dt><dd>{researchLive.conflicts ?? 0}</dd></div>
-                {researchLive.coverage && <div><dt>훑은 기간</dt><dd>{researchLive.coverage.label}</dd></div>}
-              </dl>
-            )}
-            {researchLive?.elapsedMinutes !== null && researchLive?.elapsedMinutes !== undefined && (
-              <p className="research-phase-note">누적 {researchLive.elapsedMinutes}분 · 서버가 기록한 진행만 표시하고 남은 시간은 추정하지 않아요.</p>
-            )}
-          </div>
-        )}
         {expanded && (
           <div className="brief-detail">
             {localContext && <p className="local-context">내 기록: {localContext}</p>}
             {briefBody ? <MarkdownLite text={briefBody} /> : <p>아직 브리핑 본문이 도착하지 않았습니다.</p>}
-            {researchEvidence.kind === 'ready' && (
-              <>
-                <ResearchRelationshipOverview graph={researchEvidence.graph} />
-                <ResearchEvidencePanel graph={researchEvidence.graph} />
-              </>
-            )}
-            {researchEvidence.kind === 'invalid' && (
-              <section className="research-evidence" role="alert" aria-label="조사 결과 복구 안내">
-                {/* 읽는 이름은 한국어가 먼저 온다. `Deep Research`는 이 mode의 제품명이라
-                    표식으로만 남긴다 (`ResearchComposer`와 같은 처리). */}
-                <header><div><span className="eyebrow">깊은 근거 조사 <span className="research-mode-tag">Deep Research</span></span><h4>조사 결과를 안전하게 열지 못했어요</h4></div></header>
-                <p className="document-error">서버 결과 형식이 확인되지 않아 근거를 숨겼습니다. 기존 기록은 그대로이며, 다시 확인하거나 새 조사를 요청할 수 있어요.</p>
-                <div className="stage-actions">
-                  <button type="button" onClick={() => void manualRefresh()}><RefreshCw aria-hidden="true" size={13} />다시 확인</button>
-                  {researchInstructionEnabled && <button type="button" onClick={() => promptResearch({ captureId: item.captureId })}><Sparkles aria-hidden="true" size={13} />새 조사 요청</button>}
-                </div>
-              </section>
-            )}
             {actionable && <ContactActions contact={contact} />}
             {actionable && item.person && (
               <ActionSection label="기록" className="record-actions">
@@ -1862,39 +1408,10 @@ function App() {
 
   function renderFeedBody() {
     const visible = feed.slice(0, feedLimit);
-    const hasContent = feed.length > 0;
     return (
       <>
-        {/* 오래 열어 둔 화면으로 돌아온 경우. 목록을 조용히 옛 상태로 두지 않고, 지금 보이는 것이
-            언제 기준인지 먼저 말한 뒤 우선 갱신을 한 번 권한다 (founder 시나리오: 한 시간 열어 둔 탭). */}
-        {hasContent && refreshStale && refreshState !== 'failure' && refreshState !== 'offline' && (
-          <div className="feed-notice is-stale" role="status">
-            <History aria-hidden="true" size={15} />
-            <span>{staleAgoLabel} 확인한 목록이에요.</span>
-            <button type="button" disabled={!configured} onClick={() => void manualRefresh()}>지금 확인</button>
-          </div>
-        )}
-        {/* 오프라인. 기기에 남은 마지막 사본을 보여 주고 있다는 사실을 숨기지 않는다. */}
-        {configured && refreshState === 'offline' && (
-          <div className="feed-notice is-offline" role="status">
-            <WifiOff aria-hidden="true" size={15} />
-            <span>{hasContent
-              ? '오프라인이에요 — 이 기기에 저장된 마지막 기록을 보여 주고 있어요. 연결되면 자동으로 다시 확인합니다.'
-              : '오프라인이에요 — 연결되면 자동으로 기록을 받아옵니다. 촬영은 지금도 할 수 있고 기기에 저장돼요.'}</span>
-          </div>
-        )}
-        {/* 실패. 목록을 조용히 비우지 않는다 — 무엇이 남아 있는지와 다시 시도하는 길을 같이 준다. */}
-        {configured && refreshState === 'failure' && (
-          <div className="feed-notice is-failure" role="alert">
-            <CircleAlert aria-hidden="true" size={15} />
-            <span>{hasContent
-              ? '최신 상태를 받지 못했어요 — 아래는 마지막으로 확인된 기록이에요.'
-              : '기록을 불러오지 못했어요 — 연결을 확인하고 다시 시도해 주세요.'}</span>
-            <button type="button" onClick={() => void manualRefresh()}>다시 시도</button>
-          </div>
-        )}
-        {loading && !hasContent && configured && <div className="center-state"><IonSpinner name="crescent" /><span>최신 상태 확인 중</span></div>}
-        {!hasContent && !(loading && configured) && <p className="section-empty">아직 명함 기록이 없어요. 명함을 찍으면 여기에 쌓여요.</p>}
+        {loading && feed.length === 0 && configured && <div className="center-state"><IonSpinner name="crescent" /><span>최신 상태 확인 중</span></div>}
+        {feed.length === 0 && !(loading && configured) && <p className="section-empty">아직 명함 기록이 없어요. 명함을 찍으면 여기에 쌓여요.</p>}
         {visible.map(renderFeedEntry)}
         {(feed.length > feedLimit || hasMoreBriefs) && (
           <button
@@ -2022,21 +1539,24 @@ function App() {
           {/* 조사 지시는 메모가 아니라 AI에게 맡기는 일이다 — 표면·표식·단계를 그렇게 보이게 한다
               (INT-000015 Feedback item 002). 권한은 기존 owner-only public-research-v1 그대로다. */}
           {researchInstructionEnabled && (
-            <ResearchComposer
-              value={researchText}
-              onChange={setResearchText}
-              mode={researchMode}
-              onModeChange={setResearchMode}
-              purposes={researchPurposes}
-              onPurposesChange={setResearchPurposes}
-              focusIds={researchFocusIds}
-              onFocusIdsChange={setResearchFocusIds}
-              deepEnabled={deepResearchEnabled}
-              surfaceState={queueing ? 'active' : 'idle'}
-            />
+            <AiSurface className="research-request" state={queueing ? 'active' : 'idle'}>
+              <AiSurfaceHead title="AI 조사 요청" badge="소유자 전용" helper="묻기 껄끄럽지만 알아야 하는 것까지 맡기세요. 공개된 근거로 판단하고 확신도를 함께 적습니다." />
+              <IonTextarea
+                aria-label="AI 조사 요청"
+                maxlength={2000}
+                autoGrow
+                placeholder={RESEARCH_PLACEHOLDER}
+                value={researchText}
+                onIonInput={(inputEvent) => setResearchText(String(inputEvent.detail.value ?? ''))}
+              />
+              <AiExampleChips examples={RESEARCH_EXAMPLE_CHIPS} onPick={appendResearchExample} label="조사 요청 예시" />
+              <AiStageRail stages={researchStages('draft')} label="AI 조사 요청 진행 단계" />
+              <AiScopeNote>{RESEARCH_SCOPE_DOES}</AiScopeNote>
+              <AiScopeNote limit>{RESEARCH_SCOPE_LIMITS}</AiScopeNote>
+            </AiSurface>
           )}
 
-          <IonButton className="primary-action" expand="block" disabled={!frontFrame || queueing || captureResearchNeedsPurpose} onClick={() => void completeCapture()}>{queueing ? '저장 중…' : '완료'}</IonButton>
+          <IonButton className="primary-action" expand="block" disabled={!frontFrame || queueing} onClick={() => void completeCapture()}>{queueing ? '저장 중…' : '완료'}</IonButton>
           <p className="hint">전파가 약해도 기기에 저장했다가 자동으로 다시 보내요.</p>
 
           {/* 방금 찍은 것을 즉시 되돌리거나 다시 열기 (FI-049). 서버가 이미 받은 촬영에는
@@ -2063,29 +1583,15 @@ function App() {
           )}
         </section>
 
-        {/* 명함 기록 구획.
-            v2.20.0에서는 한 줄 nowrap flex 안에 21px 토글 + 44px 버튼 + 14px 안내가 뒤섞여
-            (`.section-toggle-row`) 세 요소의 높이가 제각각이었다. 접기 토글은 글자 캐럿 `▸/▾`라
-            누를 곳이 21px밖에 없었다. 이제 제목 줄과 상태 줄을 나누고, 토글은 앱의 다른 접기
-            조작(`.context-toggle`)과 같은 아이콘·같은 회전을 쓴다. */}
-        <section className="records-section" aria-label="명함 기록">
-          <div className="records-head">
-            <button className="section-toggle" type="button" aria-expanded={!recordsCollapsed} onClick={toggleRecords}>
-              <ChevronRight className={recordsCollapsed ? '' : 'expanded'} aria-hidden="true" size={18} />
-              <span className="section-toggle-label">명함 기록</span>
-              {feed.length > 0 && <span className="section-count">{feed.length}</span>}
-            </button>
-            <RefreshControl
-              state={refreshState}
-              statusText={refreshStatusText}
-              disabled={!configured}
-              onRefresh={() => void manualRefresh()}
-            />
-          </div>
+        <div className="section-toggle-row">
+          <button className="section-toggle" type="button" aria-expanded={!recordsCollapsed} onClick={toggleRecords}>
+            <span className="caret" aria-hidden="true">{recordsCollapsed ? '▸' : '▾'}</span> 명함 기록
+          </button>
           {/* 이 구획의 진실만 쓴다. 지금 올리는 촬영이 있을 때만, 그리고 그것이 무엇인지 이름을 붙여서. */}
-          {sendingId && <p className="sending-note" role="status">{sendingName || '명함'} 전송 중…</p>}
-          {!recordsCollapsed && <div className="records-feed">{renderFeedBody()}</div>}
-        </section>
+          {sendingId && <span className="sending-note" role="status">{sendingName || '명함'} 전송 중…</span>}
+          <span className="refresh-hint" role="status">{autoRefreshHint}</span>
+        </div>
+        {!recordsCollapsed && <div className="records-feed">{renderFeedBody()}</div>}
       </div>
     );
   }
@@ -2094,38 +1600,6 @@ function App() {
     return (
       <div className="cc-stack">
         {!configured && <EmptyState title="연결 설정이 필요해요" body="받으신 개인 링크(?k=토큰 포함)로 접속하면 같은 진행 상태를 읽습니다." action="설정 열기" onAction={() => { setDraftConfig(config); setSettingsOpen(true); }} />}
-        {/* 갱신 조작은 "무엇을 갱신하는가"를 말해야 한다. 예전에는 같은 `manualRefresh()`를 부르는
-            버튼이 네 화면에 여섯 개였고 어느 것도 범위를 말하지 않았다 (ISS-000050). */}
-        <section className={`surface-card refresh-console is-${refreshState}`} aria-label="진행 상태">
-          <div className="refresh-console-copy">
-            <strong>서버에서 처리 중인 명함</strong>
-            <span>{!configured ? '연결하면 여기에서 진행을 확인할 수 있어요'
-              : pendingStatus || (feed.length > 0 ? `기록 ${feed.length}건 · 기다리는 처리가 없어요` : '아직 접수된 명함이 없어요')}</span>
-          </div>
-          <RefreshControl
-            state={refreshState}
-            statusText={refreshStatusText}
-            disabled={!configured}
-            onRefresh={() => void manualRefresh()}
-          />
-        </section>
-        {recoveryFocusId && (
-          <section className="surface-card recovery-notice" role="alert" aria-label="처리 복구 필요">
-            <div className="recovery-notice-icon"><CircleAlert aria-hidden="true" size={20} /></div>
-            <div className="recovery-notice-copy">
-              <span>복구가 필요한 명함</span>
-              <strong>자동 처리가 여러 번 완료되지 않았어요</strong>
-              <p>원본과 기존 기록은 그대로입니다. 아래에서 다시 처리를 요청하면 이 항목만 안전하게 재시도합니다.</p>
-              <div className="stage-actions">
-                <button type="button" disabled={!configured || requeueingId === recoveryFocusId} onClick={() => void retryProcessing(recoveryFocusId)}>
-                  <RotateCcw aria-hidden="true" size={13} />{requeueingId === recoveryFocusId ? '요청하는 중…' : '이 항목 다시 처리'}
-                </button>
-                {/* 이 안내 바로 위 구획이 이미 갱신을 소유한다 — 같은 화면에 두 번째 새로고침을 두지 않는다. */}
-                <button type="button" onClick={() => setRecoveryFocusId('')}>안내 닫기</button>
-              </div>
-            </div>
-          </section>
-        )}
         {/* FI-025: 손상 항목을 조용히 지우지도, 큐 전체를 막게 두지도 않는다. */}
         {damagedQueue.length > 0 && (
           <section className="surface-card damaged-card" role="status">
@@ -2369,163 +1843,108 @@ function App() {
     );
   }
 
-  async function handlePushToggle() {
-    if (pushBusy) return;
-    setPushBusy(true);
-    setPushState({ status: 'checking' });
-    const next = pushState.status === 'subscribed'
-      || pushState.detail === 'local_subscription'
-      || (pushState.status === 'stale' && pushState.detail === 'cleanup_pending')
-      ? await disablePushNotifications(config)
-      : await enablePushNotifications(config);
-    setPushState(next);
-    setPushBusy(false);
-  }
-
   function renderSettings() {
-    const pushHasLocalSubscription = pushState.detail === 'local_subscription';
-    const pushCopy = pushHasLocalSubscription
-      ? pushState.status === 'offline'
-        ? { title: '오프라인 · 이 기기 구독은 남아 있어요', body: '지금 이 기기에서 먼저 끌 수 있고, 만료된 서버 등록은 전송 때 안전하게 정리됩니다.' }
-        : pushState.status === 'denied'
-          ? { title: '차단됐지만 이전 기기 구독이 남아 있어요', body: '브라우저 차단과 별개로 이 기기 구독을 안전하게 정리할 수 있습니다.' }
-          : { title: '전송은 멈췄고 이 기기 구독이 남아 있어요', body: '새 알림은 보내지 않으며, 원하면 이 기기 구독도 바로 정리할 수 있습니다.' }
-      : pushState.status === 'stale' && pushState.detail === 'key_changed'
-        ? { title: '알림 전송 키가 바뀌었어요', body: '기존 구독을 교체해 다시 연결하면 새 키로 안전하게 갱신됩니다.' }
-        : pushState.status === 'stale' && pushState.detail === 'registration_missing'
-          ? { title: '이 기기 알림을 다시 연결해야 해요', body: '브라우저 구독은 남아 있지만 서버 연결이 없습니다. 다시 연결하면 안전하게 복구됩니다.' }
-        : pushStatusCopy[pushState.status];
-    const pushCanToggle = ['capable', 'off', 'subscribed'].includes(pushState.status)
-      || pushState.status === 'stale'
-      || pushHasLocalSubscription;
-    const pushCanRetry = ['denied', 'offline', 'error'].includes(pushState.status);
-    const pushTurningOff = pushState.status === 'subscribed'
-      || pushHasLocalSubscription
-      || (pushState.status === 'stale' && pushState.detail === 'cleanup_pending');
-    const pushActionLabel = pushTurningOff
-      ? '이 기기 알림 끄기'
-      : pushState.status === 'stale' ? '알림 안전하게 다시 연결' : '닫힌 앱 알림 켜기';
-    // 확인이 아직 끝나지 않았는데 "켤 수 없어요"라고 단정하면 막다른 골목이 된다 —
-    // 확인 중에는 확인 중이라고만 말한다 (ISS-000217).
-    const pushSettling = pushBusy || pushState.status === 'checking';
     return (
-      <div className="settings-dashboard">
-        {/* 상단 바가 이미 `내 앱 설정`이라고 말한다 — 두 줄 아래에서 같은 말을 다시 하지 않는다. */}
-        <header className="settings-intro">
-          <h2>필요한 일을 기준으로 정리했어요</h2>
-        </header>
-        {/* 그룹 머리에 01~06을 붙이면 순서가 없는 묶음이 순서 있는 사양서처럼 읽힌다 (ISS-000217).
-            번호 대신 그림표로 각 묶음이 무엇에 관한 것인지 한눈에 구분한다. */}
-        <div className="settings-job-grid">
-          <section className="surface-card settings-job" aria-labelledby="settings-account">
-            <div className="settings-job-head"><span className="settings-job-icon" aria-hidden="true"><CircleUser size={18} /></span><div><h3 id="settings-account">계정·연결</h3><p>누가 어떤 개인 링크로 쓰는지</p></div></div>
-            <dl className="settings-facts">
-              <div><dt>사용자</dt><dd>{config.capturer || '이름을 입력해주세요'}</dd></div>
-              <div><dt>명함 연결</dt><dd>{configured ? '연결됨' : '연결 필요'}</dd></div>
-              <div><dt>개인 링크</dt><dd>{config.token ? '이 기기에 안전하게 저장됨' : '저장되지 않음'}</dd></div>
-            </dl>
-            <IonButton fill="outline" expand="block" onClick={() => { setDraftConfig(config); setAdvancedOpen(false); setSettingsOpen(true); }}>사용자·연결 정보 편집</IonButton>
-          </section>
-
-          <section className="surface-card settings-job" aria-labelledby="settings-capture">
-            <div className="settings-job-head"><span className="settings-job-icon" aria-hidden="true"><Camera size={18} /></span><div><h3 id="settings-capture">캡처·처리</h3><p>촬영과 자동 처리 방식</p></div></div>
-            {/* 각 행은 제목 / 현재 값 / 조작으로 끝난다. 행마다 운영 설명을 덧붙이지 않는다 —
-                예전의 `.settings-explain` 문단과 여섯 번째 새로고침 버튼은 도움말과 진행 화면으로 옮겼다. */}
-            <label className="gallery-toggle">
-              <input type="checkbox" checked={galleryFree} onChange={(event) => { const next = event.target.checked; setGalleryFree(next); saveGalleryFree(next); }} />
-              <span><strong>기본 카메라 앱 쓰지 않기</strong><small>{galleryFree ? '앱 안의 명함 카메라만 사용합니다.' : '기본 카메라 촬영도 선택할 수 있습니다. 그 사진은 갤러리에 남고 카이렌이 지울 수 없습니다.'}</small></span>
-            </label>
-          </section>
-
-          <section className="surface-card settings-job" aria-labelledby="settings-notifications">
-            <div className="settings-job-head"><span className="settings-job-icon" aria-hidden="true"><BellRing size={18} /></span><div><h3 id="settings-notifications">알림</h3><p>꼭 개입할 때만 알려주기</p></div></div>
-            <div className={`notification-readiness state-${pushState.status}`} role="status" aria-live="polite" aria-busy={pushSettling}>
-              <span className="notification-state-icon" aria-hidden="true">
-                {pushState.status === 'subscribed' ? <BellRing size={19} /> : <BellOff size={19} />}
-              </span>
-              <div><strong>{pushCopy.title}</strong><p>{pushCopy.body}</p></div>
-            </div>
-            <ul className="notification-scope" aria-label="알림이 오는 경우">
-              <li><strong>최종 결과</strong><span>처리가 끝나 결과를 볼 수 있을 때</span></li>
-              <li><strong>내용 확인</strong><span>사진·이름 등 사람의 보완이 필요할 때</span></li>
-              <li><strong>복구 필요</strong><span>문제를 확인하고 다시 이어가야 할 때</span></li>
-            </ul>
-            {/* 상태를 아직 확인하는 중에는 확인 중이라고만 말한다. 확인이 끝나기 전에 "켤 수 없어요"를
-                내밀면 잠시 뒤 켤 수 있는 기기에서도 사용자가 포기한다. */}
-            {pushSettling ? (
-              <button className="notification-action is-settling" type="button" aria-busy disabled>
-                <RefreshCw className="spinning" aria-hidden="true" size={16} />
-                {pushBusy ? '안전하게 반영 중…' : '알림 상태 확인 중…'}
+      <div className="cc-stack">
+        <section className="surface-card settings-summary">
+          <div><span>사용자</span><strong>{config.capturer || '이름을 입력해 주세요'}</strong></div>
+          <div><span>명함 연결</span><strong>{configured ? '연결됨' : (config.token ? '연결 주소 확인 필요' : '개인 링크로 접속해 주세요')}</strong></div>
+          <div><span>개인 링크</span><strong>{config.token ? '이 기기에 저장됨' : '아직 저장되지 않음'}</strong></div>
+          <IonButton fill="outline" expand="block" onClick={() => { setDraftConfig(config); setAdvancedOpen(false); setSettingsOpen(true); }}>사용자·연결 정보 편집</IonButton>
+        </section>
+        {/* INT-000016 항목 003: 시스템 자동 추종만으로는 부족하다 — 직접 고르고, 고른 값은 이 기기에 남는다. */}
+        <section className="surface-card theme-card">
+          <div className="theme-head"><SunMoon aria-hidden="true" size={17} /><strong>화면 테마</strong></div>
+          <p>어두운 곳에서는 다크로 바꿔 보세요. 고른 값은 이 기기에 저장돼요.</p>
+          <div className="theme-choice" role="radiogroup" aria-label="화면 테마">
+            {THEME_CHOICES.map((choice) => (
+              <button
+                key={choice.value}
+                type="button"
+                role="radio"
+                aria-checked={theme === choice.value}
+                className={theme === choice.value ? 'on' : ''}
+                onClick={() => { setTheme(choice.value); saveThemePreference(choice.value); }}
+              >
+                <strong>{choice.label}</strong>
+                <small>{choice.hint}</small>
               </button>
-            ) : (
-              <>
-                {pushCanToggle && (
-                  <button className={`notification-action ${pushTurningOff ? 'is-on' : ''}`} type="button" onClick={() => void handlePushToggle()}>
-                    {pushTurningOff ? <BellOff aria-hidden="true" size={16} /> : <BellRing aria-hidden="true" size={16} />}
-                    {pushActionLabel}
-                  </button>
-                )}
-                {pushCanRetry && <button className="notification-retry" type="button" onClick={() => void refreshPushState()}>상태 다시 확인</button>}
-                {!pushCanToggle && !pushCanRetry && <button className="settings-disabled-action" type="button" disabled>현재 이 기기에서 알림을 켤 수 없어요</button>}
-              </>
-            )}
-            <small>알림에는 이름·회사·메모를 넣지 않습니다. 빠른 이름 인식이나 일반 처리 단계는 알리지 않으며, 알림 실패가 캡처 상태를 바꾸지 않습니다.</small>
-          </section>
-
-          <section className="surface-card settings-job" aria-labelledby="settings-display">
-            <div className="settings-job-head"><span className="settings-job-icon" aria-hidden="true"><SunMoon size={18} /></span><div><h3 id="settings-display">화면</h3><p>읽기 편한 테마</p></div></div>
-            <div className="theme-choice" role="radiogroup" aria-label="화면 테마">
-              {THEME_CHOICES.map((choice) => (
-                <button key={choice.value} type="button" role="radio" aria-checked={theme === choice.value} className={theme === choice.value ? 'on' : ''} onClick={() => { setTheme(choice.value); saveThemePreference(choice.value); }}>
-                  <strong>{choice.label}</strong><small>{choice.hint}</small>
-                </button>
-              ))}
-            </div>
-            {/* DEC-000093: `화면 움직임` 선택지는 두지 않는다. OS의 `움직임 줄이기`가 항상 이긴다. */}
-            <small>지금은 <b>{resolvedTheme === 'dark' ? '다크' : '라이트'}</b> 화면입니다. 움직임은 휴대폰의 ‘움직임 줄이기’를 항상 존중합니다.</small>
-          </section>
-
-          <section className="surface-card settings-job" aria-labelledby="settings-data">
-            <div className="settings-job-head"><span className="settings-job-icon" aria-hidden="true"><Lock size={18} /></span><div><h3 id="settings-data">데이터·개인정보</h3><p>무엇이 어디로 가는지</p></div></div>
-            <div className="boundary-note settings-boundary">
-              <ShieldCheck aria-hidden="true" size={20} />
-              <div>
-                <strong>개인 링크 정보는 이 기기에만 저장돼요.</strong>
-                <p>명함과 개인 링크 코드는 <b>{trustedApiHost}</b>로만 전송됩니다. 주소창의 코드는 바로 지워 화면 공유와 방문 기록에 남지 않게 합니다.</p>
-              </div>
-            </div>
-            {/* 이 기기의 데이터를 지우는 일은 "데이터·개인정보"가 소유한다 — 예전에는 계정 묶음 안에
-                있었고, 그래서 이 묶음에는 조작이 하나도 없는 설명 카드만 남았다.
-                파괴적 동작은 결과를 먼저 말하고 확인을 받는다 (계약 §4). */}
-            <div className="settings-danger">
-              <strong>이 기기에서 연결 해제</strong>
-              <p>개인 링크와 기기 내 브리핑·검색 기록을 지웁니다. 서버 기록과 전송 대기 중인 촬영은 지우지 않습니다.</p>
-              <IonButton fill="outline" color="danger" expand="block" disabled={!config.token} onClick={() => setSignOutOpen(true)}>연결 해제</IonButton>
-            </div>
-          </section>
-
-          <section className="surface-card settings-job" aria-labelledby="settings-help">
-            <div className="settings-job-head"><span className="settings-job-icon" aria-hidden="true"><CircleHelp size={18} /></span><div><h3 id="settings-help">도움말·버전</h3><p>문제를 진단하고 알려줄 정보</p></div></div>
-            <div className="help-actions">
-              <button type="button" onClick={() => { setTab('activity'); contentRef.current?.scrollToTop(250); }}><Waves aria-hidden="true" size={16} /> 진행 화면 열기</button>
-            </div>
-            {/* 다른 묶음에서 옮겨 온 운영 설명은 여기 한 곳에 모아 두고, 기본은 접어 둔다
-                (ISS-000217 해결 조건: read-only 상태·운영 설명은 더 적절한 surface로 이동한다). */}
-            <button className="settings-help-toggle" type="button" aria-expanded={settingsHelpOpen} onClick={() => setSettingsHelpOpen((value) => !value)}>
-              <ChevronRight className={settingsHelpOpen ? 'expanded' : ''} aria-hidden="true" size={16} />
-              <span>이 앱이 어떻게 동작하는지</span>
-            </button>
-            {settingsHelpOpen && (
-              <div className="settings-help-body">
-                <p>촬영 원본은 전송이 확인된 뒤 기기에서 정리합니다. 전파가 약하면 기기에 저장했다가 자동으로 다시 보냅니다.</p>
-                <p>진행 화면은 앱이 보일 때 자동으로 갱신되고, 각 목록의 <b>새로고침</b>으로 순서를 앞당길 수 있습니다.</p>
-                <p>Deep Research는 공개·합법 출처만 사용합니다. 로그인 자료, 가족·집주소, 정치·종교·건강 추론은 차단합니다.</p>
-                <p>문제가 계속되면 아래 버전과 빌드 값을 함께 전달해주세요. 연결 주소나 개인 링크 코드는 보내지 마세요.</p>
-              </div>
-            )}
-            <p className="build-line">버전 {APP_VERSION} · 빌드 {__CARD_CAPTURE_BUILD_ID__}</p>
-          </section>
-        </div>
+            ))}
+          </div>
+          <small className="theme-foot">
+            지금 보이는 화면은 <b>{resolvedTheme === 'dark' ? '다크' : '라이트'}</b>예요{theme === 'system' ? ' — 폰 설정을 따라갑니다.' : '.'}
+          </small>
+        </section>
+        {/* founder 판정 2026-07-28: "여전히 하이라이팅이 안 나옴".
+            폰이 `움직임 최소화`를 켜고 있으면 AI 표면의 빛은 한 픽셀도 그려지지 않는다(실측 확인).
+            그건 존중이지만 **말없이 사라지면 고장으로 읽힌다** — 지금 상태를 적고, 직접 켤 수 있게 한다. */}
+        <section className="surface-card theme-card">
+          <div className="theme-head"><Waves aria-hidden="true" size={17} /><strong>화면 움직임</strong></div>
+          <p>AI가 맡은 자리(<b>AI 조사 요청</b>·<b>AI 사람 찾기</b>)는 평소에도 은은한 빛이 지나갑니다. 고른 값은 이 기기에 저장돼요.</p>
+          <div className="theme-choice" role="radiogroup" aria-label="화면 움직임">
+            {MOTION_CHOICES.map((choice) => (
+              <button
+                key={choice.value}
+                type="button"
+                role="radio"
+                aria-checked={motion === choice.value}
+                className={motion === choice.value ? 'on' : ''}
+                onClick={() => { setMotion(choice.value); saveMotionPreference(choice.value); }}
+              >
+                <strong>{choice.label}</strong>
+                <small>{choice.hint}</small>
+              </button>
+            ))}
+          </div>
+          <small className="theme-foot">
+            지금은 <b>{resolvedMotion === 'on' ? '움직이는 중' : '멈춰 있음'}</b>이에요
+            {motion === 'system'
+              ? (osPrefersReducedMotion
+                ? ' — 이 폰이 움직임 최소화를 켜 두어서 빛이 멈춰 있습니다. 여기서 켜기를 고르면 앱에서만 다시 움직여요.'
+                : ' — 폰 설정을 따라갑니다.')
+              : '.'}
+          </small>
+        </section>
+        {/* ISS-000102: 갤러리 사본은 OS 기본 카메라 앱만 만든다. 지울 수 없는 것을 지운다고 말하지 않는다. */}
+        <section className="surface-card gallery-card">
+          <div className="gallery-head"><ImageOff aria-hidden="true" size={17} /><strong>명함 사진과 갤러리</strong></div>
+          <p>카이렌 카메라로 찍은 명함은 <b>휴대폰 갤러리에 저장되지 않아요.</b> 앱 안에만 두었다가 전송이 확인되면 10분 뒤 원본을 지우고 목록용 작은 썸네일만 남깁니다.</p>
+          <label className="gallery-toggle">
+            <input
+              type="checkbox"
+              checked={galleryFree}
+              onChange={(changeEvent) => { const next = changeEvent.target.checked; setGalleryFree(next); saveGalleryFree(next); }}
+            />
+            <span>
+              <strong>기본 카메라 앱 쓰지 않기</strong>
+              <small>{galleryFree
+                ? '켜짐 — 촬영 화면에서 기본 카메라 앱 버튼을 숨깁니다. 카메라가 열리지 않는 기기에서는 예외로 보여 줘요.'
+                : '꺼짐 — 기본 카메라 앱으로도 찍을 수 있어요. 그 사진은 갤러리에 남고 카이렌이 지울 수 없습니다.'}</small>
+            </span>
+          </label>
+          <small className="gallery-foot">이미 갤러리에 쌓인 사진은 앱이 지울 수 없어요 — 휴대폰 갤러리에서 직접 지워 주세요.</small>
+        </section>
+        <section className="boundary-note">
+          <ShieldCheck aria-hidden="true" size={20} />
+          <div>
+            <strong>개인 링크 정보는 이 기기에만 저장돼요.</strong>
+            <p>연결 정보는 저장소나 로그에 넣지 않습니다. 연결에 문제가 있을 때만 고급 설정에서 직접 확인하세요.</p>
+            {/* FI-004·005: 어디로 보내지는지와, 주소창에서 코드를 지웠다는 사실을 그대로 말한다. */}
+            <p className="boundary-origin">명함과 개인 링크 코드는 <b>{trustedApiHost}</b> 로만 전송돼요. 다른 주소를 붙인 링크는 무시합니다.</p>
+            <p className="boundary-origin">개인 링크로 열면 주소창의 코드를 <b>즉시 지웁니다</b> — 방문 기록·화면 공유에 남지 않아요.</p>
+          </div>
+        </section>
+        {/* FI-007: 폰을 넘기거나 링크를 회수할 때 이 기기의 사본을 끊는 경로. */}
+        <section className="surface-card signout-card">
+          <div className="signout-head"><strong>이 기기에서 연결 해제</strong></div>
+          <p>개인 링크 코드와 이 기기에 저장된 브리핑 사본·검색 기록·만남 맥락을 지웁니다. <b>전송을 기다리는 촬영은 지우지 않아요.</b></p>
+          <IonButton fill="outline" color="danger" expand="block" disabled={!config.token} onClick={() => setSignOutOpen(true)}>연결 해제</IonButton>
+        </section>
+        {/* 두 값은 서로 다른 일을 한다. 버전은 사람이 말하기 위한 것이고(“2.12.0 쓰고 있어요”),
+            소스 식별자는 그 화면이 정확히 어느 소스에서 나왔는지 저장소에서 다시 계산해 대조하기
+            위한 것이다. 하나만으로는 문제를 알릴 수도, 확인할 수도 없다. */}
+        <p className="build-line">버전 {APP_VERSION} · 빌드 {__CARD_CAPTURE_BUILD_ID__}</p>
+        <p className="build-note">문제를 알리실 때 이 두 줄을 함께 알려 주세요. 버전은 이 앱이 나온 릴리즈 이름이고, 빌드는 그 화면을 만든 소스를 가리킵니다.</p>
       </div>
     );
   }
@@ -2537,12 +1956,15 @@ function App() {
           <IonToolbar>
             <div className="app-header">
               <span className="brand-mark" aria-hidden="true">K</span>
-              {/* 상단 바는 화면 이름과 한 줄 상태를 소유한다. 갱신 조작은 소유하지 않는다 —
-                  갱신할 목록을 가진 구획이 자기 새로고침을 하나씩 갖는다 (ISS-000050). */}
               <span className="app-header-copy">
                 <b>{screenTitles[tab]}</b>
                 <small role="status">{headerStatus}</small>
               </span>
+              {tab !== 'settings' && (
+                <button className="header-refresh" type="button" aria-label="최신 상태 확인" aria-busy={loading} onClick={() => void manualRefresh()}>
+                  <RefreshCw className={loading ? 'spinning' : ''} aria-hidden="true" size={17} />
+                </button>
+              )}
             </div>
           </IonToolbar>
         </IonHeader>
@@ -2623,28 +2045,22 @@ function App() {
             <IonButton expand="block" disabled={!draftConfig.capturer.trim()} onClick={commitSettings}>설정 저장</IonButton>
           </IonContent>
         </IonModal>
-        <IonModal className="person-action-modal" isOpen={Boolean(personActionComposer)} onDidDismiss={closePersonActionComposer} initialBreakpoint={1} breakpoints={[0, 1]}>
+        <IonModal className="person-action-modal" isOpen={Boolean(personActionComposer)} onDidDismiss={closePersonActionComposer} initialBreakpoint={personActionComposer?.kind === 'research' ? 0.92 : 0.62} breakpoints={[0, 0.62, 0.92]}>
           {personActionComposer && (
-            <IonPage className="person-action-page">
+            <>
               <IonHeader><IonToolbar><IonTitle>{personActionCopy[personActionComposer.kind].title}</IonTitle><IonButton slot="end" fill="clear" disabled={personActionSubmitting} onClick={closePersonActionComposer}>취소</IonButton></IonToolbar></IonHeader>
               <IonContent className="ion-padding">
                 <div className="person-action-composer">
                   {personActionComposer.kind === 'research' ? (
                     // 같은 AI 표면·표식·단계를 캡처 화면과 인물 카드에서 그대로 쓴다 (INT-000015 항목 002).
-                    <ResearchComposer
-                      value={personActionText}
-                      onChange={setPersonActionText}
-                      mode={personResearchMode}
-                      onModeChange={setPersonResearchMode}
-                      purposes={personResearchPurposes}
-                      onPurposesChange={setPersonResearchPurposes}
-                      focusIds={personResearchFocusIds}
-                      onFocusIdsChange={setPersonResearchFocusIds}
-                      deepEnabled={deepResearchEnabled}
-                      surfaceState={personActionSubmitting ? 'active' : 'idle'}
-                      stage={personActionSubmitting ? 'received' : 'draft'}
-                      autofocus
-                    />
+                    <AiSurface className="research-request" state={personActionSubmitting ? 'active' : 'idle'}>
+                      <AiSurfaceHead title="AI 조사 요청" badge="소유자 전용" helper={personActionCopy.research.helper} />
+                      <IonTextarea aria-label="AI 조사 요청" autofocus autoGrow maxlength={2000} placeholder={personActionCopy.research.placeholder} value={personActionText} onIonInput={(inputEvent) => setPersonActionText(String(inputEvent.detail.value ?? ''))} />
+                      <AiExampleChips examples={RESEARCH_EXAMPLE_CHIPS} onPick={(value) => setPersonActionText((current) => (current.trim() ? (current.includes(value) ? current : `${current.trim()}, ${value}`) : value))} label="조사 요청 예시" />
+                      <AiStageRail stages={researchStages(personActionSubmitting ? 'received' : 'draft')} label="AI 조사 요청 진행 단계" />
+                      <AiScopeNote>{RESEARCH_SCOPE_DOES}</AiScopeNote>
+                      <AiScopeNote limit>{RESEARCH_SCOPE_LIMITS}</AiScopeNote>
+                    </AiSurface>
                   ) : (
                     <>
                       <span className="eyebrow">{personActionCopy[personActionComposer.kind].eyebrow}</span>
@@ -2652,14 +2068,14 @@ function App() {
                       <IonTextarea aria-label={personActionCopy[personActionComposer.kind].title} autofocus autoGrow maxlength={2000} label={personActionCopy[personActionComposer.kind].title} labelPlacement="stacked" placeholder={personActionCopy[personActionComposer.kind].placeholder} value={personActionText} onIonInput={(inputEvent) => setPersonActionText(String(inputEvent.detail.value ?? ''))} />
                     </>
                   )}
+                  {/* 접수 버튼은 시트 아래에 고정한다 — 예시 chip이 늘어나도 화면 밖으로 밀리면 안 된다. */}
+                  <div className="person-action-submit">
+                    <small>{personActionText.length.toLocaleString()} / 2,000</small>
+                    <IonButton expand="block" disabled={!personActionText.trim() || personActionSubmitting} onClick={() => void submitPersonAction()}>{personActionSubmitting ? '접수 중…' : personActionCopy[personActionComposer.kind].submit}</IonButton>
+                  </div>
                 </div>
               </IonContent>
-              {/* 접수 버튼은 scroll content 밖의 modal footer가 소유한다. 내용이 길어져도 항상 닿는다. */}
-              <IonFooter className="person-action-submit">
-                <small>{personActionText.length.toLocaleString()} / 2,000</small>
-                <IonButton expand="block" disabled={personActionSubmitting || (personActionComposer.kind !== 'research' && !personActionText.trim()) || (personActionComposer.kind === 'research' && ((personResearchMode === 'deep_evidence_graph' && !personResearchPurposes.length) || (!personActionText.trim() && !personResearchFocusIds.length && !(personResearchMode === 'deep_evidence_graph' && personResearchPurposes.length))))} onClick={() => void submitPersonAction()}>{personActionSubmitting ? '접수 중…' : personActionCopy[personActionComposer.kind].submit}</IonButton>
-              </IonFooter>
-            </IonPage>
+            </>
           )}
         </IonModal>
         <IonModal isOpen={documentOpen} onDidDismiss={() => setDocumentOpen(false)}>
@@ -2717,50 +2133,6 @@ function App() {
 
 function EmptyState({ title, body, action, onAction }: { title: string; body: string; action?: string; onAction?: () => void }) {
   return <section className="empty-state"><span className="empty-icon"><ShieldCheck aria-hidden="true" size={23} /></span><h2>{title}</h2><p>{body}</p>{action && onAction && <button onClick={onAction}>{action}</button>}</section>;
-}
-
-/**
- * 갱신할 목록을 가진 구획이 하나씩 갖는 새로고침 조작 (표면 설계 계약 §2).
- *
- * v2.20.0에는 같은 `manualRefresh()`를 부르는 조작이 네 화면에 여섯 개 있었다 —
- * 상단 아이콘(캡처·진행·검색) + 캡처 인라인 + `진행 새로고침` + 설정의 `지금 처리 상태 확인`·
- * `연결 다시 확인`. 어느 것도 무엇을 갱신하는지 말하지 않았고 이름도 두 벌이었다.
- *
- * 두 가지가 이 컴포넌트의 계약이다.
- *  1. **회전은 실제 요청이 떠 있는 동안에만** 존재한다. 자동 갱신이 켜져 있다는 정책은 정적인
- *     글자로 말한다 — 정책을 애니메이션으로 표현한 것이 ISS-000050의 원래 결함이다.
- *  2. 요청이 떠 있어도 **누를 수 있다**. 이 버튼은 "지금 순번을 앞당겨 달라"는 뜻이고, 진행 중인
- *     조회 뒤에 최신 조회를 한 번 더 예약한다(우선 갱신). 여기서 비활성화하면 사용자가 자기
- *     작업 직후의 상태를 확인할 방법이 사라진다.
- */
-// 상태 기계는 `services/refresh-orchestrator`가 소유한다. 화면이 하나 더 갖는 상태는 `offline`뿐이다 —
-// 오프라인은 "실패"가 아니라 "지금은 물어볼 수 없음"이라 재시도 문구를 내밀면 거짓말이 된다.
-type SurfaceRefreshState = RefreshState | 'offline';
-
-function RefreshControl({ state, statusText, disabled, onRefresh }: {
-  state: SurfaceRefreshState;
-  statusText: string;
-  disabled: boolean;
-  onRefresh: () => void;
-}) {
-  const busy = state === 'in-flight';
-  return (
-    <div className={`refresh-control is-${state}`}>
-      <button
-        className="refresh-action"
-        type="button"
-        aria-label={busy ? REFRESH_BUSY_LABEL : REFRESH_IDLE_LABEL}
-        aria-busy={busy}
-        disabled={disabled}
-        onClick={onRefresh}
-      >
-        <RefreshCw className={busy ? 'spinning' : ''} aria-hidden="true" size={16} />
-        <span>{REFRESH_IDLE_LABEL}</span>
-      </button>
-      {/* 실패는 낭독기가 즉시 알려야 하고(`alert`), 나머지는 하던 일을 끊지 않는다(`status`). */}
-      <span className="refresh-status" role={state === 'failure' ? 'alert' : 'status'}>{statusText}</span>
-    </div>
-  );
 }
 
 export default App;

@@ -150,10 +150,7 @@ async function boot(page: import('@playwright/test').Page, options: { fakeCamera
 }
 
 // ISS-000084: 상단 바가 제품 이름만 띄우고 화면마다 큰 제목을 또 그리면, 폰 화면 위쪽이 제목 두 줄로 낭비된다.
-// ISS-000050(INT-000025): 갱신 조작은 화면마다 하나뿐이고 이름은 승인 문구 `새로고침` 하나다.
-// v2.20.0에는 같은 `manualRefresh()`를 부르는 버튼이 네 화면에 여섯 개 있었고, 이 게이트는
-// 실제로 쓰이지 않는 옛 class 이름(`.activity-refresh`·`.refresh-chip`)만 세고 있어 통과했다.
-test('the top bar owns the screen name and live status, and each list screen has exactly one refresh', async ({ page }) => {
+test('the top bar owns the screen name, live status and the single refresh', async ({ page }) => {
   const harness = await boot(page);
   try {
     const header = page.locator('ion-header .app-header');
@@ -166,22 +163,16 @@ test('the top bar owns the screen name and live status, and each list screen has
     await expect(header.locator('small')).toHaveText(/1건 처리 중/);
     expect(await page.locator('#kairen-ui h1').count()).toBe(0);
 
-    // 갱신할 목록을 가진 화면은 새로고침을 **정확히 하나** 갖는다. 상단 바는 갱신을 소유하지 않는다.
-    expect(await page.locator('.refresh-control').count()).toBe(1);
-    expect(await page.locator('ion-header .header-refresh').count()).toBe(0);
+    // 새로고침은 화면마다 흩어진 버튼이 아니라 상단 바의 하나로 동작한다.
     const before = harness.requests.filter((entry) => entry.includes('action=list')).length;
-    await page.getByRole('button', { name: /새로고침/ }).click();
+    await page.getByRole('button', { name: '최신 상태 확인' }).click();
     await expect.poll(() => harness.requests.filter((entry) => entry.includes('action=list')).length).toBeGreaterThan(before);
     expect(await page.locator('.activity-refresh, .refresh-chip').count()).toBe(0);
-
-    await page.getByRole('button', { name: '캡처', exact: true }).click();
-    expect(await page.locator('.refresh-control').count()).toBe(1);
 
     await page.getByRole('button', { name: '설정', exact: true }).click();
     await expect(header.locator('b')).toHaveText('내 앱 설정');
     // 설정 화면에는 새로고침할 목록이 없으므로 버튼도 없다.
-    expect(await page.getByRole('button', { name: /새로고침/ }).count()).toBe(0);
-    expect(await page.locator('.refresh-control').count()).toBe(0);
+    expect(await page.getByRole('button', { name: '최신 상태 확인' }).count()).toBe(0);
   } finally {
     harness.server.close();
   }

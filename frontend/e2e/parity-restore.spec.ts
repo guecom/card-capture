@@ -125,7 +125,7 @@ function listFixture(receivedAtLate: string, receivedAtStage2: string) {
   };
 }
 
-test('renders brief markdown, extracted contacts, server-proven progress and compatible titles', async ({ page }) => {
+test('renders brief markdown, extracted contacts, staged progress and legacy titles', async ({ page }) => {
   const server = await startStaticServer();
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
@@ -154,10 +154,11 @@ test('renders brief markdown, extracted contacts, server-proven progress and com
     await expect(page.getByText('Alice Kim — 이런 분이에요'), '목록은 고정 문구 대신 요약을 보여 준다').toHaveCount(0);
     // note receipt는 legacy처럼 "메모 → 대상"으로 표시된다.
     await expect(page.getByText('메모 → PER-000001 Alice Kim')).toBeVisible();
-    // 서버가 실제로 증명한 상태와 관측 경과만 보여 준다. 기기 quickName은 서버 처리 단계의 증거가 아니다.
-    await expect(page.getByText('서버가 접수했어요')).toBeVisible();
-    await expect(page.getByText('8분 경과 · 남은 시간은 아직 알 수 없어요')).toBeVisible();
-    await expect(page.locator('.stage-dots li.stage-active').first()).toHaveText('서버 접수');
+    // 진행 표시는 "몇 단계 중 몇 단계 · 경과 · 남은 시간 · 보통 얼마"를 함께 보여준다 (TSK-000249).
+    // 기기에서 미리 채운 quickName만 있고 서버 contact는 아직 없으므로 "이름·정보 인식" 단계다.
+    await expect(page.getByText('4단계 중 3단계 · 이름·정보 인식 중')).toBeVisible();
+    await expect(page.getByText(/8분 경과 · 약 \d+분 남음 · 보통 6~20분/)).toBeVisible();
+    await expect(page.locator('.stage-dots li.stage-active').first()).toHaveText(/이름·정보 인식/);
 
     await page.getByRole('button', { name: /^Alice Kim — / }).click();
     // 마크다운이 원문 덤프가 아니라 실제 표·불릿으로 렌더링된다 (escaped pipe 포함).
@@ -203,7 +204,7 @@ test('keeps background refresh silent on network failure and maps errors on manu
     await page.waitForTimeout(1_200);
     expect(await page.evaluate(() => document.querySelector('ion-toast')?.getAttribute('is-open'))).not.toBe('true');
     // 수동 새로고침은 한글로 안내한다.
-    await page.getByRole('button', { name: /새로고침/ }).click();
+    await page.getByRole('button', { name: '최신 상태 확인', exact: true }).click();
     await expect(page.getByText(/새로고침 실패: 네트워크 오류/)).toBeVisible();
   } finally {
     await stopStaticServer(server);
@@ -280,7 +281,7 @@ test('merges local capture context into the brief card with instant note and edi
   }
 });
 
-test('keeps the one-screen capture surface and link-first onboarding', async ({ page }) => {
+test('restores the legacy one-screen capture surface and link-first onboarding', async ({ page }) => {
   const server = await startStaticServer();
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');

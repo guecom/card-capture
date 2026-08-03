@@ -83,6 +83,35 @@ export function elapsedMinutesOf(item: Pick<BriefItem, 'captureId' | 'capturedAt
   return minutes >= 0 && minutes < 60 * 24 * 30 ? minutes : null;
 }
 
+export interface PendingProgress {
+  text: string;
+  late: boolean;
+}
+
+// 단계 표시: 1 이름 인식(OCR) → 2 웹 조사·정리 → 3 브리핑 도착. contact/quickName 존재 = 1단계 완료 신호.
+export function pendingProgress(item: BriefItem, minutes: number | null): PendingProgress | null {
+  if (item.status === 'processed' || item.status === 'skipped') return null;
+  if (minutes === null) return null;
+  const named = Boolean(item.contact?.name || item.quickName?.name);
+  if (minutes > 30) {
+    return {
+      late: true,
+      text: `${named ? '2/3단계 웹 조사·정리 중' : '1/3단계 이름 인식 중'} · ${minutes}분 경과 — 평소(6~20분)보다 오래 걸리고 있어요.`,
+    };
+  }
+  if (!named) {
+    return {
+      late: false,
+      text: `1/3단계 이름 인식(OCR) 중 · ${minutes}분 경과 · 이 단계는 보통 3분 안에 끝나요 · 다음: 웹 조사 → 브리핑`,
+    };
+  }
+  const remain = Math.max(1, 14 - minutes);
+  return {
+    late: false,
+    text: `2/3단계 웹 조사·기록 정리 중 (이름 인식 ✓) · ${minutes}분 경과 · 완료까지 약 ${remain}분 남음(추정, 보통 6~20분)`,
+  };
+}
+
 const ERROR_COPY: Record<string, string> = {
   owner_only: '소유자 토큰만 사용할 수 있어요',
   unknown_action: '서버 업데이트(GAS 재배포) 후 가능해요',

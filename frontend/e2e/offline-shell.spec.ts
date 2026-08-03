@@ -184,7 +184,7 @@ test('boots from personal-link parameters and retries a failed local capture whe
     await expect.poll(() => postCount).toBe(1);
     await page.getByRole('navigation', { name: '주요 화면' }).getByRole('button', { name: '진행' }).click();
     await expect(page.getByText('Queue Fixture', { exact: true })).toBeVisible();
-    await expect(page.getByText('서버가 접수했어요')).toBeVisible();
+    await expect(page.getByText(/4단계 중 2단계 · 서버 접수 중/)).toBeVisible();
     await page.getByRole('button', { name: /Queue Fixture/ }).click();
     await page.getByLabel('어디서 만났는지', { exact: true }).fill('Edited Expo');
     await page.getByLabel('메모', { exact: true }).fill('Edited memo');
@@ -343,7 +343,7 @@ test('captures front and back with context into the local queue without uploadin
     await page.getByRole('button', { name: '완료', exact: true }).click();
     // 저장이 확인된 뒤에만, 그리고 이 기기 저장 사실만 말한다 (FI-031·032).
     await expect(page.getByText('이 폰에 저장했어요 — 이제 폰을 넣어도 됩니다. 연결되면 자동으로 전송합니다.', { exact: false })).toBeVisible();
-    await expect(page.locator('.queue-row', { hasText: '김카이렌' })).toContainText('기기에서 전송을 기다려요');
+    await expect(page.locator('.queue-row', { hasText: '김카이렌' })).toContainText('4단계 중 1단계 · 사진 전송 중');
     const queueReceipt = await page.evaluate(async () => {
       const database = await new Promise<IDBDatabase>((resolveDatabase, reject) => {
         const request = indexedDB.open('cardcapture', 1);

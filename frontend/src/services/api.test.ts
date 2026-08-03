@@ -32,12 +32,11 @@ describe('legacy GAS contract adapter', () => {
     const fetchMock = vi.fn().mockResolvedValue({ json: async () => ({ ok: true, receiptId: 'receipt-1' }) });
     vi.stubGlobal('fetch', fetchMock);
     await addPersonNote(config, { person: 'PER-000001' }, ' note ');
-    const instruction = { raw: 'research', mode: 'standard' as const, focusIds: ['expertise' as const] };
-    await submitResearchInstruction(config, { captureId: 'CAP-1' }, instruction);
+    await submitResearchInstruction(config, { captureId: 'CAP-1' }, ' research ');
     await requestCorrection(config, 'CAP-1', ' correction ');
     expect(fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)))).toEqual([
       { action: 'addnote', person: 'PER-000001', text: 'note', k: 'fixture-token' },
-      { action: 'researchinstruction', captureId: 'CAP-1', instruction, k: 'fixture-token' },
+      { action: 'researchinstruction', captureId: 'CAP-1', text: 'research', k: 'fixture-token' },
       { action: 'correction', captureId: 'CAP-1', text: 'correction', k: 'fixture-token' },
     ]);
   });
