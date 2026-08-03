@@ -79,6 +79,16 @@ export interface ContactSummary {
   phones?: string[];
 }
 
+/* 서버가 "사람이 손을 대야 넘어간다"고 표시한 상태. 처리 실패와 다르다 — 재시도로는 풀리지 않고
+   사용자가 무엇을 해야 하는지 알아야 닫힌다. `reasonCode`는 닫힌 enum이며 화면에는 그대로 찍지
+   않는다(사용자에게 `identity_ambiguous`는 아무 뜻도 아니다). 실제 판정은 서버 값을 믿지 않고
+   `services/capture-progress.ts`의 `captureAttentionOf()`가 런타임에서 다시 좁힌다. */
+export interface CaptureAttentionPayload {
+  kind: 'input_required';
+  reasonCode: 'unreadable_capture' | 'missing_required_side' | 'identity_ambiguous';
+  requestedAt: string;
+}
+
 export interface BriefItem {
   captureId: string;
   capturedAt?: string;
@@ -92,6 +102,7 @@ export interface BriefItem {
   event?: string;
   note?: string;
   capturer?: string;
+  attention?: CaptureAttentionPayload;
 }
 
 export interface ListResponse {

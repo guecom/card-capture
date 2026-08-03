@@ -122,7 +122,11 @@ $rootSw = Get-Content (Join-Path $root 'docs\sw.js') -Raw
 if ($idx -notmatch "new URL\('next/'" -or $idx -notmatch 'destination\.search = location\.search') { Fail 'docs/index.html live redirect missing or query not preserved' } else { Pass 'live redirect preserves query parameters' }
 if (-not $runtime.apiUrl -or $runtime.apiUrl -notmatch '^https://script\.google\.com/macros/s/[A-Za-z0-9_-]+/exec$') { Fail 'public runtime API missing or malformed' } else { Pass 'public runtime API present' }
 if (Test-Path (Join-Path $root 'docs\legacy.html')) { Fail 'retired docs/legacy.html still exists' } else { Pass 'legacy user surface retired' }
-if ($idx -match 'legacy\.html' -or $rootSw -match 'legacy\.html') { Fail 'current root entry or service worker still references legacy.html' } else { Pass 'current root has no legacy entry or precache' }
+# 후보 앱(`next/`)의 진입 문서와 생성된 worker까지 본다. 사용자가 실제로 여는 표면이 그쪽이라
+# 루트 두 파일만 보면 은퇴가 배포본에서 되살아나도 통과한다 (Kairen-Ref: TSK-000529).
+$nextIdx = Get-Content (Join-Path $root 'docs\next\index.html') -Raw
+$nextSw = Get-Content (Join-Path $root 'docs\next\sw.js') -Raw
+if ($idx -match 'legacy\.html' -or $rootSw -match 'legacy\.html' -or $nextIdx -match 'legacy\.html' -or $nextSw -match 'legacy\.html') { Fail 'current root or candidate entry/service worker still references legacy.html' } else { Pass 'current root and candidate have no legacy entry or precache' }
 if (-not $rootSw.Contains("if (url.pathname.indexOf(scopePath + 'next/') === 0) return;") -or -not $rootSw.Contains('/^cardcapture-v/.test(k)')) { Fail 'root service worker must ignore next scope and preserve candidate caches' } else { Pass 'root and React service-worker caches are isolated' }
 if ((Get-Content (Join-Path $root 'CHANGELOG.md') -Raw) -notmatch '\[Unreleased\]') { Warn 'CHANGELOG has no [Unreleased] section' } else { Pass 'CHANGELOG has [Unreleased]' }
 

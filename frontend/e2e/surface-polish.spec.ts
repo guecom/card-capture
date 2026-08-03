@@ -321,53 +321,35 @@ test('corner radii stay on a deliberate scale instead of blanket softness', asyn
   }
 });
 
-// ── 007: 폰이 움직임을 줄여도, 사용자가 켜기를 고르면 앱은 움직인다 ──
+// ── 007: 폰이 줄이라고 하지 않으면 빛은 실제로 움직인다 ──
 //
-// founder 2차 판정 2026-07-28: "여전히 하이라이팅이 안 나옴".
-// 실측으로 원인을 갈랐다 — 폰이 `움직임 최소화`를 켜고 있으면 우리 빛은 한 픽셀도 그려지지 않았다
-// (그 조건에서 시간에 따른 픽셀 변화 0). 그건 결함이 아니라 존중이지만 **말없이 사라지면 고장으로
-// 읽힌다.** 그래서 OS 설정은 기본값이 되고, 설정에서 직접 켤 수 있어야 한다.
+// 원래 이 자리는 `화면 움직임` preference를 지키는 게이트였다. DEC-000093이 그 preference를
+// 없앴다 — 움직임은 사용자가 관리할 설정이 아니라 제품이 책임질 동작이고, 폰의 `움직임 최소화`가
+// 유일한 기준이다. 그래서 그때의 (b)(화면이 왜 멈췄는지 말한다)와 (c)(설정에서 되켤 수 있다)는
+// 지킬 계약이 아니게 됐다.
 //
-// 이 게이트가 지키는 계약은 셋이다:
-//   (a) 아무것도 고르지 않은 사람에게는 폰 설정이 그대로 존중된다 (지금까지의 약속을 깨지 않는다)
-//   (b) 그때 화면은 **왜** 멈춰 있는지 말한다
-//   (c) `켜기`를 고르면 폰이 여전히 줄이라고 해도 앱 안에서는 움직인다
-test('a phone that reduces motion stops the light, says so, and can be overridden', async ({ page }) => {
-  await page.emulateMedia({ reducedMotion: 'reduce' });
+// 그런데 (a)만 남기고 지우면 **구멍이 생긴다.** `prefers-reduced-motion`을 존중하는지 보는
+// 게이트는 두 개 더 있지만(`int16-surfaces` 무한 애니메이션 0건, `status-truth` animationName
+// none) 셋 다 "줄이라고 했을 때 멈추는가"만 본다. 빛을 통째로 지워도 전부 통과한다 —
+// ISS-000129가 정확히 그 방식으로 늦게 발견됐다.
+//
+// 그래서 방향을 뒤집어 **줄이라고 하지 않았을 때 실제로 움직이는가**를 픽셀로 확인한다.
+// 값이 아니라 픽셀인 이유: 애니메이션이 "돈다"고 보고되면서 화면은 정지해 있던 경우가 실제로 있었다.
+test('a phone that does not reduce motion actually gets the moving light', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
   const harness = await boot(page, 'dark');
   try {
-    // (a) 기본값 `시스템` — 폰이 줄이라고 하면 멈춘다.
-    await expect(page.locator('html')).toHaveAttribute('data-motion', 'off');
     const surface = page.locator('.ai-surface.research-request');
-    const stopped = await surface.evaluate((node) => ({
-      sweep: getComputedStyle(node, '::before').display,
-      looping: node.getAnimations({ subtree: true })
-        .filter((a) => a.playState === 'running' && (a.effect?.getComputedTiming().iterations ?? 1) === Infinity).length,
-    }));
-    expect(stopped.sweep, '움직임을 줄인 폰에서 빛이 계속 그려진다').toBe('none');
-    expect(stopped.looping, '움직임을 줄인 폰에서 무한 애니메이션이 돈다').toBe(0);
-
-    // (b) 왜 멈춰 있는지 화면이 말한다.
-    await page.getByRole('button', { name: '설정', exact: true }).click();
-    const card = page.getByRole('radiogroup', { name: '화면 움직임' });
-    await expect(card).toBeVisible();
-    await expect(page.getByText(/움직임 최소화를 켜 두어서/)).toBeVisible();
-
-    // (c) 켜기를 고르면 폰 설정과 무관하게 앱 안에서 움직인다 — 이게 이번 판정의 핵심이다.
-    await card.getByRole('radio', { name: /켜기/ }).click();
-    await expect(page.locator('html')).toHaveAttribute('data-motion', 'on');
-    await page.getByRole('button', { name: '캡처', exact: true }).click();
     await surface.scrollIntoViewIfNeeded();
     await page.waitForTimeout(200);
-    const revived = await surface.evaluate((node) => ({
+    const running = await surface.evaluate((node) => ({
       sweep: getComputedStyle(node, '::before').display,
       looping: node.getAnimations({ subtree: true })
         .filter((a) => a.playState === 'running' && (a.effect?.getComputedTiming().iterations ?? 1) === Infinity).length,
     }));
-    expect(revived.sweep, '켜기를 골랐는데도 빛이 그려지지 않는다').not.toBe('none');
-    expect(revived.looping, '켜기를 골랐는데도 애니메이션이 돌지 않는다').toBeGreaterThan(0);
+    expect(running.sweep, '움직임을 줄이지 않은 폰에서 빛이 아예 그려지지 않는다').not.toBe('none');
+    expect(running.looping, '움직임을 줄이지 않은 폰에서 애니메이션이 돌지 않는다').toBeGreaterThan(0);
 
-    // 값이 아니라 픽셀로 확인한다 — 애니메이션이 "돈다"고 보고되면서 화면은 정지한 경우가 실제로 있었다.
     const box = (await surface.boundingBox())!;
     const clip = { x: Math.round(box.x) + 8, y: Math.round(box.y) + 2, width: Math.round(box.width) - 16, height: 10 };
     const frames: Buffer[] = [];
@@ -376,10 +358,13 @@ test('a phone that reduces motion stops the light, says so, and can be overridde
     for (let i = 0; i < frames.length; i += 1) {
       for (let j = i + 1; j < frames.length; j += 1) moved = Math.max(moved, ...(await columnDeltas(page, frames[i], frames[j])));
     }
-    expect(moved, `켜기를 골랐는데 화면이 실제로는 정지해 있다 (${moved}/255)`).toBeGreaterThanOrEqual(10);
+    expect(moved, `빛이 돈다고 보고되지만 화면은 실제로 정지해 있다 (${moved}/255)`).toBeGreaterThanOrEqual(10);
 
-    // 고른 값은 이 기기에 남는다.
-    expect(await page.evaluate(() => localStorage.getItem('cc_motion'))).toBe('on');
+    // preference가 사라졌다는 것은 저장값도 사라졌다는 뜻이다 — 되살아나면 여기서 잡힌다.
+    expect(await page.evaluate(() => localStorage.getItem('cc_motion'))).toBeNull();
+    await page.getByRole('button', { name: '설정', exact: true }).click();
+    expect(await page.getByRole('radiogroup', { name: '화면 움직임' }).count(),
+      '은퇴한 `화면 움직임` preference가 설정에 되살아났다').toBe(0);
   } finally {
     harness.server.close();
   }
