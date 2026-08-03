@@ -1,0 +1,110 @@
+/* 복구가 필요한 명함·조사 receipt (TSK-000531 / ISS-000232)
+ *
+ * founder 실측 2026-08-04: "다시 처리 요청해도 안 되고, 뭐 반응이 없어서"
+ * 그 자리에는 아무 일도 하지 않는 버튼이 있었다. 이 파일은 그 버튼이 사라진 자리에
+ * **무슨 일이 있었고 지금 무엇을 할 수 있는지**를 놓는다.
+ *
+ * 색은 전부 토큰이다 — 하드코딩한 색이 하나라도 있으면 다크 팔레트에서 대비가 깨진다.
+ * 클래스 이름을 int29- 로 접두하는 이유: app.css의 `.recovery-notice`는 이미 다른 표면
+ * (복구 안내 카드)이 쓰고 있어서 이름이 겹치면 그쪽 모양이 조용히 바뀐다.
+ */
+
+.int29-recovery {
+  display: grid;
+  gap: 9px;
+  padding: 12px 14px 13px;
+  border-top: 1px solid var(--cc-line);
+  /* 실패한 자리라고 붉게 칠하지 않는다 — 사용자의 원본은 그대로 있고, 이것은 경고가 아니라 안내다. */
+  background: var(--cc-soft);
+}
+
+.int29-recovery-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.int29-recovery-head > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: rgb(var(--cc-accent));
+}
+
+.int29-recovery-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.int29-recovery-title strong {
+  color: var(--cc-ink);
+  font-size: 12.5px;
+  font-weight: 760;
+  word-break: keep-all;
+}
+
+/* 경과·시도 횟수 같은 사실만 오는 자리. 추정치는 오지 않는다. */
+.int29-recovery-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: var(--cc-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.int29-recovery-facts span::before {
+  content: '· ';
+}
+
+.int29-recovery-facts span:first-child::before {
+  content: '';
+}
+
+.int29-recovery p {
+  margin: 0;
+  color: var(--cc-muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+  word-break: keep-all;
+}
+
+.int29-recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+/* 손가락 크기는 기존 조작들과 같다 (44px). 320px 폭에서도 줄바꿈으로 흘러넘치지 않는다. */
+.int29-recovery-actions a,
+.int29-recovery-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-sm);
+  background: var(--cc-solid);
+  color: var(--cc-blue);
+  font-size: 11.5px;
+  font-weight: 720;
+  text-decoration: none;
+}
+
+/* 일시 실패 — 기다리면 되는 상태. 카드 전체를 차지하지 않고 한 줄로만 말한다. */
+.int29-flow-note {
+  display: block;
+  margin-top: 2px;
+  color: var(--cc-muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+.status-badge.status-recovery {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}

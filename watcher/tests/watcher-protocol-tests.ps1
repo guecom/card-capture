@@ -762,6 +762,274 @@ TB 'APP-AC-239 runtime: Deep slice process tree와 stream drain을 wall-clock �
     }
 }
 
+# =====================================================================
+# TSK-000531 — 정직한 실패 저널 / stale marker 조정 / 결정적 requeue 차단
+#   실측 출발점(2026-08-04): PER-000418 조사 receipt가 requeue 2회 x processor exit 1 3회 =
+#   연속 실패 6회에서 멈춰 있었고, 그 상태에서도 앱은 아무 반응 없는 '다시 처리'만 보여 줬다.
+#   처리기 raw 로그는 보존 기간이 지나 사라졌다 — 운영 원인은 로그로 되살릴 수 없다.
+#   그래서 여기서 고정하는 것은 '무엇이 원인이었나'가 아니라 **그 상황에서 시스템이 남기는 흔적과
+#   사용자에게 주는 선택지**다. 아래 세 가지는 전부 합성 캡처로만 재현한다.
+# =====================================================================
+function New-DeepCapture($id, $receivedAt) {
+    $d = Join-Path $sbInbox $id
+    New-Item -ItemType Directory -Force -Path $d | Out-Null
+    $meta = [ordered]@{
+        captureId = $id; status = 'received'; capturer = 'test'; files = @('front.jpg')
+        receivedAt = $receivedAt; type = 'research_instruction'
+        researchInstruction = [ordered]@{ mode = 'deep_evidence_graph'; raw = '합성 조사 지시' }
+    }
+    ($meta | ConvertTo-Json -Depth 6) | Out-File -Encoding utf8 (Join-Path $d 'capture.json')
+    return $d
+}
+function CaptureMeta($id) { return (Get-Content (Join-Path (Join-Path $sbInbox $id) 'capture.json') -Raw -Encoding UTF8 | ConvertFrom-Json) }
+function FailureJournal($id) {
+    $p = Join-Path (StagingDir $id) 'failure.json'
+    if (-not (Test-Path $p)) { return $null }
+    return (Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json)
+}
+function HasBegin($id) { return (Test-Path (Join-Path (StagingDir $id) 'begin.json')) }
+function HasBackup($id) { return (Test-Path (Join-Path (StagingDir $id) 'deep-output-backup.json')) }
+# 서버 requeue와 같은 표식: receivedAt 갱신 + requeueRequested. 이것이 입력 fingerprint를 바꾼다.
+function Invoke-SyntheticRequeue($id, $stamp) {
+    $p = Join-Path (Join-Path $sbInbox $id) 'capture.json'
+    $m = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
+    $m.receivedAt = $stamp
+    $m | Add-Member -NotePropertyName requeueRequested -NotePropertyValue $true -Force
+    ($m | ConvertTo-Json -Depth 12) | Out-File -Encoding utf8 $p
+}
+function Invoke-WhileEligible($id, $limit) {
+    for ($i = 0; $i -lt $limit; $i++) {
+        $dir = Join-Path $sbInbox $id
+        if (-not (Test-Path $dir)) { break }
+        $e = Get-CaptureEligibility (Get-Item $dir)
+        if (-not $e.eligible) { break }
+        $script:ConsecutiveFailures = 0
+        Invoke-Processing
+    }
+}
+
+# 이 구획은 원래 sandbox inbox로 돌아간다 — 앞의 Deep 구획이 $Inbox를 deep-inbox로 바꿔 두고
+# 되돌리지 않는다. 그대로 두면 여기서 만든 캡처를 워처가 아예 보지 못해 모든 단언이
+# '처리된 적이 없어서 파일도 없다'로 조용히 통과한다(실측으로 실제 그랬다 — 그래서 아래
+# 단언들에 처리기 호출 수 같은 양성 증거를 함께 요구한다).
+$Inbox = $sbInbox
+$Lock = Join-Path $sbInbox 'processing.lock'
+# 앞 구획이 남긴 대기 항목이 있으면 처리 루프가 실패 한 번에 멈춰(기존 계약: 실패하면 break)
+# 이 구획의 캡처에 닿지도 못한다. 먼저 큐를 비우고, 비워졌다는 사실 자체를 게이트로 고정한다.
+Set-StubConf @() 'commit'
+for ($drain = 0; $drain -lt 12; $drain++) {
+    if ((Get-Backlog).Count -eq 0) { break }
+    $script:ConsecutiveFailures = 0
+    Invoke-Processing
+}
+T ((Get-Backlog).Count -eq 0) ('TSK-000531 전제: 이 구획 시작 시 대기 큐가 비어 있다 (남은=' + (Get-Backlog).Count + ')')
+
+# ---- 1. 정상 실패는 crash와 다른 흔적을 남긴다 ----
+$null = New-DeepCapture 'F5001' '2026-07-25T11:00:00Z'
+Set-StubConf @('F5001') 'exit1'
+
+TB 'TSK-000531 journal: 정상 실패는 begin marker와 rollback backup을 함께 닫는다' {
+    $script:ConsecutiveFailures = 0
+    Invoke-Processing
+    # 양성 증거 먼저: 이 캡처가 실제로 처리기까지 갔고 실패했는가. 이것이 없으면 아래 부정 단언은
+    # '처리된 적이 없어서 파일도 없다'로 통과한다.
+    if ((Count-Calls 'F5001') -ne 1) { return $false }
+    if ([int](Get-CaptureState 'F5001').attempts -ne 1) { return $false }
+    # deep lane이라 이번 실행에서 backup이 실제로 만들어졌다 — 둘 다 사라져 있어야 한다.
+    return ((-not (HasBegin 'F5001')) -and (-not (HasBackup 'F5001')))
+}
+TB 'TSK-000531 journal: 실패 영수증이 원인 분류·시도 수·시각과 함께 남는다' {
+    $j = FailureJournal 'F5001'
+    if (-not $j) { return $false }
+    return (([string]$j.version -eq 'card-capture-failure-v1') -and ([string]$j.causeClass -eq 'processor_failed') -and
+            ([int]$j.failures -ge 1) -and ([int]$j.attempt -ge 1) -and
+            ([int]$j.recoveryThreshold -eq [int]$RecoveryRequiredFailures) -and
+            [string]$j.firstFailedAt -and [string]$j.lastFailedAt)
+}
+TB 'TSK-000531 journal: 영수증에 캡처 내용·자유 텍스트가 들어가지 않는다' {
+    $raw = Get-Content (Join-Path (StagingDir 'F5001') 'failure.json') -Raw -Encoding UTF8
+    # reason은 워처 소스의 닫힌 리터럴로만 만들어진다. 명함·조사 지시 본문은 어떤 형태로도 들어갈 수 없다.
+    return (($raw -notmatch '합성 조사 지시') -and ($raw -notmatch 'front\.jpg') -and
+            ((FailureJournal 'F5001').reason -match '\Aprocessor_exit_-?\d+\z'))
+}
+TB 'TSK-000531 journal: 정상 실패는 중단된 attempt로 보고되지 않는다 (crash와 다른 상태)' {
+    return (-not ((Get-InterruptedCaptures) -contains 'F5001'))
+}
+TB 'TSK-000531 journal: 반대로 commit 전에 죽은 attempt는 여전히 중단으로 보고된다' {
+    $null = New-Capture 'F5002' 'received' '2026-07-25T11:10:00Z'
+    $null = Start-CaptureStaging 'F5002' 1 (Fp 'F5002') 'dead-worker'
+    return (((Get-InterruptedCaptures) -contains 'F5002') -and (HasBegin 'F5002') -and
+            ($null -eq (FailureJournal 'F5002')))
+}
+TB 'TSK-000531 journal: 닫기는 begin·backup·영수증을 한 번에 처리한다 (직접 호출)' {
+    $null = New-Capture 'F5003' 'received' '2026-07-25T11:20:00Z'
+    $null = Start-CaptureStaging 'F5003' 2 (Fp 'F5003') 'worker-1'
+    $null = Save-DeepRollbackBackup 'F5003' (Get-DeepWorkspaceSnapshot (Join-Path $sbInbox 'F5003'))
+    if (-not ((HasBegin 'F5003') -and (HasBackup 'F5003'))) { return $false }
+    $null = Close-CaptureStagingFailure 'F5003' 2 'result_incomplete' 'commit_incomplete_missing_brief' $false $false
+    $j = FailureJournal 'F5003'
+    return ((-not (HasBegin 'F5003')) -and (-not (HasBackup 'F5003')) -and
+            ($j -and [string]$j.causeClass -eq 'result_incomplete' -and [int]$j.attempt -eq 2))
+}
+# F5001·F5002의 단언은 여기서 끝난다. F5001은 deep이라 stub이 evidence graph를 만들 수 없어
+# 절대 commit되지 않는다 — 큐에 남겨 두면 뒤 게이트가 그 항목에서 멈춘다.
+Remove-Item (Join-Path $sbInbox 'F5001') -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $sbInbox 'F5002') -Recurse -Force -ErrorAction SilentlyContinue
+TB 'TSK-000531 journal: 진전(commit)은 실패 영수증을 지운다' {
+    $null = New-Capture 'F5004' 'received' '2026-07-25T11:30:00Z'
+    Set-StubConf @('F5004') 'exit1'
+    $script:ConsecutiveFailures = 0
+    Invoke-Processing
+    # 양성 증거: 지우기 전에 영수증이 실제로 있었다.
+    if ($null -eq (FailureJournal 'F5004')) { return $false }
+    Set-StubConf @() 'commit'
+    $script:ConsecutiveFailures = 0
+    Invoke-Processing
+    return (($null -eq (FailureJournal 'F5004')) -and ((CaptureMeta 'F5004').status -eq 'processed'))
+}
+
+# ---- 2. 옛 버전이 남긴 stale marker 조정 ----
+TB 'TSK-000531 reconcile: backup 없는 고아 begin marker는 불가능한 복구 대신 조정된다' {
+    $null = New-Capture 'L5001' 'received' '2026-07-25T12:00:00Z'
+    $null = Start-CaptureStaging 'L5001' 1 (Fp 'L5001') 'ancient-worker'
+    if (-not ((Get-InterruptedCaptures) -contains 'L5001')) { return $false }
+    $reconciled = @(Repair-InterruptedCaptures)
+    $j = FailureJournal 'L5001'
+    return (($reconciled -contains 'L5001') -and (-not (HasBegin 'L5001')) -and
+            (-not ((Get-InterruptedCaptures) -contains 'L5001')) -and
+            ($j -and [string]$j.reason -eq 'interrupted_no_backup' -and [string]$j.causeClass -eq 'interrupted_attempt'))
+}
+TB 'TSK-000531 reconcile: 여러 번 돌려도 같은 결과다 (멱등)' {
+    $before = (Get-Content (Join-Path (StagingDir 'L5001') 'failure.json') -Raw -Encoding UTF8)
+    $null = Repair-InterruptedCaptures
+    $null = Repair-InterruptedCaptures
+    $after = (Get-Content (Join-Path (StagingDir 'L5001') 'failure.json') -Raw -Encoding UTF8)
+    return ($before -eq $after)
+}
+TB 'TSK-000531 reconcile: 조정은 진행 중인 attempt의 marker를 건드리지 않는다' {
+    $null = New-Capture 'L5002' 'received' '2026-07-25T12:10:00Z'
+    $live = New-CaptureClaim 'L5002' (Fp 'L5002')
+    if ($null -eq $live) { return $false }
+    $null = Start-CaptureStaging 'L5002' 1 (Fp 'L5002') $live.owner
+    $null = Repair-InterruptedCaptures
+    $kept = ((HasBegin 'L5002') -and ($null -eq (FailureJournal 'L5002')))
+    Remove-CaptureClaim $live
+    return $kept
+}
+TB 'TSK-000531 reconcile: claim이 사라지면 같은 marker가 조정된다' {
+    $null = Repair-InterruptedCaptures
+    return ((-not (HasBegin 'L5002')) -and ($null -ne (FailureJournal 'L5002')))
+}
+TB 'TSK-000531 reconcile: 복구할 backup이 있으면 복구부터 하고 marker를 닫는다' {
+    $null = New-Capture 'L5003' 'received' '2026-07-25T12:20:00Z'
+    $dir = Join-Path $sbInbox 'L5003'
+    'pre-run truth' | Out-File -Encoding utf8 (Join-Path $dir 'brief.md')
+    $null = Save-DeepRollbackBackup 'L5003' (Get-DeepWorkspaceSnapshot $dir)
+    $null = Start-CaptureStaging 'L5003' 1 (Fp 'L5003') 'dead-worker'
+    'poisoned output' | Out-File -Encoding utf8 (Join-Path $dir 'brief.md')
+    $null = Repair-InterruptedCaptures
+    $restored = ((Get-Content (Join-Path $dir 'brief.md') -Raw -Encoding UTF8).Trim() -eq 'pre-run truth')
+    return ($restored -and (-not (HasBegin 'L5003')) -and (-not (HasBackup 'L5003')) -and
+            ([string](FailureJournal 'L5003').reason -eq 'interrupted_restored'))
+}
+
+# ---- 3. 결정적 requeue 차단 + 복구 필요 영수증 ----
+$null = New-Capture 'G5001' 'received' '2026-07-25T13:00:00Z'
+Set-StubConf @('G5001') 'exit1'
+
+TB 'TSK-000531 guard: 첫 예산은 기존 정책 그대로 MaxAttempts에서 격리된다' {
+    Invoke-WhileEligible 'G5001' 8
+    $st = Get-CaptureState 'G5001'
+    return (($st.quarantined -eq $true) -and ([int]$st.attempts -eq $maxA) -and
+            ((Count-Calls 'G5001') -eq $maxA) -and ($st.recoveryRequired -ne $true))
+}
+TB 'TSK-000531 guard: 첫 격리에서는 아직 requeue가 받아들여진다 (한 번은 준다)' {
+    Invoke-SyntheticRequeue 'G5001' '2026-07-26T13:00:00Z'
+    return (-not (Test-CaptureQuarantined 'G5001' (Fp 'G5001')))
+}
+TB 'TSK-000531 guard: 같은 원인으로 예산을 두 번 소진하면 복구 필요로 확정된다' {
+    Invoke-WhileEligible 'G5001' 8
+    $st = Get-CaptureState 'G5001'
+    return (($st.recoveryRequired -eq $true) -and ([string]$st.recoveryCause -eq 'processor_failed') -and
+            ([int]$st.repeatFailures -ge [int]$RecoveryRequiredFailures) -and [string]$st.recoveryRequiredAt)
+}
+TB 'TSK-000531 guard: 그 뒤의 requeue는 조용히 받아들여지지 않는다 (결정적 차단)' {
+    Invoke-SyntheticRequeue 'G5001' '2026-07-27T13:00:00Z'
+    $held = Test-CaptureQuarantined 'G5001' (Fp 'G5001')
+    $stillHeld = Test-CaptureQuarantined 'G5001' (Fp 'G5001')
+    $callsBefore = Count-Calls 'G5001'
+    $script:ConsecutiveFailures = 0
+    Invoke-Processing
+    Invoke-Processing
+    return ($held -and $stillHeld -and ((Count-Calls 'G5001') -eq $callsBefore))
+}
+TB 'TSK-000531 guard: 임계값은 발명한 상수가 아니라 격리 정책에서 유도된다' {
+    return ([int]$RecoveryRequiredFailures -eq ([int]$MaxAttempts * 2))
+}
+TB 'TSK-000531 guard: 반복 실패 횟수는 requeue로 초기화되지 않는다' {
+    # 예산(attempts)은 requeue로 재충전되지만 '같은 원인으로 몇 번 실패했는가'는 진전에서만 지워진다.
+    $st = Get-CaptureState 'G5001'
+    return ([int]$st.repeatFailures -ge ([int]$MaxAttempts * 2))
+}
+TB 'TSK-000531 receipt: since는 ISO(UTC)다 — 폰 브라우저가 읽을 수 없는 형식을 보내지 않는다' {
+    # iOS Safari의 Date.parse는 워처 상태 파일 형식('yyyy-MM-dd HH:mm:ss')을 NaN으로 돌려준다.
+    # 그러면 '멈춘 지 얼마나 됐나'가 폰에서만 조용히 사라진다 — 이 lane이 고치는 결함 그 자체다.
+    $r = (CaptureMeta 'G5001').recovery
+    return ([string]$r.since -match '\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z')
+}
+TB 'TSK-000531 receipt: capture.json에 복구 필요 영수증이 닫힌 enum으로 남는다' {
+    $r = (CaptureMeta 'G5001').recovery
+    return (($r) -and ([string]$r.kind -eq 'recovery_required') -and ([string]$r.reasonCode -eq 'processor_failed') -and
+            ([int]$r.threshold -eq [int]$RecoveryRequiredFailures) -and ([int]$r.failures -ge [int]$RecoveryRequiredFailures) -and
+            [string]$r.since)
+}
+TB 'TSK-000531 receipt: 영수증은 입력 fingerprint를 바꾸지 않는다 (예산 자동 재충전 없음)' {
+    $before = Fp 'G5001'
+    $null = Set-CaptureRecoveryReceipt 'G5001' (Join-Path $sbInbox 'G5001') (New-CaptureRecoveryReceipt 'retry_scheduled' 'processor_failed' 1 1 '2026-07-27 13:00:00')
+    $after = Fp 'G5001'
+    $null = Set-CaptureRecoveryReceipt 'G5001' (Join-Path $sbInbox 'G5001') (New-CaptureRecoveryReceipt 'recovery_required' 'processor_failed' 3 6 '2026-07-27 13:00:00')
+    return ($before -eq $after)
+}
+TB 'TSK-000531 receipt: 일시 실패는 재시도 예정으로 남는다 (복구 필요와 다른 상태)' {
+    $null = New-Capture 'G5002' 'received' '2026-07-25T14:00:00Z'
+    Set-StubConf @('G5002') 'exit1'
+    $script:ConsecutiveFailures = 0
+    Invoke-Processing
+    $r = (CaptureMeta 'G5002').recovery
+    $st = Get-CaptureState 'G5002'
+    return (($r) -and ([string]$r.kind -eq 'retry_scheduled') -and ([int]$r.attempts -eq 1) -and
+            ($st.recoveryRequired -ne $true))
+}
+TB 'TSK-000531 receipt: 성공하면 영수증이 사라진다' {
+    Set-StubConf @() 'commit'
+    $script:ConsecutiveFailures = 0
+    Invoke-Processing
+    $m = CaptureMeta 'G5002'
+    return (($m.status -eq 'processed') -and ($null -eq $m.PSObject.Properties['recovery']))
+}
+TB 'TSK-000531 health: 격리·복구 필요 항목이 원인과 시각과 함께 노출된다' {
+    Write-Health
+    $h = Get-Content $HealthFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    $row = @($h.quarantineDetail | Where-Object { [string]$_.captureId -eq 'G5001' })
+    return (([int]$h.recoveryRequiredCount -ge 1) -and
+            ([int]$h.recoveryRequiredThreshold -eq [int]$RecoveryRequiredFailures) -and
+            ($row.Count -eq 1) -and ([string]$row[0].cause -eq 'processor_failed') -and
+            ($row[0].recoveryRequired -eq $true) -and [string]$row[0].since)
+}
+TB 'TSK-000531 health: 진단 출력에는 자유 문자열이 아니라 닫힌 원인 enum만 나간다' {
+    $h = Get-Content $HealthFile -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach ($row in @($h.quarantineDetail)) {
+        if ($FailureCauseClasses -notcontains [string]$row.cause) { return $false }
+        if ($row.PSObject.Properties['quarantineReason']) { return $false }
+    }
+    return $true
+}
+TB 'TSK-000531 복구: 사람이 항목 상태를 지우면 잠금이 풀린다 (문서화된 유일한 해제 경로)' {
+    Remove-Item (Join-Path $sbState 'items\G5001.json') -Force -ErrorAction SilentlyContinue
+    $script:QuarantineHoldLogged.Remove('G5001')
+    return (-not (Test-CaptureQuarantined 'G5001' (Fp 'G5001')))
+}
+
 # ---- summary + cleanup ----
 Write-Host ''
 Write-Host ("summary: pass=" + $pass + " fail=" + $fail)

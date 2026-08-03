@@ -16,7 +16,7 @@ import {
   IonToolbar,
   setupIonicReact,
 } from '@ionic/react';
-import { Bell, Camera, ChevronRight, CircleAlert, FileText, ImageOff, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, Waves } from 'lucide-react';
+import { Bell, Camera, ChevronRight, CircleAlert, FileText, ImageOff, LifeBuoy, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, SunMoon, Waves } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 릴리즈 버전은 저장소가 선언한 값 하나만 쓴다 (founder 지시 2026-07-27: "버전이 설정에 표기되었으면 함").
@@ -25,6 +25,7 @@ import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useS
 import { version as APP_VERSION } from '../package.json';
 import type { BriefItem, CaptureQueueItem, PersonTarget, QuickName, RuntimeConfig, SearchItem } from './contracts/capture';
 import { CameraCaptureModal, type CapturedSideMeta, type CardSide } from './components/CameraPreviewModal';
+import { RecoveryNotice } from './components/RecoveryNotice';
 import { StatusBadge } from './components/StatusBadge';
 import { MarkdownLite } from './components/MarkdownLite';
 import { ActionSection, ContactActions, PersonDocument } from './components/PersonDocument';
@@ -64,13 +65,22 @@ import {
   SELF_RELATION_CHIPS,
   toggleChipValue,
 } from './services/capture-context';
-import { buildLegacyNote, buildQueuedCapture, parseLegacyNote, restoredDraftOf } from './services/capture-item';
+import {
+  buildLegacyNote,
+  buildQueuedCapture,
+  captureFlowStateOf,
+  captureRecoveryOf,
+  parseLegacyNote,
+  restoredDraftOf,
+} from './services/capture-item';
 import { actionErrorMessage, briefListTitle, briefNameMap, briefTitle, elapsedMinutesOf } from './services/brief-view';
 import {
+  CAPTURE_STAGE_KEYS,
   captureAttentionOf,
   captureProgress,
   captureStageStats,
   lastUpdatedText,
+  stageIndexOf,
   syncCaptureStageTelemetry,
 } from './services/capture-progress';
 import { refreshCadenceMs } from './services/refresh-cadence';
@@ -1498,6 +1508,16 @@ function App() {
     // 서버가 "사람이 손대야 넘어간다"고 표시한 항목. 재시도로는 풀리지 않으므로 다시 처리 버튼과
     // 다른 행동을 준다 (ISS-000045: 알림 3종 중 `내용 확인`이 여는 자리).
     const attention = captureAttentionOf(item);
+    // 워처가 남긴 실패 영수증 (TSK-000531). `attention`이 "사람이 내용을 보완해야 한다"라면
+    // 이쪽은 "시스템이 같은 자리에서 반복해 멈췄다"다 — 사용자가 할 수 있는 일이 서로 다르다.
+    const recovery = captureRecoveryOf(item);
+    const flow = captureFlowStateOf({
+      status: item.status,
+      recovery,
+      elapsedMinutes: minutes,
+      // 지연 판정의 근거는 지어낸 임계값이 아니라 이 기기가 실제로 본 이 단계의 보통 범위다.
+      stageStat: stageStats[CAPTURE_STAGE_KEYS[stageIndexOf({ brief: item, queue: local })] ?? ''] ?? null,
+    });
     const title = briefTitle(item);
     // 목록에는 "이름 — 한 줄 요약"을 보여 준다 (founder 판정 2026-07-26: 전부 "이런 분이에요"라 구분이 안 됨).
     const listTitle = briefListTitle(item);
@@ -1515,7 +1535,9 @@ function App() {
           </div>
           {attention
             ? <span className="status-badge status-attention"><CircleAlert aria-hidden="true" size={13} strokeWidth={2.2} />확인 필요</span>
-            : <StatusBadge status={item.status} />}
+            : flow.state === 'recovery_required'
+              ? <span className="status-badge status-recovery"><LifeBuoy aria-hidden="true" size={13} strokeWidth={2.2} />복구 필요</span>
+              : <StatusBadge status={item.status} />}
           <ChevronRight className={expanded ? 'expanded' : ''} aria-hidden="true" size={17} />
         </button>
         {/* 사람이 손대야 넘어가는 항목. 단계 막대와 같은 문장을 두 번 찍지 않는다 — 여기는
@@ -1548,10 +1570,16 @@ function App() {
                 </li>
               ))}
             </ol>
+            {/* 표준 진행 문구가 말하지 않는 것만 한 줄 덧붙인다 — 일시 실패로 재시도가 예정돼 있거나,
+                이 기기가 실제로 본 보통 범위를 넘겼을 때. 지어낸 임계값은 쓰지 않는다. */}
+            {flow.note && <small className="int29-flow-note" role="status">{flow.note}</small>}
             {/* 예전에는 이 행동이 `progress.late`, 즉 경과 시간이 임의 기준을 넘었을 때만 나타났다.
                 그 기준은 관측이 아니라 지어낸 값이었고, 정작 사용자가 "멈춘 것 같다"고 느끼는
-                시점과 맞지도 않았다. 기다리는 동안에는 언제나 손이 닿게 둔다 (ISS-000050). */}
-            {!progress.done && (
+                시점과 맞지도 않았다. 기다리는 동안에는 언제나 손이 닿게 둔다 (ISS-000050).
+                단 하나의 예외가 `복구 필요`다: 워처가 같은 원인으로 예산을 두 번 소진한 receipt의
+                requeue를 더 받지 않으므로, 그 자리에 이 버튼을 두면 눌러도 아무 일도 일어나지
+                않는다 — founder가 실제로 겪은 그 상태다 (TSK-000531). 아래 복구 안내가 대신 선다. */}
+            {!progress.done && flow.canRequeue && (
               <div className="stage-actions">
                 {/* 접근 이름은 고정한다 — 보이는 글자가 진행에 따라 바뀌어도 낭독기·자동화가 같은 버튼을 계속 가리킨다. */}
                 <button
@@ -1565,6 +1593,11 @@ function App() {
               </div>
             )}
           </div>
+        )}
+        {/* 진행 소유권은 위의 단계 막대에 있다. 여기는 그 막대가 말할 수 없는 것 —
+            '왜 멈췄고 지금 무엇을 할 수 있나' — 만 말한다. */}
+        {recovery && flow.state === 'recovery_required' && (
+          <RecoveryNotice captureId={item.captureId} recovery={recovery} contactEmail="guecom90@gmail.com" />
         )}
         {expanded && (
           <div className="brief-detail">
