@@ -45,6 +45,15 @@
   box-shadow: var(--cc-elev-1);
 }
 
+/* 범위가 없어 막혔을 때 밖에 있는 제출 버튼이 손을 여기로 보낸다 (`focusResearchNotice`).
+   `:focus-visible`이 아니라 `:focus`로 잡는 이유: 마우스로 누른 제출 뒤에 오는 프로그램
+   포커스라 브라우저가 `:focus-visible`을 걸어 주지 않는다. 채운 면 위이므로 링은 잉크색이다 —
+   강조색 링을 강조색 면에 두면 보이지 않는다. */
+.research-scope-all:focus {
+  outline: 2px solid var(--cc-on-accent);
+  outline-offset: -4px;
+}
+
 /* 표식은 잉크만 쓴다. 채운 면 위에 반투명 흰 판을 하나 더 얹으면 라이트/다크 어느 쪽에서도
    토큰 밖의 색이 하나 생긴다 — 이 앱은 강조색을 한 곳에서만 정한다. */
 .research-scope-all-mark {
@@ -295,6 +304,19 @@
   text-decoration: underline;
 }
 
+/* 프로그램으로 준 포커스 (`focusResearchNotice`가 닫힘 막힘에서 이 칸으로 손을 보낸다).
+   마우스로 누른 제출 뒤에 오는 포커스라 브라우저가 `:focus-visible`을 걸어 주지 않는다 —
+   그러면 손이 옮겨졌는데 화면에는 아무 표시가 없다. 위 규칙과 **같은 목록에 묶지 않는다**:
+   `:has()`를 모르는 브라우저에서 목록 전체가 버려진다. */
+.research-depth-option:has(input:focus) {
+  outline: 2px solid rgb(var(--cc-accent));
+  outline-offset: 2px;
+}
+
+.research-depth-option input:focus ~ .research-depth-name {
+  text-decoration: underline;
+}
+
 /* 기다림은 눈금으로만 말한다. 칸 수는 `RESEARCH_WAIT_STEPS`와 같은 곳에서 나온다. */
 .research-depth-meter {
   display: inline-flex;
@@ -365,8 +387,10 @@
    점선은 "지금 거절당한 것이 아니라 앞으로의 조건"이라는 뜻이다. */
 .research-block[data-blocked="not-yet"] { border-style: dashed; }
 
-/* 밖에 있는 제출 버튼에서 손이 여기로 온다(`focusResearchNotice`). 프로그램으로 준 포커스는
-   `:focus-visible`이 안 걸리는 브라우저가 있어 `:focus`로 잡는다. */
+/* 손이 여기로 오는 것은 이제 **되돌아갈 곳이 없을 때뿐**이다 (INT-000036). 막히면
+   `focusResearchNotice`가 이유에 맞는 조작(범위 켜기 / 깊이 고르기)으로 보내고, 그 조작을
+   못 찾았을 때만 이 문단이 받는다 — 아무 일도 일어나지 않는 것보다는 읽히는 편이 낫다.
+   프로그램으로 준 포커스는 `:focus-visible`이 안 걸리는 브라우저가 있어 `:focus`로 잡는다. */
 .research-block:focus {
   outline: 2px solid var(--cc-warn);
   outline-offset: 2px;

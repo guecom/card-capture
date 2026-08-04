@@ -154,11 +154,13 @@ export function RefreshControl(props: RefreshControlProps): ReactElement {
   }, []);
 
   const notice = refreshNotice({ plan, failure: liveStatus, online, asked });
+  /* 진행은 이 줄에 내려오지 않는다 (INT-000036 통합 검수). `busy`를 넘겨줄 통로 자체를 없앴다 —
+     통로가 있으면 언젠가 다시 그리로 흘러 들어와 진행을 말하는 자리가 둘이 된다. 진행의 주인은
+     위 버튼의 `aria-busy`와 회전 하나뿐이고, 이 줄은 그동안에도 신선도·박자를 그대로 말한다. */
   const headline = refreshHeadlineText({
     plan,
     // 실패는 아래 안내가 소유한다. 같은 사실을 두 줄이 겹쳐 말하면 어느 쪽이 참인지 알 수 없다.
     status: notice ? null : liveStatus,
-    busy,
     lastSuccessAgoMs: props.lastSuccessAgoMs,
   });
   const sentence = refreshCadenceSentence(plan);
@@ -200,8 +202,12 @@ export function RefreshControl(props: RefreshControlProps): ReactElement {
           <RefreshCw className={busy ? 'int30-refresh-spin' : undefined} aria-hidden="true" size={16} />
         </button>
       </div>
+      {/* 진행을 색으로도 말하지 않는다. `is-busy` 강조가 여기 있던 동안, 글자가 `갱신 중`이
+          아니게 된 뒤에도 이 줄은 요청이 뜰 때마다 함께 파래졌다 — 그것도 진행을 말하는
+          두 번째 자리다. 남은 강조는 `data-reason="active"`(빠른 박자)뿐이고, 그것은 진행이
+          아니라 지금 걸려 있는 박자다. */}
       <span
-        className={`int30-refresh-line${busy ? ' is-busy' : ''}`}
+        className="int30-refresh-line"
         id={CADENCE_ID}
         data-reason={plan.reason}
         data-state={liveStatus?.state ?? 'idle'}

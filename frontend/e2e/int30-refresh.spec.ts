@@ -154,7 +154,6 @@ const autoSwitch = (page: Page): Locator => page.getByRole('switch', { name: '�
 const refreshNow = (page: Page): Locator => page.getByRole('button', { name: '최신 상태 확인' });
 const refreshLine = (page: Page): Locator => page.locator('.int30-refresh-line');
 const refreshNotice = (page: Page): Locator => page.locator('.int30-refresh-notice');
-const refreshHint = (page: Page): Locator => page.locator('.refresh-hint');
 const retryButton = (page: Page): Locator => refreshNotice(page).getByRole('button', { name: '다시 시도' });
 
 /**
@@ -349,7 +348,9 @@ test('회전과 aria-busy는 요청이 떠 있는 동안에만 있고, 끝나면
     await refreshNow(page).click();
     await expect(refreshNow(page)).toHaveAttribute('aria-busy', 'true');
     await expect(page.locator('.int30-refresh-spin')).toHaveCount(1);
-    await expect(refreshLine(page)).toHaveText('갱신 중');
+    /* 진행은 버튼만 말한다 (INT-000036). 이 줄은 그동안에도 박자를 그대로 말한다 —
+       마지막으로 받은 시점은 요청이 떠 있는 동안에도 여전히 참이다. */
+    await expect(refreshLine(page)).toContainText('20초마다');
     // 요청이 떠 있다는 것을 서버 쪽 사실로도 확인한다.
     expect(harness.listInFlight, '읽는 사이에 요청이 이미 끝났다 — 관측 창이 너무 좁다').toBeGreaterThan(0);
 
@@ -546,6 +547,7 @@ test('움직임을 끈 폰에서도 요청 중임을 알 수 있고, 아이콘�
   const harness = await boot(page, { active: false, reducedMotion: true });
   try {
     const idle = await refreshNow(page).evaluate((node) => getComputedStyle(node).backgroundColor);
+    const idleBorder = await refreshNow(page).evaluate((node) => getComputedStyle(node).borderTopColor);
     harness.delayList(3_000);
     await refreshNow(page).click();
     await expect(refreshNow(page)).toHaveAttribute('aria-busy', 'true');
@@ -567,8 +569,17 @@ test('움직임을 끈 폰에서도 요청 중임을 알 수 있고, 아이콘�
       .not.toBe(idle);
     expect(['none', 'matrix(1, 0, 0, 1, 0, 0)'], `아이콘이 비뚤어진 채 멈췄다: ${busy.transform}`)
       .toContain(busy.transform);
-    // 글자도 함께 말한다 — 색과 모양만으로 상태를 전달하지 않는다.
-    await expect(refreshLine(page)).toHaveText('갱신 중');
+    /* 예전에는 여기서 신선도 줄의 `갱신 중` 글자를 함께 봤다. 그 글자는 없어졌다 —
+       진행을 말하는 자리가 버튼과 그 줄 둘이었고, founder 승인안이 하나로 못 박았다
+       (INT-000036). 그래서 이 검사는 **남은 하나가 정말로 혼자 다 나르는지**를 잰다:
+       바탕 하나에만 기대지 않고 테두리도 함께 바뀌어야 하며(색 한 축이 안 보이는 사용자),
+       낭독기·자동화에는 `aria-busy`가 같은 사실을 글자 없이 나른다. */
+    expect(busy.borderColor, '진행 표시가 바탕색 한 축에만 걸려 있다 — 그 축이 안 보이면 알 방법이 없다')
+      .not.toBe(idleBorder);
+    await expect(refreshNow(page)).toHaveAttribute('aria-busy', 'true');
+    // 그리고 그 사실을 말하는 자리는 여전히 **하나**다. 줄은 박자를 그대로 말한다.
+    const line = ((await refreshLine(page).textContent()) ?? '').trim();
+    expect(line, `신선도 줄이 진행을 겹쳐 말한다: ${line}`).not.toMatch(/갱신 중|새로고침 중/);
   } finally {
     await stopServer(harness.server);
   }
@@ -642,7 +653,8 @@ test('수동 갱신은 위에서 내려오는 토스트를 만들지 않는다',
         await page.waitForTimeout(140);
       }
     };
-    await expect(refreshLine(page)).toHaveText('갱신 중');
+    // 요청이 떠 있는 창을 붙잡는 신호는 버튼의 `aria-busy`다 — 진행의 유일한 주인이다.
+    await expect(refreshNow(page)).toHaveAttribute('aria-busy', 'true');
     await sweep(8);
 
     // 성공은 토스트가 아니라 신선도 줄이 바뀌는 것으로 닫힌다.
@@ -752,46 +764,85 @@ test('연결이 없으면 새로고침이 헛돌지 않고 왜 못 하는지 말
   }
 });
 
+/* 예전에는 이 검사가 `명함 기록` 옆 두 번째 줄(`.refresh-hint`)이 live region을 들고 있지
+   않은지를 함께 봤다. 그 줄은 없어졌다 (INT-000036) — 상단 갱신 덩어리가 이미 같은 계획에서
+   같은 낱말로 말하는 셋(자동 켜짐/꺼짐 · 박자 · 마지막 성공)을 한 번 더 말할 뿐이었다.
+   검사는 약해지지 않는다. 오히려 **표면이 하나뿐이라는 사실 자체**를 여기서 잰다: 줄이
+   없어졌는지만 확인하고 끝내면, 누군가 다른 이름으로 같은 줄을 다시 세워도 통과한다. */
 test('갱신 사실을 낭독하는 live region은 하나뿐이다', async ({ page }) => {
   const harness = await boot(page, { active: false });
   try {
-    await expect(refreshHint(page)).toBeVisible();
+    await expect(refreshLine(page)).toBeVisible();
     const report = await page.evaluate(() => {
-      const hint = document.querySelector('.refresh-hint');
       const liveSelector = '[role="status"], [role="alert"], [aria-live]:not([aria-live="off"])';
+      const facts = /갱신|새로고침|초마다|업데이트/;
       const speaking = Array.from(document.querySelectorAll(liveSelector))
-        .filter((node) => /갱신|새로고침|초마다|자동 갱신|업데이트/.test(node.textContent ?? ''))
+        .filter((node) => facts.test(node.textContent ?? ''))
         .map((node) => `${node.className || node.tagName}: ${(node.textContent ?? '').trim().slice(0, 30)}`);
+      /* 갱신 사실을 말하는 표면을 **전부** 센다 — live region인지와 무관하게. 이것이 없으면
+         "두 번째 줄을 다시 세우되 role만 안 붙인다"가 그대로 통과한다. */
+      const stating = Array.from(document.querySelectorAll<HTMLElement>('body *'))
+        .filter((node) => {
+          const own = Array.from(node.childNodes)
+            .filter((child) => child.nodeType === 3)
+            .map((child) => child.textContent ?? '')
+            .join(' ');
+          return /자동 갱신 (켜짐|꺼짐)|초마다|자동 꺼짐|되면 확인|돌아오면 확인/.test(own);
+        })
+        .map((node) => `${node.className || node.tagName}: ${(node.textContent ?? '').trim().slice(0, 40)}`);
       return {
         cluster: document.querySelectorAll(`.int30-refresh ${liveSelector.split(', ').join(', .int30-refresh ')}`).length,
-        hintRole: hint?.getAttribute('role') ?? '',
-        hintLive: hint?.getAttribute('aria-live') ?? '',
+        hint: document.querySelectorAll('.refresh-hint').length,
         speaking,
+        stating,
       };
     });
     expect(report.cluster, '갱신 덩어리 안에 낭독 지점이 둘 이상이다').toBe(1);
-    expect(report.hintRole, '`명함 기록` 옆 줄이 live region이라 1초마다 낭독기가 끼어든다').toBe('');
-    expect(report.hintLive, '`명함 기록` 옆 줄이 aria-live를 들고 있다').toBe('');
+    expect(report.hint, '`명함 기록` 옆 갱신 줄이 되살아났다 — 상단 덩어리가 이미 같은 말을 한다').toBe(0);
     expect(report.speaking.length, `갱신 사실을 말하는 live region이 여럿이다: ${report.speaking.join(' / ')}`)
       .toBeLessThanOrEqual(1);
+    /* 박자·켜짐 상태를 말하는 자리는 상단 덩어리 안의 두 곳뿐이다: 짧은 신선도 줄과, 그 뜻을
+       풀어 주는 전문(`aria-describedby`로만 닿는다). 그 밖에 하나라도 생기면 두 번째 표면이다. */
+    expect(report.stating.length, `갱신 박자를 말하는 표면이 여럿이다: ${report.stating.join(' / ')}`)
+      .toBeLessThanOrEqual(2);
+    for (const surface of report.stating) {
+      expect(surface, `갱신 사실이 상단 갱신 덩어리 밖에서 나온다: ${surface}`).toMatch(/int30-refresh/);
+    }
   } finally {
     await stopServer(harness.server);
   }
 });
 
-test('진행 사실은 누른 버튼 옆 한 곳만 말하고, 나머지 줄은 박자를 그대로 유지한다', async ({ page }) => {
+/* 이 검사는 두 줄이 진행을 겹쳐 말하지 않는지를 봤다. 두 번째 줄이 없어졌으므로(INT-000036)
+   같은 뜻을 **남은 표면들** 위에서 다시 잰다 — 그리고 한 겹 더 조인다: 예전에는 신선도 줄이
+   진행 중에 `갱신 중`으로 바뀌었고, 그것이 버튼의 `aria-busy`와 함께 진행을 말하는 두 번째
+   자리였다. 이제 진행의 주인은 버튼 하나뿐이고, 신선도 줄은 요청이 떠 있는 동안에도 박자와
+   마지막 성공을 그대로 말한다 — 마지막으로 받은 시점은 요청 중에도 여전히 참이다. */
+test('요청이 떠 있는 동안 진행을 말하는 것은 버튼뿐이고, 신선도 줄은 박자를 그대로 유지한다', async ({ page }) => {
   const harness = await boot(page, { active: false });
   try {
-    await expect(refreshHint(page)).toContainText('20초마다');
+    await expect(refreshLine(page)).toContainText('20초마다');
     harness.delayList(2_500);
     await refreshNow(page).click();
-    await expect(refreshLine(page)).toHaveText('갱신 중');
 
-    const hint = ((await refreshHint(page).textContent()) ?? '').trim();
-    expect(hint, `아래 줄까지 진행을 겹쳐 말한다: ${hint}`).not.toMatch(/갱신 중|방금 업데이트|갱신 실패/);
-    // 겹쳐 말하지 않으면서도 **같은 박자**를 말한다 — 서로 다른 사실을 말하는 순간
-    // 어느 쪽이 참인지 알 방법이 없어진다 (통합 검수 2026-08-04에 실제로 있던 결함).
-    expect(hint, `두 줄이 다른 박자를 말한다: ${hint}`).toContain('20초마다');
+    // 진행의 주인: 누른 버튼 하나. 회전도 여기에만 있다.
+    await expect(refreshNow(page)).toHaveAttribute('aria-busy', 'true');
+    await expect(refreshNow(page).locator('.int30-refresh-spin')).toHaveCount(1);
+
+    const line = ((await refreshLine(page).textContent()) ?? '').trim();
+    expect(line, `신선도 줄까지 진행을 겹쳐 말한다: ${line}`).not.toMatch(/갱신 중|방금 업데이트|갱신 실패/);
+    expect(line, `요청이 떠 있다고 박자를 놓쳤다: ${line}`).toContain('20초마다');
+
+    // 진행 문구를 말하는 표면이 화면 어디에도 없다 — 색으로도 말하지 않는다.
+    const during = await page.evaluate(() => ({
+      busyText: Array.from(document.querySelectorAll<HTMLElement>('body *'))
+        .filter((node) => Array.from(node.childNodes).some((child) => child.nodeType === 3 && /갱신 중|새로고침 중/.test(child.textContent ?? '')))
+        .map((node) => node.className || node.tagName),
+      lineClass: document.querySelector('.int30-refresh-line')?.className ?? '',
+    }));
+    expect(during.busyText, `진행 문구를 말하는 표면이 남아 있다: ${during.busyText.join(' / ')}`).toEqual([]);
+    expect(during.lineClass, '신선도 줄이 진행 중 강조를 들고 있다 — 그것도 진행을 말하는 두 번째 자리다')
+      .not.toContain('is-busy');
   } finally {
     harness.delayList(0);
     await stopServer(harness.server);

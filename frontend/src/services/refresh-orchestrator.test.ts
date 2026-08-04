@@ -20,7 +20,6 @@ import {
   refreshCadenceText,
   refreshFailureTitle,
   refreshHeadlineText,
-  refreshIdleText,
   refreshNotice,
 } from './refresh-orchestrator';
 
@@ -287,49 +286,45 @@ describe('상태 기계와 승인 문구', () => {
   });
 });
 
-describe('idle 문구', () => {
-  it('다음 갱신 시각을 지어내지 않고 자동 갱신 여부와 마지막 성공만 말한다', () => {
-    expect(refreshIdleText({ autoRefreshOn: true, lastSuccessAgoMs: 1_000 })).toBe('자동 갱신 켜짐 · 방금');
-    expect(refreshIdleText({ autoRefreshOn: true, lastSuccessAgoMs: 12_000 })).toBe('자동 갱신 켜짐 · 12초 전');
-    expect(refreshIdleText({ autoRefreshOn: true, lastSuccessAgoMs: 5 * 60_000 })).toBe('자동 갱신 켜짐 · 5분 전');
-    expect(refreshIdleText({ autoRefreshOn: true })).toBe('자동 갱신 켜짐');
-    expect(refreshIdleText({ autoRefreshOn: false, lastSuccessAgoMs: 30_000 })).toBe('자동 갱신 꺼짐 · 30초 전');
+/* ── 갱신 사실을 조립하는 자리는 하나뿐이다 (INT-000036 통합 검수) ──
+ *
+ * 여기에는 `idle 문구` 묶음이 있었다. 그것이 재던 `refreshIdleText`는 `명함 기록` 옆 두 번째
+ * 줄(`.refresh-hint`)만 쓰던 조립 함수였고, 그 줄은 상단 갱신 덩어리가 **이미 같은 계획에서
+ * 같은 낱말로** 말하는 셋(자동 켜짐/꺼짐 · 박자 · 마지막 성공)을 한 번 더 말했다. 낭독기
+ * 기준으로는 기능 상태와 신선도가 매번 두 번씩 읽혔다. 줄을 없앴으므로 함수도 없앴다.
+ *
+ * 그 묶음이 지키던 뜻(박자를 지어내지 않는다 · 멈춘 이유를 말한다 · 없는 신선도를 만들지
+ * 않는다)은 사라지지 않았다. 아래 두 검사가 그것을 **남은 한 표면에서** 다시 잰다.
+ */
+describe('갱신 사실을 조립하는 자리', () => {
+  it('두 번째 조립 함수를 다시 만들지 않는다', async () => {
+    const orchestrator = await import('./refresh-orchestrator');
+    // 표면이 없어졌는데 조립 함수가 남아 있으면 다음 사람이 그 줄을 다시 세운다.
+    expect(Object.keys(orchestrator), '갱신 사실을 조립하는 두 번째 함수가 되살아났다')
+      .not.toContain('refreshIdleText');
   });
 
-  it('계획을 주면 지금 걸린 박자를 그대로 넣고, 멈춰 있으면 없는 박자를 말하지 않는다', () => {
-    const active = refreshCadencePlan({ items: [brief('received')] });
-    const idle = refreshCadencePlan({ items: [brief('processed')] });
-    const off = refreshCadencePlan({ items: [brief('received')], autoRefreshOn: false });
-
-    expect(refreshIdleText({ autoRefreshOn: true, lastSuccessAgoMs: 1_000, cadence: active }))
-      .toBe('자동 갱신 켜짐 · 4초마다 · 방금');
-    expect(refreshIdleText({ autoRefreshOn: true, lastSuccessAgoMs: 1_000, cadence: idle }))
-      .toBe('자동 갱신 켜짐 · 20초마다 · 방금');
-    // 꺼진 상태에서 "20초마다"라고 말하면 그것이 곧 지켜지지 않는 약속이다.
-    expect(refreshIdleText({ autoRefreshOn: false, lastSuccessAgoMs: 1_000, cadence: off }))
-      .toBe('자동 갱신 꺼짐 · 방금');
-  });
-
-  /* 통합 검수 2026-08-04: 두 표면이 같은 사실을 다른 말로 하던 자리.
-     미연결 PC에서 상단은 `연결되면 확인`인데 이 줄은 `자동 갱신 켜짐`만 남아 서로 모순되게
-     읽혔다 — 하나는 "지금 안 본다", 다른 하나는 "켜져 있다". 이제 가운데 조각이 상단 바가 쓰는
-     `refreshCadenceText`의 파생이라, 두 곳이 각자 문장을 만드는 일 자체가 없다.
-     DEC-000092 §2의 뜻은 그대로다: 이 자리는 원래도 "지금 걸려 있는 박자"를 말하는 자리이고,
-     박자가 없을 때 왜 없는지를 말하는 것이 그 자리를 비우는 것보다 정직하다. */
-  it('멈춘 이유를 상단 바와 똑같은 말로 말한다', () => {
+  /* 없어진 줄이 말하던 것 중 **남은 표면이 이어받아야 하는 것**: 지금 걸려 있는 박자와,
+     박자가 멈췄을 때 왜 멈췄는지. 기능 상태(자동 켜짐/꺼짐)는 이어받지 않는다 — 그것은
+     스위치가 모양으로 말하고, 글자로 한 번 더 쓰면 다시 두 번 읽힌다. */
+  it('없어진 줄이 말하던 박자와 멈춤 이유를 남은 한 줄이 그대로 말한다', () => {
     const cases: { plan: RefreshCadencePlan; line: string }[] = [
-      { plan: refreshCadencePlan({ items: [brief('processed')], configured: false }), line: '자동 갱신 켜짐 · 연결되면 확인' },
-      { plan: refreshCadencePlan({ items: [brief('processed')], hidden: true }), line: '자동 갱신 켜짐 · 돌아오면 확인' },
+      { plan: refreshCadencePlan({ items: [brief('received')] }), line: '방금 · 4초마다' },
+      { plan: refreshCadencePlan({ items: [brief('processed')] }), line: '방금 · 20초마다' },
+      { plan: refreshCadencePlan({ items: [brief('processed')], configured: false }), line: '방금 · 연결되면 확인' },
+      { plan: refreshCadencePlan({ items: [brief('processed')], hidden: true }), line: '방금 · 돌아오면 확인' },
+      { plan: refreshCadencePlan({ items: [brief('received')], autoRefreshOn: false }), line: '방금 · 자동 꺼짐' },
     ];
     for (const { plan, line } of cases) {
-      expect(refreshIdleText({ autoRefreshOn: true, cadence: plan })).toBe(line);
-      // 상단 바가 쓰는 조각이 이 줄 안에 **글자 그대로** 들어 있다.
-      expect(refreshIdleText({ autoRefreshOn: true, cadence: plan })).toContain(refreshCadenceText(plan));
+      expect(refreshHeadlineText({ plan, lastSuccessAgoMs: 1_000 })).toBe(line);
+      // 박자 조각은 언제나 같은 함수의 파생이다 — 두 곳이 각자 문장을 만들 자리가 없다.
+      expect(refreshHeadlineText({ plan, lastSuccessAgoMs: 1_000 })).toContain(refreshCadenceText(plan));
     }
-    // 사용자가 직접 끈 상태만 예외다 — 머리말이 이미 `자동 갱신 꺼짐`이라 같은 말을 두 번 쓰지 않는다.
-    const off = refreshCadencePlan({ items: [brief('received')], autoRefreshOn: false });
-    expect(refreshIdleText({ autoRefreshOn: false, cadence: off })).toBe('자동 갱신 꺼짐');
-    expect(refreshCadenceText(off)).toBe('자동 꺼짐');
+    // 기능 상태는 이 줄의 일이 아니다. 스위치가 소유한다.
+    for (const { plan } of cases) {
+      expect(refreshHeadlineText({ plan, lastSuccessAgoMs: 1_000 }), '신선도 줄이 기능 상태까지 겹쳐 말한다')
+        .not.toMatch(/자동 갱신 (켜짐|꺼짐)/);
+    }
   });
 });
 
@@ -377,8 +372,16 @@ describe('갱신 박자 문구', () => {
     expect(refreshHeadlineText({ plan: idle, lastSuccessAgoMs: 12_000 })).toBe('12초 전 · 20초마다');
     // 아직 한 번도 못 받았으면 없는 신선도를 지어내지 않는다.
     expect(refreshHeadlineText({ plan: idle, lastSuccessAgoMs: null })).toBe('20초마다');
-    // 요청이 실제로 떠 있는 동안에만 작업 상태가 이 줄을 차지한다.
-    expect(refreshHeadlineText({ plan: idle, lastSuccessAgoMs: 3_000, busy: true })).toBe(REFRESH_BUSY_TEXT);
+    /* 진행은 이 줄의 일이 아니다 (INT-000036). 요청이 실제로 떠 있어도 이 줄은 신선도·박자를
+       그대로 말한다 — 마지막으로 받은 시점은 요청이 떠 있는 동안에도 여전히 참이고, 진행을
+       말하는 자리는 `aria-busy`를 든 버튼 하나뿐이다. 이 줄까지 `갱신 중`으로 바뀌면 낭독기가
+       같은 사실을 두 번 읽는다. */
+    expect(refreshHeadlineText({
+      plan: idle,
+      lastSuccessAgoMs: 3_000,
+      status: { state: 'in-flight', text: REFRESH_BUSY_TEXT, label: REFRESH_BUSY_LABEL, busy: true, role: null, generation: 1, failureStreak: 0 },
+    }), '요청이 떠 있다고 신선도 줄이 진행을 말한다').toBe('방금 · 20초마다');
+    // 결말은 여전히 이 줄이 말한다. 그것은 진행이 아니라 영수증이다.
     expect(refreshHeadlineText({
       plan: idle,
       lastSuccessAgoMs: 3_000,

@@ -44,7 +44,7 @@ export type RefreshTrigger = 'auto' | 'priority';
 
 export interface RefreshStatus {
   state: RefreshState;
-  /** 화면에 그대로 쓰는 문구. `idle`에서는 빈 문자열이고 호출자가 `refreshIdleText`를 쓴다. */
+  /** 화면에 그대로 쓰는 문구. `idle`에서는 빈 문자열이고 호출자가 신선도 줄을 대신 그린다. */
   text: string;
   /** 버튼 접근 이름 */
   label: string;
@@ -242,36 +242,22 @@ export function refreshAgoText(ago?: number | null): string {
   return `${Math.floor(ago / 3_600_000)}시간 전`;
 }
 
-/**
- * 목록 구획에 쓰는 한 줄 (DEC-000092 §2).
- * 다음 갱신 **시각**은 지어내지 않는다 — 켜짐/꺼짐, 지금 걸려 있는 박자, 마지막 성공만 말한다.
- * `cadence`를 주면 그 계획의 실제 간격을 그대로 읽어 넣는다.
+/*
+ * ── `refreshIdleText`가 사라진 자리 (통합 검수 2026-08-04 / INT-000036)
  *
- * ── 박자 조각이 `refreshCadenceText`에서 오는 이유 (통합 검수 2026-08-04)
- * 예전에는 이 함수가 박자 문구를 **직접 조립**했고, 멈춰 있는 계획에서는 그 조각을 통째로
- * 지웠다. 그래서 미연결 PC에서 상단은 `연결되면 확인`인데 이 줄은 `자동 갱신 켜짐`만 남아,
- * 두 표면이 같은 사실을 서로 모순되게 말했다 — 하나는 "지금 안 본다", 다른 하나는 "켜져 있다".
+ * 여기에는 `명함 기록` 구획 옆 한 줄(`.refresh-hint`)이 쓰던 조립 함수가 있었다. 그 줄은
+ * 자동 켜짐/꺼짐 · 지금 걸려 있는 박자 · 마지막 성공을 말했다 — 상단 바가 이미 말하는
+ * **바로 그 세 가지**를.
  *
- * 두 곳이 각자 문장을 만드는 한 이런 어긋남은 다시 생긴다. 그래서 이 줄의 가운데 조각은
- * 상단 바가 쓰는 것과 **같은 함수의 파생**이다. 뜻은 그대로다: 이 자리는 원래도
- * "지금 걸려 있는 박자"를 말하는 자리였고, 박자가 없을 때 왜 없는지를 말하는 것이
- * 그 자리를 비우는 것보다 정직하다.
+ * 두 줄이 어긋나던 동안에는 그것이 "같은 말을 하게 맞추는" 문제로 보였고, 실제로 박자 조각을
+ * `refreshCadenceText`의 파생으로 바꿔 맞췄다. 맞추고 나니 남은 것이 드러났다: 같은 계획에서
+ * 같은 낱말로 같은 사실을 말하는 두 번째 줄에는 **자기 일이 없다**. 낭독기 기준으로는 기능
+ * 상태와 신선도가 매번 두 번씩 읽히는 것이 전부였다.
  *
- * `off`만 빼는 이유: 그때 `refreshCadenceText`는 `자동 꺼짐`을 돌려주는데 머리말이 이미
- * `자동 갱신 꺼짐`이다. 같은 사실을 한 줄에 두 번 쓰지 않는다.
+ * 그래서 줄을 지웠고, 그 줄만 쓰던 이 함수도 함께 지웠다. 표면이 없어졌는데 조립 함수를
+ * 남겨 두면 다음 사람이 "쓸 데가 있으니 있겠지" 하고 두 번째 표면을 다시 세운다.
+ * 갱신 사실의 주인은 이제 상단 갱신 덩어리 하나뿐이다 (`refreshHeadlineText`).
  */
-export function refreshIdleText(input: {
-  autoRefreshOn: boolean;
-  lastSuccessAgoMs?: number | null;
-  cadence?: RefreshCadencePlan | null;
-}): string {
-  const since = refreshAgoText(input.lastSuccessAgoMs);
-  const head = input.autoRefreshOn ? '자동 갱신 켜짐' : '자동 갱신 꺼짐';
-  const beat = input.cadence && input.autoRefreshOn && input.cadence.reason !== 'off'
-    ? refreshCadenceText(input.cadence)
-    : '';
-  return [head, beat, since].filter(Boolean).join(' · ');
-}
 
 export type RefreshCadenceReason = 'active' | 'idle' | 'hidden' | 'disconnected' | 'off';
 
@@ -341,19 +327,26 @@ export function refreshCadenceSentence(plan: RefreshCadencePlan): string {
  *
  * 세 가지 사실을 **한 기호에 합치지 않기 위한** 마지막 조립 지점이다.
  *   - 기능 상태(자동 켜짐/꺼짐)는 스위치가 스스로 말한다.
- *   - 작업 상태(요청 중)는 `busy`가 소유한다 — 회전과 `aria-busy`도 이것만 따른다.
- *   - 이 줄은 신선도와 박자다. 다만 요청이 실제로 떠 있거나 방금 영수증이 나온 순간에는
- *     그것이 더 급한 사실이므로 잠깐 자리를 내준다. 애매한 기호가 아니라 **글자**라서
- *     무엇을 말하는지 헷갈릴 여지가 없다.
+ *   - 작업 상태(요청 중)는 **버튼 하나가 통째로 소유한다** — 회전과 `aria-busy`가 전부다.
+ *   - 이 줄은 신선도와 박자다. 요청이 떠 있는 동안에도 자리를 내주지 않는다.
+ *
+ * ── 진행 문구가 이 줄에서 빠진 이유 (통합 검수 2026-08-04 / INT-000036)
+ * 예전에는 요청이 떠 있는 동안 이 줄이 `갱신 중`으로 바뀌었다. 계약상으로는 "한 번에 한
+ * 사실"이었지만, 화면에는 그 순간 **진행을 말하는 자리가 둘**이었다 — `aria-busy`를 든 버튼과
+ * 이 줄. 낭독기 사용자는 같은 사실을 두 번 듣고, 눈으로 보는 사람은 어느 쪽이 주인인지 알
+ * 방법이 없다. 자리를 내주는 것 자체가 중복이었다.
+ *
+ * 그래서 진행은 버튼만 말한다. **결말은 여전히 이 줄이 말한다** (`방금 업데이트`·`갱신 실패`) —
+ * 그것은 진행이 아니라 영수증이고, 성공을 닫는 유일한 표면이 이 줄이기 때문이다.
+ * `in-flight`가 여기 내려오면 신선도·박자가 그대로 서 있는다: 마지막으로 받은 시점은 요청이
+ * 떠 있는 동안에도 여전히 참이다.
  */
 export function refreshHeadlineText(input: {
   plan: RefreshCadencePlan;
   status?: RefreshStatus | null;
   lastSuccessAgoMs?: number | null;
-  busy?: boolean;
 }): string {
   const state = input.status?.state;
-  if (input.busy === true || state === 'in-flight') return REFRESH_BUSY_TEXT;
   if (state === 'success') return REFRESH_SUCCESS_TEXT;
   if (state === 'failure') return REFRESH_FAILURE_SHORT_TEXT;
   const beat = refreshCadenceText(input.plan);

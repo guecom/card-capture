@@ -102,7 +102,6 @@ import {
   createRefreshLoop,
   createRefreshOrchestrator,
   refreshCadencePlan,
-  refreshIdleText,
   type RefreshStatus,
 } from './services/refresh-orchestrator';
 import { RefreshControl } from './components/RefreshControl';
@@ -1061,22 +1060,18 @@ function App() {
     }));
   }, [feed, hasMoreBriefs, loadMoreBriefs, loading, loadingMore, refreshedAt]);
 
-  /* 갱신 상태 한 줄. 예전에는 `N초 뒤 자동 새로고침` 카운트다운이었는데, 그 숫자는 **지켜지지
-     않는 약속**이었다 — 탭이 가려지면 타이머가 멈추고, 요청이 늦으면 0에서 머문다. 남은 시간을
-     지어내지 않고 지금 아는 사실만 말한다: 자동 갱신이 켜져 있다는 것과 마지막으로 언제 받았는지.
-     요청이 실제로 오가는 중일 때만 `갱신 중`, 끝나면 `방금 업데이트`/`갱신 실패 · 다시 시도`.
-     (ISS-000050 · DEC-000092: 가짜 정밀 ETA 금지) */
+  /* 마지막 성공에서 지난 시간. 상단 갱신 덩어리 하나가 이 값을 받아 신선도를 말한다.
+     남은 시간을 지어내지 않는다 — 예전의 `N초 뒤 자동 새로고침` 카운트다운은 탭이 가려지면
+     멈추고 요청이 늦으면 0에서 머무는, 지켜지지 않는 약속이었다
+     (ISS-000050 · DEC-000092: 가짜 정밀 ETA 금지).
+
+     ── `명함 기록` 옆 두 번째 줄이 사라진 이유 (INT-000036 통합 검수)
+     여기에는 `.refresh-hint` 한 줄을 조립하는 계산이 있었다. 그 줄은 자동 켜짐/꺼짐 · 지금
+     걸린 박자 · 마지막 성공을 말했는데, 상단 갱신 덩어리가 **이미 같은 계획에서 같은 낱말로**
+     그 셋을 말한다. 두 줄이 어긋나던 동안에는 "맞추는" 문제로 보였지만, 맞추고 나니 남은 것은
+     낭독기가 기능 상태와 신선도를 매번 두 번씩 읽는 것뿐이었다. 겹치는 줄을 없애면 어긋날
+     방법도, 두 번 읽힐 방법도 없어진다. */
   const lastRefreshAgoMs = refreshedAt === null ? null : clockTick - refreshedAt;
-  /* 이 줄은 **주변 사실만** 말한다: 자동 켜짐/꺼짐 · 지금 걸린 박자 · 마지막 성공.
-     진행·성공·실패는 누른 버튼 옆 한 곳(`RefreshControl`)이 소유한다 (TSK-000559).
-     예전에는 여기서도 `refreshStatus.text`를 그대로 썼는데, 그러면 같은 사실을 두 자리가
-     말하게 되고 실제로 어긋났다 — 자동 폴링 동안 위는 `갱신 중`, 아래는 `자동 갱신 켜짐 ·
-     20초마다`였다. 겹쳐 말할 곳을 없애면 어긋날 방법도 없어진다. */
-  const autoRefreshHint = refreshIdleText({
-    autoRefreshOn,
-    lastSuccessAgoMs: lastRefreshAgoMs,
-    cadence: refreshPlan,
-  });
 
   // 지금 올리고 있는 촬영의 표시 이름. 없으면 빈 문자열이다.
   const sendingItem = useMemo(
@@ -2255,10 +2250,9 @@ function App() {
           </button>
           {/* 이 구획의 진실만 쓴다. 지금 올리는 촬영이 있을 때만, 그리고 그것이 무엇인지 이름을 붙여서. */}
           {sendingId && <span className="sending-note" role="status">{sendingName || '명함'} 전송 중…</span>}
-          {/* live region이 아니다. 이 문구는 1초 tick으로 `N초 전`이 계속 바뀌므로 `role="status"`를
-              달면 낭독기가 매초 끼어들어 다른 것을 아무것도 읽을 수 없다 (TSK-000559).
-              갱신을 낭독하는 지점은 상단 갱신 덩어리 안의 하나뿐이다. */}
-          <span className="refresh-hint">{autoRefreshHint}</span>
+          {/* 갱신 사실(자동 켜짐/꺼짐 · 박자 · 마지막 성공)은 여기 없다. 상단 갱신 덩어리가
+              통째로 소유한다 — 같은 계획에서 같은 낱말로 같은 것을 말하는 두 번째 줄에는
+              자기 일이 없고, 낭독기에는 매번 두 번 읽히는 소음만 남는다 (INT-000036). */}
         </div>
         {/* 연결 안내는 실제로 막힌 것(서버 전송) 옆에 붙는다. 위 촬영 카드는 연결 없이도
             전부 동작하므로 그 위에는 아무것도 얹지 않는다. */}

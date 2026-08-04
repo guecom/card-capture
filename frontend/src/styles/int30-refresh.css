@@ -204,7 +204,8 @@
   white-space: nowrap;
 }
 
-.int30-refresh-line.is-busy,
+/* 강조는 **박자**에만 붙는다. 진행 중 강조(`.is-busy`)가 여기 있었는데, 그것은 버튼이 이미
+   소유한 사실을 이 줄이 색으로 한 번 더 말하는 것이었다 (INT-000036 통합 검수). */
 .int30-refresh-line[data-reason="active"] {
   color: var(--cc-blue-ink);
 }

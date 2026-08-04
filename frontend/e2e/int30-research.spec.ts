@@ -380,7 +380,10 @@ test('세 깊이가 서버에서 서로 다른 요청이 된다', async ({ page 
 /** 세 라디오가 DOM에 **처음 나타난 순간**의 상태를 붙잡는다. 나중에 고쳐진 것으로 속지 않는다. */
 async function watchDepthFirstPaint(page: Page): Promise<void> {
   await page.addInitScript(() => {
-    interface FirstPaintRow { depth: string; disabled: boolean; unavailable: string | null }
+    /* `unavailable`과 `intake`를 **둘 다** 붙잡는다. 앞의 것은 이 칸이 꺼져 있던 시절의 표식이고
+       (지금은 어느 상태에서도 다시 나타나면 안 된다), 뒤의 것은 접수가 닫혔다는 지금의 표식이다.
+       한쪽만 재면 이름만 바꾸고 뜻은 그대로 둔 회귀를 못 잡는다. */
+    interface FirstPaintRow { depth: string; disabled: boolean; unavailable: string | null; intake: string | null }
     (window as unknown as { __depthFirstPaint?: FirstPaintRow[] | null }).__depthFirstPaint = null;
     const holder = window as unknown as { __depthFirstPaint?: FirstPaintRow[] | null };
     // 프레임마다 들여다본다. `MutationObserver`는 init script 시점에 `documentElement`가 아직
@@ -393,6 +396,7 @@ async function watchDepthFirstPaint(page: Page): Promise<void> {
           depth: String(node.value),
           disabled: node.disabled,
           unavailable: node.closest('.research-depth-option')?.getAttribute('data-unavailable') ?? null,
+          intake: node.closest('.research-depth-option')?.getAttribute('data-intake') ?? null,
         }));
         return;
       }
@@ -432,9 +436,9 @@ test('서버가 아직 대답하지 않은 첫 프레임에서 세 깊이가 모
     const painted = await readDepthFirstPaint(page);
     expect(painted, '세 깊이가 함께 나타난 프레임을 못 잡았다').not.toBeNull();
     expect(painted, `첫 render에서 고를 수 없는 깊이가 있다: ${JSON.stringify(painted)}`).toEqual([
-      { depth: 'quick', disabled: false, unavailable: null },
-      { depth: 'standard', disabled: false, unavailable: null },
-      { depth: 'deep', disabled: false, unavailable: null },
+      { depth: 'quick', disabled: false, unavailable: null, intake: null },
+      { depth: 'standard', disabled: false, unavailable: null, intake: null },
+      { depth: 'deep', disabled: false, unavailable: null, intake: null },
     ]);
 
     // 2. 그동안 목록 응답은 **아직 도착하지 않았다**. 이 사실이 없으면 위 판정은 아무것도 증명하지 못한다.
@@ -479,9 +483,9 @@ test('연결되지 않은 기기에서도 깊이를 고르고 요청을 준비�
     const scope = composer(page);
     await expect(scope).toBeVisible();
     expect(await readDepthFirstPaint(page)).toEqual([
-      { depth: 'quick', disabled: false, unavailable: null },
-      { depth: 'standard', disabled: false, unavailable: null },
-      { depth: 'deep', disabled: false, unavailable: null },
+      { depth: 'quick', disabled: false, unavailable: null, intake: null },
+      { depth: 'standard', disabled: false, unavailable: null, intake: null },
+      { depth: 'deep', disabled: false, unavailable: null, intake: null },
     ]);
 
     // 고르고, 범위를 켜고, 글을 적는 데까지 서버가 필요하지 않다.
@@ -514,6 +518,26 @@ test('서버가 닫혔다고 말해도 깊은 조사는 고를 수 있고, 막�
     await expect(depthInput(scope, 'quick')).toBeEnabled();
     await expect(depthInput(scope, 'standard')).toBeEnabled();
     await expect(scope.locator('.research-depth')).toHaveAttribute('data-deep-state', 'closed');
+
+    /* DOM이 화면과 **같은 말**을 하는가 (INT-000036 통합 검수).
+       이 칸은 `data-unavailable="yes"`를 들고 있었다 — 이 저장소에서 그 이름은 "이 조작을 쓸 수
+       없다"는 뜻이고(`CaptureEntry`의 카메라 없는 카드가 그 이름을 쓴다), 이 칸이 실제로 꺼져
+       있던 시절의 표식이다. 사람에게는 "고를 수 있다"고 하면서 기계에게는 "쓸 수 없다"고 하는
+       상태였고, 독립 게이트가 `enabled=true` 인데 `why=data-unavailable`로 그것을 잡아냈다.
+       이제 표식이 말하는 것은 **접수**가 닫혔다는 사실이다 — 막힌 자리가 선택이 아니라 접수라는
+       것이 이름에도 그대로 있다. */
+    await expect(depthOption(scope, 'deep')).toHaveAttribute('data-intake', 'closed');
+    for (const depth of ['quick', 'standard', 'deep'] as const) {
+      expect(
+        await depthOption(scope, depth).getAttribute('data-unavailable'),
+        `\`${depth}\` 칸이 고를 수 있는데도 "쓸 수 없다"고 표시돼 있다`,
+      ).toBeNull();
+      await expect(depthOption(scope, depth)).not.toHaveAttribute('aria-disabled', 'true');
+    }
+    // 닫히지 않은 두 칸에는 접수 표식도 없다.
+    for (const depth of ['quick', 'standard'] as const) {
+      expect(await depthOption(scope, depth).getAttribute('data-intake')).toBeNull();
+    }
 
     // 고르지 않은 동안에도 지금의 사실이 **글자로** 서 있다 — 색으로만 말하지 않는다.
     // 그리고 "못 골라요"가 아니다: 고르는 것은 되고, 안 되는 것은 접수다.
@@ -548,6 +572,72 @@ test('서버가 닫혔다고 말해도 깊은 조사는 고를 수 있고, 막�
     for (const word of ['잠시', '확인 중', '연결 중', '준비 중', '나중에', '곧']) {
       expect((await scope.locator('.research-depth').innerText()).includes(word), `닫힘을 지연처럼 말한다: ${word}`).toBe(false);
     }
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+// ── 막혔을 때 손이 가는 곳은 이유마다 다르다 (INT-000036 / TSK-000562) ──────────
+//
+// 승인된 acceptance: 「깊은 조사 목적 1개 이상은 mode 선택이 아니라 제출 validation이 검사하고,
+// 실패 시 **목적 영역으로 focus**와 inline 안내를 제공한다.」
+//
+// 예전에는 두 막힘 모두 안내 **문단**으로 손이 갔다. 문단은 읽히지만 다음 키 입력으로 할 수 있는
+// 것이 없다 — 막다른 곳이다. 그리고 두 막힘을 한 곳으로 몰면 그중 하나는 반드시 거짓말이 된다:
+// 서버가 닫아 둔 상태에서 범위 영역으로 데려가면, 사용자는 범위를 다 골라 놓고 여전히 못 보낸다.
+//
+// 그래서 **풀 수 있는 자리**로 나눠 보낸다. 아래는 그중 닫힘 쪽이다 (범위 쪽은
+// `int36-surfaces.spec.ts`가 독립적으로 잰다).
+
+/** 지금 포커스가 어디에 있는가. shadow DOM을 뚫고 가장 안쪽 활성 요소를 찾는다. */
+async function focusedTrail(page: Page): Promise<{ tag: string; value: string; inDepth: boolean; inScopes: boolean; describedBy: string }> {
+  return page.evaluate(() => {
+    let active: Element | null = document.activeElement;
+    while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+    return {
+      tag: active ? active.tagName.toLowerCase() : '(없음)',
+      value: active?.getAttribute('value') ?? '',
+      inDepth: Boolean(active?.closest('.research-depth')),
+      inScopes: Boolean(active?.closest('.research-scopes')),
+      describedBy: active?.getAttribute('aria-describedby') ?? '',
+    };
+  });
+}
+
+test('서버가 닫아 둔 막힘에서는 손이 범위가 아니라 깊이로 간다', async ({ page }) => {
+  const harness = await boot(page, { deepOpen: false });
+  try {
+    await openPersonSheet(page);
+    const sheet = page.locator('ion-modal.person-action-modal');
+    const scope = sheet.locator('.ai-surface.research-request');
+    // 올라오는 시트 위의 요소는 `not stable`이라 클릭을 못 받는다. 전환이 끝난 뒤에 손을 댄다.
+    await page.waitForTimeout(700);
+    await depthOption(scope, 'deep').click();
+    await scope.locator('ion-textarea textarea').fill('의사결정 권한을 확인해 주세요');
+    // 범위를 **다 골라 놓아도** 닫힘은 풀리지 않는다. 그래서 범위 영역은 갈 곳이 아니다.
+    await scope.locator('.research-scope-all').click();
+
+    const submit = sheet.locator('.person-action-submit ion-button');
+    await expect(submit).toHaveAttribute('data-blocked', 'research');
+    await submit.click();
+    await page.waitForTimeout(300);
+
+    const focused = await focusedTrail(page);
+    expect(focused.inDepth, `닫힘으로 막혔는데 손이 깊이 자리로 가지 않았다: ${JSON.stringify(focused)}`).toBe(true);
+    expect(focused.inScopes, '범위를 골라도 풀리지 않는 막힘인데 손이 범위 영역으로 갔다').toBe(false);
+    // 그 자리에서 화살표로 다른 깊이를 고를 수 있어야 실제로 풀 수 있는 자리다.
+    expect(focused.tag, `포커스가 라디오가 아니다: ${JSON.stringify(focused)}`).toBe('input');
+    expect(focused.value).toBe('deep');
+    // 이유는 함께 읽힌다 — 손만 옮기고 왜 막혔는지 말하지 않으면 안내가 아니다.
+    const blockId = await scope.locator('.research-block').getAttribute('id');
+    expect(blockId).toBeTruthy();
+    expect(focused.describedBy.split(/\s+/), '포커스가 닿은 자리가 막힘 이유와 이어져 있지 않다')
+      .toContain(blockId!);
+    await expect(scope.locator('.research-block')).toBeVisible();
+
+    await page.keyboard.press('ArrowLeft');
+    await expect(depthInput(scope, 'standard'), '깊이 자리에 섰는데 화살표로 다른 깊이를 못 고른다').toBeChecked();
+    await expect(submit).toHaveAttribute('data-blocked', 'no');
   } finally {
     await stopServer(harness.server);
   }

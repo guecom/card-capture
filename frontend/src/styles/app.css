@@ -645,7 +645,8 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(var(--cc-accent)
 .stage-dots li.stage-failed { color: var(--cc-danger); font-weight: 700; }
 .stage-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .stage-actions button, .stage-actions a { display: inline-flex; align-items: center; gap: 5px; padding: 7px 11px; border: 0; border-radius: var(--cc-r-sm); background: var(--cc-solid); color: var(--cc-blue); font-size: 10.5px; font-weight: 700; text-decoration: none; }
-.refresh-hint { margin-left: auto; color: var(--cc-muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+/* `.refresh-hint`는 없다 (INT-000036). `명함 기록` 옆에서 상단 갱신 덩어리와 같은 사실을
+   반복하던 줄이라 표면째로 걷어냈다. 규칙이 남아 있으면 다음 사람이 그 줄을 다시 세운다. */
 
 /* ── AI가 맡은 일의 공통 표면 (INT-000015) ──
    일반 입력 박스와 구분되는 배경·테두리 + sparkle 표식 + 권한 배지 + 실제 단계 막대.
