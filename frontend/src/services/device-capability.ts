@@ -81,6 +81,38 @@ export function detectFormFactor(view: Pick<Window, 'matchMedia'> | undefined = 
   }
 }
 
+/**
+ * `<input type="file">`이 실제로 있는가 (INT-000036).
+ *
+ * 예전 판정은 `FileReader가 있는가`였다. 그것은 **고른 뒤에 읽을 수 있는가**를 볼 뿐,
+ * 고르는 칸이 있는지는 보지 않는다. 지금은 카드를 누르는 그 제스처가 곧바로 이 칸을 여는
+ * 구조라 (`components/CaptureIntake.tsx`), 칸이 없으면 카드는 누를 수 있는데 아무 일도 일어나지
+ * 않는다 — 이 표면에서 가장 나쁜 종류의 실패다.
+ *
+ * 그래서 칸을 하나 만들어 `type`을 되읽는다. 브라우저가 `file`을 모르면 명세대로 `text`로
+ * 되돌아가므로, 추측이 아니라 관측이 된다. 읽는 쪽(`FileReader`)도 함께 있어야 한 바퀴가 돈다.
+ */
+export interface FileInputProbe {
+  createElement(tagName: 'input'): { type: string };
+}
+
+export function detectFileInput(
+  probe: FileInputProbe | undefined = typeof document === 'undefined' ? undefined : document,
+  canRead: boolean = typeof FileReader !== 'undefined' || typeof createImageBitmap === 'function',
+): boolean {
+  // 고를 수 있어도 읽지 못하면 한 바퀴가 돌지 않는다.
+  if (!canRead) return false;
+  // 문서가 없는 환경(SSR·단위 시험)에서는 칸을 만들어 볼 수 없다. 그때는 읽을 수 있다는 사실만 남는다.
+  if (!probe) return true;
+  try {
+    const input = probe.createElement('input');
+    input.type = 'file';
+    return input.type === 'file';
+  } catch {
+    return false;
+  }
+}
+
 /** 지금 당장 알 수 있는 것만 담은 스냅샷. 비동기 조회 없이 즉시 반환한다. */
 export function readDeviceEnvironment(): DeviceEnvironment {
   const nav = typeof navigator === 'undefined' ? undefined : navigator;
@@ -89,7 +121,7 @@ export function readDeviceEnvironment(): DeviceEnvironment {
     formFactor: detectFormFactor(),
     secureContext,
     hasGetUserMedia: Boolean(nav?.mediaDevices?.getUserMedia) && secureContext,
-    hasFileInput: typeof FileReader !== 'undefined' || typeof createImageBitmap === 'function',
+    hasFileInput: detectFileInput(),
     cameraPermission: 'unknown',
     videoInputs: 'unknown',
     lastCameraFailure: null,
@@ -226,14 +258,52 @@ function cameraCopy(env: DeviceEnvironment): { title: string; description: strin
  */
 const PERMISSION_PROMPT_CLAUSE = ' 권한은 한 번만 물어요.';
 
+/**
+ * 파일 입구의 문구 (INT-000036에서 다시 씀).
+ *
+ * 예전 데스크톱 문구는 `끌어다 놓거나`를 카드 설명 안에 넣었다. 두 가지가 어긋나 있었다.
+ *
+ *  1. **끌어다 놓기는 카드의 사실이 아니라 화면의 사실이다.** 이제 캡처 영역 전체가 드롭
+ *     대상이므로(`components/CaptureIntake.tsx`) 그 문장이 카드 한 장에만 붙어 있으면 거짓말이
+ *     된다. 구획의 사실은 구획이 말한다 — `intakeAssistHint()` 참고. `CAPTURE_DEFERRED_NOTE`를
+ *     카드에서 구획으로 옮긴 것과 같은 규칙이다.
+ *  2. 그 문장이 설명 줄 예산(40자)을 정확히 다 썼다. 한 글자만 늘려도 좁은 칸에서 잘렸다.
+ *
+ * 폰 문구가 끌어다 놓기를 권한 적은 없다. 그 자리는 그대로 둔다.
+ */
 function uploadCopy(env: DeviceEnvironment): { title: string; description: string } {
   if (env.formFactor === 'desktop') {
     return {
       title: '파일 올리기',
-      description: '명함 사진을 끌어다 놓거나 골라서 올려요. 앞·뒷면 두 장까지 한 번에.',
+      description: '명함 사진을 골라 올려요. 앞·뒷면 두 장까지 한 번에.',
     };
   }
   return { title: '사진 올리기', description: '앨범에 있는 명함 사진을 골라 올려요.' };
+}
+
+/**
+ * 붙여넣기 단축키 이름. 기기가 쓰는 자판을 그대로 말한다 —
+ * Mac에서 `Ctrl+V`라고 적으면 그 안내는 실제로 아무 일도 하지 않는 손가락을 만든다.
+ */
+export function pasteShortcutLabel(platform: string = typeof navigator === 'undefined' ? '' : `${navigator.platform ?? ''} ${navigator.userAgent ?? ''}`): string {
+  return /mac|iphone|ipad|ipod/i.test(platform) ? '⌘V' : 'Ctrl+V';
+}
+
+/**
+ * 캡처 구획이 덧붙이는 두 번째 길 — 끌어다 놓기와 붙여넣기.
+ *
+ * **터치 기기에는 빈 문자열이다.** 손가락으로는 파일을 끌어다 놓을 수 없고 `Ctrl+V`도 없다.
+ * 할 수 없는 일을 권하는 안내는 안내가 아니라 잡음이고, 예전 `DesktopIntake`는 폰에서도
+ * `여기로 끌어다 놓아도 되고`를 그대로 보여 주고 있었다.
+ *
+ * 파일 칸 자체가 없는 브라우저에서도 빈 문자열이다 — 그 기기에서는 이 길이 아예 없다.
+ */
+export function intakeAssistHint(
+  env: Pick<DeviceEnvironment, 'formFactor' | 'hasFileInput'>,
+  platform?: string,
+): string {
+  if (env.formFactor !== 'desktop' || !env.hasFileInput) return '';
+  return `사진 파일을 이 화면에 끌어다 놓거나 ${pasteShortcutLabel(platform)}로 붙여넣어도 돼요`;
 }
 
 export const HELP_UPLOAD: CaptureMethodRecovery = { label: '파일 올리기로 등록하기', kind: 'help' };
@@ -366,7 +436,8 @@ export function deviceCaptureMethods(
 // ── 파일 분류 ────────────────────────────────────────────────────────────────
 
 export type IntakeSide = 'front' | 'back';
-export type IntakeRejection = 'wrong_type' | 'too_large' | 'slots_full';
+/** `unreadable`만 판정 시점이 다르다 — 열어 본 뒤에야 알 수 있어 호출자가 돌려준다. */
+export type IntakeRejection = 'wrong_type' | 'too_large' | 'slots_full' | 'unreadable';
 
 export interface IntakeFileLike {
   name: string;
@@ -379,14 +450,21 @@ export interface IntakeAssignment<T extends IntakeFileLike = IntakeFileLike> {
   side: IntakeSide;
 }
 
-export interface IntakeRejected {
-  name: string;
+/**
+ * 거절된 한 장. **파일 자신을 들고 있다.**
+ *
+ * 예전에는 이름 문자열만 남겼다. 그래서 "자리가 없어 빠진 장"을 나중에 다시 쓰려면 이름으로
+ * 원본을 되찾아야 했는데, 같은 이름의 파일 두 장은 구별되지 않는다. 자리가 다 찼을 때
+ * `어디에 넣을까요?`를 물으려면 그 장을 손에 쥐고 있어야 한다 (`planIntakeFiles`).
+ */
+export interface IntakeRejected<T extends IntakeFileLike = IntakeFileLike> {
+  file: T;
   reason: IntakeRejection;
 }
 
 export interface IntakeTriage<T extends IntakeFileLike = IntakeFileLike> {
   accepted: IntakeAssignment<T>[];
-  rejected: IntakeRejected[];
+  rejected: IntakeRejected<T>[];
 }
 
 /** 20MB. 폰 카메라 원본 한 장이 넉넉히 들어가고, 브라우저가 dataURL로 들고 있어도 버틴다. */
@@ -396,7 +474,13 @@ export const intakeRejectionMessage: Record<IntakeRejection, string> = {
   wrong_type: '이미지 파일이 아니라 뺐어요 (jpg·png·heic 같은 사진 파일이면 됩니다)',
   too_large: '20MB가 넘어 뺐어요. 조금 줄여서 다시 올려 주세요',
   slots_full: '한 사람은 앞·뒷면 두 장까지예요. 나머지는 다음 사람으로 따로 올려 주세요',
+  unreadable: '사진을 열지 못했어요. 파일이 깨졌거나 이 브라우저가 모르는 형식이에요',
 };
+
+/** 이름과 이유를 한 줄로 붙인다. 이유만 남고 무엇이었는지 모르는 문장을 만들지 않는다. */
+export function intakeRejectionLine(name: string, reason: IntakeRejection): string {
+  return `${name} — ${intakeRejectionMessage[reason]}`;
+}
 
 /**
  * 떨어뜨린 파일을 앞·뒷면에 배정한다.
@@ -415,24 +499,56 @@ export function triageIntakeFiles<T extends IntakeFileLike>(
   if (!options.hasBack) open.push('back');
 
   const accepted: IntakeAssignment<T>[] = [];
-  const rejected: IntakeRejected[] = [];
+  const rejected: IntakeRejected<T>[] = [];
 
   for (const file of files) {
     if (!/^image\//i.test(file.type || '')) {
-      rejected.push({ name: file.name, reason: 'wrong_type' });
+      rejected.push({ file, reason: 'wrong_type' });
       continue;
     }
     if (file.size > maxBytes) {
-      rejected.push({ name: file.name, reason: 'too_large' });
+      rejected.push({ file, reason: 'too_large' });
       continue;
     }
     const side = open.shift();
     if (!side) {
-      rejected.push({ name: file.name, reason: 'slots_full' });
+      rejected.push({ file, reason: 'slots_full' });
       continue;
     }
     accepted.push({ file, side });
   }
 
   return { accepted, rejected };
+}
+
+export interface IntakePlan<T extends IntakeFileLike = IntakeFileLike> extends IntakeTriage<T> {
+  /**
+   * 앞·뒷면이 다 차서 자리를 못 얻은 **첫 장**. 있으면 화면이 `어디에 넣을까요?`를 묻는다.
+   *
+   * 두 장 이상 남았을 때 전부 묻지는 않는다 — 세 번째 장의 자리를 묻는 질문에는 사람이 답할
+   * 근거가 없다. 첫 장만 질문이 되고 나머지는 이유가 붙은 통보로 남는다.
+   */
+  replaceCandidate: T | null;
+  /** 화면에 그대로 내보낼 문장들. `replaceCandidate`는 여기 없다 — 그것은 질문이지 통보가 아니다. */
+  notes: string[];
+}
+
+/**
+ * 받은 파일 묶음을 **화면이 할 일 전부**로 바꾼다 (INT-000036).
+ *
+ * `triageIntakeFiles`는 "어느 자리에 갈 수 있는가"만 판정한다. 그 위에 이 함수가 두 가지를 더한다:
+ * 자리가 다 찼을 때 되물을 대상 한 장과, 사람이 읽을 문장들. 화면 세 곳(카드에서 고르기·
+ * 끌어다 놓기·붙여넣기)이 전부 이 하나를 통과하므로 경로마다 다른 말을 하지 않는다.
+ */
+export function planIntakeFiles<T extends IntakeFileLike>(
+  files: readonly T[],
+  options: { hasFront?: boolean; hasBack?: boolean; maxBytes?: number } = {},
+): IntakePlan<T> {
+  const triage = triageIntakeFiles(files, options);
+  const firstFull = triage.rejected.findIndex((item) => item.reason === 'slots_full');
+  const replaceCandidate = firstFull >= 0 ? triage.rejected[firstFull].file : null;
+  const notes = triage.rejected
+    .filter((_item, index) => index !== firstFull)
+    .map((item) => intakeRejectionLine(item.file.name, item.reason));
+  return { ...triage, replaceCandidate, notes };
 }

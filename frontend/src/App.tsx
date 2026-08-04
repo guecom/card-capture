@@ -35,7 +35,7 @@ import { focusCaptureProgress, focusResearchNotice, ResearchComposer, type Resea
 // 아래 둘은 `int30-capture.css`를 함께 들여온다. `app.css`의 만남 맥락 규칙을 되받아야 하므로
 // 이 import가 `int29-*` 뒤에 와야 한다 — 순서가 곧 cascade다 (TSK-000220).
 import { CaptureEntry } from './components/CaptureEntry';
-import { DesktopIntake } from './components/DesktopIntake';
+import { CaptureIntake, type CaptureIntakeHandle } from './components/CaptureIntake';
 import { AuthoringField } from './components/AuthoringField';
 import type { CaptureMethodId, CaptureMethodRecovery } from './contracts/int30';
 import { CONTEXT_EXAMPLE_LABEL, contextWeight } from './services/capture-entry';
@@ -44,6 +44,7 @@ import {
   captureRecoveryIntent,
   deviceCaptureMethods,
   type DeviceEnvironment,
+  intakeAssistHint,
   type IntakeAssignment,
   probeDeviceEnvironment,
   readDeviceEnvironment,
@@ -502,9 +503,12 @@ function App() {
   // 직접 입력 시트의 열림은 이제 진입 카드가 소유한다 (TSK-000220). 카드가 `CaptureEntry`로
   // 옮겨 갔기 때문이다 — 두 입구를 서로 다른 파일이 각자 그리던 것이 통일감이 깨진 원인이었다.
   const [manualOpen, setManualOpen] = useState(false);
-  /* 파일 올리기 작업면(`DesktopIntake`)이 진입 카드 자리를 넘겨받았는가 (TSK-000545 통합).
-     겹쳐 띄우지 않는 이유는 같은 이름의 웹캠 입구가 카드와 작업면에 동시에 두 개 생기기 때문이다. */
-  const [intakeOpen, setIntakeOpen] = useState(false);
+  /* 파일 올리기에는 열림 상태가 없다 (INT-000036). 예전에는 카드를 누르면 진입 카드 자리를
+     작업면이 넘겨받았고(`intakeOpen`), 그 화면을 한 번 더 눌러야 파일 선택창이 열렸다 —
+     founder가 "기존에 있던 것이 바뀌어서 혼란스럽다"고 본 것이 그 한 겹이다.
+     지금은 카드를 누른 **그 제스처 안에서** 선택창이 열리므로 화면 상태가 아예 생기지 않는다.
+     여기서는 그 손잡이만 잡는다 (`components/CaptureIntake.tsx`). */
+  const intakeRef = useRef<CaptureIntakeHandle>(null);
   /* 이 기기가 실제로 할 수 있는 일. 처음에는 **즉시 알 수 있는 것만** 담고, 모르는 축은
      `unknown`으로 둔다 — 탐지 전 몇 프레임 동안 멀쩡한 카메라가 "없음"으로 그려지면
      그 첫인상이 사용자가 읽는 유일한 사실이 된다 (`device-capability.ts`). */
@@ -945,10 +949,14 @@ function App() {
 
   /**
    * 카드를 눌렀을 때 열리는 것. 세 입구가 각자 자기 자리로 간다.
+   *
+   * **이 함수는 끝까지 동기여야 한다.** `upload`는 브라우저의 파일 선택창으로 이어지는데,
+   * 그것은 신뢰된 제스처에서 끊기지 않고 이어진 동기 호출일 때만 열린다. 여기에 `await`이나
+   * `setTimeout`을 끼우면 그 카드만 조용히 아무 일도 하지 않는다 — 오류도 나지 않는다.
    */
   const selectCaptureMethod = useCallback((id: CaptureMethodId) => {
     if (id === 'manual') { setManualOpen(true); return; }
-    if (id === 'upload') { setIntakeOpen(true); return; }
+    if (id === 'upload') { intakeRef.current?.open(); return; }
     setCameraSession({ side: 'front', withChoice: true });
   }, []);
 
@@ -960,7 +968,9 @@ function App() {
     const intent = captureRecoveryIntent(recovery);
     // 권한 재요청은 브라우저가 카메라를 **실제로 열 때만** 일어난다. 조회로는 물어볼 수 없다.
     if (intent === 'retry_camera') { setCameraSession({ side: 'front', withChoice: true }); return; }
-    if (intent === 'open_upload') { setIntakeOpen(true); return; }
+    // 카메라가 없는 기기의 `파일 올리기로 등록하기`도 같은 즉시-선택창 동선이다 (INT-000036).
+    // 회복이 카드보다 한 걸음 멀면 정작 다른 길이 필요한 사람이 더 먼 길을 간다.
+    if (intent === 'open_upload') { intakeRef.current?.open(); return; }
     setManualOpen(true);
   }, []);
 
@@ -1398,13 +1408,18 @@ function App() {
   }, [startQuickNameOcr]);
 
   /**
-   * 올린 파일을 앞·뒷면 프레임으로 옮긴다 (TSK-000545 통합).
+   * 올린 파일을 앞·뒷면 프레임으로 옮긴다 (TSK-000545 통합, INT-000036에서 다시 씀).
    *
-   * 어느 자리에 갈지는 이미 `DesktopIntake`가 `triageIntakeFiles`로 정해서 준다. 여기서는
+   * 어느 자리에 갈지는 이미 `CaptureIntake`가 `planIntakeFiles`로 정해서 준다. 여기서는
    * 프레임 변환과 화면 상태만 맡는다 — 판정과 변환을 한 자리에 섞지 않는다. 그 결과 올린 사진은
    * 촬영한 사진과 **같은 자리**로 들어가고, 이름 인식·만남 맥락·완료가 그대로 이어진다.
+   *
+   * 읽지 못한 파일의 **이름을 돌려준다.** 예전에는 여기서 toast를 띄웠는데, 그 문장은 몇 초 뒤
+   * 사라지고 사용자는 방금 무엇이 빠졌는지 다시 볼 방법이 없었다. 안내는 파일을 올린 그 자리에
+   * 남아 있어야 하고, 그 옆에 다시 고를 손잡이가 있어야 한다 — 둘 다 `CaptureIntake`가 갖고 있다.
    */
-  const acceptIntakeFiles = useCallback(async (assignments: IntakeAssignment<File>[]) => {
+  const acceptIntakeFiles = useCallback(async (assignments: IntakeAssignment<File>[]): Promise<string[]> => {
+    const unreadable: string[] = [];
     for (const assignment of assignments) {
       try {
         const frame = await fileToCameraFrame(assignment.file);
@@ -1415,12 +1430,11 @@ function App() {
           setBackFrame(frame);
         }
       } catch {
-        // 읽지 못한 파일은 조용히 사라지지 않는다 — 이름을 붙여 말한다.
-        setMessage(`${assignment.file.name} 사진을 읽지 못했어요. 다른 파일로 다시 올려 주세요.`);
+        // 읽지 못한 파일은 조용히 사라지지 않는다 — 이름을 붙여 올린 자리에 남긴다.
+        unreadable.push(assignment.file.name);
       }
     }
-    // 사진이 들어왔으면 작업면은 할 일을 마쳤다. 완료 뒤에는 세 입구로 돌아온다.
-    setIntakeOpen(false);
+    return unreadable;
   }, [startQuickNameOcr]);
 
   const completeCapture = useCallback(async () => {
@@ -1997,40 +2011,38 @@ function App() {
               쓰는 앱"이 되고, 명함을 못 받은 자리(대부분의 자리)가 통째로 빠진다.
               앞면을 이미 찍은 뒤에는 그 촬영을 마치는 것이 지금 할 일이므로 미리보기가 자리를
               그대로 쓴다 — 반쯤 진행된 등록 두 개가 서로 다투지 않게 한다. */}
-          {frontFrame ? (
-            <button className="shot-main filled" type="button" onClick={() => setCameraSession({ side: 'front', withChoice: true })}>
-              <img src={frontFrame.dataUrl} alt="앞면 미리보기" />
-            </button>
-          ) : intakeOpen ? (
-            /* `파일 올리기`를 고르면 카드 자리를 파일 작업면이 넘겨받는다 (TSK-000545 통합).
-               카드 아래에 덧붙이지 않는 이유: 작업면 안에도 웹캠 입구가 있어서, 같은 이름의
-               입구가 화면에 둘이 되고 어느 쪽이 진짜인지 사용자도 게이트도 알 수 없게 된다. */
-            <div className="cc-intake-panel">
-              <button className="cc-intake-back" type="button" onClick={() => setIntakeOpen(false)}>다른 방법 고르기</button>
-              <DesktopIntake
-                /* 앞면이 이미 있으면 위 미리보기가 이 자리를 가져간다 — 그래서 여기서 찰 수
-                   있는 것은 뒷면뿐이다. `triageIntakeFiles`가 이 값으로 빈 자리를 센다. */
-                assigned={{ back: backFrame ? '뒷면 사진' : undefined }}
-                onFiles={(assignments) => void acceptIntakeFiles(assignments)}
-                onClear={(side) => (side === 'front' ? setFrontFrame(null) : setBackFrame(null))}
-                webcam={captureMethods.find((card) => card.id === 'camera') ?? captureMethods[0]}
-                onOpenWebcam={() => setCameraSession({ side: 'front', withChoice: true })}
-                onRecovery={(recovery) => recoverCaptureMethod('camera', recovery)}
+          {/* 파일로 올리는 길은 이 층이 통째로 갖는다 (INT-000036). 진짜 `<input type="file">`이
+              카드 옆에 **이미 붙어 있어야** 카드를 누른 그 제스처가 곧바로 선택창을 연다 —
+              눌린 뒤에 화면을 하나 띄우고 그 안에서 여는 것이 founder가 본 어색함이었다.
+              감싸는 이유는 하나 더 있다: 끌어다 놓기와 붙여넣기는 카드 한 장의 성질이 아니라
+              캡처 영역의 성질이라, 앞면 미리보기로 바뀐 뒤에도 그대로 성립해야 한다. */}
+          <CaptureIntake
+            ref={intakeRef}
+            hasFront={Boolean(frontFrame)}
+            hasBack={Boolean(backFrame)}
+            enabled={deviceEnv.hasFileInput}
+            assistable={deviceEnv.formFactor === 'desktop'}
+            assistHint={intakeAssistHint(deviceEnv)}
+            onFiles={acceptIntakeFiles}
+          >
+            {frontFrame ? (
+              <button className="shot-main filled" type="button" onClick={() => setCameraSession({ side: 'front', withChoice: true })}>
+                <img src={frontFrame.dataUrl} alt="앞면 미리보기" />
+              </button>
+            ) : (
+              /* 세 카드를 이제 한 컴포넌트가 그린다 (TSK-000220). 예전에는 촬영 버튼은 여기서,
+                 직접 입력 버튼은 `ManualPersonSheet`에서 각자 그려졌고 안쪽 구조가 서로 달랐다 —
+                 founder가 본 "하나는 설명이 있고 하나는 없고"가 정확히 그 결과였다.
+                 무엇을 쓸 수 있는지는 `device-capability.ts`가 판정하고(TSK-000545), 여기서는
+                 그 사실을 그대로 넘긴다 — 화면이 가용성을 추측하지 않는다. */
+              <CaptureEntry
+                methods={captureMethods}
+                status={captureMethodStatus}
+                onSelect={selectCaptureMethod}
+                onRecover={recoverCaptureMethod}
               />
-            </div>
-          ) : (
-            /* 세 카드를 이제 한 컴포넌트가 그린다 (TSK-000220). 예전에는 촬영 버튼은 여기서,
-               직접 입력 버튼은 `ManualPersonSheet`에서 각자 그려졌고 안쪽 구조가 서로 달랐다 —
-               founder가 본 "하나는 설명이 있고 하나는 없고"가 정확히 그 결과였다.
-               무엇을 쓸 수 있는지는 `device-capability.ts`가 판정하고(TSK-000545), 여기서는
-               그 사실을 그대로 넘긴다 — 화면이 가용성을 추측하지 않는다. */
-            <CaptureEntry
-              methods={captureMethods}
-              status={captureMethodStatus}
-              onSelect={selectCaptureMethod}
-              onRecover={recoverCaptureMethod}
-            />
-          )}
+            )}
+          </CaptureIntake>
 
           {/* 시트는 진입 카드와 분리됐다. 카드가 열고, 여기서는 시트만 산다. */}
           <ManualPersonEntry

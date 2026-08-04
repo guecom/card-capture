@@ -116,6 +116,7 @@ export function CaptureEntry({ methods, onSelect, onRecover, status }: CaptureEn
               key={anatomy.id}
               type="button"
               className={`cc-entry-card is-unavailable ${legacy}`.trim()}
+              data-method={anatomy.id}
               data-unavailable="true"
               {...(recovery ? {} : { 'aria-disabled': 'true' as const })}
               onClick={recovery ? () => onRecover?.(anatomy.id, recovery as CaptureMethodRecovery) : undefined}
@@ -128,11 +129,15 @@ export function CaptureEntry({ methods, onSelect, onRecover, status }: CaptureEn
           );
         }
 
+        /* `onSelect`는 **동기 호출**이다. `upload` 카드에서는 이 한 줄이 브라우저의 파일
+           선택창까지 이어지는 신뢰된 제스처 사슬의 첫 칸이다 (`components/CaptureIntake.tsx`).
+           여기에 `await`이나 지연을 끼우면 그 카드만 조용히 아무 일도 하지 않게 된다. */
         return (
           <button
             key={anatomy.id}
             type="button"
             className={`cc-entry-card ${legacy}`.trim()}
+            data-method={anatomy.id}
             onClick={() => onSelect(anatomy.id)}
           >
             {head}

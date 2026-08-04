@@ -13,8 +13,15 @@ import {
   captureDeferredNote,
   captureMethodOrder,
   captureRecoveryIntent,
+  detectFileInput,
   deviceCaptureMethods,
+  intakeAssistHint,
+  intakeRejectionLine,
+  intakeRejectionMessage,
+  pasteShortcutLabel,
+  planIntakeFiles,
   probeDeviceEnvironment,
+  readDeviceEnvironment,
   triageIntakeFiles,
 } from './device-capability';
 
@@ -332,6 +339,52 @@ describe('probeDeviceEnvironment', () => {
   });
 });
 
+/* INT-000036: 카드를 누른 그 제스처가 곧바로 `<input type="file">`을 여는 구조가 됐다.
+   그래서 "고를 칸이 있는가"는 이제 추측이면 안 된다 — 틀리면 카드는 눌리는데 아무 일도 일어나지
+   않고, 오류조차 나지 않는다. 예전 판정(`FileReader가 있는가`)은 **고른 뒤에 읽을 수 있는가**만
+   봤다. 지금은 칸을 하나 만들어 `type`을 되읽는다. */
+describe('detectFileInput — 고를 칸이 정말 있는가', () => {
+  /* 브라우저를 흉내 낸다. `input.type`은 아는 값만 받고 모르는 값은 명세대로 `text`로 되돌린다 —
+     그 되돌림이 곧 "이 브라우저는 그 칸을 모른다"는 관측이다. */
+  const documentThatKnows = (types: readonly string[]) => ({
+    createElement: () => {
+      let value = 'text';
+      return {
+        get type() { return value; },
+        set type(next: string) { value = types.includes(next) ? next : 'text'; },
+      };
+    },
+  });
+
+  it('칸을 하나 만들어 type을 되읽는다', () => {
+    expect(detectFileInput(documentThatKnows(['file']), true)).toBe(true);
+  });
+
+  it('브라우저가 file을 모르면 type이 text로 되돌아간다 — 그것을 지원으로 읽지 않는다', () => {
+    // 예전 판정(`FileReader가 있는가`)은 그런 기기에서도 true였다. 그러면 카드는 눌리는데
+    // 아무 일도 일어나지 않고, 오류조차 나지 않는다.
+    expect(detectFileInput(documentThatKnows([]), true)).toBe(false);
+  });
+
+  it('읽을 수단이 없으면 칸이 있어도 한 바퀴가 돌지 않는다', () => {
+    expect(detectFileInput(documentThatKnows(['file']), false)).toBe(false);
+  });
+
+  it('칸을 만들다 던지는 환경을 지원으로 읽지 않는다', () => {
+    expect(detectFileInput({ createElement: () => { throw new Error('no DOM'); } }, true)).toBe(false);
+  });
+
+  it('문서가 없는 환경에서는 읽을 수 있다는 사실만 남는다', () => {
+    expect(detectFileInput(undefined, true)).toBe(true);
+    expect(detectFileInput(undefined, false)).toBe(false);
+  });
+
+  it('환경 스냅샷이 이 판정을 그대로 싣는다', () => {
+    // 판정이 스냅샷에 닿지 않으면 카드는 계속 옛 사실을 그린다.
+    expect(readDeviceEnvironment().hasFileInput).toBe(detectFileInput());
+  });
+});
+
 describe('file triage', () => {
   const file = (name: string, type = 'image/jpeg', size = 1_000) => ({ name, type, size });
 
@@ -352,7 +405,7 @@ describe('file triage', () => {
   it('explains extra files instead of silently dropping them', () => {
     const triage = triageIntakeFiles([file('a.jpg'), file('b.jpg'), file('c.jpg')]);
     expect(triage.accepted).toHaveLength(2);
-    expect(triage.rejected).toEqual([{ name: 'c.jpg', reason: 'slots_full' }]);
+    expect(triage.rejected).toEqual([{ file: file('c.jpg'), reason: 'slots_full' }]);
   });
 
   it('rejects a wrong type and an oversized file by name', () => {
@@ -362,8 +415,8 @@ describe('file triage', () => {
       file('ok.jpg'),
     ]);
     expect(triage.rejected).toEqual([
-      { name: 'notes.pdf', reason: 'wrong_type' },
-      { name: 'huge.jpg', reason: 'too_large' },
+      { file: file('notes.pdf', 'application/pdf'), reason: 'wrong_type' },
+      { file: file('huge.jpg', 'image/jpeg', MAX_INTAKE_BYTES + 1), reason: 'too_large' },
     ]);
     // 나쁜 파일이 섞여 있어도 멀쩡한 장은 그대로 들어간다.
     expect(triage.accepted).toEqual([{ file: file('ok.jpg'), side: 'front' }]);
@@ -377,6 +430,91 @@ describe('file triage', () => {
   it('returns nothing to do when both slots are already full', () => {
     const triage = triageIntakeFiles([file('a.jpg')], { hasFront: true, hasBack: true });
     expect(triage.accepted).toEqual([]);
-    expect(triage.rejected).toEqual([{ name: 'a.jpg', reason: 'slots_full' }]);
+    expect(triage.rejected).toEqual([{ file: file('a.jpg'), reason: 'slots_full' }]);
+  });
+
+  /* 거절은 이름 문자열이 아니라 **파일 자신**을 들고 있어야 한다 (INT-000036).
+     자리가 다 찼을 때 "어디에 넣을까요?"를 물으려면 그 장을 손에 쥐고 있어야 하고,
+     같은 이름의 두 파일은 이름으로 되찾을 수 없다. */
+  it('keeps the rejected file itself, not just its name', () => {
+    const duplicate = file('scan.jpg');
+    const triage = triageIntakeFiles([file('a.jpg'), file('b.jpg'), duplicate]);
+    expect(triage.rejected[0].file).toBe(duplicate);
+  });
+});
+
+describe('intake plan — 화면이 할 일 전부', () => {
+  const file = (name: string, type = 'image/jpeg', size = 1_000) => ({ name, type, size });
+
+  it('앞·뒷면이 다 찼으면 되물을 한 장을 고르고, 그 장은 통보 문장에 넣지 않는다', () => {
+    const extra = file('extra.jpg');
+    const plan = planIntakeFiles([extra], { hasFront: true, hasBack: true });
+    expect(plan.replaceCandidate).toBe(extra);
+    // 질문 대상은 통보가 아니다 — 같은 파일을 묻고 동시에 "뺐어요"라고 말하지 않는다.
+    expect(plan.notes).toEqual([]);
+  });
+
+  it('남은 장이 여럿이면 첫 장만 묻고 나머지는 이름과 이유를 남긴다', () => {
+    const plan = planIntakeFiles([file('c.jpg'), file('d.jpg')], { hasFront: true, hasBack: true });
+    expect(plan.replaceCandidate?.name).toBe('c.jpg');
+    expect(plan.notes).toHaveLength(1);
+    expect(plan.notes[0]).toContain('d.jpg');
+    expect(plan.notes[0]).toContain(intakeRejectionMessage.slots_full);
+  });
+
+  it('자리가 남아 있으면 되물을 것이 없다', () => {
+    const plan = planIntakeFiles([file('a.jpg'), file('b.jpg')]);
+    expect(plan.replaceCandidate).toBeNull();
+    expect(plan.notes).toEqual([]);
+    expect(plan.accepted.map((item) => item.side)).toEqual(['front', 'back']);
+  });
+
+  it('이름과 이유를 함께 남긴다 — 이유만 남은 문장을 만들지 않는다', () => {
+    const plan = planIntakeFiles([file('notes.pdf', 'application/pdf'), file('huge.jpg', 'image/jpeg', MAX_INTAKE_BYTES + 1)]);
+    expect(plan.notes).toEqual([
+      intakeRejectionLine('notes.pdf', 'wrong_type'),
+      intakeRejectionLine('huge.jpg', 'too_large'),
+    ]);
+    for (const note of plan.notes) expect(note.length).toBeGreaterThan(10);
+  });
+
+  it('열어 본 뒤에야 아는 실패에도 할 말이 있다', () => {
+    // 디코드 실패는 이 함수가 판정할 수 없다 — 그래도 같은 자에 같은 모양으로 남아야 한다.
+    expect(intakeRejectionLine('broken.png', 'unreadable')).toContain('broken.png');
+    expect(intakeRejectionMessage.unreadable.length).toBeGreaterThan(10);
+  });
+});
+
+describe('끌어다 놓기·붙여넣기 안내', () => {
+  /* 손가락으로는 파일을 끌 수 없고 `Ctrl+V`도 없다. 예전 `DesktopIntake`는 폰에서도
+     `여기로 끌어다 놓아도 되고`를 그대로 보여 줬다 — 할 수 없는 일을 권하는 안내다. */
+  it('터치 기기에는 아무 말도 하지 않는다', () => {
+    expect(intakeAssistHint({ formFactor: 'mobile', hasFileInput: true })).toBe('');
+  });
+
+  it('파일 칸이 없는 브라우저에도 아무 말도 하지 않는다', () => {
+    expect(intakeAssistHint({ formFactor: 'desktop', hasFileInput: false })).toBe('');
+  });
+
+  it('데스크톱에서는 두 길을 한 줄로 말한다', () => {
+    const hint = intakeAssistHint({ formFactor: 'desktop', hasFileInput: true }, 'Win32');
+    expect(hint).toContain('끌어다');
+    expect(hint).toContain('Ctrl+V');
+  });
+
+  it('자판이 다른 기기에는 그 기기의 단축키를 말한다', () => {
+    expect(pasteShortcutLabel('MacIntel')).toBe('⌘V');
+    expect(pasteShortcutLabel('Win32')).toBe('Ctrl+V');
+    expect(intakeAssistHint({ formFactor: 'desktop', hasFileInput: true }, 'MacIntel')).toContain('⌘V');
+  });
+
+  /* 카드 설명은 이 안내를 다시 하지 않는다 — 카드 한 장의 사실이 아니라 구획의 사실이고,
+     예전 데스크톱 문구는 그것 때문에 설명 줄 예산(40자)을 정확히 다 쓰고 있었다. */
+  it('카드 설명은 끌어다 놓기를 말하지 않는다', () => {
+    for (const formFactor of FORM_FACTORS) {
+      for (const card of deviceCaptureMethods(env({ formFactor }))) {
+        expect(card.description, `${formFactor}/${card.id}`).not.toContain('끌어다');
+      }
+    }
   });
 });
