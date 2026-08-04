@@ -1312,9 +1312,15 @@ test('앱을 열자마자, 목록 응답이 도착하기 전에 세 깊이가 �
   const harness = await boot(page, { active: false, reopenWithHeldList: true });
   try {
     // 응답을 붙잡아 둔 채로 잰다 — 앱은 서버에서 아무것도 못 들은 상태다.
+    // 요청이 실제로 떠서 붙잡힌 것을 먼저 기다린다. 한 번만 읽으면 앱이 화면을 먼저 그리고
+    // 요청을 나중에 보내는 순서일 때 아직 0이라, 제품과 무관하게 게이트가 빨개진다
+    // (수정 전 실측: 10회 중 3회). 이 파일의 다른 여섯 자리는 전부 이미 poll을 쓴다.
+    await expect
+      .poll(() => harness.listInFlight, { timeout: 10_000 })
+      .toBeGreaterThan(0);
     const group = depthGroup(page);
     await expect(group, '목록 응답이 오기 전에는 조사 깊이 자리가 아예 없다').toHaveCount(1, { timeout: 10_000 });
-    expect(harness.listInFlight, '목록 요청을 붙잡지 못했다 — 이 게이트가 재려는 상태가 아니다').toBeGreaterThan(0);
+    expect(harness.listInFlight, '읽는 사이에 응답이 도착했다 — 관측 창이 너무 좁다').toBeGreaterThan(0);
 
     const states = await depthState(page);
     expect(states.length, `깊이 칸이 ${states.length}개다 (셋이어야 한다)`).toBe(3);
