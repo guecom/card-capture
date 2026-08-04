@@ -112,7 +112,10 @@ import {
   runRecallSearch,
   serverFallbackTerm,
 } from './services/recall-search';
-import { buildResearchInstruction } from './services/research';
+import { buildResearchSubmission } from './services/research';
+// 조사 깊이는 lane 사이 공유 이음매에서 온다. 이 화면은 값을 나르기만 하고 뜻은
+// `services/research-mode.ts`가 소유한다 (TSK-000542).
+import { DEFAULT_RESEARCH_DEPTH, type ResearchDepth } from './contracts/int30';
 import { recognizeQuickName } from './services/vision';
 import {
   loadCachedBriefs,
@@ -401,6 +404,8 @@ function App() {
   const [documentNoteTarget, setDocumentNoteTarget] = useState<PersonTarget | null>(null);
   const [personActionComposer, setPersonActionComposer] = useState<PersonActionComposer | null>(null);
   const [personActionText, setPersonActionText] = useState('');
+  // 시트는 열릴 때마다 새 요청이다. 깊이도 그때마다 기본값으로 되돌린다 (TSK-000542).
+  const [personActionDepth, setPersonActionDepth] = useState<ResearchDepth>(DEFAULT_RESEARCH_DEPTH);
   const [personActionSubmitting, setPersonActionSubmitting] = useState(false);
   // 시트에서 보낸 조사 요청이 **접수됐는가 / 접수에 실패했는가**. 접수 뒤의 처리 진행은
   // 여기서 말하지 않는다 — 그건 명함 기록·진행의 블록이 소유한다 (TSK-000535).
@@ -425,6 +430,10 @@ function App() {
   const [relKairen, setRelKairen] = useState(sticky.relKairen);
   const [memo, setMemo] = useState('');
   const [researchText, setResearchText] = useState(sticky.research);
+  // 깊이는 **저장하지 않는다**. 새 요청은 언제나 `일반 조사`에서 시작한다 (TSK-000542) —
+  // 더 오래 기다리는 선택이 지난번 습관으로 조용히 따라붙지 않게 한다. 만난 곳·조사 지시문의
+  // 2시간 유지와 일부러 다르게 두는 자리다.
+  const [researchDepth, setResearchDepth] = useState<ResearchDepth>(DEFAULT_RESEARCH_DEPTH);
   const [contextCollapsed, setContextCollapsed] = useState(() => loadSectionCollapsed('context', false));
   const [queueing, setQueueing] = useState(false);
   // 자동 새로고침 안내용: 마지막 갱신 시각과 현재 시각(1초 tick).
@@ -1164,7 +1173,7 @@ function App() {
         relSelf,
         relKairen,
         memo,
-        researchInstruction: researchInstructionEnabled ? buildResearchInstruction(researchText) : null,
+        researchInstruction: researchInstructionEnabled ? buildResearchSubmission(researchText, researchDepth) : null,
         quickName,
       });
       // 전송 후 원본이 정리돼도 목록에 남을 104px 썸네일 (legacy thumbOf).
@@ -1195,7 +1204,7 @@ function App() {
     } finally {
       setQueueing(false);
     }
-  }, [backFrame, configured, event, flushPendingQueue, frontFrame, memo, queueing, quickName, relKairen, relSelf, researchInstructionEnabled, researchText, resetQuickName]);
+  }, [backFrame, configured, event, flushPendingQueue, frontFrame, memo, queueing, quickName, relKairen, relSelf, researchDepth, researchInstructionEnabled, researchText, resetQuickName]);
 
   /**
    * 방금 찍은 촬영을 대기열에서 빼서 촬영 화면으로 되돌린다 (FI-049).
@@ -1364,6 +1373,7 @@ function App() {
 
   const promptResearch = useCallback((target: PersonTarget) => {
     setPersonActionText('');
+    setPersonActionDepth(DEFAULT_RESEARCH_DEPTH);
     setPersonActionOutcome(null);
     setPersonActionComposer({ kind: 'research', target });
   }, []);
@@ -1390,12 +1400,12 @@ function App() {
     } else if (personActionComposer.kind === 'research') {
       // 조사 요청만 `runPersonAction`을 거치지 않는다. 실패 사유와 접수 번호를 시트 안에서
       // 그대로 보여 주고(접수 실패), 접수되면 그 요청의 **진행 블록**으로 손을 넘겨야 하기 때문이다.
-      const submission = buildResearchInstruction(personActionText);
+      const submission = buildResearchSubmission(personActionText, personActionDepth);
       if (!submission) {
         setPersonActionOutcome({ ok: false, reason: '조사할 내용을 적거나 조사 항목을 골라 주세요.' });
       } else {
         try {
-          const response = await submitResearchInstruction(config, personActionComposer.target, submission.raw);
+          const response = await submitResearchInstruction(config, personActionComposer.target, submission.raw, submission.depth);
           if (!response.ok) throw new Error(response.error ?? 'request_failed');
           setMessage(response.receiptId ? `조사 요청을 접수했어요 · receipt ${response.receiptId}` : '조사 요청을 접수했어요');
           setPersonActionOutcome({ ok: true });
@@ -1424,7 +1434,7 @@ function App() {
       setPersonActionText('');
       setPersonActionOutcome(null);
     }
-  }, [config, personActionComposer, personActionSubmitting, personActionText, refresh, runPersonAction]);
+  }, [config, personActionComposer, personActionDepth, personActionSubmitting, personActionText, refresh, runPersonAction]);
 
   const retryProcessing = useCallback(async (captureId: string) => {
     if (requeueingId) return;
@@ -1818,6 +1828,8 @@ function App() {
               busy={queueing}
               value={researchText}
               onChange={setResearchText}
+              depth={researchDepth}
+              onDepthChange={setResearchDepth}
               receipt={researchReceipt}
             />
           )}
@@ -2249,6 +2261,8 @@ function App() {
                       busy={personActionSubmitting}
                       value={personActionText}
                       onChange={setPersonActionText}
+                      depth={personActionDepth}
+                      onDepthChange={setPersonActionDepth}
                       receipt={personActionOutcome === null
                         ? { state: 'idle' }
                         : personActionOutcome.ok

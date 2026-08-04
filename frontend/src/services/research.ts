@@ -1,4 +1,7 @@
 import type { ResearchInstruction } from '../contracts/capture';
+import { DEFAULT_RESEARCH_DEPTH, type ResearchDepth } from '../contracts/int30';
+import { normalizeResearchDepth, resolveResearchRoute } from './research-mode';
+import { recordResearchRoute } from './research-telemetry';
 
 const MAX_LENGTH = 2000;
 const POLICY_VERSION = 'public-research-v1';
@@ -30,4 +33,27 @@ export function buildResearchInstruction(value: string): ResearchInstruction | n
     policyVersion: POLICY_VERSION,
     riskFlags: riskPatterns.filter(([, pattern]) => pattern.test(raw)).map(([id]) => id),
   };
+}
+
+/**
+ * 실제로 접수되는 요청 한 건. 지시문 봉투에 **조사 깊이**가 하나 더 붙는다 (TSK-000542).
+ *
+ * `buildResearchInstruction`은 손대지 않는다 — 그 모양은 legacy 웹앱과의 parity 계약이고
+ * (`research.test.ts`가 `docs/research-policy.js`와 글자 단위로 대조한다), 깊이는 그 계약이
+ * 생긴 뒤에 더해진 것이다. 새 필드를 옛 봉투에 몰래 넣는 대신 새 봉투를 하나 만든다.
+ *
+ * 깊이는 **요청에 실려 나가는 값**이다. 어디로 보낼지는 여기서 정하지 않는다 —
+ * 그 판정(`resolveResearchRoute`)의 결과는 개발자 telemetry에만 남고 화면으로 돌아가지 않는다.
+ */
+export interface ResearchSubmission extends ResearchInstruction {
+  depth: ResearchDepth;
+}
+
+export function buildResearchSubmission(value: string, depth: unknown = DEFAULT_RESEARCH_DEPTH): ResearchSubmission | null {
+  const instruction = buildResearchInstruction(value);
+  if (!instruction) return null;
+  // 라우팅은 지금 일어나지 않는다. 지금 남기는 것은 "이 깊이로 접수됐고, 이 설정 판에서는
+  // 어디로 가게 되어 있었다"는 사실이다. 설정이 반쪽이면 여기서 degraded로 드러난다.
+  recordResearchRoute(resolveResearchRoute(depth));
+  return { ...instruction, depth: normalizeResearchDepth(depth) };
 }

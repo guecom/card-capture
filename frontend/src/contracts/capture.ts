@@ -1,3 +1,5 @@
+import type { ResearchDepth } from './int30';
+
 export type CaptureState = 'queued' | 'failed' | 'sent';
 export type ProcessingStatus = 'received' | 'processing' | 'processed' | 'skipped' | string;
 
@@ -45,6 +47,12 @@ export interface ResearchInstruction {
   channel?: 'owner_ui';
   policyVersion?: string;
   riskFlags?: string[];
+  /**
+   * 조사 깊이 (TSK-000542). 값이 없으면 `standard`다 — 이 필드가 생기기 전에 저장된 요청이 그렇다.
+   * 사용자가 고르는 것은 결과와 기다림이고, 이 값이 **어디로 보낼지**를 뜻하지는 않는다.
+   * 라우팅 설정은 `services/research-mode.ts`가 소유하며 화면으로 돌아오지 않는다.
+   */
+  depth?: ResearchDepth;
 }
 
 export interface CaptureQueueItem {
