@@ -362,38 +362,204 @@ test('세 깊이가 서버에서 서로 다른 요청이 된다', async ({ page 
   }
 });
 
-// ── 깊은 조사 fail-closed (계약: `DEEP_RESEARCH_ENABLED=true`인 경우에만 열린다) ──
+// ── 깊이 선택은 언제나 즉시다 (TSK-000560 / INT-000036) ─────────────────────
+//
+// founder 판정 2026-08-04:
+//   "빠른조사, 일반조사는 그냥 선택할 수 있는데, 깊은 조사는 왜 버튼 클릭할 수 있을 때 까지
+//    시간이 지나야하는지 모르겠네?"
+//   "깊은 조사 활성화는 조건이 아니라 그냥 선택할 수 있게 해줘."
+//
+// **원인은 timer도 debounce도 아니었다.** 깊은 조사 칸의 `disabled`는 목록 응답 한 칸
+// (`deepResearchEnabled`)에서 왔고, 그 값은 IndexedDB 두 번 + 여러 페이지 목록 조회가 끝난 뒤에야
+// 채워졌다. 즉 "시간이 지나면 켜진다"는 것은 **갱신 한 바퀴**였다. 빠른·일반은 애초에 그 값을
+// 보지 않아서 처음부터 눌렸고, 그래서 깊은 조사 하나만 늦게 열리는 것처럼 보였다.
+//
+// 그래서 아래 검사들은 **응답을 주지 않은 채로** 판정한다. 가짜 시계를 돌리지도, 목록이
+// 도착하기를 기다리지도 않는다 — 그 구간이 결함이 살던 자리다.
 
-test('서버가 열어 두지 않았다고 말하면 깊은 조사를 고를 수 없다', async ({ page }) => {
+/** 세 라디오가 DOM에 **처음 나타난 순간**의 상태를 붙잡는다. 나중에 고쳐진 것으로 속지 않는다. */
+async function watchDepthFirstPaint(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    interface FirstPaintRow { depth: string; disabled: boolean; unavailable: string | null }
+    (window as unknown as { __depthFirstPaint?: FirstPaintRow[] | null }).__depthFirstPaint = null;
+    const holder = window as unknown as { __depthFirstPaint?: FirstPaintRow[] | null };
+    // 프레임마다 들여다본다. `MutationObserver`는 init script 시점에 `documentElement`가 아직
+    // 없을 수 있어 관측 자체가 시작되지 않는다 — 그러면 검사가 조용히 아무것도 못 본다.
+    const capture = () => {
+      if (holder.__depthFirstPaint) return;
+      const inputs = [...document.querySelectorAll<HTMLInputElement>('.research-depth-option input')];
+      if (inputs.length === 3) {
+        holder.__depthFirstPaint = inputs.map((node) => ({
+          depth: String(node.value),
+          disabled: node.disabled,
+          unavailable: node.closest('.research-depth-option')?.getAttribute('data-unavailable') ?? null,
+        }));
+        return;
+      }
+      window.requestAnimationFrame(capture);
+    };
+    window.requestAnimationFrame(capture);
+  });
+}
+
+function readDepthFirstPaint(page: Page) {
+  return page.evaluate(() => (window as unknown as { __depthFirstPaint?: unknown }).__depthFirstPaint);
+}
+
+test('서버가 아직 대답하지 않은 첫 프레임에서 세 깊이가 모두 고를 수 있다', async ({ page }) => {
+  const harness = await boot(page);
+  try {
+    // 한 번 다녀왔으니 작성 자리는 첫 프레임부터 그려진다. 이제 목록 응답만 **붙잡아 둔다** —
+    // 사용자가 앱을 다시 열었을 때 실제로 보게 되는 구간이다.
+    const held: Array<() => void> = [];
+    let listRequests = 0;
+    await page.route('https://api.example.test/**', async (route) => {
+      if (new URL(route.request().url()).searchParams.get('action') !== 'list') {
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, items: [] }) });
+        return;
+      }
+      listRequests += 1;
+      await new Promise<void>((resume) => held.push(resume));
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, seeAll: true, researchInstructionEnabled: true, deepResearchEnabled: true, hasMore: false, items: [] }) });
+    });
+    await watchDepthFirstPaint(page);
+    await page.reload({ waitUntil: 'commit' });
+
+    const scope = composer(page);
+    await expect(scope).toBeVisible();
+
+    // 1. 처음 그려진 그 프레임에서 이미 셋 다 열려 있다.
+    const painted = await readDepthFirstPaint(page);
+    expect(painted, '세 깊이가 함께 나타난 프레임을 못 잡았다').not.toBeNull();
+    expect(painted, `첫 render에서 고를 수 없는 깊이가 있다: ${JSON.stringify(painted)}`).toEqual([
+      { depth: 'quick', disabled: false, unavailable: null },
+      { depth: 'standard', disabled: false, unavailable: null },
+      { depth: 'deep', disabled: false, unavailable: null },
+    ]);
+
+    // 2. 그동안 목록 응답은 **아직 도착하지 않았다**. 이 사실이 없으면 위 판정은 아무것도 증명하지 못한다.
+    expect(listRequests, '목록 요청이 시작조차 안 됐다 — 검사가 다른 구간을 보고 있다').toBeGreaterThan(0);
+    expect(held.length, '목록 응답이 이미 도착했다 — 결함이 살던 구간을 못 봤다').toBeGreaterThan(0);
+
+    // 3. 실제로 고를 수 있고, 고른 것이 남는다.
+    await depthOption(scope, 'deep').click();
+    await expect(depthInput(scope, 'deep')).toBeChecked();
+
+    // 4. 못 들은 동안에는 아무 경고도 만들지 않는다 — 닫혔다는 말도, 기다리라는 말도 없다.
+    await expect(scope.locator('.research-depth')).toHaveAttribute('data-deep-state', 'unknown');
+    await expect(depthOption(scope, 'deep'), '못 들었을 뿐인데 닫혔다고 말한다').not.toContainText('접수 안 돼요');
+    await expect(scope.locator('.research-depth-summary')).toContainText('근거까지 넓게 대조');
+    // 처리 대기를 말하는 문장(`기다리는 시간이 가장 깁니다`)은 정당하다 — 여기서 잡는 것은
+    // **상태를 지연처럼 말하는** 낱말이다.
+    for (const word of ['잠시', '확인 중', '연결 중', '준비 중', '나중에', '불러오']) {
+      expect((await scope.locator('.research-depth').innerText()).includes(word), `못 들은 상태를 지연처럼 말한다: ${word}`).toBe(false);
+    }
+    held.forEach((resume) => resume());
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+test('연결되지 않은 기기에서도 깊이를 고르고 요청을 준비할 수 있다', async ({ page }) => {
+  // 개인 링크 없이 연 화면. 서버에 물어볼 길이 아예 없으므로 영원히 `unknown`이다 —
+  // 그 상태가 선택을 막으면 오프라인에서는 깊은 조사가 존재하지 않는 기능이 된다.
+  const server = await startStaticServer();
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
+  let apiCalls = 0;
+  try {
+    await page.context().route('**/vendor/**', (route) => route.abort());
+    await page.route('https://api.example.test/**', async (route) => { apiCalls += 1; await route.abort(); });
+    // 기기 이름은 연결과 무관한 값이다. 채워 두지 않으면 이름 온보딩 시트가 화면을 덮는다.
+    await page.addInitScript(() => localStorage.setItem('cc_name', '이강규'));
+    await page.setViewportSize({ width: 390, height: 844 });
+    await watchDepthFirstPaint(page);
+    await page.goto(`http://127.0.0.1:${address.port}/next/`, { waitUntil: 'commit' });
+
+    const scope = composer(page);
+    await expect(scope).toBeVisible();
+    expect(await readDepthFirstPaint(page)).toEqual([
+      { depth: 'quick', disabled: false, unavailable: null },
+      { depth: 'standard', disabled: false, unavailable: null },
+      { depth: 'deep', disabled: false, unavailable: null },
+    ]);
+
+    // 고르고, 범위를 켜고, 글을 적는 데까지 서버가 필요하지 않다.
+    await depthOption(scope, 'deep').click();
+    await scope.locator('.research-scope-all').click();
+    await scope.locator('ion-textarea textarea').fill('공개 경력을 확인해 주세요');
+    await expect(depthInput(scope, 'deep')).toBeChecked();
+    await expect(scope.locator('.research-scope-count')).toHaveText(`${SCOPE_COUNT}개 중 ${SCOPE_COUNT}개 선택`);
+    await expect(scope.locator('.research-block')).toHaveCount(0);
+    expect(apiCalls, '연결도 없는데 서버를 불렀다').toBe(0);
+  } finally {
+    await stopServer(server);
+  }
+});
+
+// ── 닫힘은 사실이지 지연이 아니다 ─────────────────────────────────────────────
+//
+// 계약 (INT-000036 승인안): "rollback flag가 deep Product surface 전체를 닫는 경우를
+// per-request 지연 조건으로 가장하지 않는다." 그리고 `DEEP_RESEARCH_ENABLED` 경계는 그대로
+// fail-closed다 — 막히는 자리가 **선택이 아니라 접수**로 옮겨졌을 뿐이다.
+
+test('서버가 닫혔다고 말해도 깊은 조사는 고를 수 있고, 막히는 것은 제출이다', async ({ page }) => {
   const harness = await boot(page, { deepOpen: false });
   try {
     const scope = composer(page);
     // 사라지지 않는다 — 없어진 선택지는 고장으로 읽힌다.
     await expect(depthOption(scope, 'deep')).toHaveCount(1);
-    await expect(depthInput(scope, 'deep')).toBeDisabled();
-    await expect(depthOption(scope, 'deep')).toHaveAttribute('data-unavailable', 'yes');
-    // 상태를 색으로만 말하지 않는다. 칸 안에 지금의 사실이 글자로 있다.
-    await expect(depthOption(scope, 'deep')).toContainText('지금은 못 골라요');
-    // 나머지 둘은 그대로 열려 있다 — 하나가 닫혔다고 전부 닫히지 않는다.
+    // 그리고 **꺼져 있지도 않다**. 고르는 것은 사람의 손이고 조건이 붙지 않는다.
+    await expect(depthInput(scope, 'deep')).toBeEnabled();
     await expect(depthInput(scope, 'quick')).toBeEnabled();
     await expect(depthInput(scope, 'standard')).toBeEnabled();
-    // 서버 설정 이름·오류 코드는 화면에 없다.
+    await expect(scope.locator('.research-depth')).toHaveAttribute('data-deep-state', 'closed');
+
+    // 고르지 않은 동안에도 지금의 사실이 **글자로** 서 있다 — 색으로만 말하지 않는다.
+    // 그리고 "못 골라요"가 아니다: 고르는 것은 되고, 안 되는 것은 접수다.
+    await expect(depthOption(scope, 'deep')).toContainText('지금은 접수 안 돼요');
+    expect(await depthOption(scope, 'deep').innerText(), '고를 수 없다고 적어 놓고 고르게 해 둔다').not.toContain('못 골라');
+    // 뜻과 회복 방법은 그 칸이 스스로 나른다 — 새 블록을 세우지 않고(높이는 공용 예산이다)
+    // 호버 문구와 낭독기 문장으로 간다.
+    const closedDetail = await depthOption(scope, 'deep').getAttribute('title');
+    expect(closedDetail, '닫힌 칸이 뜻을 말하지 않는다').toContain('접수하지 않아요');
+    expect(closedDetail, '무엇을 하면 되는지 말하지 않는다').toContain('일반 조사');
+    expect(await depthOption(scope, 'deep').locator('.research-sr-only').innerText()).toContain('일반 조사');
+    // 진행이 아니다. 회전하는 것도, 세는 것도, 새로 생긴 live region도 없다.
+    await expect(scope.locator('.research-depth [aria-busy="true"], .research-depth ion-spinner, .research-depth progress')).toHaveCount(0);
+
+    // 실제로 고를 수 있고, 고른 것이 남는다.
+    await depthOption(scope, 'deep').click();
+    await expect(depthInput(scope, 'deep')).toBeChecked();
+    // 고른 순간 접수 조건 안내가 이유와 회복 방법을 눈에 보이게 말한다.
+    await expect(scope.locator('.research-block')).toBeVisible();
+    await expect(scope.locator('.research-block')).toContainText('지금 접수하지 않아요');
+    await expect(scope.locator('.research-block')).toContainText('일반 조사');
+
+    // 그리고 막힌다. 서버 설정 이름·오류 코드는 화면 어디에도 없다.
+    await scope.locator('ion-textarea textarea').fill('의사결정 권한을 확인해 주세요');
+    await scope.locator('.research-scope-all').click();
+    await expect(page.locator('ion-button.primary-action')).toHaveAttribute('data-blocked', 'research');
     const text = (await scope.innerText()).toLowerCase();
     for (const leak of ['deep_research', 'deep_feature_disabled', 'bad_research_request', 'script', 'enabled']) {
       expect(text.includes(leak), `화면에 내부 이름이 있다: ${leak}`).toBe(false);
+    }
+    // 닫힘을 기다림으로 말하지 않는다.
+    for (const word of ['잠시', '확인 중', '연결 중', '준비 중', '나중에', '곧']) {
+      expect((await scope.locator('.research-depth').innerText()).includes(word), `닫힘을 지연처럼 말한다: ${word}`).toBe(false);
     }
   } finally {
     await stopServer(harness.server);
   }
 });
 
-test('서버가 응답에서 아예 말하지 않아도 닫힘이다 — 못 들음과 안 됨을 같게 읽는다', async ({ page }) => {
+test('서버가 응답에서 아예 말하지 않아도 닫힘이다 — 대답한 것과 못 들은 것은 다르다', async ({ page }) => {
   const server = await startStaticServer();
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
   try {
     await page.context().route('**/vendor/**', (route) => route.abort());
-    // 옛 서버 흉내: `deepResearchEnabled` 칸 자체가 없다.
+    // 옛 서버 흉내: `deepResearchEnabled` 칸 자체가 없다. **대답은 했다** — 그러므로 닫힘이다.
     await page.route('https://api.example.test/**', async (route) => {
       const action = new URL(route.request().url()).searchParams.get('action');
       const items = action === 'list' ? [person(1, '김민서', '한화시스템')] : [];
@@ -408,9 +574,17 @@ test('서버가 응답에서 아예 말하지 않아도 닫힘이다 — 못 들
     const api = encodeURIComponent('https://api.example.test/exec');
     await page.goto(`http://127.0.0.1:${address.port}/next/?api=${api}&k=owner-token`, { waitUntil: 'networkidle' });
 
-    await expect(depthInput(composer(page), 'deep')).toBeDisabled();
+    const scope = composer(page);
+    await expect(scope.locator('.research-depth')).toHaveAttribute('data-deep-state', 'closed');
+    // 고르는 것은 여전히 된다. 닫힌 것은 접수다.
+    await expect(depthInput(scope, 'deep')).toBeEnabled();
+    await expect(depthInput(scope, 'standard')).toBeEnabled();
+    await depthOption(scope, 'deep').click();
+    await expect(depthInput(scope, 'deep')).toBeChecked();
+    await expect(scope.locator('.research-block')).toBeVisible();
     // 작성 자리 자체는 살아 있다 — 깊은 조사 하나가 닫혔다고 조사 기능이 사라지지 않는다.
-    await expect(depthInput(composer(page), 'standard')).toBeEnabled();
+    await depthOption(scope, 'standard').click();
+    await expect(scope.locator('.research-block')).toHaveCount(0);
   } finally {
     await stopServer(server);
   }
@@ -458,22 +632,54 @@ test('닫혀 있는데 이미 깊은 조사를 고른 상태면 몰래 낮추지
     // 서버가 닫는다. 다음 목록 갱신이 그 사실을 가져온다.
     deepOpen = false;
     await page.locator('.int30-refresh-now').click();
-    await expect(depthInput(scope, 'deep')).toBeDisabled({ timeout: 10_000 });
+    await expect(scope.locator('.research-depth')).toHaveAttribute('data-deep-state', 'closed', { timeout: 10_000 });
 
-    // 고른 것은 고른 채로 남는다 — 대신 다른 깊이로 바꿔치기하지 않는다.
+    // 고른 것은 고른 채로 남는다 — 대신 다른 깊이로 바꿔치기하지 않는다. 그리고 여전히 고를 수 있다.
     await expect(depthInput(scope, 'deep'), '고른 깊이를 몰래 다른 것으로 바꿨다').toBeChecked();
+    await expect(depthInput(scope, 'deep'), '닫혔다고 선택까지 잠갔다').toBeEnabled();
     await expect(scope.locator('.research-block')).toBeVisible();
     await expect(page.locator('ion-button.primary-action')).toHaveAttribute('data-blocked', 'research');
     // 하게 될 일을 설명하지 않는다 — 하지 않을 일을 설명하는 문장은 거짓말이다.
-    await expect(scope.locator('.research-depth-summary')).toContainText('지금은 깊은 조사를');
+    await expect(scope.locator('.research-depth-summary')).toContainText('지금 접수하지 않아요');
 
     // 그동안 어떤 조사 요청도 나가지 않았다. (막힌 버튼을 눌렀을 때의 동작 자체는
     // `int30-conformance.spec.ts`가, 마지막 방어선은 `services/research.test.ts`가 잠근다.)
     await page.waitForTimeout(400);
     expect(submitted.filter((body) => body.action === 'researchinstruction' || body.researchInstruction),
       '막힌 요청이 서버로 나갔다').toHaveLength(0);
+
+    // 막힘을 푸는 길은 살아 있다 — 깊이를 낮추면 그 자리에서 풀린다.
+    await depthOption(scope, 'standard').click();
+    await expect(scope.locator('.research-block')).toHaveCount(0);
+    // 막힘 표시가 **실제로 걷힌다.** `ion-button`은 custom element라 속성을 `undefined`로 주면
+    // 지워지지 않고 남는다 — 그래서 예전에는 조건을 푼 뒤에도 버튼이 계속 흐리게 서 있었다.
+    // `int30-research.css`의 `ion-button[data-blocked="research"] { opacity: .62 }`가 이 값을 읽는다.
+    // 계산된 opacity로는 판정하지 않는다 — 사진이 없어 버튼이 `disabled`인 상태와 섞인다.
+    await expect(page.locator('ion-button.primary-action'), '막힘이 풀렸는데 버튼이 아직 막힌 모습이다')
+      .toHaveAttribute('data-blocked', 'no');
   } finally {
     await stopServer(server);
+  }
+});
+
+test('깊이를 바꿔도 적어 둔 내용과 고른 범위가 사라지지 않는다', async ({ page }) => {
+  const harness = await boot(page);
+  try {
+    const scope = composer(page);
+    await scope.locator('ion-textarea textarea').fill('최근 발표 자료를 확인해 주세요');
+    await scope.locator('.research-scope-chip').first().click();
+    await scope.locator('.research-scope-chip').nth(2).click();
+
+    for (const depth of ['deep', 'quick', 'deep', 'standard'] as const) {
+      await depthOption(scope, depth).click();
+      await expect(depthInput(scope, depth)).toBeChecked();
+      await expect(scope.locator('ion-textarea textarea'), `${depth}로 바꾸자 적어 둔 글이 사라졌다`)
+        .toHaveValue('최근 발표 자료를 확인해 주세요');
+      await expect(scope.locator('.research-scope-count'), `${depth}로 바꾸자 고른 범위가 사라졌다`)
+        .toHaveText(`${SCOPE_COUNT}개 중 2개 선택`);
+    }
+  } finally {
+    await stopServer(harness.server);
   }
 });
 
@@ -585,6 +791,46 @@ test('키보드만으로 모두 선택·낱개·깊이를 차례로 다룰 수 �
     await expect(surface.locator('.research-depth-summary')).toContainText('깊은 조사');
     await page.keyboard.press('ArrowLeft');
     await expect(depthInput(surface, 'standard')).toBeChecked();
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+test('닫혀 있어도 화살표가 깊은 조사를 건너뛰지 않는다', async ({ page }) => {
+  // 꺼진 라디오는 브라우저가 화살표 순회에서 **통째로 건너뛴다**. 그래서 예전 화면에서는
+  // 키보드만 쓰는 사람에게 깊은 조사가 존재하지 않는 칸이었다 — 왜 안 되는지 물어볼 수도 없었다.
+  const harness = await boot(page, { deepOpen: false });
+  try {
+    const surface = composer(page);
+    await depthInput(surface, 'standard').focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(depthInput(surface, 'deep'), '화살표가 닫힌 깊이를 건너뛴다').toBeChecked();
+    await expect(depthInput(surface, 'deep')).toBeFocused();
+    // 그 자리에서 조건이 낭독기에 도달한다 — 고른 칸이 자기 조건과 이어져 있다.
+    const wiring = await surface.evaluate((root) => {
+      const blockId = root.querySelector('.research-block')?.id ?? '';
+      const deepInput = root.querySelector('.research-depth-option[data-depth="deep"] input');
+      return { blockId, described: (deepInput?.getAttribute('aria-describedby') ?? '').split(/\s+/).includes(blockId) };
+    });
+    expect(wiring.blockId).not.toBe('');
+    expect(wiring.described, '닫힌 깊이를 골랐는데 이유가 낭독기에 닿지 않는다').toBe(true);
+
+    await page.keyboard.press('ArrowLeft');
+    await expect(depthInput(surface, 'standard')).toBeChecked();
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+test('깊이 자리의 live region은 하나다 — 같은 사실을 두 번 읽어 주지 않는다', async ({ page }) => {
+  const harness = await boot(page, { deepOpen: false });
+  try {
+    const surface = composer(page);
+    const live = async () => surface.locator('.research-depth [role="status"], .research-depth [role="alert"], .research-depth [aria-live]').count();
+    // 닫힌 채로 고르지 않은 상태: 요약 줄 하나만 말한다. durable 문장은 사실이지 알림이 아니다.
+    expect(await live(), '깊이 자리에 스스로 말하는 자리가 둘 이상이다').toBe(1);
+    await depthOption(surface, 'deep').click();
+    expect(await live(), '깊이를 고른 뒤 말하는 자리가 늘었다').toBe(1);
   } finally {
     await stopServer(harness.server);
   }

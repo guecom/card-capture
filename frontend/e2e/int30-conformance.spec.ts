@@ -340,3 +340,56 @@ test('모두 선택은 지금 화면에 있는 범위만 켠다 — 보이지 �
     await stopServer(harness.server);
   }
 });
+
+// ── D. 닫힘과 남은 조건은 서로 다른 이유다 (TSK-000560 / INT-000036) ──────────
+//
+// 두 이유가 한 문장으로 뭉개지면 사용자는 풀 수 있는 조건(범위)과 풀 수 없는 조건(닫힘)을
+// 구분하지 못한다. 그리고 풀 수 없는 조건이 뒤에 숨으면, 범위를 다 고른 뒤에야 못 보낸다는 것을
+// 알게 된다 — 헛수고를 시키는 순서다.
+
+test('서버가 닫아 둔 깊은 조사는 범위를 다 골라도 다른 이유로 막힌다', async ({ page }) => {
+  const harness = await boot(page, { deepOpen: false });
+  try {
+    await openPersonSheet(page);
+    const composer = sheetComposer(page);
+    await composer.locator('ion-textarea textarea').fill('공개 경력과 최근 발표를 확인해 주세요');
+
+    // 고르는 것 자체는 막히지 않는다 — 예전에는 이 칸이 꺼져 있어 클릭이 아무 일도 하지 않았다.
+    await depthOption(composer, 'deep').click();
+    await expect(composer.locator('.research-depth-option[data-depth="deep"] input')).toBeChecked();
+
+    const block = composer.locator('.research-block');
+    await expect(block).toBeVisible();
+    // 범위 조건이 아니라 닫힘을 말한다.
+    await expect(block).toContainText('지금 접수하지 않아요');
+    await expect(block, '풀 수 없는 조건 자리에 풀 수 있는 조건을 적었다').not.toContainText('조사 범위를 하나 이상');
+
+    // 범위를 다 골라도 그대로다. 사용자가 이 자리에서 풀 수 있는 조건이 아니기 때문이다.
+    await composer.locator('.research-scope-all').click();
+    await expect(composer.locator('.research-scope-count')).toHaveText(`${SCOPE_COUNT}개 중 ${SCOPE_COUNT}개 선택`);
+    await expect(block, '범위를 다 골랐더니 닫힘이 사라졌다 — 열리지 않은 것을 열린 것처럼 보인다').toBeVisible();
+    await expect(block).toContainText('지금 접수하지 않아요');
+
+    // 막힌 버튼은 여전히 키보드로 닿고, 이름 자체로 이 이유를 말한다.
+    const native = sheetSubmitNative(page);
+    await expect(native).not.toBeDisabled();
+    await expect(native).toHaveAccessibleName(/보낼 수 없어요/);
+    await expect(native).toHaveAccessibleName(/일반 조사/);
+
+    await native.click();
+    await expect(block, '눌러도 이유로 데려다주지 않는다').toBeFocused();
+    await page.waitForTimeout(400);
+    expect(harness.submitted, '닫힌 깊은 조사가 서버로 나갔다').toEqual([]);
+
+    // 회복은 깊이를 낮추는 것 하나다. 그 순간 그대로 보낼 수 있어야 한다.
+    await depthOption(composer, 'standard').click();
+    await expect(block).toHaveCount(0);
+    await expect(native).toHaveAccessibleName('조사 요청 접수');
+    await native.click();
+    await expect.poll(() => harness.submitted.length, { timeout: 10_000 }).toBe(1);
+    // 낮춰 준 것이 아니라 사용자가 바꾼 것이다 — 나가는 값이 그 사실을 증명한다.
+    expect((harness.submitted[0].instruction as Record<string, unknown>)?.mode).toBe('standard');
+  } finally {
+    await stopServer(harness.server);
+  }
+});
