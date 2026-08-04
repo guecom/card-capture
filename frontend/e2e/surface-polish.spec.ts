@@ -109,6 +109,33 @@ interface BootOptions {
   height?: number;
   /** 개인 링크로 열렸는가. `false`면 미연결 첫 방문 상태 그대로 뜬다. */
   connected?: boolean;
+  /**
+   * 이 기기에 카메라가 있는가.
+   *
+   * 선언하지 않으면 이 파일은 **실행한 기계**를 잰다. 진입 카드의 조각 수와 마지막 조각의 모양이
+   * 기기 능력으로 갈리기 때문이다(`services/device-capability.ts`): 웹캠이 있으면 카드는
+   * `행동` 한 줄로 끝나고, 없으면 `이유`가 붙고 마지막 줄이 34px짜리 회복 버튼이 된다.
+   * 2026-08-04 CI 실패가 바로 그 차이였다 — 웹캠 있는 개발 PC에서는 전부 통과하고
+   * 웹캠 없는 runner에서만 두 카드의 행동 줄이 20px 어긋났다. 기본값은 `present`다.
+   */
+  camera?: 'present' | 'absent';
+}
+
+/** 기기의 카메라 사실을 못 박는다. 두 세계 모두 이 앱이 실제로 만나는 세계다. */
+async function declareCamera(page: Page, world: 'present' | 'absent'): Promise<void> {
+  await page.addInitScript((present) => {
+    const media = navigator.mediaDevices;
+    if (!media) return;
+    media.enumerateDevices = async () => (present
+      ? [{ kind: 'videoinput', deviceId: '', label: '', groupId: '', toJSON: () => ({}) } as MediaDeviceInfo]
+      : []);
+    media.getUserMedia = async () => {
+      if (present) return new MediaStream();
+      const error = new Error('Requested device not found');
+      error.name = 'NotFoundError';
+      throw error;
+    };
+  }, world === 'present');
 }
 
 async function boot(page: Page, theme: 'light' | 'dark', options: BootOptions = {}): Promise<Harness> {
@@ -127,6 +154,7 @@ async function boot(page: Page, theme: 'light' | 'dark', options: BootOptions = 
     localStorage.setItem('cc_name', '이강규');
     localStorage.setItem('cc_theme', value);
   }, theme);
+  await declareCamera(page, options.camera ?? 'present');
   await page.setViewportSize({ width: options.width ?? 390, height: options.height ?? 844 });
   const api = encodeURIComponent('https://api.example.test/exec');
   const query = options.connected === false ? '' : `?api=${api}&k=owner-token`;
@@ -522,38 +550,57 @@ function readEntryProbes(): EntryProbe[] {
 // ── 009: 나란한 카드는 같은 선에서 시작한다 ──
 //
 // founder: "하나는 설명이 있고 하나는 없고 그래서 시각적으로 뭔가 통일감이 떨어져."
-// 통일감의 실체는 **줄의 시작선**이다. 제목과 행동은 이미 맞아 있었고 설명만 짧은 쪽이
-// 세로 가운데로 내려와 있었다 — 같은 해부라면 세 줄 모두 같은 y에서 시작해야 한다.
+// 통일감의 실체는 **줄의 시작선**이다. 같은 해부라면 세 줄 모두 같은 y에서 시작해야 한다.
+//
+// 이 게이트는 처음에 폭 두 가지만 돌았고, 기기의 카메라 사실은 **실행한 기계**가 정했다.
+// 그래서 웹캠 있는 개발 PC에서는 늘 통과하고 웹캠 없는 CI runner에서만 20~25px 어긋났다 —
+// 없는 기기에서는 카드에 `이유` 줄이 하나 더 붙고 마지막 조각이 34px짜리 회복 버튼이 되기
+// 때문이다. 단언은 그대로 두고 **기기 세계를 선언해** 두 세계를 모두 전수로 돈다.
+// 정렬은 글자가 몇 줄로 접혔는지·조각이 몇 개인지와 무관해야 하고, 그 보장은
+// `int30-capture.css`의 subgrid(카드가 바깥 grid의 줄을 그대로 쓴다)가 만든다.
 for (const width of [390, 1280] as const) {
-  test(`entry cards in the same row start their title, outcome and action on the same line at ${width}px`, async ({ page }) => {
-    const harness = await boot(page, 'light', { width, height: 900 });
-    try {
-      const probes = await page.evaluate(readEntryProbes);
-      expect(probes.length, '진입 카드를 하나도 찾지 못했다 — 재지 못한 곳은 통과한 곳이 아니다').toBeGreaterThanOrEqual(3);
+  for (const camera of ['present', 'absent'] as const) {
+    test(`entry cards in the same row start their title, outcome and action on the same line at ${width}px (camera ${camera})`, async ({ page }) => {
+      const harness = await boot(page, 'light', { width, height: 900, camera });
+      try {
+        /* 두 세계를 정말 갈라 돌았는지 **먼저** 확인한다. 선언이 안 먹으면 `absent` 회차가
+           조용히 `present`를 한 번 더 도는 것이 되고, 그러면 이 게이트는 통과하면서 아무것도
+           재지 않는다. 기기 조회는 비동기라(`probeDeviceEnvironment`) 여기서 기다린다 —
+           확정되기 전에 재면 그 값은 화면의 최종 상태가 아니다. */
+        await expect(
+          page.locator('.cc-entry-card.is-unavailable'),
+          camera === 'absent'
+            ? '카메라 없음을 선언했는데 못 쓰는 카드가 하나도 없다 — 기기 선언이 먹지 않았다'
+            : '카메라 있음을 선언했는데 못 쓰는 카드가 있다',
+        ).toHaveCount(camera === 'absent' ? 1 : 0);
 
-      const rows = new Map<number, EntryProbe[]>();
-      for (const probe of probes) {
-        const key = Math.round(probe.cardTop);
-        rows.set(key, [...(rows.get(key) ?? []), probe]);
-      }
-      let compared = 0;
-      for (const [, row] of rows) {
-        if (row.length < 2) continue;
-        compared += 1;
-        for (const axis of ['titleTop', 'outcomeTop', 'actionTop'] as const) {
-          const values = row.map((probe) => probe[axis] ?? Number.NaN);
-          const spread = Math.max(...values) - Math.min(...values);
-          expect(
-            spread,
-            `같은 줄의 카드들이 ${axis}에서 어긋난다 (${spread}px): ${JSON.stringify(row.map((probe) => ({ [probe.title]: probe[axis] })))}`,
-          ).toBeLessThanOrEqual(0.5);
+        const probes = await page.evaluate(readEntryProbes);
+        expect(probes.length, '진입 카드를 하나도 찾지 못했다 — 재지 못한 곳은 통과한 곳이 아니다').toBeGreaterThanOrEqual(3);
+
+        const rows = new Map<number, EntryProbe[]>();
+        for (const probe of probes) {
+          const key = Math.round(probe.cardTop);
+          rows.set(key, [...(rows.get(key) ?? []), probe]);
         }
+        let compared = 0;
+        for (const [, row] of rows) {
+          if (row.length < 2) continue;
+          compared += 1;
+          for (const axis of ['titleTop', 'outcomeTop', 'actionTop'] as const) {
+            const values = row.map((probe) => probe[axis] ?? Number.NaN);
+            const spread = Math.max(...values) - Math.min(...values);
+            expect(
+              spread,
+              `같은 줄의 카드들이 ${axis}에서 어긋난다 (${spread}px): ${JSON.stringify(row.map((probe) => ({ [probe.title]: probe[axis] })))}`,
+            ).toBeLessThanOrEqual(0.5);
+          }
+        }
+        expect(compared, '나란히 선 카드 쌍을 한 번도 비교하지 못했다').toBeGreaterThan(0);
+      } finally {
+        harness.server.close();
       }
-      expect(compared, '나란히 선 카드 쌍을 한 번도 비교하지 못했다').toBeGreaterThan(0);
-    } finally {
-      harness.server.close();
-    }
-  });
+    });
+  }
 }
 
 // ── 010: 늘어난 죽은 공백이 없다 ──

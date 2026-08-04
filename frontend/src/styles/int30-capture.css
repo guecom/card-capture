@@ -287,12 +287,22 @@
 }
 
 /* ── 캡처 진입 카드 ───────────────────────────────────────────────────
-   모든 카드가 같은 네 줄을 갖는다: 아이콘 · 제목 · 한 줄 outcome · 행동.
-   `1fr`이 세 번째 줄에 있어서 설명 길이가 달라도 마지막 줄은 언제나 바닥에 붙는다 —
-   카드마다 행동 문구의 높이가 달라 보이던 것이 "조립식"으로 읽힌 원인 중 하나였다. */
+   모든 카드가 같은 네 줄을 갖는다: 아이콘 · 제목 · 본문(설명[+이유]) · 행동.
+
+   그리고 **같은 줄에 선 카드들은 그 네 줄을 문자 그대로 공유한다.** 카드가 각자 자기 줄을
+   나눠 가지면 정렬은 "글자가 우연히 같은 줄 수로 접혔는가"에 걸린다 — 서체가 늦게 오거나
+   기기가 달라 한쪽이 한 줄 더 쓰는 순간 조용히 어긋난다. 그래서 줄을 소유하는 것은 바깥
+   grid이고, 카드는 `subgrid`로 그 줄에 얹힌다. 제목·설명·행동의 시작선은 글자 수가 아니라
+   **구조**가 보장한다 (통합 검수 2026-08-04, TSK-000220).
+
+   `1fr`로 마지막 줄을 바닥에 붙이던 예전 방식은 두 카드의 마지막 조각 높이가 같을 때만 맞았다.
+   웹캠 없는 PC에서 `명함 앞면 촬영`의 마지막 조각은 34px짜리 회복 버튼, `직접 입력`은 14px짜리
+   글줄이라 바닥은 맞고 **시작선이 20px 어긋났다.** 줄을 공유하면 그 축 자체가 사라진다. */
 .primary-entries.cc-entries {
   display: grid;
   grid-template-columns: repeat(var(--cc-entry-columns, 2), minmax(0, 1fr));
+  /* 카드 한 줄 = 이 grid의 네 줄. 카드 수가 몇이든 암묵적으로 만들어진다. */
+  grid-auto-rows: auto;
   align-items: stretch;
   gap: 10px;
 }
@@ -314,12 +324,11 @@
    외톨이 카드까지 가로 배치가 되어 버린다. */
 .primary-entries.cc-entries[data-columns="2"] > .cc-entry-card:last-child:nth-child(odd) {
   grid-template-columns: auto minmax(0, 1fr);
-  /* 명시한 세 줄이 있어야 아이콘의 `1 / -1`이 실제 끝 줄까지 간다. 못 쓰는 카드처럼 조각이
-     하나 더 있는 경우는 넷째 줄이 암묵적으로 생겨 오른쪽 열에 그대로 이어진다. */
-  grid-template-rows: repeat(3, auto);
+  /* 명시한 네 줄이 있어야 아이콘의 `1 / -1`이 실제 끝 줄까지 간다. 조각 수는 이제 카드가
+     쓸 수 있든 없든 언제나 넷이다 (`CaptureEntry.tsx`의 본문 자리). */
+  grid-template-rows: repeat(4, auto);
   align-items: start;
   column-gap: 13px;
-  min-height: 0;
 }
 
 .primary-entries.cc-entries[data-columns="2"] > .cc-entry-card:last-child:nth-child(odd) > * {
@@ -335,13 +344,23 @@
 
 .primary-entries .cc-entry-card {
   display: grid;
+  /* subgrid를 모르는 엔진의 뒷줄. 정렬 보장은 없지만 네 줄 구조와 바닥에 붙는 행동은 남는다. */
   grid-template-rows: auto auto 1fr auto;
   align-content: start;
+  /* 브라우저 기본 스타일시트가 `button`에 `align-items: center`를 준다. 그대로 두면 옆 카드
+     때문에 넓어진 줄 안에서 조각이 **세로 가운데로 내려앉아** 시작선이 다시 어긋난다
+     (실측 8.33px). 조각은 자기 줄의 맨 위에서 시작한다. */
+  align-items: start;
   justify-items: start;
   gap: 9px;
   width: 100%;
   min-width: 0;
-  min-height: 182px;
+  /* 세로 하한(예전 182/174/190px)은 없앴다. 줄을 바깥 grid가 소유하면 카드의 높이는 track의
+     합이고, 카드에 건 `min-height`는 **아무 일도 하지 않으면서 선언만 남는다** — 나중에 이
+     구조를 되돌린 사람이 카드가 갑자기 38px 부푸는 것으로 그 사실을 알게 되는 종류의 덫이다.
+     하한 계약은 원래 이 값이 아니라 `int30-capture.spec.ts`의 140px과 `int29-manual.spec.ts`의
+     "두 카드가 같은 높이"이고, 둘 다 그대로 지켜진다(실측: 1280px 데스크톱에서 152px).
+     카드는 자기 내용만큼만 높아진다 — 넓은 카드에 이미 적용한 규칙과 같다. */
   margin: 0;
   padding: 13px 13px 12px;
   border: 1px solid rgba(var(--cc-accent), 0.22);
@@ -358,6 +377,23 @@
   background: rgba(var(--cc-accent), 0.09);
 }
 .primary-entries .cc-entry-card:active { transform: translateY(1px); }
+
+/* 줄의 소유권을 바깥 grid로 넘긴다 — 같은 줄에 선 카드들이 **같은 track**을 쓴다.
+   `span 4`가 카드 한 장이 차지하는 줄 수이고, 카드가 `gap`을 다시 선언하므로 카드 **안쪽**
+   간격(9px)과 카드 **사이** 간격(10px)은 그대로 갈린다(마지막 줄과 다음 카드 줄 사이의
+   틈만 바깥 값을 쓴다). 이 한 겹이 "글자가 몇 줄로 접혔는가"를 정렬에서 완전히 빼낸다. */
+@supports (grid-template-rows: subgrid) {
+  .primary-entries .cc-entry-card {
+    grid-row: span 4;
+    grid-template-rows: subgrid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .primary-entries.cc-entries[data-columns="2"] > .cc-entry-card:last-child:nth-child(odd) {
+    grid-template-rows: subgrid;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+}
 
 /* 1번째 줄: 아이콘과 상태. 상태 뱃지가 없어도 줄 높이는 아이콘이 정하므로 카드가 흔들리지 않는다. */
 .primary-entries .cc-entry-card .cc-entry-top {
@@ -405,15 +441,24 @@
   overflow-wrap: anywhere;
 }
 
+/* 3번째 줄: 본문 자리. 설명 한 줄과, 못 쓰는 카드일 때의 이유가 **이 자리 안에** 함께 산다.
+   조각 수를 넷으로 못 박는 자리이기도 하다 — 이유를 다섯 번째 조각으로 내보내면 옆 카드보다
+   줄이 하나 많아지고, 그 순간 두 카드의 마지막 줄이 서로 다른 track에 놓인다. */
+.primary-entries .cc-entry-card .cc-entry-body {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  align-content: start;
+  row-gap: 9px;
+}
+
 /* 한 줄 outcome. 어느 카드도 이 줄을 비우지 못한다 — 비면 `capture-entry.ts`가 메운다.
 
-   `align-self: start`가 이 파일에서 가장 중요한 한 줄이다 (통합 검수 2026-08-04).
-   설명은 `1fr` 줄에 놓여 있어서 기본값(`stretch`)이면 **남은 자리를 채우려고 상자가 늘어난다.**
-   그러면 `-webkit-box`가 그 안에서 글자를 세로 가운데로 밀어, 두 줄짜리 설명 옆의 한 줄짜리
-   설명이 8.33px 아래에서 시작한다. founder가 말한 "하나는 설명이 있고 하나는 없고 그래서
-   시각적으로 뭔가 통일감이 떨어져"의 실체가 정확히 이 8.33px이었다 — 제목도 행동도 이미
-   맞아 있었고 어긋난 것은 이 줄 하나였다. 남는 자리는 설명과 행동 **사이**에 남고,
-   행동 줄은 `1fr` 덕분에 계속 바닥에 붙는다. */
+   `align-self: start`는 이 상자가 **글자만큼만** 높아지게 한다 (통합 검수 2026-08-04).
+   기본값(`stretch`)이면 옆 카드 때문에 넓어진 본문 줄을 채우려고 상자가 늘어나고,
+   `-webkit-box`가 그 안에서 글자를 세로 가운데로 밀어 한 줄짜리 설명이 8.33px 아래에서
+   시작했다. founder가 말한 "하나는 설명이 있고 하나는 없고 그래서 시각적으로 뭔가 통일감이
+   떨어져"의 실체가 정확히 그 8.33px이었다. 남는 자리는 설명 **아래**에 남는다. */
 .primary-entries .cc-entry-card .cc-entry-outcome {
   display: -webkit-box;
   align-self: start;
@@ -428,7 +473,16 @@
   overflow-wrap: anywhere;
 }
 
-/* 4번째 줄: 눌리는 자리라는 표시. 카드마다 있고, 없는 카드가 없다. */
+/* 4번째 줄: 눌리는 자리라는 표시. 카드마다 있고, 없는 카드가 없다.
+
+   이 줄만 `stretch`다. 옆 카드의 마지막 조각이 34px짜리 회복 버튼이면 줄 자체가 34px가 되는데,
+   글줄을 그 맨 위에 붙여 두면 상자는 맞고 **글자는 안 맞는다.** 줄을 꽉 채우고 안에서 가운데를
+   잡으면 두 카드의 글자가 같은 띠 안에서 같은 높이에 선다. */
+.primary-entries .cc-entry-card .cc-entry-action,
+.primary-entries .cc-entry-card .cc-entry-recovery {
+  align-self: stretch;
+}
+
 .primary-entries .cc-entry-card .cc-entry-action {
   display: inline-flex;
   max-width: 100%;
@@ -525,7 +579,6 @@
   .primary-entries .cc-entry-card {
     gap: 8px;
     padding: 11px 11px 11px;
-    min-height: 174px;
   }
   .primary-entries .cc-entry-card .cc-entry-icon { width: 38px; height: 38px; }
   .primary-entries .cc-entry-card .cc-entry-title { font-size: 13.5px; }
@@ -550,5 +603,5 @@
    같은 카드가 다른 물건으로 보인다. */
 @media (min-width: 760px) {
   .primary-entries.cc-entries { gap: 12px; }
-  .primary-entries .cc-entry-card { min-height: 190px; padding: 15px; }
+  .primary-entries .cc-entry-card { padding: 15px; }
 }

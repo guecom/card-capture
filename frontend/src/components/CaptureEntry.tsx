@@ -73,7 +73,12 @@ export function CaptureEntry({ methods, onSelect, onRecover, status }: CaptureEn
         const legacy = METHOD_LEGACY_CLASS[anatomy.id] ?? '';
         const icon = METHOD_ICON[anatomy.id] ?? <Sparkles size={22} />;
 
-        // 네 줄의 앞 세 줄은 쓸 수 있든 없든 완전히 같다. 마지막 줄만 `행동`과 `회복`으로 갈린다.
+        /* 네 줄의 앞 세 줄은 쓸 수 있든 없든 완전히 같다. 마지막 줄만 `행동`과 `회복`으로 갈린다.
+           **줄의 개수가 카드마다 달라지면 안 된다** (통합 검수 2026-08-04, TSK-000220).
+           예전 판에서 못 쓰는 카드는 `이유`를 네 번째 조각으로 따로 내보냈다. 그래서 웹캠 없는
+           PC에서 `명함 앞면 촬영`은 다섯 조각, 옆에 선 `직접 입력`은 네 조각이 되었고, 같은 줄에
+           선 두 카드의 마지막 줄이 서로 다른 grid 줄에 놓였다. 이유는 설명과 같은 자리에 산다 —
+           둘 다 "이 카드가 지금 무엇인가"를 말하는 본문이고, 조각 수는 언제나 넷이다. */
         const head = (
           <>
             <span className="cc-entry-top">
@@ -81,7 +86,11 @@ export function CaptureEntry({ methods, onSelect, onRecover, status }: CaptureEn
               {anatomy.status && <span className="cc-entry-status">{anatomy.status}</span>}
             </span>
             <span className="cc-entry-title">{anatomy.title}</span>
-            <span className="cc-entry-outcome">{anatomy.outcome}</span>
+            <span className="cc-entry-body">
+              <span className="cc-entry-outcome">{anatomy.outcome}</span>
+              {/* 이유는 설명 줄을 덮지 않고 그 아래에 선다 — 무엇이었는지는 계속 읽혀야 한다. */}
+              {!anatomy.available && <span className="cc-entry-reason">{anatomy.reason}</span>}
+            </span>
           </>
         );
 
@@ -112,8 +121,6 @@ export function CaptureEntry({ methods, onSelect, onRecover, status }: CaptureEn
               onClick={recovery ? () => onRecover?.(anatomy.id, recovery as CaptureMethodRecovery) : undefined}
             >
               {head}
-              {/* 이유는 설명 줄을 덮지 않고 그 아래에 선다 — 무엇이었는지는 계속 읽혀야 한다. */}
-              <span className="cc-entry-reason">{anatomy.reason}</span>
               {recovery
                 ? <span className="cc-entry-recovery">{recovery.label}</span>
                 : <span className="cc-entry-action is-off">{anatomy.action}</span>}
