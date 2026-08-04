@@ -769,6 +769,12 @@ TB 'APP-AC-239 runtime: Deep slice process tree와 stream drain을 wall-clock �
 # .NET Framework(=Windows PowerShell 5.1)에 없는 속성이라는 것 — 대입이 던지고 `catch {}`가
 # 삼켜서 아무도 몰랐다. 이 게이트는 "무엇을 설정했는가"가 아니라 **처리기가 실제로 받은 바이트**를
 # 본다. 설정 방식을 바꿔도 계약이 지켜지는지 그것만이 판정 기준이다.
+#
+# 게이트는 **주변 환경을 믿지 않고 스스로 적대적인 조건을 만든다.** 첫 판은 개발 PC에서 통과하고
+# CI에서만 실패했다 — runner의 `Console.InputEncoding`이 BOM 있는 UTF-8이라 .NET이 StandardInput을
+# 만들며 켜는 `AutoFlush`가 우리가 쓰기도 전에 `EF BB BF`를 파이프로 흘렸기 때문이다(72→75바이트).
+# 그래서 여기서 그 상태를 직접 만들어 놓고 잰다. 환경이 우연히 친절할 때 초록으로 보이는 게이트는
+# 게이트가 아니다.
 TB 'ISS-000232 stdin: 처리기가 받는 프롬프트 바이트가 한글에서도 정확히 UTF-8이다' {
     $oldMode = $CardCaptureWatcherTestMode
     $oldCodex = $Codex
@@ -777,6 +783,20 @@ TB 'ISS-000232 stdin: 처리기가 받는 프롬프트 바이트가 한글에서
     $oldArguments = $BoundedProcessorTestArguments
     $probeOut = Join-Path $sandbox 'stdin-prompt-bytes.bin'
     if (Test-Path $probeOut) { Remove-Item $probeOut -Force }
+    $savedInputEncoding = $null
+    # 실제로 관측된 두 가지 적대 조건을 모두 건다.
+    #   949            — 한글 Windows 기본 ANSI. 운영 워처가 이 상태였고 `invalid byte at offset 0`이 났다.
+    #   UTF-8 with BOM — GitHub Actions windows runner. 프롬프트 앞에 `EF BB BF`가 붙어 나갔다.
+    $hostiles = @(
+        @{ name = 'cp949'; enc = { [System.Text.Encoding]::GetEncoding(949) } },
+        @{ name = 'utf8-bom'; enc = { New-Object System.Text.UTF8Encoding($true) } }
+    )
+    $prompt = "한글 조사 프롬프트 · PER 실력·전문성 추정 · ASCII tail"
+    $expected = [System.Text.Encoding]::UTF8.GetBytes($prompt)
+    $hasProp = ((New-Object System.Diagnostics.ProcessStartInfo).PSObject.Properties.Name -contains 'StandardInputEncoding')
+    Write-Host ('  stdin probe: hasStdinEncodingProp=' + $hasProp + ' promptChars=' + ([string]$prompt).Length + ' psv=' + $PSVersionTable.PSVersion)
+    $allOk = $true
+    $anyHostileApplied = $false
     try {
         $CardCaptureWatcherTestMode = $false
         $Codex = 'powershell.exe'
@@ -785,33 +805,44 @@ TB 'ISS-000232 stdin: 처리기가 받는 프롬프트 바이트가 한글에서
         $BoundedProcessorTestArguments = '-NoProfile -Command "$in=[Console]::OpenStandardInput(); $mem=New-Object System.IO.MemoryStream; $in.CopyTo($mem); [System.IO.File]::WriteAllBytes(''' + $probeOut + ''', $mem.ToArray())"'
         $DeepSliceTimeoutSeconds = 20
         $Vault = $sandbox
-        # 첫 글자가 한글이어야 한다 — 운영 실패가 정확히 offset 0에서 났다.
-        $prompt = "한글 조사 프롬프트 · PER 실력·전문성 추정 · ASCII tail"
-        $null = Invoke-BoundedDeepProcessor $prompt (Join-Path $sbLog 'stdin-utf8.log')
-        if (-not (Test-Path $probeOut)) { Write-Host '  stdin probe: 자식이 아무것도 받지 못했다'; return $false }
-        $actual = [System.IO.File]::ReadAllBytes($probeOut)
-        $expected = [System.Text.Encoding]::UTF8.GetBytes($prompt)
-        $sameBytes = ($actual.Length -eq $expected.Length)
-        if ($sameBytes) {
-            for ($i = 0; $i -lt $expected.Length; $i++) {
-                if ($actual[$i] -ne $expected[$i]) { $sameBytes = $false; break }
+        foreach ($hostile in $hostiles) {
+            if (Test-Path $probeOut) { Remove-Item $probeOut -Force }
+            $applied = $false
+            try {
+                if ($null -eq $savedInputEncoding) { $savedInputEncoding = [Console]::InputEncoding }
+                [Console]::InputEncoding = (& $hostile.enc)
+                $applied = ([Console]::InputEncoding.CodePage -eq (& $hostile.enc).CodePage)
+            } catch { $applied = $false }
+            if ($applied) { $anyHostileApplied = $true }
+            # 첫 글자가 한글이어야 한다 — 운영 실패가 정확히 offset 0에서 났다.
+            $null = Invoke-BoundedDeepProcessor $prompt (Join-Path $sbLog ('stdin-' + $hostile.name + '.log'))
+            if (-not (Test-Path $probeOut)) {
+                Write-Host ('  stdin probe[' + $hostile.name + ']: 자식이 아무것도 받지 못했다')
+                $allOk = $false
+                continue
             }
+            $actual = [System.IO.File]::ReadAllBytes($probeOut)
+            $same = ($actual.Length -eq $expected.Length)
+            if ($same) {
+                for ($i = 0; $i -lt $expected.Length; $i++) {
+                    if ($actual[$i] -ne $expected[$i]) { $same = $false; break }
+                }
+            }
+            # 실패했을 때 "왜"를 로그만 보고 가릴 수 있도록 실측값을 남긴다.
+            Write-Host ('  stdin probe[' + $hostile.name + ']: applied=' + $applied + ' bytes=' + $actual.Length + '/' + $expected.Length +
+                ' head=[' + (@($actual | Select-Object -First 8) -join ',') + '] want=[' + (@($expected | Select-Object -First 8) -join ',') + ']')
+            if (-not ($same -and $applied)) { $allOk = $false }
         }
-        # 실패했을 때 "왜"를 로그만 보고 가릴 수 있도록 런타임 사실까지 함께 적는다 — 이 게이트는
-        # 인코딩 환경에 따라 갈리므로 숫자만 남으면 CI에서 원인을 좁힐 수 없다.
-        $head = (@($actual | Select-Object -First 8) -join ',')
-        $want = (@($expected | Select-Object -First 8) -join ',')
-        $hasProp = ((New-Object System.Diagnostics.ProcessStartInfo).PSObject.Properties.Name -contains 'StandardInputEncoding')
-        Write-Host ('  stdin probe: bytes=' + $actual.Length + ' expected=' + $expected.Length + ' promptChars=' + ([string]$prompt).Length)
-        Write-Host ('  stdin probe: head=[' + $head + '] want=[' + $want + ']')
-        Write-Host ('  stdin probe: hasStdinEncodingProp=' + $hasProp + ' outCP=' + [Console]::OutputEncoding.CodePage + ' psv=' + $PSVersionTable.PSVersion)
-        return $sameBytes
+        # 적대 조건을 하나도 걸지 못했으면 통과로 세지 않는다 — 아무것도 검사하지 않은 초록이 이
+        # 게이트가 막으려는 바로 그 실패 양식이다.
+        return ($allOk -and $anyHostileApplied)
     } finally {
         $CardCaptureWatcherTestMode = $oldMode
         $Codex = $oldCodex
         $DeepSliceTimeoutSeconds = $oldTimeout
         $Vault = $oldVault
         $BoundedProcessorTestArguments = $oldArguments
+        if ($null -ne $savedInputEncoding) { try { [Console]::InputEncoding = $savedInputEncoding } catch {} }
     }
 }
 
