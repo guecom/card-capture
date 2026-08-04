@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ConnectionState } from '../contracts/int30';
 import type { CandidateCameraErrorCode } from './camera';
+import { CAPTURE_METHOD_ORDER } from './capture-entry';
 import {
   type CameraPermission,
   type DeviceEnvironment,
@@ -9,6 +10,7 @@ import {
   UNKNOWN_DEVICE_ENVIRONMENT,
   cameraBlockOf,
   captureMethodOrder,
+  captureRecoveryIntent,
   deviceCaptureMethods,
   probeDeviceEnvironment,
   triageIntakeFiles,
@@ -124,11 +126,22 @@ describe('capture method cards — 전수 매트릭스', () => {
 });
 
 describe('capture method order', () => {
-  it('leads with the file entry on a PC and with the camera on a phone', () => {
-    expect(captureMethodOrder('desktop')[0]).toBe('upload');
-    expect(captureMethodOrder('mobile')[0]).toBe('camera');
-    expect(deviceCaptureMethods(env({ formFactor: 'desktop' })).map((card) => card.id)).toEqual(['upload', 'camera', 'manual']);
-    expect(deviceCaptureMethods(env({ formFactor: 'mobile' })).map((card) => card.id)).toEqual(['camera', 'upload', 'manual']);
+  /* 통합 판정 (TSK-000220 + TSK-000545): 순서는 기기와 무관하게 **하나**다.
+     이 lane의 초안은 PC에서 `upload`를 맨 앞에 두었는데, 칸이 2개인 grid에서 그 순서는
+     첫 줄을 `upload`·`camera`로 만들고 `직접 입력`을 둘째 줄로 밀어낸다. 두 입구가 같은 줄·
+     같은 크기라는 것은 founder 결정(DEC-000103)이라 기기에 따라 깨질 수 없다. */
+  it('keeps one order on every device so 촬영·직접 입력 stay side by side', () => {
+    expect(captureMethodOrder()).toEqual(['camera', 'manual', 'upload']);
+    for (const formFactor of FORM_FACTORS) {
+      const ids = deviceCaptureMethods(env({ formFactor })).map((card) => card.id);
+      expect(ids, `${formFactor}: 순서가 다르다`).toEqual(['camera', 'manual', 'upload']);
+      // 인접성은 index 산술로 못 박는다 — 나중에 입구가 늘어도 둘 사이에 끼어들 수 없다.
+      expect(ids.indexOf('manual') - ids.indexOf('camera'), `${formFactor}: 두 입구가 붙어 있지 않다`).toBe(1);
+    }
+  });
+
+  it('is the same value the entry cards order by — one registry, not two', () => {
+    expect(captureMethodOrder()).toEqual([...CAPTURE_METHOD_ORDER]);
   });
 });
 
@@ -187,8 +200,58 @@ describe('camera availability', () => {
 
   it('describes the desktop webcam for hands that are not free', () => {
     const card = cameraOf({ formFactor: 'desktop', videoInputs: 1, cameraPermission: 'granted' });
-    expect(card.title).toBe('웹캠으로 촬영');
+    // PC의 사정은 **설명 줄**이 나른다. 제목은 결과를 말하는 자리다.
     expect(card.description).toContain('흔들림이 멎으면');
+    expect(card.description).not.toBe(cameraOf({ formFactor: 'mobile', videoInputs: 1, cameraPermission: 'granted' }).description);
+  });
+
+  /* 통합 판정 (TSK-000220 + TSK-000545): 제목은 기기와 무관하게 하나다.
+     초안은 PC에서 `웹캠으로 촬영`이었다. 그러면 (1) 옆에 나란히 선 `직접 입력`이 결과형 제목인데
+     하나만 장치형이 되어 두 입구가 다른 종류의 말로 읽히고(DEC-000103의 동등 위계는 크기만이
+     아니라 말의 결로도 읽힌다), (2) 앱에서 가장 많이 참조되는 접근 이름이 기기마다 달라진다. */
+  it('names the camera entry by its outcome, identically on every device', () => {
+    const desktop = cameraOf({ formFactor: 'desktop', videoInputs: 1 });
+    const mobile = cameraOf({ formFactor: 'mobile', videoInputs: 1 });
+    expect(desktop.title).toBe('명함 앞면 촬영');
+    expect(mobile.title).toBe(desktop.title);
+  });
+
+  it('keeps every camera title stable across the whole device matrix', () => {
+    const titles = new Set<string>();
+    for (const candidate of everyEnvironment()) {
+      for (const connection of CONNECTIONS) {
+        titles.add(deviceCaptureMethods(candidate, connection).find((card) => card.id === 'camera')!.title);
+      }
+    }
+    expect([...titles], '카메라 카드 제목이 조합에 따라 달라진다').toEqual(['명함 앞면 촬영']);
+  });
+});
+
+describe('recovery intent', () => {
+  /* 회복 버튼이 무엇을 여는지는 문구를 만든 자리가 안다. `kind`만으로는 갈리지 않는다 —
+     `다시 시도`와 `파일 올리기로 등록하기`가 둘 다 `help`다. */
+  it('never leaves a blocked card without a place to go', () => {
+    for (const candidate of everyEnvironment()) {
+      for (const card of deviceCaptureMethods(candidate)) {
+        if (card.available) continue;
+        expect(['retry_camera', 'open_upload', 'open_manual']).toContain(captureRecoveryIntent(card.recovery!));
+      }
+    }
+  });
+
+  it('asks the browser again only when a permission is what is missing', () => {
+    const denied = deviceCaptureMethods(env({ cameraPermission: 'denied', videoInputs: 1 })).find((card) => card.id === 'camera')!;
+    expect(captureRecoveryIntent(denied.recovery!)).toBe('retry_camera');
+    // 다른 앱이 잡고 있는 경우도 "다시 열어 보는 것"이 유일하게 확인 가능한 행동이다.
+    const busy = deviceCaptureMethods(env({ lastCameraFailure: 'camera_busy', videoInputs: 1 })).find((card) => card.id === 'camera')!;
+    expect(captureRecoveryIntent(busy.recovery!)).toBe('retry_camera');
+  });
+
+  it('sends a camera-less device to file upload, and a file-less browser to 직접 입력', () => {
+    const noCamera = deviceCaptureMethods(env({ videoInputs: 0 })).find((card) => card.id === 'camera')!;
+    expect(captureRecoveryIntent(noCamera.recovery!)).toBe('open_upload');
+    const noFiles = deviceCaptureMethods(env({ hasFileInput: false })).find((card) => card.id === 'upload')!;
+    expect(captureRecoveryIntent(noFiles.recovery!)).toBe('open_manual');
   });
 
   it('reports no block at all when the camera is simply fine', () => {

@@ -148,8 +148,13 @@ test.describe('PC 진입 — 데스크톱 1280×800', () => {
 
   test('keeps every other entry when the webcam is denied', async ({ page }) => {
     const { server, origin } = await serverOrigin();
-    // 권한 거부를 실제로 재현한다. Chrome의 fake-capture 플래그는 이 환경에서 신뢰할 수 없으므로
-    // `getUserMedia`를 직접 덮어써 브라우저가 던지는 것과 같은 오류를 만든다.
+    /* 권한 거부를 실제로 재현한다. Chrome의 fake-capture 플래그는 이 환경에서 신뢰할 수 없으므로
+       `getUserMedia`를 직접 덮어써 브라우저가 던지는 것과 같은 오류를 만든다.
+
+       기기 목록에는 카메라가 **있다**고 답한다. `카메라가 아예 없다`와 `카메라는 있는데 권한이
+       거부됐다`는 서로 다른 세계이고, 이 게이트가 재려는 것은 두 번째다 (첫 번째는
+       `int30-integration.spec.ts`가 잰다). 예전에는 목록을 빈 배열로 두었는데, 진입 카드가
+       기기 능력을 읽기 시작한 뒤로는 그 stub이 "카메라 없는 PC"를 뜻하게 됐다. */
     await page.addInitScript(() => {
       const denied = () => {
         const error = new Error('Permission denied');
@@ -158,7 +163,10 @@ test.describe('PC 진입 — 데스크톱 1280×800', () => {
       };
       Object.defineProperty(navigator, 'mediaDevices', {
         configurable: true,
-        value: { getUserMedia: denied, enumerateDevices: () => Promise.resolve([]) },
+        value: {
+          getUserMedia: denied,
+          enumerateDevices: () => Promise.resolve([{ kind: 'videoinput', deviceId: '', label: '', groupId: '' }]),
+        },
       });
     });
 
@@ -176,6 +184,13 @@ test.describe('PC 진입 — 데스크톱 1280×800', () => {
       // 그리고 촬영이 막혔다고 해서 나머지 입구가 사라지지 않는다.
       await expectCoreShell(page);
       await expectNoBlockingBanner(page);
+      /* 방금 있었던 일을 카드가 기억한다 (TSK-000220 통합). 예전에는 거부가 모달 안에서만
+         보이고 닫는 순간 잊혔다 — 사용자는 자기가 방금 거부한 입구가 아무 일 없었다는 얼굴로
+         다시 서 있는 것을 봤다. 조회는 방금 거부를 곧바로 말해 주지 않으므로,
+         **실제로 열어 본 결과**가 이 화면이 가진 가장 구체적인 사실이다. */
+      const camera = page.getByRole('button', { name: '명함 앞면 촬영' });
+      await expect(camera).toContainText('권한이 꺼져 있어요');
+      await expect(camera).toContainText('카메라 권한 다시 열기');
     } finally {
       await stopStaticServer(server);
     }

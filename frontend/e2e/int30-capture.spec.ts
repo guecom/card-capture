@@ -76,6 +76,16 @@ async function boot(page: Page, size = { width: 390, height: 844 }): Promise<Har
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(listFixture()) });
   });
   await page.addInitScript(() => localStorage.setItem('cc_name', 'E2E Owner'));
+  /* 이 게이트가 재는 것은 **해부**이지 가용성이 아니다. 그런데 카드가 쓸 수 있는지는 이제
+     기기가 정하므로(`device-capability.ts`), 웹캠 없는 기계에서 돌리면 카메라 카드가 이유·회복
+     줄을 달고 나와 줄 수가 달라진다 — 게이트가 코드가 아니라 **실행한 기계**에 따라 붙었다
+     떨어졌다 하게 된다. 그래서 여기서는 기기 축을 못 박는다. 못 쓰는 카드의 해부는
+     `int30-integration.spec.ts`가 따로 잰다. */
+  await page.addInitScript(() => {
+    const media = navigator.mediaDevices;
+    if (!media) return;
+    media.enumerateDevices = async () => [{ kind: 'videoinput', deviceId: '', label: '', groupId: '', toJSON: () => ({}) } as MediaDeviceInfo];
+  });
   await page.setViewportSize(size);
   const api = encodeURIComponent('https://api.example.test/exec');
   await page.goto(`${origin}next/?api=${api}&k=owner-token`, { waitUntil: 'networkidle' });
@@ -183,11 +193,13 @@ async function settled(locator: ReturnType<Page['locator']>, property: 'boxShado
   }, property);
 }
 
-test('두 진입 카드가 같은 해부를 쓴다 — 설명 있는 카드/없는 카드가 없다', async ({ page }) => {
+test('진입 카드가 모두 같은 해부를 쓴다 — 설명 있는 카드/없는 카드가 없다', async ({ page }) => {
   const harness = await boot(page);
   try {
     const cards = await cardShapes(page);
-    expect(cards.length, '진입 카드가 둘이 아니다').toBe(2);
+    /* 셋이다: 촬영 · 직접 입력 · 파일 올리기. 생산자를 연결하기 전에는 둘이었다 —
+       임시 배열이 두 입구만 들고 있었기 때문이고, 그때는 파일 올리기가 화면에 없었다. */
+    expect(cards.length, '진입 카드가 셋이 아니다').toBe(3);
 
     for (const card of cards) {
       expect(card.hasIcon, `${card.label}: 아이콘이 없다`).toBe(true);
@@ -200,11 +212,15 @@ test('두 진입 카드가 같은 해부를 쓴다 — 설명 있는 카드/없�
       }
     }
 
-    const [first, second] = cards;
-    // 같은 부모의 형제이고, 같은 줄에서 같은 크기다.
+    const [first, second, third] = cards;
+    // 같은 부모의 형제이고, 같은 줄에서 같은 크기다 (DEC-000103: 촬영·직접 입력의 동등 위계).
     expect(Math.abs(first.rect.top - second.rect.top), '같은 줄에 있지 않다').toBeLessThanOrEqual(2);
     expect(Math.abs(first.rect.height - second.rect.height), '높이가 다르다').toBeLessThanOrEqual(2);
     expect(Math.abs(first.rect.width - second.rect.width), '폭이 다르다').toBeLessThanOrEqual(2);
+    /* 셋째 카드(파일 올리기)는 둘째 줄에서 **두 칸을 가로지른다**. 반만 그려진 카드는 잘린 것으로
+       보이고, 무엇보다 이 카드가 첫 줄에 끼면 직접 입력이 둘째 줄로 밀려 위 계약이 깨진다. */
+    expect(third.rect.top, '셋째 카드가 첫 줄에 끼어 있다').toBeGreaterThan(first.rect.top + first.rect.height - 2);
+    expect(third.rect.width, '셋째 카드가 두 칸을 가로지르지 않는다').toBeGreaterThan(first.rect.width * 1.6);
 
     // 줄마다 같은 글자 크기·굵기를 쓴다 — 위계가 카드마다 달라지면 그것이 곧 통일감의 붕괴다.
     for (let index = 0; index < first.rows.length; index += 1) {
@@ -379,7 +395,7 @@ for (const viewport of [{ name: 'compact phone', width: 390, height: 844 }, { na
     const harness = await boot(page, { width: viewport.width, height: viewport.height });
     try {
       const cards = await cardShapes(page);
-      expect(cards.length).toBe(2);
+      expect(cards.length).toBe(3);
       for (const card of cards) {
         expect(card.rows.length, `${viewport.name}: ${card.label}의 줄이 사라졌다`).toBe(3);
         expect(card.rect.height, `${viewport.name}: 카드가 너무 낮다`).toBeGreaterThanOrEqual(140);

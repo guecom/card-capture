@@ -177,7 +177,6 @@
 :root[data-theme="dark"] .status-skipped { background: rgba(158,140,120,0.2); color: #cbb9a5; }
 :root[data-theme="dark"] .signout-warning { border-color: rgba(214,109,96,0.4); background: rgba(214,109,96,0.16); color: var(--cc-danger); }
 :root[data-theme="dark"] .signout-warning b { color: var(--cc-danger); }
-:root[data-theme="dark"] .setup-banner { background: rgba(224,183,109,0.12); }
 :root[data-theme="dark"] .stage-track { background: rgba(var(--cc-accent), 0.08); }
 :root[data-theme="dark"] .stage-track.late { background: rgba(224,183,109,0.11); }
 :root[data-theme="dark"] .stage-track.failed { background: rgba(214,109,96,0.13); }
@@ -250,10 +249,9 @@ ion-toolbar {
 .app-header-copy small { overflow: hidden; color: var(--cc-muted); font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 /* K 표식은 테마 강조색을 따른다 (founder 항목 1). 예전에는 파랑이 박혀 있어 보라 화면에서 이것만 튀었다. */
 .brand-mark { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border-radius: var(--cc-r-md); background: linear-gradient(145deg, rgb(var(--cc-accent)), rgb(var(--cc-accent-deep))); color: var(--cc-on-accent); font-weight: 780; box-shadow: 0 6px 15px rgba(var(--cc-accent), 0.2); }
-.header-refresh { display: grid; width: 40px; height: 40px; flex: 0 0 auto; place-items: center; border: 1px solid var(--cc-line); border-radius: var(--cc-r-md); background: var(--cc-solid-soft); color: var(--cc-muted); }
-.header-refresh:active { background: rgba(var(--cc-accent), 0.08); color: var(--cc-blue); }
-.header-refresh[aria-busy="true"] { color: var(--cc-blue); }
-.header-refresh .spinning { animation: cc-spin 900ms linear infinite; }
+/* `cc-spin`은 계속 쓰인다 — 설정 화면의 진행 아이콘(`int29-settings.css`의 `.int29-action .spinning`).
+   이 keyframes를 갖고 있던 `.header-refresh`(헤더의 갱신 버튼)는 갱신이 `RefreshControl`로 옮겨
+   가면서 마크업이 사라졌다. 규칙만 남아 있었다 (TSK-000543 정리). */
 @keyframes cc-spin { to { transform: rotate(360deg); } }
 
 .candidate-shell { min-height: 100%; padding: 24px max(18px, env(safe-area-inset-left)) calc(28px + var(--cc-safe-bottom)); background: radial-gradient(circle at 92% 3%, var(--cc-page-tint), transparent 30%), var(--cc-page); }
@@ -493,18 +491,19 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(var(--cc-accent)
 /* 최근 캡처 목록의 바로 메모 버튼 */
 .note-action { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; min-height: 34px; padding: 8px 11px; border: 1px solid rgba(var(--cc-accent), 0.34); border-radius: var(--cc-r-sm); background: rgba(var(--cc-accent), 0.1); color: var(--cc-blue); font-size: 11px; font-weight: 700; }
 
-/* ── legacy 작업 화면 구조 복원 (ISS-000091 항목 17·18) ── */
-.setup-banner { padding: 14px 16px; border-left: 4px solid #b96908; border-radius: var(--cc-r-md); background: rgba(185,105,8,0.08); }
-.setup-banner strong { color: var(--cc-ink); font-size: 14px; }
-.setup-banner p { margin: 5px 0 0; color: var(--cc-muted); font-size: 12.5px; line-height: 1.55; }
-
+/* ── legacy 작업 화면 구조 복원 (ISS-000091 항목 17·18) ──
+   `.setup-banner`(화면 위를 덮던 전면 연결 경고)의 규칙은 여기 있었다. 그 배너는 연결 안내가
+   막힌 기능 옆 inline card로 옮겨 가면서 사라졌고(TSK-000545 / DEC-000105), 규칙만 남아 있었다.
+   되살아나지 않는지는 `int30-desktop.spec.ts`가 DOM에서 직접 센다 — CSS가 아니라 마크업이 계약이다. */
 .capture-card { padding: 20px 18px 18px; }
 .capture-kicker { display: inline-flex; align-items: center; gap: 7px; color: var(--cc-teal); font-size: 12px; font-weight: 800; margin-bottom: 8px; }
 .capture-kicker::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 5px rgba(31,143,130,0.13); }
 .capture-title { margin: 0; color: var(--cc-ink); font-size: 24px; line-height: 1.22; letter-spacing: -0.045em; font-weight: 790; word-break: keep-all; }
 .capture-copy { margin: 7px 0 15px; color: var(--cc-muted); font-size: 13.5px; line-height: 1.55; word-break: keep-all; }
 .shot-main { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 170px; padding: 12px; border: 1px solid rgba(var(--cc-accent), 0.2); border-radius: var(--cc-r-lg); background: rgba(var(--cc-accent), 0.05); color: var(--cc-blue); font-size: 15px; font-weight: 750; }
-.shot-main .shot-icon { display: grid; width: 48px; height: 48px; place-items: center; border-radius: var(--cc-r-md); color: var(--cc-on-accent); background: linear-gradient(145deg, rgb(var(--cc-accent)), rgb(var(--cc-accent-deep))); box-shadow: 0 7px 16px rgba(var(--cc-accent), 0.2); }
+/* `.shot-main .shot-icon`이 여기 있었다. 촬영 버튼을 `App.tsx`가 직접 그리던 시절의 아이콘이고,
+   입구가 `CaptureEntry`로 옮겨 가면서 아이콘도 `.cc-entry-icon`이 됐다 (TSK-000220).
+   `.shot-main` 자신은 남는다 — 앞면 미리보기(`.shot-main.filled`)와 여러 게이트가 쓰는 이름이다. */
 .shot-main.filled { min-height: 0; padding: 8px; background: var(--cc-soft); }
 .shot-main img { max-width: 100%; max-height: 190px; border-radius: var(--cc-r-sm); }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }

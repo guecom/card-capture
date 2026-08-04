@@ -35,9 +35,18 @@ import { focusCaptureProgress, ResearchComposer, type ResearchReceipt } from './
 // 아래 둘은 `int30-capture.css`를 함께 들여온다. `app.css`의 만남 맥락 규칙을 되받아야 하므로
 // 이 import가 `int29-*` 뒤에 와야 한다 — 순서가 곧 cascade다 (TSK-000220).
 import { CaptureEntry } from './components/CaptureEntry';
+import { DesktopIntake } from './components/DesktopIntake';
 import { AuthoringField } from './components/AuthoringField';
-import type { CaptureMethodCard } from './contracts/int30';
+import type { CaptureMethodId, CaptureMethodRecovery } from './contracts/int30';
 import { CONTEXT_EXAMPLE_LABEL, contextWeight } from './services/capture-entry';
+import {
+  captureRecoveryIntent,
+  deviceCaptureMethods,
+  type DeviceEnvironment,
+  type IntakeAssignment,
+  probeDeviceEnvironment,
+  readDeviceEnvironment,
+} from './services/device-capability';
 import { addPersonNote, fetchServerCaptureIds, listBriefsUpTo, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
 import {
   contentEvidence,
@@ -53,7 +62,7 @@ import {
   RESEARCH_PLACEHOLDER,
   type RecallStageKey,
 } from './services/ai-stages';
-import { type CapturedCameraFrame, storedCameraFrame, thumbnailOf } from './services/camera';
+import { type CandidateCameraErrorCode, type CapturedCameraFrame, fileToCameraFrame, storedCameraFrame, thumbnailOf } from './services/camera';
 import {
   QUICK_NAME_LATER_LABEL,
   QUICK_NAME_STATUS_COPY,
@@ -463,6 +472,13 @@ function App() {
   // 직접 입력 시트의 열림은 이제 진입 카드가 소유한다 (TSK-000220). 카드가 `CaptureEntry`로
   // 옮겨 갔기 때문이다 — 두 입구를 서로 다른 파일이 각자 그리던 것이 통일감이 깨진 원인이었다.
   const [manualOpen, setManualOpen] = useState(false);
+  /* 파일 올리기 작업면(`DesktopIntake`)이 진입 카드 자리를 넘겨받았는가 (TSK-000545 통합).
+     겹쳐 띄우지 않는 이유는 같은 이름의 웹캠 입구가 카드와 작업면에 동시에 두 개 생기기 때문이다. */
+  const [intakeOpen, setIntakeOpen] = useState(false);
+  /* 이 기기가 실제로 할 수 있는 일. 처음에는 **즉시 알 수 있는 것만** 담고, 모르는 축은
+     `unknown`으로 둔다 — 탐지 전 몇 프레임 동안 멀쩡한 카메라가 "없음"으로 그려지면
+     그 첫인상이 사용자가 읽는 유일한 사실이 된다 (`device-capability.ts`). */
+  const [deviceEnv, setDeviceEnv] = useState<DeviceEnvironment>(readDeviceEnvironment);
   // 쓰다 만 초안이 있는가. 시트를 닫는 순간 다시 읽는다(시트 안에서만 바뀌는 값이다).
   const [manualDraftText, setManualDraftText] = useState(() => loadManualDraft()?.text.trim() ?? '');
   // 자동 새로고침 안내용: 마지막 갱신 시각과 현재 시각(1초 tick).
@@ -822,6 +838,26 @@ function App() {
     if (setupVisitedRef.current) setSetupCancelled(true);
   }, [connectionState, tab]);
 
+  /* 기기가 무엇을 할 수 있는지 브라우저에 **물어보기만** 한다 (TSK-000545 통합).
+     권한을 요청하지 않는다 — 첫 화면이 뜨자마자 권한 창을 띄우면 사용자는 무엇을 위한
+     요청인지 모른 채로 거절하고, 그 거절이 이 앱에서 가장 되돌리기 어려운 상태가 된다.
+     조회가 없거나 실패하면 그 축은 `unknown`으로 남고, 모름은 "없음"으로 바뀌지 않는다.
+
+     카메라 세션이 열리고 닫힐 때마다 다시 조회한다: 권한을 허용하면 기기 목록의 사실이
+     그때 바뀌고, 이전 조회의 늦은 응답은 `alive`가 막는다.
+
+     관측된 실패(`lastCameraFailure`)는 조회 결과로 덮지 않는다. 브라우저의 permission 조회는
+     방금 거부당한 사실을 곧바로 말해 주지 않아서, 덮으면 카드가 방금 있었던 일을 잊는다.
+     그 축은 카메라가 **실제로 열릴 때** `noteCameraOutcome(null)`이 푼다. */
+  useEffect(() => {
+    let alive = true;
+    void probeDeviceEnvironment(readDeviceEnvironment()).then((next) => {
+      if (!alive) return;
+      setDeviceEnv((current) => ({ ...next, lastCameraFailure: current.lastCameraFailure }));
+    });
+    return () => { alive = false; };
+  }, [cameraSession]);
+
   // 고른 테마를 문서에 적용하고, `시스템`을 고른 사람은 폰 설정 변경을 그대로 따라간다.
   useEffect(() => {
     applyTheme(resolveTheme(theme, osPrefersDark));
@@ -857,21 +893,55 @@ function App() {
   const eventChips = useMemo(() => buildEventChips(event), [event]);
 
   /**
-   * 사람을 등록하는 입구들 (TSK-000220 / 이음매: `contracts/int30.ts`).
+   * 사람을 등록하는 입구들 (TSK-000220 + TSK-000545 / 이음매: `contracts/int30.ts`).
    *
-   * **임시 자리다.** 기기가 무엇을 할 수 있는지는 `services/device-capability.ts`(TSK-000545)가
-   * 판정하고, 통합 시 이 배열이 그 생산자로 교체된다. 지금은 예전과 똑같이 두 입구가 늘 열려
-   * 있도록 두어 동작이 달라지지 않게 한다 — 이 lane이 바꾸는 것은 **모양**이지 가용성이 아니다.
+   * 카드가 읽는 사실은 이제 전부 생산자(`services/device-capability.ts`)가 만든다. 예전에 이
+   * 자리에 있던 임시 배열은 두 입구를 **언제나 available: true**로 못 박고 있어서, 능력 판정
+   * 전체가 화면에 닿지 않는 죽은 코드였다.
+   *
+   * `connectionState`는 설명 문구 한 조각만 바꾸고 가용성에는 닿지 않는다 — 그 계약은
+   * 생산자가 소유하고 단위 시험이 네 연결 상태 전수로 지킨다.
    */
-  const captureMethods = useMemo<CaptureMethodCard[]>(() => [
-    { id: 'camera', title: '명함 앞면 촬영', description: '찍으면 정리·브리핑까지 이어져요', available: true },
-    { id: 'manual', title: '직접 입력', description: '명함이 없어도 기억으로 등록해요', available: true },
-  ], []);
+  const captureMethods = useMemo(
+    () => deviceCaptureMethods(deviceEnv, connectionState),
+    [connectionState, deviceEnv],
+  );
 
   const captureMethodStatus = useMemo(
     () => (manualDraftText ? { manual: '이어서 쓰기' } : {}),
     [manualDraftText],
   );
+
+  /**
+   * 카드를 눌렀을 때 열리는 것. 세 입구가 각자 자기 자리로 간다.
+   */
+  const selectCaptureMethod = useCallback((id: CaptureMethodId) => {
+    if (id === 'manual') { setManualOpen(true); return; }
+    if (id === 'upload') { setIntakeOpen(true); return; }
+    setCameraSession({ side: 'front', withChoice: true });
+  }, []);
+
+  /**
+   * 못 쓰는 카드의 회복 행동. **안내만 남고 할 일이 없는 상태를 만들지 않는다.**
+   * 무엇을 해야 하는지는 이유를 만든 자리가 안다 (`captureRecoveryIntent`).
+   */
+  const recoverCaptureMethod = useCallback((_id: CaptureMethodId, recovery: CaptureMethodRecovery) => {
+    const intent = captureRecoveryIntent(recovery);
+    // 권한 재요청은 브라우저가 카메라를 **실제로 열 때만** 일어난다. 조회로는 물어볼 수 없다.
+    if (intent === 'retry_camera') { setCameraSession({ side: 'front', withChoice: true }); return; }
+    if (intent === 'open_upload') { setIntakeOpen(true); return; }
+    setManualOpen(true);
+  }, []);
+
+  /**
+   * 카메라를 열어 본 결과를 기기 사실에 되먹인다.
+   *
+   * 조회(`navigator.permissions`)는 방금 거부당한 사실을 곧바로 말해 주지 않는다. 그래서 관측된
+   * 실패가 이 화면이 가진 가장 구체적인 사실이고, 그것이 카드의 이유 문구를 정한다.
+   */
+  const noteCameraOutcome = useCallback((failure: CandidateCameraErrorCode | null) => {
+    setDeviceEnv((current) => (current.lastCameraFailure === failure ? current : { ...current, lastCameraFailure: failure }));
+  }, []);
 
   // 방금 저장한 촬영 (FI-049). 다음 장을 찍기 시작하면 내려간다 — 되돌리기가 촬영 중인
   // 초안과 다투면 안 되고, 카메라가 열려 있는 동안 화면을 바꿔치기해서도 안 된다.
@@ -1277,6 +1347,32 @@ function App() {
     pendingQuickNameFrameRef.current = null;
     // CameraCaptureModal.stopPreview() 후 마지막 감지 추론이 반환될 시간을 준다.
     if (frame) window.setTimeout(() => startQuickNameOcr(frame), 250);
+  }, [startQuickNameOcr]);
+
+  /**
+   * 올린 파일을 앞·뒷면 프레임으로 옮긴다 (TSK-000545 통합).
+   *
+   * 어느 자리에 갈지는 이미 `DesktopIntake`가 `triageIntakeFiles`로 정해서 준다. 여기서는
+   * 프레임 변환과 화면 상태만 맡는다 — 판정과 변환을 한 자리에 섞지 않는다. 그 결과 올린 사진은
+   * 촬영한 사진과 **같은 자리**로 들어가고, 이름 인식·만남 맥락·완료가 그대로 이어진다.
+   */
+  const acceptIntakeFiles = useCallback(async (assignments: IntakeAssignment<File>[]) => {
+    for (const assignment of assignments) {
+      try {
+        const frame = await fileToCameraFrame(assignment.file);
+        if (assignment.side === 'front') {
+          setFrontFrame(frame);
+          startQuickNameOcr(frame);
+        } else {
+          setBackFrame(frame);
+        }
+      } catch {
+        // 읽지 못한 파일은 조용히 사라지지 않는다 — 이름을 붙여 말한다.
+        setMessage(`${assignment.file.name} 사진을 읽지 못했어요. 다른 파일로 다시 올려 주세요.`);
+      }
+    }
+    // 사진이 들어왔으면 작업면은 할 일을 마쳤다. 완료 뒤에는 세 입구로 돌아온다.
+    setIntakeOpen(false);
   }, [startQuickNameOcr]);
 
   const completeCapture = useCallback(async () => {
@@ -1827,17 +1923,34 @@ function App() {
             <button className="shot-main filled" type="button" onClick={() => setCameraSession({ side: 'front', withChoice: true })}>
               <img src={frontFrame.dataUrl} alt="앞면 미리보기" />
             </button>
+          ) : intakeOpen ? (
+            /* `파일 올리기`를 고르면 카드 자리를 파일 작업면이 넘겨받는다 (TSK-000545 통합).
+               카드 아래에 덧붙이지 않는 이유: 작업면 안에도 웹캠 입구가 있어서, 같은 이름의
+               입구가 화면에 둘이 되고 어느 쪽이 진짜인지 사용자도 게이트도 알 수 없게 된다. */
+            <div className="cc-intake-panel">
+              <button className="cc-intake-back" type="button" onClick={() => setIntakeOpen(false)}>다른 방법 고르기</button>
+              <DesktopIntake
+                /* 앞면이 이미 있으면 위 미리보기가 이 자리를 가져간다 — 그래서 여기서 찰 수
+                   있는 것은 뒷면뿐이다. `triageIntakeFiles`가 이 값으로 빈 자리를 센다. */
+                assigned={{ back: backFrame ? '뒷면 사진' : undefined }}
+                onFiles={(assignments) => void acceptIntakeFiles(assignments)}
+                onClear={(side) => (side === 'front' ? setFrontFrame(null) : setBackFrame(null))}
+                webcam={captureMethods.find((card) => card.id === 'camera') ?? captureMethods[0]}
+                onOpenWebcam={() => setCameraSession({ side: 'front', withChoice: true })}
+                onRecovery={(recovery) => recoverCaptureMethod('camera', recovery)}
+              />
+            </div>
           ) : (
-            /* 두 카드를 이제 한 컴포넌트가 그린다 (TSK-000220). 예전에는 촬영 버튼은 여기서,
+            /* 세 카드를 이제 한 컴포넌트가 그린다 (TSK-000220). 예전에는 촬영 버튼은 여기서,
                직접 입력 버튼은 `ManualPersonSheet`에서 각자 그려졌고 안쪽 구조가 서로 달랐다 —
-               founder가 본 "하나는 설명이 있고 하나는 없고"가 정확히 그 결과였다. */
+               founder가 본 "하나는 설명이 있고 하나는 없고"가 정확히 그 결과였다.
+               무엇을 쓸 수 있는지는 `device-capability.ts`가 판정하고(TSK-000545), 여기서는
+               그 사실을 그대로 넘긴다 — 화면이 가용성을 추측하지 않는다. */
             <CaptureEntry
               methods={captureMethods}
               status={captureMethodStatus}
-              onSelect={(id) => {
-                if (id === 'manual') { setManualOpen(true); return; }
-                setCameraSession({ side: 'front', withChoice: true });
-              }}
+              onSelect={selectCaptureMethod}
+              onRecover={recoverCaptureMethod}
             />
           )}
 
@@ -2498,6 +2611,7 @@ function App() {
           onDismiss={closeCameraSession}
           onCaptured={handleCaptured}
           onFinished={closeCameraSession}
+          onCameraOutcome={noteCameraOutcome}
         />
       </IonPage>
     </IonApp>

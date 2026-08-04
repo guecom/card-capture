@@ -22,6 +22,7 @@ import type {
   CaptureMethodRecovery,
   ConnectionState,
 } from '../contracts/int30';
+import { CAPTURE_METHOD_ORDER } from './capture-entry';
 import type { CandidateCameraErrorCode } from './camera';
 
 /**
@@ -138,28 +139,54 @@ export async function probeDeviceEnvironment(
 }
 
 /**
- * 카드 순서.
+ * 카드 순서 — 기기와 무관하게 하나다 (통합 판정, TSK-000220 + TSK-000545).
  *
- * PC는 명함 사진이 이미 파일로 와 있는 경우가 많고(메일·스캐너·휴대폰에서 전송), 웹캠은
- * 손이 자유롭지 않아 두 번째 선택이다. 폰은 반대다. 순서만 다르고 **셋 다 항상 있다**.
+ * 이 lane의 초안은 PC에서 `upload`를 맨 앞에 놓았다. PC로 오는 명함은 대개 이미 파일이라는
+ * 관찰은 맞다. 그런데 칸이 두 줄로 접히는 grid에서 `upload`를 앞에 두면 첫 줄이
+ * `upload`·`camera`가 되고 **`직접 입력`이 둘째 줄로 밀린다.** `명함 촬영`과 `직접 입력`이
+ * 같은 줄·같은 크기라는 것은 founder 결정(DEC-000103)이고, 회귀 게이트(`int29-manual`)가
+ * 실제 픽셀로 그것을 잰다. 순서를 기기별로 갈랐다면 PC에서 그 결정이 조용히 깨졌을 것이다.
+ *
+ * PC에서 `upload`의 발견 가능성은 순서가 아니라 **면적**으로 갚는다: 카드가 셋이면
+ * `captureMethodColumns`가 2칸을 유지하고 CSS가 마지막 카드를 두 칸에 걸쳐 그리므로,
+ * `upload`는 첫 줄 바로 아래에서 화면에서 가장 넓은 카드가 된다. 맨 앞이 아니라고 해서
+ * 숨은 것이 아니다.
+ *
+ * 순서의 원본은 `capture-entry.ts`의 `CAPTURE_METHOD_ORDER` 하나다. 생산자와 소비자가
+ * 각자 순서를 들고 있으면 둘 중 하나만 고쳤을 때 화면과 계약이 조용히 갈라진다.
  */
-export function captureMethodOrder(formFactor: FormFactor): CaptureMethodId[] {
-  return formFactor === 'desktop'
-    ? ['upload', 'camera', 'manual']
-    : ['camera', 'upload', 'manual'];
+export function captureMethodOrder(): CaptureMethodId[] {
+  return [...CAPTURE_METHOD_ORDER];
 }
 
 const DEFERRED_CLAUSE = ' 연결 전에도 이 기기에 저장돼요.';
 
+/**
+ * 카메라 카드의 제목 — 기기와 무관하게 하나다 (통합 판정).
+ *
+ * 이 lane의 초안은 PC에서 제목을 `웹캠으로 촬영`으로 바꿨다. 두 가지 이유로 되돌렸다.
+ *
+ *  1. **card anatomy가 제목과 설명의 역할을 갈라 놓았다** (`capture-entry.ts`): 제목은
+ *     결과(무엇이 만들어지는가), 설명은 방법(어떻게 찍히는가)이다. `웹캠으로`는 장치 이름,
+ *     즉 방법이고 그 말은 이미 아래 설명 줄이 하고 있다. 그리고 옆에 나란히 선 `직접 입력`이
+ *     결과형 제목이라, 하나만 장치형이 되면 두 입구가 **다른 종류의 말**로 읽힌다 —
+ *     DEC-000103의 동등 위계는 크기만이 아니라 말의 결로도 읽힌다.
+ *  2. 이 문자열은 앱에서 가장 많이 참조되는 접근 이름이다(14개 spec 파일). 기기에 따라
+ *     달라지면 같은 버튼이 기기마다 다른 이름을 갖게 된다.
+ *
+ * PC의 사정(웹캠은 화각이 넓고 두 손이 자판에 묶여 있다)은 설명 줄이 그대로 나른다.
+ */
+const CAMERA_TITLE = '명함 앞면 촬영';
+
 function cameraCopy(env: DeviceEnvironment): { title: string; description: string } {
   if (env.formFactor === 'desktop') {
     return {
-      title: '웹캠으로 촬영',
+      title: CAMERA_TITLE,
       // 데스크톱 웹캠은 화각이 넓고 두 손이 자판에 묶여 있다 — 들고 흔들리는 시간을 짧게 만든다.
       description: '명함을 웹캠 가까이 들면 테두리를 잡고, 흔들림이 멎으면 알아서 찍어요.',
     };
   }
-  return { title: '명함 촬영', description: '명함을 비추면 테두리를 잡아 반듯하게 잘라요.' };
+  return { title: CAMERA_TITLE, description: '명함을 비추면 테두리를 잡아 반듯하게 잘라요.' };
 }
 
 function uploadCopy(env: DeviceEnvironment): { title: string; description: string } {
@@ -172,9 +199,27 @@ function uploadCopy(env: DeviceEnvironment): { title: string; description: strin
   return { title: '사진 올리기', description: '앨범에 있는 명함 사진을 골라 올려요.' };
 }
 
-const HELP_UPLOAD: CaptureMethodRecovery = { label: '파일 올리기로 등록하기', kind: 'help' };
-const HELP_RETRY: CaptureMethodRecovery = { label: '다시 시도', kind: 'help' };
-const ASK_PERMISSION: CaptureMethodRecovery = { label: '카메라 권한 다시 열기', kind: 'permission' };
+export const HELP_UPLOAD: CaptureMethodRecovery = { label: '파일 올리기로 등록하기', kind: 'help' };
+export const HELP_RETRY: CaptureMethodRecovery = { label: '다시 시도', kind: 'help' };
+export const HELP_MANUAL: CaptureMethodRecovery = { label: '직접 입력으로 등록하기', kind: 'help' };
+export const ASK_PERMISSION: CaptureMethodRecovery = { label: '카메라 권한 다시 열기', kind: 'permission' };
+
+/** 회복 버튼을 눌렀을 때 화면이 실제로 할 일. */
+export type CaptureRecoveryIntent = 'retry_camera' | 'open_upload' | 'open_manual';
+
+/**
+ * 회복 문구를 화면의 행동으로 옮긴다.
+ *
+ * `kind`만으로는 갈리지 않는다 — `다시 시도`와 `파일 올리기로 등록하기`가 둘 다 `help`다.
+ * 그래서 이 판정은 문구를 만든 자리(바로 위 상수들) 옆에 둔다. 화면이 문구를 보고 추측하면
+ * 문구를 고치는 순간 행동이 조용히 어긋난다.
+ */
+export function captureRecoveryIntent(recovery: CaptureMethodRecovery): CaptureRecoveryIntent {
+  if (recovery.kind === 'permission') return 'retry_camera';
+  if (recovery.label === HELP_RETRY.label) return 'retry_camera';
+  if (recovery.label === HELP_UPLOAD.label) return 'open_upload';
+  return 'open_manual';
+}
 
 interface Blocked {
   reason: string;
@@ -264,7 +309,7 @@ export function deviceCaptureMethods(
         description: upload.description,
         available: false,
         unavailableReason: '이 브라우저는 파일 올리기를 지원하지 않아요.',
-        recovery: { label: '직접 입력으로 등록하기', kind: 'help' },
+        recovery: HELP_MANUAL,
       },
     // 마지막 입구. 어떤 기기·권한·연결 조합에서도 조건이 붙지 않는다.
     manual: {
@@ -275,7 +320,7 @@ export function deviceCaptureMethods(
     },
   };
 
-  return captureMethodOrder(env.formFactor).map((id) => byId[id]);
+  return captureMethodOrder().map((id) => byId[id]);
 }
 
 // ── 파일 분류 ────────────────────────────────────────────────────────────────

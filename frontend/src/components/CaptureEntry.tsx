@@ -86,29 +86,38 @@ export function CaptureEntry({ methods, onSelect, onRecover, status }: CaptureEn
         );
 
         if (!anatomy.available) {
+          const recovery = anatomy.recovery;
+          /* 못 쓰는 입구도 **버튼으로 남는다** (통합 판정, TSK-000220 + TSK-000545).
+             처음 판은 `<div role="group">`이었다. 그 모양은 두 가지를 동시에 잃는다.
+               - 낭독기는 group을 컨테이너로 읽는다. "누를 수 있었던 것이 지금 안 된다"는 사실이
+                 사라지고, 그냥 글 뭉치가 하나 있다고 읽힌다.
+               - 앱에서 가장 많이 참조되는 손잡이(`button` + `명함 앞면 촬영`)가 **기기에 따라**
+                 사라진다. 웹캠 없는 PC에서만 14개 spec 파일의 대상이 없어지는 셈이고,
+                 그 기기에서만 게이트가 무너진다 — 가장 늦게, 가장 알기 어렵게.
+             그래서 회복 행동이 있으면 **카드 자체가 그 행동의 버튼**이다. 카드는 막다른 길이
+             아니라 다른 길로 가는 문이 되고, `aria-disabled`는 회복이 아예 없을 때만 남는다
+             (생산자는 그런 카드를 만들지 않는다).
+
+             이유를 `aria-describedby`로 따로 매달지 않는다. 이유 줄이 버튼 **안**에 있어 이미
+             접근 이름의 일부이고, describedby까지 붙이면 같은 문장을 두 번 읽는다. 쓸 수 있는
+             카드가 "제목 → 설명 → 행동" 순서로 읽히는 것과 같은 규칙으로, 못 쓰는 카드는
+             "제목 → 설명 → 이유 → 회복 행동" 순서로 읽힌다. */
           return (
-            <div
+            <button
               key={anatomy.id}
+              type="button"
               className={`cc-entry-card is-unavailable ${legacy}`.trim()}
-              role="group"
-              aria-label={anatomy.title}
-              aria-disabled="true"
+              data-unavailable="true"
+              {...(recovery ? {} : { 'aria-disabled': 'true' as const })}
+              onClick={recovery ? () => onRecover?.(anatomy.id, recovery as CaptureMethodRecovery) : undefined}
             >
               {head}
               {/* 이유는 설명 줄을 덮지 않고 그 아래에 선다 — 무엇이었는지는 계속 읽혀야 한다. */}
               <span className="cc-entry-reason">{anatomy.reason}</span>
-              {anatomy.recovery
-                ? (
-                  <button
-                    type="button"
-                    className="cc-entry-recovery"
-                    onClick={() => onRecover?.(anatomy.id, anatomy.recovery as CaptureMethodRecovery)}
-                  >
-                    {anatomy.recovery.label}
-                  </button>
-                )
+              {recovery
+                ? <span className="cc-entry-recovery">{recovery.label}</span>
                 : <span className="cc-entry-action is-off">{anatomy.action}</span>}
-            </div>
+            </button>
           );
         }
 
