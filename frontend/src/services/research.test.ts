@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 // @ts-expect-error The legacy UMD fixture intentionally has no TypeScript declaration.
 import legacyResearch from '../../../docs/research-policy.js';
-import { buildResearchInstruction, buildResearchSubmission, researchSubmitGate, sanitizeResearchInstruction } from './research';
+import { buildResearchInstruction, buildResearchSubmission, researchDeepClosedBy, researchFailureReason, researchSubmitGate, sanitizeResearchInstruction } from './research';
+import { RESEARCH_DEEP_CLOSED, researchDelayWordsIn } from './research-mode';
 import { composeResearchInstruction } from './research-scope';
 import { clearResearchRouteLog, readResearchRouteLog } from './research-telemetry';
 
@@ -33,7 +34,7 @@ describe('research submission — 깊이가 실려 나간다', () => {
     scopeKeys: ['expertise', 'opener'],
     text: '공개 경력과 주요 인터뷰를 확인해줘',
   });
-  const open = { deepAvailable: true, random: () => 0.5 };
+  const open = { deepState: 'open' as const, random: () => 0.5 };
 
   it('legacy 봉투의 세 칸은 그대로 남는다 — parity 계약을 깨지 않는다', () => {
     const submission = buildResearchSubmission('공개 경력과 주요 인터뷰를 확인해줘', 'standard', open);
@@ -132,30 +133,37 @@ describe('깊은 조사는 서버가 열었다고 말한 경우에만 접수된�
 
   const deepValue = composeResearchInstruction({ scopeKeys: ['expertise'], text: '확인해줘' });
 
-  it('열려 있다고 듣지 못하면 깊은 조사는 봉투가 되지 않는다', () => {
-    // 못 들음 / 안 물어봄 / 명시적 false — 셋이 같은 결과여야 한다.
-    expect(buildResearchSubmission(deepValue, 'deep')).toBeNull();
-    expect(buildResearchSubmission(deepValue, 'deep', {})).toBeNull();
-    expect(buildResearchSubmission(deepValue, 'deep', { deepAvailable: false })).toBeNull();
-    expect(buildResearchSubmission(deepValue, 'deep', { deepAvailable: undefined })).toBeNull();
+  it('서버가 닫혔다고 **말한** 경우에만 봉투가 만들어지지 않는다', () => {
+    expect(buildResearchSubmission(deepValue, 'deep', { deepState: 'closed' })).toBeNull();
+  });
+
+  it('아직 못 들은 구간에서는 사용자가 고른 깊이 그대로 봉투가 된다', () => {
+    // 예전에는 이 세 줄이 전부 `null`이었다. 못 들은 것을 거절로 읽었기 때문이고, 그래서 부팅
+    // 직후·오프라인에서 깊은 조사가 통째로 잠겼다 (TSK-000560). 판정은 서버가 한다 —
+    // `Code.gs`가 `deep_evidence_graph`를 두 입구에서 다시 검사하므로 경계는 그대로 fail-closed다.
+    expect(buildResearchSubmission(deepValue, 'deep')).toMatchObject({ mode: 'deep_evidence_graph' });
+    expect(buildResearchSubmission(deepValue, 'deep', {})).toMatchObject({ mode: 'deep_evidence_graph' });
+    expect(buildResearchSubmission(deepValue, 'deep', { deepState: undefined })).toMatchObject({ mode: 'deep_evidence_graph' });
+    // 알 수 없는 값도 `unknown`이다 — 옛 boolean이 닫힘으로 되살아나지 않는다.
+    expect(buildResearchSubmission(deepValue, 'deep', { deepState: false as never })).toMatchObject({ mode: 'deep_evidence_graph' });
   });
 
   it('열려 있으면 그대로 접수된다', () => {
-    expect(buildResearchSubmission(deepValue, 'deep', { deepAvailable: true })).toMatchObject({ mode: 'deep_evidence_graph' });
+    expect(buildResearchSubmission(deepValue, 'deep', { deepState: 'open' })).toMatchObject({ mode: 'deep_evidence_graph' });
   });
 
   it('닫혀 있어도 깊이를 몰래 낮춰 보내지 않는다 — 요청 자체가 만들어지지 않는다', () => {
-    expect(buildResearchSubmission(deepValue, 'deep', { deepAvailable: false })).toBeNull();
+    expect(buildResearchSubmission(deepValue, 'deep', { deepState: 'closed' })).toBeNull();
     expect(readResearchRouteLog()).toHaveLength(0);
   });
 
   it('빠른·일반은 이 스위치와 무관하다 — 깊은 조사를 닫아도 나머지가 함께 닫히지 않는다', () => {
-    expect(buildResearchSubmission(deepValue, 'quick', { deepAvailable: false })).toMatchObject({ mode: 'quick' });
-    expect(buildResearchSubmission(deepValue, 'standard', { deepAvailable: false })).toMatchObject({ mode: 'standard' });
+    expect(buildResearchSubmission(deepValue, 'quick', { deepState: 'closed' })).toMatchObject({ mode: 'quick' });
+    expect(buildResearchSubmission(deepValue, 'standard', { deepState: 'closed' })).toMatchObject({ mode: 'standard' });
   });
 
   it('막힘 안내는 이유와 회복 방법을 말하고 서버 코드·설정 이름을 말하지 않는다', () => {
-    const gate = researchSubmitGate(deepValue, 'deep', false);
+    const gate = researchSubmitGate(deepValue, 'deep', 'closed');
     expect(gate.blocked).toBe(true);
     expect(gate.notice?.block).toBe('deep_unavailable');
     const words = `${gate.notice?.title} ${gate.notice?.reason} ${gate.notice?.fix}`;
@@ -204,11 +212,11 @@ describe('researchSubmitGate — 합쳐진 문장 한 줄로 판정한다', () =
   const withScope = composeResearchInstruction({ scopeKeys: ['capability'], text: '' });
 
   it('깊은 조사에 범위가 있으면 통과한다', () => {
-    expect(researchSubmitGate(withScope, 'deep', true)).toMatchObject({ state: 'ready', blocked: false, notice: null });
+    expect(researchSubmitGate(withScope, 'deep', 'open')).toMatchObject({ state: 'ready', blocked: false, notice: null });
   });
 
   it('깊은 조사에 자유 입력만 있으면 막고 이유와 회복 방법을 함께 준다', () => {
-    const gate = researchSubmitGate('실력만 확인해 주세요', 'deep', true);
+    const gate = researchSubmitGate('실력만 확인해 주세요', 'deep', 'open');
     expect(gate.state).toBe('blocked');
     expect(gate.blocked).toBe(true);
     expect(gate.notice?.block).toBe('deep_requires_scope');
@@ -218,22 +226,68 @@ describe('researchSubmitGate — 합쳐진 문장 한 줄로 판정한다', () =
   });
 
   it('깊은 조사를 고르기만 하고 아직 아무것도 없으면 막지는 않되 조건을 미리 말한다', () => {
-    expect(researchSubmitGate('', 'deep', true)).toMatchObject({ state: 'empty', blocked: false });
-    expect(researchSubmitGate('', 'deep', true).notice?.block).toBe('deep_requires_scope');
+    expect(researchSubmitGate('', 'deep', 'open')).toMatchObject({ state: 'empty', blocked: false });
+    expect(researchSubmitGate('', 'deep', 'open').notice?.block).toBe('deep_requires_scope');
   });
 
   it('빠른·일반은 범위가 없어도 막지 않고 설명도 붙이지 않는다', () => {
     for (const depth of ['quick', 'standard', 'turbo', undefined]) {
-      expect(researchSubmitGate('실력만 확인해 주세요', depth, false)).toMatchObject({ state: 'ready', blocked: false, notice: null });
+      expect(researchSubmitGate('실력만 확인해 주세요', depth, 'closed')).toMatchObject({ state: 'ready', blocked: false, notice: null });
     }
   });
 
-  it('가용성을 묻지 않으면 깊은 조사는 닫혀 있다 — 기본값이 곧 fail-closed다', () => {
-    expect(researchSubmitGate(withScope, 'deep')).toMatchObject({ state: 'blocked', blocked: true });
-    expect(researchSubmitGate(withScope, 'deep').notice?.block).toBe('deep_unavailable');
+  it('묻지 않으면 `unknown`이다 — 못 들은 것을 거절로 바꾸지 않는다', () => {
+    // 예전 기본값은 `false`(= 닫힘)였다. 그 기본값이 부팅 직후 구간을 통째로 닫아 두었고,
+    // 화면은 그것을 지연처럼 그렸다 (TSK-000560). 판정은 서버가 한다.
+    expect(researchSubmitGate(withScope, 'deep')).toMatchObject({ state: 'ready', blocked: false, notice: null });
   });
 
-  it('닫힘은 범위 규칙보다 먼저 판정된다 — 못 고르는 것을 고른 채로 다른 이유를 대지 않는다', () => {
-    expect(researchSubmitGate('실력만 확인해 주세요', 'deep', false).notice?.block).toBe('deep_unavailable');
+  it('닫힘은 범위 규칙보다 먼저 판정된다 — 풀 수 없는 조건을 뒤에 두지 않는다', () => {
+    expect(researchSubmitGate('실력만 확인해 주세요', 'deep', 'closed').notice?.block).toBe('deep_unavailable');
+  });
+});
+
+// ── 접수 실패를 사람의 말로 (TSK-000560) ─────────────────────────────────────
+//
+// 예전에는 조사 실패에도 `actionErrorMessage`가 그대로 쓰였다. 그 함수는 모르는 코드를
+// `요청 실패: <코드>`로 붙여 돌려주므로, 깊은 조사가 서버에서 거절되는 순간 내부 코드가 그대로
+// 사용자 화면에 찍혔다. 그리고 아는 코드였던 `feature_disabled`의 문구는 닫아 둔 기능을
+// **지연처럼** 말했다 — 계약이 금지하는 위장이다.
+describe('접수 실패 문구 — 서버 코드도, 지연도 말하지 않는다', () => {
+  const codes = ['deep_feature_disabled', 'feature_disabled', 'bad_research_request', 'deep_evidence_graph_unavailable', 'nonsense_code_42'];
+
+  it('서버 코드가 사용자 문구에 그대로 실리지 않는다', () => {
+    for (const code of codes) {
+      const text = researchFailureReason(new Error(code));
+      expect(text, `서버 코드가 화면 문구에 있다: ${code}`).not.toContain(code);
+      expect(text, `서버 원문이 그대로 붙었다: ${code}`).not.toContain('요청 실패:');
+      expect(text.length, `문구가 비었다: ${code}`).toBeGreaterThan(0);
+    }
+  });
+
+  it('닫힘은 지연으로 말하지 않는다 — 기다리면 풀린다고 읽히면 안 된다', () => {
+    for (const code of ['deep_feature_disabled', 'feature_disabled']) {
+      const text = researchFailureReason(new Error(code));
+      expect(researchDelayWordsIn(text), `닫힘을 지연처럼 말한다: ${code} → ${text}`).toEqual([]);
+    }
+  });
+
+  it('깊은 조사 거절은 닫힘 문구 그대로 말하고, 적어 둔 것이 안전하다고 말한다', () => {
+    const text = researchFailureReason(new Error('deep_feature_disabled'));
+    expect(text).toBe(RESEARCH_DEEP_CLOSED.body);
+    expect(text).toContain('일반 조사');
+  });
+
+  it('그 거절만 닫힘으로 배운다 — 아무 실패나 닫힘으로 읽지 않는다', () => {
+    expect(researchDeepClosedBy(new Error('deep_feature_disabled'))).toBe(true);
+    expect(researchDeepClosedBy('deep_feature_disabled')).toBe(true);
+    for (const other of ['feature_disabled', 'daily_limit', 'owner_only', '', null, undefined, new Error('Failed to fetch')]) {
+      expect(researchDeepClosedBy(other), `${String(other)}를 닫힘으로 읽었다`).toBe(false);
+    }
+  });
+
+  it('사람의 말로 이미 되어 있는 코드는 그대로 쓴다 — 전부 뭉개지 않는다', () => {
+    expect(researchFailureReason(new Error('daily_limit'))).toContain('한도');
+    expect(researchFailureReason(new Error('Failed to fetch'))).toContain('네트워크');
   });
 });

@@ -136,11 +136,11 @@ import {
   runRecallSearch,
   serverFallbackTerm,
 } from './services/recall-search';
-import { buildResearchSubmission, researchSubmitGate } from './services/research';
+import { buildResearchSubmission, researchDeepClosedBy, researchFailureReason, researchSubmitGate } from './services/research';
 // 조사 깊이는 lane 사이 공유 이음매에서 온다. 이 화면은 값을 나르기만 하고 뜻은
 // `services/research-mode.ts`가 소유한다 (TSK-000542).
 import { DEFAULT_RESEARCH_DEPTH, type ResearchDepth } from './contracts/int30';
-import { RESEARCH_SUBMIT_READY, researchSubmitLabel } from './services/research-mode';
+import { RESEARCH_SUBMIT_READY, type ResearchDeepState, researchSubmitLabel } from './services/research-mode';
 import { recognizeQuickName } from './services/vision';
 import {
   loadCachedBriefs,
@@ -438,12 +438,14 @@ function App() {
   const [researchInstructionEnabled, setResearchInstructionEnabled] = useState(
     () => researchSurfaceVisible(loadOwnerFlags(), resolveConnectionState(boot.config)),
   );
-  /* 깊은 조사가 지금 열려 있는가 (TSK-000542 / 계약 §Product Behavior).
-     **기기에 저장하지 않고 `false`에서 시작한다.** `researchInstructionEnabled`와 일부러 다르게
-     두는 자리다 — 저 값은 작성 자리를 그릴지의 문제라 못 들었을 때 지난번 답을 쓰는 편이 낫지만,
-     이 값은 "서버가 지금 이 요청을 받는가"라서 못 들었으면 **닫힘**이어야 한다. 캐시한 `true`는
-     서버가 이미 닫은 뒤에도 사용자에게 접수되지 않을 선택지를 계속 내민다. */
-  const [deepResearchEnabled, setDeepResearchEnabled] = useState(false);
+  /* 깊은 조사에 대해 서버가 **지금까지 한 말** (TSK-000560 / 계약 §Product Behavior).
+     **기기에 저장하지 않고 `unknown`에서 시작한다.** 예전에는 `false`에서 시작하는 boolean이었고,
+     그 한 칸이 "아직 못 들었다"와 "서버가 안 연다고 말했다"를 같은 값으로 눌러 담았다. 화면은 그
+     접힌 값을 닫힘으로 그렸다가 목록 응답이 도착하는 순간 열었고, 사용자 눈에는 **닫힌 기능이
+     아니라 요청마다 붙는 지연**으로 보였다 (founder 2026-08-04: "깊은 조사는 왜 버튼 클릭할 수
+     있을 때 까지 시간이 지나야하는지 모르겠네?"). 이제 셋을 구분한다 — 못 들은 동안에는 아무 말도
+     하지 않고, 닫혔다고 들었을 때만 그 사실을 말한다. 어느 값에서도 고르는 것은 막지 않는다. */
+  const [deepResearchState, setDeepResearchState] = useState<ResearchDeepState>('unknown');
   // 화면이 서버에 요청하는 총 건수. `더 보기`를 누를 때마다 커지고 상한이 없다 —
   // 서버 한 페이지(100건) 안에서만 움직이면 101번째부터는 앱에서 존재하지 않는 것이 된다 (FI-100).
   const listWantedRef = useRef(LIST_PAGE_STEP);
@@ -621,9 +623,10 @@ function App() {
         const research = response.researchInstructionEnabled === true;
         setOwnerCanSeeAll(seeAll);
         setResearchInstructionEnabled(seeAll && research);
-        // 깊은 조사는 서버가 **명시적으로 열었다고 말한 응답에서만** 열린다. 누락·빈 값·false는
-        // 전부 닫힘이고, 이 값은 저장하지 않으므로 다음 응답이 매번 다시 판정한다.
-        setDeepResearchEnabled(seeAll && research && response.deepResearchEnabled === true);
+        // 서버가 실제로 **대답한** 순간이다. 여기서만 `unknown`을 벗어난다 — 응답이 실패하거나
+        // 아예 오지 않으면 이 줄에 닿지 않고, 화면은 계속 "아직 모른다"로 남는다.
+        // 명시적으로 열었다고 말한 응답만 `open`이고 누락·빈 값·false는 전부 `closed`다.
+        setDeepResearchState(seeAll && research && response.deepResearchEnabled === true ? 'open' : 'closed');
         saveOwnerFlags({ seeAll, researchInstructionEnabled: research });
         const hasMore = response.hasMore === true;
         setHasMoreBriefs(hasMore);
@@ -983,12 +986,12 @@ function App() {
   // `완료`, 인물 시트의 `조사 요청 접수`)가 같은 함수를 부르므로 한쪽만 고쳐지는 일이 없다.
   // 조사 기능이 꺼져 있으면 규칙 자체가 없다 — 그때 촬영 저장을 막으면 엉뚱한 이유로 사진을 잃는다.
   const researchGate = useMemo(
-    () => (researchInstructionEnabled ? researchSubmitGate(researchText, researchDepth, deepResearchEnabled) : RESEARCH_SUBMIT_READY),
-    [deepResearchEnabled, researchDepth, researchInstructionEnabled, researchText],
+    () => (researchInstructionEnabled ? researchSubmitGate(researchText, researchDepth, deepResearchState) : RESEARCH_SUBMIT_READY),
+    [deepResearchState, researchDepth, researchInstructionEnabled, researchText],
   );
   const personActionGate = useMemo(
-    () => (personActionComposer?.kind === 'research' ? researchSubmitGate(personActionText, personActionDepth, deepResearchEnabled) : RESEARCH_SUBMIT_READY),
-    [deepResearchEnabled, personActionComposer, personActionDepth, personActionText],
+    () => (personActionComposer?.kind === 'research' ? researchSubmitGate(personActionText, personActionDepth, deepResearchState) : RESEARCH_SUBMIT_READY),
+    [deepResearchState, personActionComposer, personActionDepth, personActionText],
   );
 
   // 방금 저장한 촬영 (FI-049). 다음 장을 찍기 시작하면 내려간다 — 되돌리기가 촬영 중인
@@ -1438,7 +1441,7 @@ function App() {
         // 봉투는 **여기서 한 번** 만들어져 대기열 항목에 저장된다. 전송 재시도는 저장된 그 봉투를
         // 그대로 다시 보내므로 `requestId`가 바뀌지 않고, 앱을 껐다 켜도 같은 요청으로 남는다.
         researchInstruction: researchInstructionEnabled
-          ? buildResearchSubmission(researchText, researchDepth, { deepAvailable: deepResearchEnabled })
+          ? buildResearchSubmission(researchText, researchDepth, { deepState: deepResearchState })
           : null,
         quickName,
       });
@@ -1470,7 +1473,7 @@ function App() {
     } finally {
       setQueueing(false);
     }
-  }, [backFrame, configured, deepResearchEnabled, event, flushPendingQueue, frontFrame, memo, queueing, quickName, relKairen, relSelf, researchDepth, researchGate, researchInstructionEnabled, researchText, resetQuickName]);
+  }, [backFrame, configured, deepResearchState, event, flushPendingQueue, frontFrame, memo, queueing, quickName, relKairen, relSelf, researchDepth, researchGate, researchInstructionEnabled, researchText, resetQuickName]);
 
   /**
    * 방금 찍은 촬영을 대기열에서 빼서 촬영 화면으로 되돌린다 (FI-049).
@@ -1677,7 +1680,7 @@ function App() {
       const requestKey = personActionRequestKey(personActionComposer.target, personActionText, personActionDepth);
       const carried = personActionRequestIdRef.current?.key === requestKey ? personActionRequestIdRef.current.requestId : '';
       const submission = buildResearchSubmission(personActionText, personActionDepth, {
-        deepAvailable: deepResearchEnabled,
+        deepState: deepResearchState,
         requestId: carried,
       });
       if (!submission) {
@@ -1702,7 +1705,13 @@ function App() {
           });
           success = true;
         } catch (error) {
-          setPersonActionOutcome({ ok: false, reason: actionErrorMessage(error) });
+          // 서버가 거절하며 "깊은 조사를 열어 두지 않았다"고 말했다면, 그것이 우리가 그 사실을
+          // 처음 듣는 순간일 수 있다(아직 목록 응답을 못 받은 구간). 들은 것을 그 자리에서 배운다 —
+          // 그래야 다음 화면이 추측이 아니라 사실을 말한다.
+          if (researchDeepClosedBy(error)) setDeepResearchState('closed');
+          // 조사 실패는 자기 문구를 쓴다. `actionErrorMessage`는 모르는 코드를 `요청 실패: <코드>`로
+          // 그대로 붙여 내보내서, 서버 내부 코드가 사용자 화면에 찍혔다.
+          setPersonActionOutcome({ ok: false, reason: researchFailureReason(error) });
         }
       }
     } else {
@@ -1717,7 +1726,7 @@ function App() {
       setPersonActionText('');
       setPersonActionOutcome(null);
     }
-  }, [config, deepResearchEnabled, personActionComposer, personActionDepth, personActionGate, personActionSubmitting, personActionText, refresh, runPersonAction]);
+  }, [config, deepResearchState, personActionComposer, personActionDepth, personActionGate, personActionSubmitting, personActionText, refresh, runPersonAction]);
 
   const retryProcessing = useCallback(async (captureId: string) => {
     if (requeueingId) return;
@@ -1963,7 +1972,9 @@ function App() {
       : carriedResearch.state === 'failed'
         ? {
           state: 'failed',
-          reason: actionErrorMessage(carriedResearch.err),
+          // 조사 접수 실패는 자기 문구를 쓴다 — `actionErrorMessage`는 모르는 서버 코드를
+          // 그대로 붙여 내보내므로 `deep_feature_disabled` 같은 내부 이름이 화면에 찍힌다.
+          reason: researchFailureReason(carriedResearch.err),
           retryLabel: '다시 보내기',
           onRetry: () => void retryQueueItem(carriedResearch),
         }
@@ -2175,7 +2186,7 @@ function App() {
               onChange={setResearchText}
               depth={researchDepth}
               onDepthChange={setResearchDepth}
-              deepAvailable={deepResearchEnabled}
+              deepState={deepResearchState}
               receipt={researchReceipt}
               noticeId={CAPTURE_RESEARCH_NOTICE_ID}
             />
@@ -2188,7 +2199,11 @@ function App() {
           <IonButton
             className="primary-action"
             expand="block"
-            data-blocked={researchGate.blocked ? 'research' : undefined}
+            /* **언제나 문자열을 준다.** `undefined`를 주면 `ion-button`(custom element)에서
+               속성이 지워지지 않고 남아, 막힘이 풀린 뒤에도 버튼이 계속 흐리게(opacity 0.62)
+               서 있다 — `researchSubmitLabel`이 `aria-label`에서 이미 겪은 것과 같은 함정이다.
+               지우는 경로를 아예 만들지 않는다 (TSK-000560). */
+            data-blocked={researchGate.blocked ? 'research' : 'no'}
             aria-label={researchSubmitLabel(queueing ? '저장 중…' : '완료', researchGate)}
             disabled={!frontFrame || queueing}
             onClick={() => {
@@ -2643,7 +2658,7 @@ function App() {
                       onChange={setPersonActionText}
                       depth={personActionDepth}
                       onDepthChange={setPersonActionDepth}
-                      deepAvailable={deepResearchEnabled}
+                      deepState={deepResearchState}
                       noticeId={PERSON_RESEARCH_NOTICE_ID}
                       receipt={personActionOutcome === null
                         ? { state: 'idle' }
@@ -2665,7 +2680,8 @@ function App() {
                         방법이 사라진다. 이유는 버튼 이름에 실리고, 누르면 시트 안의 설명으로 손이 간다. */}
                     <IonButton
                       expand="block"
-                      data-blocked={personActionGate.blocked ? 'research' : undefined}
+                      /* 지우지 않는다 — 위 `완료` 버튼과 같은 이유(custom element 속성 잔존). */
+                      data-blocked={personActionGate.blocked ? 'research' : 'no'}
                       aria-label={researchSubmitLabel(personActionCopy[personActionComposer.kind].submit, personActionGate)}
                       disabled={!personActionText.trim() || personActionSubmitting}
                       onClick={() => {
