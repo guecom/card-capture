@@ -1,0 +1,408 @@
+/* AI 조사 요청 — 위계와 깊이 (INT-000030 / TSK-000542).
+   `ResearchComposer.tsx`가 `int29-research.css` 다음으로 이 파일을 불러온다.
+
+   founder 판정 2026-08-04:
+     "제안하는 것들의 블록들이 일단 크기가 너무 커. … 모두 선택을 주로 제일 많이 누르니까 그게
+      내가 글로 직접 적는 부분 바로 아래에 나왔으면 해. 그것도 엄청 누르고 싶게."
+     "빠른 조사, 일반 조사, 깊은 조사를 선택하는 옵션 버튼이 있었으면 좋겠어."
+
+   그래서 이 파일이 정하는 것은 두 가지다.
+     1. 가장 자주 누르는 하나(`모두 선택`)가 화면 폭을 다 쓰고 채워진 면으로 선다. 낱개는
+        한 줄짜리로 줄어 그 아래에 조용히 깔린다.
+     2. 깊이는 세 칸으로 나란히 서고, 기다림은 **눈금**으로만 말한다 — 분·초를 약속하지 않는다.
+
+   색은 전부 기존 토큰에서 온다. 새 색조·새 반경을 만들지 않는다.
+   알약(`--cc-r-pill`)은 이 앱에서 **상태 이름표 전용**이므로 누르는 것에는 쓰지 않는다. */
+
+.research-scopes {
+  /* `int29-research.css`가 이미 grid·gap을 정했다. 여기서는 자리만 확인한다. */
+  align-content: start;
+}
+
+/* ── 1. 가장 자주 누르는 하나 ────────────────────────────────────────────────
+   폭을 다 쓴다. 이 표면에서 가장 큰 조작이고, 그래야 "여기부터 누르면 된다"가 눈에 먼저 든다.
+   채우는 색은 단색이다 — 그러데이션을 쓰면 밝은 쪽 끝에서 흰 글자 대비가 4.5:1 아래로 내려간다. */
+
+.research-scope-all {
+  display: flex;
+  width: 100%;
+  min-height: 52px;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 14px;
+  border: 1px solid rgba(var(--cc-accent), 0.65);
+  border-radius: var(--cc-r-md);
+  background: rgb(var(--cc-accent));
+  color: var(--cc-on-accent);
+  text-align: left;
+  box-shadow: var(--cc-elev-1), 0 4px 12px rgba(var(--cc-accent), 0.24);
+  transition: transform 110ms ease, box-shadow 160ms ease, background-color 160ms ease;
+}
+
+/* 누른 순간 손끝에 답이 온다. 크기가 아니라 **눌린 느낌**으로 말한다. */
+.research-scope-all:active {
+  transform: translateY(1px);
+  box-shadow: var(--cc-elev-1);
+}
+
+/* 표식은 잉크만 쓴다. 채운 면 위에 반투명 흰 판을 하나 더 얹으면 라이트/다크 어느 쪽에서도
+   토큰 밖의 색이 하나 생긴다 — 이 앱은 강조색을 한 곳에서만 정한다. */
+.research-scope-all-mark {
+  display: grid;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+}
+
+.research-scope-all-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.research-scope-all-copy strong {
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+/* 두 번째 줄도 같은 잉크를 쓴다. 투명도로 흐리게 만들면 대비 계산은 통과하면서 실제로는
+   읽기 어려워진다 — 위계는 굵기와 크기로만 만든다. */
+.research-scope-all-sub {
+  font-size: 11px;
+  font-weight: 640;
+  word-break: keep-all;
+}
+
+/* 전부 골라 놓은 상태. 조용한 면으로 뒤집힌다 — 할 일이 남지 않았다는 뜻이지 고장이 아니다.
+   글자도 `모두 해제`로 바뀌므로 색 없이도 상태가 읽힌다. */
+.research-scope-all[aria-pressed="true"] {
+  border-color: rgba(var(--cc-accent), 0.5);
+  background: rgba(var(--cc-accent), 0.13);
+  color: var(--cc-blue-ink);
+  box-shadow: none;
+}
+
+/* 일부만 고른 상태는 여전히 "누르면 전부"이므로 채워진 채로 둔다. 색이 아니라 두 번째 줄의
+   글자(`나머지도 한 번에`)와 `aria-pressed="mixed"`가 지금 상태를 말한다. */
+
+.research-scope-all[disabled],
+.research-scope-chip[disabled],
+.research-scope-clear[disabled] {
+  cursor: not-allowed;
+}
+
+/* ── 2. 낱개 조사 범위 — 한 줄짜리 ──────────────────────────────────────────
+   예전에는 이름 + 설명 두 줄이라 칸 하나가 44px였고, 아홉 개가 화면 한 판을 먹었다.
+   설명은 접근성 이름(`.research-sr-only`)과 툴팁으로 옮기고 눈에는 이름만 남긴다. */
+
+.research-scope-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.research-scope-chip {
+  position: relative;
+  display: inline-flex;
+  min-height: 34px;
+  max-width: 100%;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 11px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-solid-soft);
+  text-align: left;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.research-scope-chip.on {
+  border-color: rgba(var(--cc-accent), 0.5);
+  background: rgba(var(--cc-accent), 0.14);
+}
+
+/* 켜짐/꺼짐을 색이 아니라 **글리프**로도 말한다 (색 의존 금지). */
+.research-scope-tick {
+  flex: 0 0 auto;
+  width: 10px;
+  color: var(--cc-muted);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  text-align: center;
+}
+
+.research-scope-chip.on .research-scope-tick { color: var(--cc-blue-ink); }
+
+.research-scope-name {
+  color: var(--cc-ink);
+  font-size: 11.5px;
+  font-weight: 740;
+  letter-spacing: -0.02em;
+  word-break: keep-all;
+}
+
+.research-scope-chip.on .research-scope-name { color: var(--cc-blue-ink); }
+
+/* ── 3. 선택 수 — 고른 뒤에 확인하는 줄 ──────────────────────────────────── */
+
+.research-scope-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 개수는 언제나 읽힌다. 버튼의 접근 이름과 떨어져 있어야 이름이 개수로 흔들리지 않는다. */
+.research-scope-count {
+  flex: 1 1 auto;
+  color: var(--cc-muted);
+  font-size: 11px;
+  font-weight: 700;
+  word-break: keep-all;
+}
+
+.research-scope-clear {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 11px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-solid-soft);
+  color: var(--cc-muted);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* ── 4. 조사 깊이 ────────────────────────────────────────────────────────────
+   무엇을 조사할지 정한 손이 그대로 "얼마나"로 이어지도록 `모두 선택` 묶음 바로 아래에 둔다. */
+
+.research-depth {
+  display: grid;
+  gap: 6px;
+}
+
+.research-depth-title {
+  color: var(--cc-ink);
+  font-size: 12px;
+  font-weight: 760;
+  letter-spacing: -0.02em;
+  word-break: keep-all;
+}
+
+/* 세 칸은 언제나 나란하다. 320px에서도 접히지 않게 최소 폭을 두지 않고 1fr로 나눈다 —
+   줄이 바뀌면 "얕은 것부터 깊은 것" 순서가 눈에서 끊긴다. */
+.research-depth-grid {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.research-depth-option {
+  position: relative;
+  display: grid;
+  min-height: 62px;
+  align-content: center;
+  justify-items: start;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-solid-soft);
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.research-depth-option.on {
+  border-color: rgba(var(--cc-accent), 0.55);
+  background: rgba(var(--cc-accent), 0.13);
+}
+
+/* 지금 고를 수 없는 칸 (TSK-000542). **사라지지 않는다** — 어제 있던 선택지가 오늘 없으면
+   사용자는 그것을 고장으로 읽는다. 대신 눌러도 안 된다는 것이 손과 눈에 모두 보여야 한다.
+   상태를 색으로만 말하지 않는다: 칸 안의 글자가 `지금은 못 골라요`로 바뀌고 낭독기에는 이유가
+   문장으로 간다. 여기서는 흐리기와 커서만 맡는다. */
+.research-depth-option.off {
+  border-style: dashed;
+  background: var(--cc-solid-faint);
+  cursor: not-allowed;
+}
+
+/* 이름은 흐려도 읽을 수 있어야 한다. 대비 하한(4.5:1)을 지키려고 본문 색을 그대로 쓰고
+   투명도만 낮춘다 — 회색을 새로 만들면 다크 모드에서 대비가 무너진다. */
+.research-depth-option.off .research-depth-name,
+.research-depth-option.off .research-depth-short {
+  opacity: 0.72;
+}
+
+.research-depth-option.off .research-depth-meter i,
+.research-depth-option.off .research-depth-meter i.on {
+  background: var(--cc-line);
+}
+
+/* 진짜 라디오를 쓴다 — 좌우 화살표 이동과 묶음 읽기를 브라우저가 해 준다.
+   눈에서만 치우고 포커스는 살려 둔다. */
+.research-depth-option input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 포커스 링. `:has()`를 모르는 브라우저를 위해 형제 선택자로 밑줄 하나를 따로 남긴다 —
+   두 규칙을 한 목록에 묶지 않는다(하나가 무효면 목록 전체가 버려진다). */
+.research-depth-option:has(input:focus-visible) {
+  outline: 2px solid rgb(var(--cc-accent));
+  outline-offset: 2px;
+}
+
+.research-depth-option input:focus-visible ~ .research-depth-name {
+  text-decoration: underline;
+}
+
+/* 기다림은 눈금으로만 말한다. 칸 수는 `RESEARCH_WAIT_STEPS`와 같은 곳에서 나온다. */
+.research-depth-meter {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.research-depth-meter i {
+  width: 9px;
+  height: 4px;
+  border-radius: var(--cc-r-sm);
+  background: var(--cc-line);
+}
+
+.research-depth-meter i.on { background: rgb(var(--cc-accent)); }
+
+.research-depth-name {
+  color: var(--cc-ink);
+  font-size: 11.5px;
+  font-weight: 760;
+  letter-spacing: -0.02em;
+  word-break: keep-all;
+}
+
+.research-depth-option.on .research-depth-name { color: var(--cc-blue-ink); }
+
+.research-depth-short {
+  color: var(--cc-muted);
+  font-size: 10.5px;
+  line-height: 1.35;
+  word-break: keep-all;
+}
+
+/* 고른 깊이 하나만 길게 설명한다. 칸마다 문장을 붙이면 높이가 세 배가 되고, founder가 지적한
+   "너무 큰 블록"이 깊이 자리에서 되살아난다. 바뀔 때마다 이 줄이 읽힌다(`role="status"`). */
+.research-depth-summary {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--cc-r-md);
+  background: var(--cc-solid-faint);
+  color: var(--cc-ink);
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+/* ── 5. 접수 조건 안내 ───────────────────────────────────────────────────────
+   계약: "깊은 조사는 목적을 하나 이상 골라야 접수된다."
+
+   이 블록은 **실패가 아니라 남은 조건**이다. 그래서 위험색(`--cc-danger`)이 아니라 주의색
+   (`--cc-warn`)을 쓰고, 접수 실패 영수증과 다른 모양으로 선다 — 둘이 닮으면 사용자는 이미
+   보냈다가 거절당한 줄로 읽는다.
+
+   글자를 주변(11px)보다 크게 잡는 것은 실수가 아니다. 지금 이 표면에서 가장 먼저 읽혀야 하는
+   문장이고, Ionic의 `<p>` 미리셋과 `small{75%}`이 조용히 더 줄이는 자리이기도 하다. */
+
+.research-block {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--cc-warn);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-solid-faint);
+}
+
+/* 아직 적은 것이 없어 막지는 않는 상태. 같은 말을 미리 하되 무게를 낮춘다 —
+   점선은 "지금 거절당한 것이 아니라 앞으로의 조건"이라는 뜻이다. */
+.research-block[data-blocked="not-yet"] { border-style: dashed; }
+
+/* 밖에 있는 제출 버튼에서 손이 여기로 온다(`focusResearchNotice`). 프로그램으로 준 포커스는
+   `:focus-visible`이 안 걸리는 브라우저가 있어 `:focus`로 잡는다. */
+.research-block:focus {
+  outline: 2px solid var(--cc-warn);
+  outline-offset: 2px;
+}
+
+.research-block-mark {
+  display: grid;
+  flex: 0 0 auto;
+  padding-top: 1px;
+  color: var(--cc-warn);
+  place-items: center;
+}
+
+.research-block-copy {
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 3px;
+  color: var(--cc-ink);
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+.research-block-copy strong {
+  color: var(--cc-warn);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+/* 무엇을 하면 풀리는지가 가장 행동에 가까운 줄이다. 흐리게 하지 않는다 — 회복 경로를
+   가장 옅은 글자로 두면 막다른 길처럼 읽힌다. */
+.research-block-fix { font-weight: 700; }
+
+/* 밖에 있는 제출 버튼이 막혔을 때.
+   **Ionic 함정 두 가지** 때문에 여기서 `aria-*`를 쓰지 않는다.
+     1. `ion-button`은 host의 `aria-disabled`를 자기 `disabled` prop에서 직접 그린다 —
+        밖에서 얹으면 다음 렌더에 지워질 수 있다.
+     2. 안쪽 native button으로 옮겨 주는 것은 `aria-checked·aria-label·aria-pressed`뿐이라
+        `aria-describedby`는 낭독기가 읽는 버튼에 닿지 않는다.
+   그래서 이유는 `aria-label`(=이름)에 싣고, 눈에 보이는 상태는 이 전용 속성으로 그린다.
+   `pointer-events`는 건드리지 않는다 — 눌러야 막힘 안내로 손이 간다. */
+ion-button[data-blocked="research"] {
+  opacity: 0.62;
+}
+
+/* ── 눈에는 없고 읽어 주는 말에는 있는 글 ────────────────────────────────────
+   `display: none`이면 접근성 이름에서도 사라진다. 그래서 잘라 내기만 한다.
+   부모가 `position: relative`여야 이 1px 조각이 화면 밖으로 튀지 않는다. */
+.research-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .research-scope-all,
+  .research-scope-chip,
+  .research-depth-option { transition: none; }
+  .research-scope-all:active { transform: none; }
+}

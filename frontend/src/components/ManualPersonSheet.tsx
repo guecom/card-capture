@@ -38,6 +38,16 @@ export interface ManualPersonEntryProps {
   queue: CaptureQueueItem[];
   /** 기기 저장이 확인된 항목. 호출자가 목록에 넣고 전송을 시작한다. */
   onQueued: (item: CaptureQueueItem) => void;
+  /**
+   * 열림을 밖에서 소유할 때 쓴다 (TSK-000220).
+   *
+   * 진입 카드가 `CaptureEntry`로 옮겨 가면서 이 컴포넌트는 더 이상 자기 트리거를 그리지 않는다 —
+   * 두 입구가 서로 다른 파일에서 각자 그려지던 것이 "하나는 설명이 있고 하나는 없고"의 원인이었다.
+   * 값을 주지 않으면 예전처럼 자기 버튼을 그리고 스스로 연다(기존 호출자 호환).
+   */
+  open?: boolean;
+  /** 통제 모드에서 열림이 바뀔 때. 닫힘(`false`)이 오면 호출자가 초안 상태를 다시 읽는다. */
+  onOpenChange?: (open: boolean) => void;
 }
 
 type ManualPhase = 'compose' | 'saving' | 'receipt';
@@ -49,8 +59,15 @@ type ManualPhase = 'compose' | 'saving' | 'receipt';
  * `ion-modal`은 열릴 때 `position: fixed`로 뜨고 닫혀 있을 때는 `display: none`이라
  * 같은 grid 안에 있어도 칸을 만들지 않는다.
  */
-export function ManualPersonEntry({ configured, context, queue, onQueued }: ManualPersonEntryProps) {
-  const [open, setOpen] = useState(false);
+export function ManualPersonEntry({ configured, context, queue, onQueued, open: openProp, onOpenChange }: ManualPersonEntryProps) {
+  // 통제 모드에서는 열림의 진실이 밖에 있다. 안쪽 state를 함께 두면 두 진실이 어긋난다.
+  const controlled = openProp !== undefined;
+  const [selfOpen, setSelfOpen] = useState(false);
+  const open = controlled ? openProp : selfOpen;
+  const setOpen = useCallback((next: boolean) => {
+    if (!controlled) setSelfOpen(next);
+    onOpenChange?.(next);
+  }, [controlled, onOpenChange]);
   const [draft, setDraft] = useState<ManualDraft>(() => startManualDraft());
   const [phase, setPhase] = useState<ManualPhase>('compose');
   const [refusal, setRefusal] = useState<ManualSubmitRefusal | null>(null);
@@ -101,7 +118,7 @@ export function ManualPersonEntry({ configured, context, queue, onQueued }: Manu
     setPhase('compose');
     setRefusal(null);
     setWriteError('');
-  }, []);
+  }, [setOpen]);
 
   const submit = useCallback(async () => {
     if (submittingRef.current) return;
@@ -171,13 +188,16 @@ export function ManualPersonEntry({ configured, context, queue, onQueued }: Manu
 
   return (
     <>
-      <button className="manual-main" type="button" onClick={() => setOpen(true)}>
-        <span className="manual-main-icon" aria-hidden="true"><PenLine size={24} /></span>
-        <span>직접 입력</span>
-        {draft.text.trim()
-          ? <span className="manual-main-resume">이어서 쓰기</span>
-          : <span className="manual-main-sub">명함 없이 기억으로</span>}
-      </button>
+      {/* 통제 모드에서는 진입 카드가 `CaptureEntry`에 있다. 여기서 또 그리면 같은 입구가 두 개가 된다. */}
+      {!controlled && (
+        <button className="manual-main" type="button" onClick={() => setOpen(true)}>
+          <span className="manual-main-icon" aria-hidden="true"><PenLine size={24} /></span>
+          <span>직접 입력</span>
+          {draft.text.trim()
+            ? <span className="manual-main-resume">이어서 쓰기</span>
+            : <span className="manual-main-sub">명함 없이 기억으로</span>}
+        </button>
+      )}
 
       <IonModal
         className="manual-sheet"

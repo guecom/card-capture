@@ -1,37 +1,47 @@
 import '../styles/int29-settings.css';
-import { Bell, Camera, Info, Mail, RefreshCw, ShieldCheck, SunMoon, Unplug } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import '../styles/int30-settings.css';
+import { Bell, Camera, ChevronDown, Info, LifeBuoy, Link2, Mail, RefreshCw, ShieldCheck, Sparkles, SunMoon, TriangleAlert, Unplug } from 'lucide-react';
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { RuntimeConfig } from '../contracts/capture';
 import type { PushState } from '../services/push';
 import type { ThemePreference } from '../services/storage';
 import { THEME_CHOICES } from '../services/theme';
 import { buildBugReportText, bugReportMailto, collectBugReportFacts } from '../services/bug-report';
+import { type SettingsGroupId, settingsGroup } from '../services/settings-ia';
 
-/* 설정 화면 (ISS-000217 · DEC-000093 — Kairen-Ref: TSK-000532)
-   ================================================================
-   founder가 이 화면을 두고 말한 것 다섯 가지를 그대로 구현한다:
+/* 설정 화면 (ISS-000217 · DEC-000093 · DEC-000105 — Kairen-Ref: TSK-000532 / TSK-000544)
+   ======================================================================================
+   DEC-000093이 뎁스와 부정형 토글을 없앤 뒤 founder가 다시 말한 것:
 
-   1. "사용자 연결 정보 편집을 눌러서 뭔가 한 뎁스가 더 들어가는데, 이렇게 뎁스가 굳이 있어야 할까"
-      → 시트도 `고급 설정` 접기도 없앤다. 이름·연결 주소·개인 링크 코드가 **여기 한 자리**에 있다.
-   2. "알림 설정하는 부분이 뭐 글귀나 버튼 같은 거라든가 전반적으로 좀 많이 어색해"
-      → 내부 사정 서술을 끊는다. 지금 상태 한 줄 · 다음 행동 하나 · 알림이 오는 경우.
-   3. "기본 카메라 앱 쓰지 않기를 결국에 껐다 켰다 하는 거잖아 ... 뭔가 좀 이상하고"
-      → 부정형 토글을 없애고 **고르는 두 가지 촬영 방법**과 각각의 결과를 적는다.
-   4. "이 도움말이 뭔가 사람들이 읽을까 싶어? 차라리 없는 게 낫지 않을까? 그러고 버전 같은 거는
-      좀 크게 잘 보이게" → 도움말 접기를 없애고 버전을 크게 보여 준다.
-   5. "버그 리포트 기능도 있으면 좋겠어" → 메일 초안을 채워 열어 준다. **보내기는 사람이 누른다.**
+     "설정 페이지는 전반적으로 세련되지 않은 느낌이야. ... 유저가 설정 페이지에 처음 혹은
+      자주 들어올 만한 이유들, 그리고 반드시 써야 될 것들을 중심으로 다시 잘 구성되었으면 좋겠어.
+      순서나 뭐 이런 것들도 이제 해서 말이야."
 
-   ── 지키는 경계 ──
+   '세련되지 않음'은 개별 styling이 아니라 **정보구조**였다. 이전 판의 여섯 묶음
+   (계정·연결 / 촬영 / 알림 / 화면 / 데이터·개인정보 / 버전·문제 알리기)은 코드가 나뉜 모양이지
+   사람이 설정에 들어오는 이유가 아니다. 그래서 이 화면은 세 가지를 바꾼다:
+
+   1. **순서를 방문 job으로 다시 놓는다.** 묶음 순서는 `services/settings-ia.ts`가 선언하고
+      이 파일은 그것을 읽어 그린다 — 순서가 JSX에 숨으면 기계가 판정할 수 없다.
+   2. **세 위계를 눈으로 구분한다.** 지속 선택(조작처럼 보임) · 읽기 전용 상태(조작처럼 보이지
+      않음) · 되돌릴 수 없는 정리(마지막 위험 영역). 이 셋이 같은 카드·같은 버튼 모양으로
+      섞여 있던 것이 '허접함'의 실체였다.
+   3. **막혔을 때의 길을 접어서 남긴다.** 진단·제보는 평소 화면을 차지하지 않되 막힌 사람이
+      반드시 발견해야 한다. 접힌 자리이지 사라진 자리가 아니다.
+
+   ── 지키는 경계 (DEC-000093에서 그대로) ──
    - 연결 주소 칸은 개발 호스트에서만 편집 가능하다 (`canEditApiEndpoint`). 배포본에서는 보이되
      읽기 전용이고, 왜 바꿀 수 없는지를 그 칸의 설명으로 연결한다. **화면은 방어선이 아니다** —
-     실제 판정은 `services/api-origin.ts`가 하고, 이 화면은 거짓 선택지를 없앨 뿐이다.
+     실제 판정은 `services/api-origin.ts`가 한다.
    - 알림 `끄기`는 차단·오프라인에서도 반드시 닿을 수 있어야 한다 (ISS-000045).
    - 버그 리포트 본문에는 개인 링크 코드·연결 주소·사람 정보가 들어가지 않는다
-     (`services/bug-report.ts`의 허용 목록 + 부정 게이트).
+     (`services/bug-report.ts`의 허용 목록 + 부정 게이트). **앱은 아무것도 보내지 않는다.**
+   - `화면 움직임` preference는 되살리지 않는다. 은퇴한 선택지이고 움직임은 언제나 폰의
+     접근성 설정을 따른다 (`surface-polish.spec.ts`가 되살아남을 잡는다).
 
    ── 글자 크기 ──
    `<small>`을 쓰지 않는다. Ionic 전역 `small { font-size: 75% }` 가 이 화면을 읽을 수 없게 만든
-   원인이었다. 크기는 전부 `int29-settings.css`가 명시하고 가독성 스윕이 매번 다시 잰다. */
+   원인이었다. 크기는 전부 CSS가 명시하고 가독성 스윕이 매번 다시 잰다. */
 
 export interface SettingsPanelProps {
   config: RuntimeConfig;
@@ -53,6 +63,10 @@ export interface SettingsPanelProps {
   onPushToggle: () => void;
   onPushRefresh: () => void;
   onSignOut: () => void;
+  /** 아직 서버로 나가지 못한 촬영 건수. 연결 해제의 실제 영향을 말하기 위해 필요하다. */
+  unsentCount: number;
+  /** 이 연결에서 AI 조사 요청을 쓸 수 있는가 (서버가 준 owner 게이트). */
+  researchAvailable: boolean;
   /** 지금 화면 이름. 버그 리포트 진단에 그대로 실린다. */
   currentScreen: string;
   appVersion: string;
@@ -215,6 +229,39 @@ function useViewportLabel(): string {
   return label;
 }
 
+/**
+ * 묶음 하나. 제목 id는 등록소가 소유한다 — 낭독기는 묶음 제목 → 항목 → 상태 순으로 읽는다.
+ */
+function Group(props: { id: SettingsGroupId; children: ReactNode }) {
+  const group = settingsGroup(props.id);
+  return (
+    <section className="int29-group int30-group" aria-labelledby={group.headingId} data-settings-group={group.id}>
+      <h2 className="int29-group-label" id={group.headingId}>{group.label}</h2>
+      {props.children}
+    </section>
+  );
+}
+
+/**
+ * 읽기 전용 사실 목록.
+ *
+ * **조작처럼 보이면 안 된다.** 이 화면의 이전 판은 상태·진단·선택이 전부 같은 카드 안에 같은
+ * 무게로 있었고, 그래서 사용자는 무엇을 누를 수 있는지 매번 시험해 봐야 했다. 여기서는
+ * 버튼 모양(둥근 모서리·채운 배경·포커스 가능)을 전부 뺀 행으로 그린다.
+ */
+function Facts(props: { rows: Array<{ label: string; value: string; tone?: 'plain' | 'warn' }> }) {
+  return (
+    <dl className="int30-facts">
+      {props.rows.map((row) => (
+        <div className="int30-fact" key={row.label}>
+          <dt>{row.label}</dt>
+          <dd className={row.tone === 'warn' ? 'is-warn' : ''}>{row.value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 export function SettingsPanel(props: SettingsPanelProps) {
   const {
     config,
@@ -233,6 +280,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
     onPushToggle,
     onPushRefresh,
     onSignOut,
+    unsentCount,
+    researchAvailable,
     currentScreen,
     appVersion,
     buildId,
@@ -246,6 +295,9 @@ export function SettingsPanel(props: SettingsPanelProps) {
   const online = useOnline();
   const viewport = useViewportLabel();
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'manual'>('idle');
+  // 지원 진입은 접혀서 시작한다. 평소 화면을 차지하지 않되 막힌 사람이 한 번에 열 수 있어야 한다.
+  const [supportOpen, setSupportOpen] = useState(false);
+  const tokenRef = useRef<HTMLInputElement>(null);
 
   const view = pushView(pushState, pushBusy);
   const pushToggleAvailable = canToggle(pushState);
@@ -282,6 +334,22 @@ export function SettingsPanel(props: SettingsPanelProps) {
   const reportText = useMemo(() => buildBugReportText(reportFacts), [reportFacts]);
   const reportMailto = useMemo(() => bugReportMailto(reportFacts), [reportFacts]);
 
+  /* 화면에 보이는 진단은 메일 본문과 **같은 값에서** 만든다.
+     따로 모으면 한쪽에만 비밀이 새는 길이 생긴다 — `collectBugReportFacts`의 허용 목록을
+     통과한 값만 여기까지 온다. */
+  const diagnosticRows = useMemo(() => [
+    { label: '버전', value: reportFacts.version },
+    { label: '빌드', value: reportFacts.buildId },
+    { label: '보던 화면', value: reportFacts.tab },
+    { label: '연결', value: reportFacts.connection },
+    { label: '알림', value: reportFacts.notifications },
+    { label: '테마', value: reportFacts.theme },
+    { label: '네트워크', value: reportFacts.online ? '온라인' : '오프라인' },
+    { label: '화면 크기', value: reportFacts.viewport },
+    { label: '언어', value: reportFacts.language },
+    { label: '브라우저', value: reportFacts.userAgent },
+  ], [reportFacts]);
+
   const copyReport = useCallback(async () => {
     // 클립보드는 권한·컨텍스트(비보안 origin, 사용자 조작 인정 만료)에 따라 아예 없거나 거부된다.
     // 실패를 조용히 삼키지 않고 **눈으로 보고 직접 긁어 갈 수 있는 자리**를 연다 —
@@ -300,11 +368,35 @@ export function SettingsPanel(props: SettingsPanelProps) {
   }, [reportText]);
 
   return (
-    <div className="cc-stack int29-settings">
-      {/* ── 계정·연결 ── 한 뎁스 없이 여기서 전부 보이고 전부 고쳐진다. */}
-      <section className="int29-group" aria-labelledby="settings-job-account">
-        <h2 className="int29-group-label" id="settings-job-account">계정·연결</h2>
-        <section className="int29-card">
+    <div className="cc-stack int29-settings int30-settings">
+      {/* ══ 1. 계정·연결 ══ 처음 온 사람이 반드시 해야 하는 단 하나가 화면 맨 위에 있다. */}
+      <Group id="account">
+        {/* 연결되지 않은 기기에서는 "무엇을 해야 하는가"가 다른 무엇보다 먼저다.
+            연결된 기기에서는 이 블록이 사라진다 — 끝난 일을 계속 보여 주면 화면이 잔소리가 된다. */}
+        {!configured && (
+          <section className="int30-next" data-settings-item="connect-next-step" aria-labelledby="settings-next-step">
+            <span className="int30-next-eyebrow">지금 할 일</span>
+            <strong id="settings-next-step">이 기기를 개인 링크로 연결하세요</strong>
+            <p>
+              받으신 <b>개인 링크</b>로 이 앱을 한 번 열면 연결 주소와 개인 링크 코드가 자동으로 채워져요.
+              링크가 없으면 관리자에게 요청해 주세요. 연결 전에는 촬영은 되지만 접수되지 않고 이 기기에 쌓입니다.
+            </p>
+            <button
+              className="int29-action is-primary"
+              type="button"
+              onClick={() => {
+                const field = tokenRef.current;
+                field?.scrollIntoView({ block: 'center' });
+                field?.focus();
+              }}
+            >
+              <Link2 aria-hidden="true" size={16} />코드를 직접 입력할게요
+            </button>
+          </section>
+        )}
+
+        {/* 다시 오는 이유 1: "지금 잘 되고 있나". 읽는 블록이므로 조작을 섞지 않는다. */}
+        <section className="int29-card" data-settings-item="connection-state">
           <div className="int29-card-head">
             <strong>이 기기의 연결</strong>
             <span className={`int29-pill ${configured ? 'is-on' : 'is-warn'}`}>{connectionLabel}</span>
@@ -316,13 +408,26 @@ export function SettingsPanel(props: SettingsPanelProps) {
             </p>
           ) : (
             <p className="int29-lede">
-              아직 이 기기가 연결되지 않았어요. 받으신 <b>개인 링크</b>로 이 앱을 한 번 열면
-              연결 주소와 개인 링크 코드가 자동으로 채워집니다. 링크가 없다면 관리자에게 요청해 주세요.
+              아직 이 기기가 연결되지 않았어요. 아래 칸은 개인 링크로 열면 자동으로 채워집니다.
             </p>
           )}
+          <div data-settings-item="now-facts">
+            <Facts rows={[
+              { label: '접수 이름', value: config.capturer || '아직 없음' },
+              { label: '알림', value: view.short },
+              { label: '전송 대기', value: unsentCount > 0 ? `${unsentCount}건` : '없음', tone: unsentCount > 0 ? 'warn' : 'plain' },
+              { label: '네트워크', value: online ? '온라인' : '오프라인', tone: online ? 'plain' : 'warn' },
+            ]} />
+          </div>
+        </section>
 
+        {/* 고치는 자리. 한 뎁스 없이 여기서 전부 보이고 전부 고쳐진다 (DEC-000093). */}
+        <section className="int29-card">
+          <div className="int29-card-head">
+            <strong>연결 정보</strong>
+          </div>
           <div className="int29-fields">
-            <div className="int29-field">
+            <div className="int29-field" data-settings-item="capturer-name">
               <label htmlFor="settings-capturer">내 이름</label>
               <input
                 id="settings-capturer"
@@ -335,7 +440,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
               <p className="int29-field-help" id="settings-capturer-help">명함에 &lsquo;누가 찍었는지&rsquo;로 함께 기록돼요.</p>
             </div>
 
-            <div className="int29-field">
+            <div className="int29-field" data-settings-item="api-endpoint">
               <label htmlFor="settings-api">연결 주소</label>
               {apiEndpointEditable ? (
                 <textarea
@@ -374,10 +479,11 @@ export function SettingsPanel(props: SettingsPanelProps) {
               )}
             </div>
 
-            <div className="int29-field">
+            <div className="int29-field" data-settings-item="personal-token">
               <label htmlFor="settings-token">개인 링크 코드</label>
               <input
                 id="settings-token"
+                ref={tokenRef}
                 type="password"
                 autoComplete="off"
                 aria-describedby="settings-token-help"
@@ -390,7 +496,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
             </div>
           </div>
 
-          <div className="int29-save-row">
+          <div className="int29-save-row" data-settings-item="save-config">
             {dirty && <p className="int29-dirty" role="status">아직 저장하지 않은 변경이 있어요.</p>}
             <button className="int29-action is-primary" type="button" disabled={nameMissing} onClick={() => onSaveConfig(draft)}>
               설정 저장
@@ -398,12 +504,13 @@ export function SettingsPanel(props: SettingsPanelProps) {
             {nameMissing && <p className="int29-note">이름을 입력해야 저장할 수 있어요.</p>}
           </div>
         </section>
-      </section>
+      </Group>
 
-      {/* ── 촬영 ── 부정형 토글 대신 고르는 두 가지 방법. 각각의 결과를 옆에 붙인다. */}
-      <section className="int29-group" aria-labelledby="settings-job-capture">
-        <h2 className="int29-group-label" id="settings-job-capture">촬영</h2>
-        <section className="int29-card">
+      {/* ══ 2. 캡처·조사 ══ 쓰는 동안 다시 오는 이유. 촬영 방법 → 보이는 방식 → 쓸 수 있는 범위.
+          `화면` 묶음을 따로 두지 않는다 — 테마는 그 자체가 목적이 아니라 **어두운 곳에서 명함을
+          찍고 결과를 읽기 위한** 설정이고, 사용자는 그 job으로 들어온다. */}
+      <Group id="capture">
+        <section className="int29-card" data-settings-item="capture-method">
           <div className="int29-card-head">
             <Camera aria-hidden="true" size={18} />
             <strong>명함을 어떻게 찍을까요</strong>
@@ -438,15 +545,58 @@ export function SettingsPanel(props: SettingsPanelProps) {
             </label>
           </fieldset>
           {/* 웹 앱은 OS 갤러리의 사진을 지울 권한이 없다. 지울 수 있는 척하지 않는다. */}
-          <p className="int29-note">
+          <p className="int29-note" data-settings-item="gallery-note">
             이미 갤러리에 쌓인 사진도 이 앱이 지울 수 없어요 — 휴대폰 갤러리에서 직접 지워 주세요.
           </p>
         </section>
-      </section>
 
-      {/* ── 알림 ── 상태 한 줄 · 행동 하나 · 오는 경우. 그 밖의 내부 사정은 적지 않는다. */}
-      <section className="int29-group" aria-labelledby="settings-job-notify">
-        <h2 className="int29-group-label" id="settings-job-notify">알림</h2>
+        <section className="int29-card" data-settings-item="theme">
+          <div className="int29-card-head">
+            <SunMoon aria-hidden="true" size={18} />
+            <strong>화면 테마</strong>
+          </div>
+          <p className="int29-lede">어두운 곳에서 명함을 찍고 결과를 읽을 때 눈이 편한 쪽으로 고르세요. 이 기기에 저장돼요.</p>
+          <div className="int29-theme" role="radiogroup" aria-label="화면 테마">
+            {THEME_CHOICES.map((choice) => (
+              <button
+                key={choice.value}
+                type="button"
+                role="radio"
+                aria-checked={theme === choice.value}
+                className={theme === choice.value ? 'on' : ''}
+                onClick={() => onThemeChange(choice.value)}
+              >
+                <strong>{choice.label}</strong>
+                <span>{choice.hint}</span>
+              </button>
+            ))}
+          </div>
+          {/* 움직임은 사용자 toggle로 덮어쓰지 않는다. 폰의 접근성 설정이 언제나 이긴다 —
+              `화면 움직임` preference는 은퇴했고 되살리지 않는다. */}
+          <p className="int29-note" data-settings-item="motion-note">
+            지금 보이는 화면은 <b>{resolvedTheme === 'dark' ? '다크' : '라이트'}</b>예요{theme === 'system' ? ' — 폰 설정을 따라갑니다.' : '.'}
+            {' '}화면의 움직임은 여기서 고르지 않고 휴대폰의 <b>움직임 줄이기</b> 설정을 항상 따릅니다.
+          </p>
+        </section>
+
+        {/* 조사는 사용자가 켜고 끄는 값이 아니라 연결에 딸려 오는 권한이다. 그래서 선택이 아니라
+            **읽기 전용 사실**로 적는다 — 못 쓰는 이유를 말하지 않으면 사용자는 설정에서 찾는다. */}
+        <section className="int29-card" data-settings-item="research-availability">
+          <div className="int29-card-head">
+            <Sparkles aria-hidden="true" size={18} />
+            <strong>AI 조사 요청</strong>
+            <span className={`int29-pill ${researchAvailable ? 'is-on' : ''}`}>{researchAvailable ? '쓸 수 있어요' : '이 연결에서는 없음'}</span>
+          </div>
+          <p className="int29-note">
+            {researchAvailable
+              ? '명함 기록과 사람 카드에서 요청할 수 있어요. 무엇을 조사할지는 요청할 때 고릅니다 — 여기서 미리 정해 두지 않아요.'
+              : '이 개인 링크에는 조사 권한이 없어요. 켜고 끄는 설정이 아니라 관리자가 링크에 부여하는 권한입니다.'}
+          </p>
+        </section>
+      </Group>
+
+      {/* ══ 3. 알림 ══ 상태 한 줄 · 행동 하나 · 오는 경우. 그 밖의 내부 사정은 적지 않는다. */}
+      <Group id="notify">
         <section className="int29-card">
           <div className="int29-card-head">
             <Bell aria-hidden="true" size={18} />
@@ -454,7 +604,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
             <span className={`int29-pill ${view.tone === 'on' ? 'is-on' : view.tone === 'blocked' ? 'is-warn' : ''}`}>{view.short}</span>
           </div>
 
-          <div className="int29-state" role="status" aria-live="polite" aria-busy={view.tone === 'wait'}>
+          <div className="int29-state" data-settings-item="notify-state" role="status" aria-live="polite" aria-busy={view.tone === 'wait'}>
             <strong>{view.state}</strong>
             {view.fix && (
               <ul className="int29-fix">
@@ -463,7 +613,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
             )}
           </div>
 
-          <div className="int29-action-row">
+          <div className="int29-action-row" data-settings-item="notify-action">
             {view.action === 'none' && (
               <button className="int29-action" type="button" disabled aria-busy={view.tone === 'wait'}>
                 {view.tone === 'wait' && <RefreshCw className="spinning" aria-hidden="true" size={16} />}
@@ -484,51 +634,21 @@ export function SettingsPanel(props: SettingsPanelProps) {
 
           {/* 세 갈래는 화면에서 지어낸 분류가 아니라 watcher가 실제로 보내는 kind와 1:1이다
               (final_result · human_input_required · recovery_required). 네 번째를 만들지 않는다. */}
-          <p className="int29-scope-label" id="settings-notify-scope">알림이 오는 경우</p>
-          <ul className="int29-scope" aria-labelledby="settings-notify-scope">
-            <li><strong>최종 결과</strong><span>처리가 끝나 결과를 볼 수 있을 때</span></li>
-            <li><strong>내용 확인</strong><span>사진·이름 등 사람의 보완이 필요할 때</span></li>
-            <li><strong>복구 필요</strong><span>문제를 확인하고 다시 이어가야 할 때</span></li>
-          </ul>
-          <p className="int29-note">이 세 가지 외에는 알리지 않아요. 알림에 이름·회사·메모는 담기지 않습니다.</p>
-        </section>
-      </section>
-
-      {/* ── 화면 ── */}
-      <section className="int29-group" aria-labelledby="settings-job-display">
-        <h2 className="int29-group-label" id="settings-job-display">화면</h2>
-        <section className="int29-card">
-          <div className="int29-card-head">
-            <SunMoon aria-hidden="true" size={18} />
-            <strong>화면 테마</strong>
+          <div data-settings-item="notify-scope">
+            <p className="int29-scope-label" id="settings-notify-scope">알림이 오는 경우</p>
+            <ul className="int29-scope" aria-labelledby="settings-notify-scope">
+              <li><strong>최종 결과</strong><span>처리가 끝나 결과를 볼 수 있을 때</span></li>
+              <li><strong>내용 확인</strong><span>사진·이름 등 사람의 보완이 필요할 때</span></li>
+              <li><strong>복구 필요</strong><span>문제를 확인하고 다시 이어가야 할 때</span></li>
+            </ul>
+            <p className="int29-note">이 세 가지 외에는 알리지 않아요. 알림에 이름·회사·메모는 담기지 않습니다.</p>
           </div>
-          <p className="int29-lede">어두운 곳에서는 다크로 바꿔 보세요. 고른 값은 이 기기에 저장돼요.</p>
-          <div className="int29-theme" role="radiogroup" aria-label="화면 테마">
-            {THEME_CHOICES.map((choice) => (
-              <button
-                key={choice.value}
-                type="button"
-                role="radio"
-                aria-checked={theme === choice.value}
-                className={theme === choice.value ? 'on' : ''}
-                onClick={() => onThemeChange(choice.value)}
-              >
-                <strong>{choice.label}</strong>
-                <span>{choice.hint}</span>
-              </button>
-            ))}
-          </div>
-          <p className="int29-note">
-            지금 보이는 화면은 <b>{resolvedTheme === 'dark' ? '다크' : '라이트'}</b>예요{theme === 'system' ? ' — 폰 설정을 따라갑니다.' : '.'}
-            {' '}화면의 움직임은 휴대폰의 <b>움직임 줄이기</b> 설정을 항상 따릅니다.
-          </p>
         </section>
-      </section>
+      </Group>
 
-      {/* ── 데이터·개인정보 ── */}
-      <section className="int29-group" aria-labelledby="settings-job-data">
-        <h2 className="int29-group-label" id="settings-job-data">데이터·개인정보</h2>
-        <section className="int29-boundary">
+      {/* ══ 4. 데이터·개인정보 ══ 읽는 것이 먼저, 되돌릴 수 없는 것이 맨 마지막. */}
+      <Group id="data">
+        <section className="int29-boundary" data-settings-item="privacy-boundary">
           <ShieldCheck aria-hidden="true" size={22} />
           <div className="int29-boundary-copy">
             <strong>개인 링크 정보는 이 기기에만 저장돼요.</strong>
@@ -537,26 +657,52 @@ export function SettingsPanel(props: SettingsPanelProps) {
             <p>개인 링크로 열면 주소창의 코드를 <b>즉시 지웁니다</b> — 방문 기록·화면 공유에 남지 않아요.</p>
           </div>
         </section>
-        <section className="int29-card">
-          <div className="int29-card-head">
-            <Unplug aria-hidden="true" size={18} />
-            <strong>이 기기에서 연결 해제</strong>
-          </div>
-          <p className="int29-lede">
-            개인 링크 코드와 이 기기에 저장된 브리핑 사본·검색 기록·만남 맥락을 지웁니다.
-            <b> 전송을 기다리는 촬영은 지우지 않아요.</b>
-          </p>
-          <button className="int29-action is-danger" type="button" disabled={!config.token} onClick={onSignOut}>
-            연결 해제
-          </button>
-          {!config.token && <p className="int29-note">지금은 이 기기에 지울 연결 정보가 없어요.</p>}
-        </section>
-      </section>
 
-      {/* ── 버전·문제 알리기 ── 도움말 접기는 없앴다. 남은 것은 말할 수 있는 값과 알릴 수 있는 경로다. */}
-      <section className="int29-group" aria-labelledby="settings-job-about">
-        <h2 className="int29-group-label" id="settings-job-about">버전·문제 알리기</h2>
-        <section className="int29-card">
+        {/* 위험 영역. 카드가 아니라 **다른 종류의 자리**로 보여야 한다 —
+            여기까지 스크롤한 사람은 "이 아래는 되돌릴 수 없다"를 읽기 전에 색으로 먼저 안다. */}
+        <section className="int30-danger" data-settings-item="disconnect" data-settings-risk="destructive" aria-labelledby="settings-danger-title">
+          <div className="int30-danger-head">
+            <TriangleAlert aria-hidden="true" size={18} />
+            <strong id="settings-danger-title">되돌릴 수 없는 정리</strong>
+          </div>
+          <div className="int30-danger-body">
+            <div className="int29-card-head">
+              <Unplug aria-hidden="true" size={18} />
+              <strong>이 기기에서 연결 해제</strong>
+            </div>
+            <p className="int29-lede">폰을 바꾸거나 이 기기를 남에게 넘길 때 쓰세요.</p>
+            <ul className="int30-impact">
+              <li className="is-remove">
+                <span>지웁니다</span>
+                <span>개인 링크 코드 · 촬영자 이름 · 이 기기에 저장된 브리핑 사본 · 최근 검색어 · 만남 맥락</span>
+              </li>
+              <li className="is-keep">
+                <span>남깁니다</span>
+                <span>전송을 기다리는 촬영 원본 · 서버에 이미 접수된 기록</span>
+              </li>
+            </ul>
+            <p className="int30-danger-note">
+              <b>이 기기에서는 되돌릴 수 없어요.</b> 다시 쓰려면 개인 링크를 새로 받아 열어야 하고,
+              이 기기에 저장된 사본은 복구되지 않습니다.
+            </p>
+            {unsentCount > 0 && (
+              <p className="int30-danger-note is-alert" role="alert">
+                아직 전송되지 않은 촬영이 <b>{unsentCount}건</b> 있어요. 지우지는 않지만 연결을 해제하면
+                이 기기에서 보낼 수 없어요 — 먼저 전송을 끝내는 걸 권합니다.
+              </p>
+            )}
+            <button className="int29-action is-danger" type="button" disabled={!config.token} onClick={onSignOut}>
+              연결 해제
+            </button>
+            {!config.token && <p className="int29-note">지금은 이 기기에 지울 연결 정보가 없어요.</p>}
+          </div>
+        </section>
+      </Group>
+
+      {/* ══ 5. 앱 정보·지원 ══ 버전은 늘 보이고(통화하며 읽는 값), 진단·제보는 접혀 있다.
+          접는 이유는 감추기 위해서가 아니라, **막히지 않은 날에는 필요 없는 것**이기 때문이다. */}
+      <Group id="about">
+        <section className="int29-card" data-settings-item="version">
           {/* 두 값은 서로 다른 일을 한다. 버전은 사람이 말하기 위한 것이고("2.23.0 쓰고 있어요"),
               빌드는 그 화면이 정확히 어느 소스에서 나왔는지 저장소에서 다시 계산해 대조하기 위한 것이다. */}
           <div className="int29-version">
@@ -565,30 +711,60 @@ export function SettingsPanel(props: SettingsPanelProps) {
             <span className="int29-version-build">빌드 <code>{buildId}</code></span>
           </div>
           <p className="int29-note">문제를 알리실 때 이 두 줄을 그대로 읽어 주시면 됩니다.</p>
-
-          <div className="int29-action-row">
-            {/* `mailto:`는 메일 앱의 **초안**을 열 뿐이다. 보내기는 사람이 직접 누른다 —
-                앱이 대신 보내면 무엇이 나갔는지 사용자가 볼 수도, 지울 수도 없다. */}
-            <a className="int29-action is-primary" href={reportMailto}>
-              <Mail aria-hidden="true" size={16} />버그 리포트 보내기
-            </a>
-            <button className="int29-action" type="button" onClick={() => void copyReport()}>
-              메일 앱이 없어요 · 내용 복사하기
-            </button>
-          </div>
-          <p className="int29-note">
-            메일 앱에 제목과 내용이 채워진 초안이 열려요. <b>보내기는 직접 누르셔야 합니다.</b>{' '}
-            버전·빌드·브라우저만 담기고 이름·연락처·개인 링크 코드는 담기지 않아요.
-          </p>
-          <p className="int29-status" role="status">{copyStatusMessage}</p>
-          {copyState === 'manual' && (
-            <div className="int29-field">
-              <label htmlFor="settings-report-text">버그 리포트 내용</label>
-              <textarea id="settings-report-text" className="int29-report-text" readOnly value={reportText} />
-            </div>
-          )}
         </section>
-      </section>
+
+        <section className="int30-support" data-settings-item="support-entry">
+          <button
+            className="int30-support-toggle"
+            type="button"
+            aria-expanded={supportOpen}
+            aria-controls="settings-support-body"
+            onClick={() => setSupportOpen((open) => !open)}
+          >
+            <LifeBuoy aria-hidden="true" size={18} />
+            <span className="int30-support-toggle-copy">
+              <strong>문제가 생겼을 때</strong>
+              <span>진단 정보 보기 · 버그 리포트 메일 초안 열기</span>
+            </span>
+            <ChevronDown className={`int30-support-chevron ${supportOpen ? 'is-open' : ''}`} aria-hidden="true" size={18} />
+          </button>
+
+          <div className="int30-support-body" id="settings-support-body" hidden={!supportOpen}>
+            <div data-settings-item="diagnostics">
+              <p className="int29-scope-label" id="settings-diagnostics-label">진단 정보</p>
+              {/* 화면에 보이는 값과 메일 본문에 실리는 값이 같은 출처다. 여기 없는 것은 메일에도 없다. */}
+              <Facts rows={diagnosticRows} />
+              <p className="int29-note">
+                이름·연락처·개인 링크 코드·연결 주소는 여기에도 메일에도 담기지 않아요.
+                이 화면은 <b>아무것도 자동으로 보내지 않습니다.</b>
+              </p>
+            </div>
+
+            <div className="int29-action-row" data-settings-item="bug-report">
+              {/* `mailto:`는 메일 앱의 **초안**을 열 뿐이다. 보내기는 사람이 직접 누른다 —
+                  앱이 대신 보내면 무엇이 나갔는지 사용자가 볼 수도, 지울 수도 없다. */}
+              <a className="int29-action is-primary" href={reportMailto}>
+                <Mail aria-hidden="true" size={16} />버그 리포트 보내기
+              </a>
+            </div>
+            <div className="int29-action-row" data-settings-item="report-copy">
+              <button className="int29-action" type="button" onClick={() => void copyReport()}>
+                메일 앱이 없어요 · 내용 복사하기
+              </button>
+            </div>
+            <p className="int29-note">
+              메일 앱에 제목과 내용이 채워진 초안이 열려요. <b>보내기는 직접 누르셔야 합니다.</b>
+            </p>
+            <p className="int29-status" role="status">{copyStatusMessage}</p>
+            {copyState === 'manual' && (
+              <div className="int29-field">
+                <label htmlFor="settings-report-text">버그 리포트 내용</label>
+                <textarea id="settings-report-text" className="int29-report-text" readOnly value={reportText} />
+              </div>
+            )}
+          </div>
+        </section>
+      </Group>
     </div>
   );
 }

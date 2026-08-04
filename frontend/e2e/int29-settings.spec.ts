@@ -128,6 +128,21 @@ async function openSettings(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { name: '계정·연결' })).toBeVisible();
 }
 
+/**
+ * 접힌 지원 진입을 연다 (INT-000030 · Kairen-Ref: TSK-000544).
+ *
+ * DEC-000105이 진단·버그 리포트를 `앱 정보·지원` 안의 접힌 자리로 옮겼다. 접은 이유는 감추기
+ * 위해서가 아니라 **막히지 않은 날에는 필요 없는 것**이기 때문이다. 아래 제보 관련 게이트가
+ * 지키는 계약(초안만 연다 · 아무것도 보내지 않는다 · 자격 정보가 실리지 않는다)은 그대로이고,
+ * 그 자리에 닿는 방법만 한 단계 늘었다.
+ */
+async function openSupport(page: Page): Promise<void> {
+  const toggle = page.getByRole('button', { name: /문제가 생겼을 때/ });
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+}
+
 // ── 001: 글자 크기 (이 화면의 근본 결함) ──
 //
 // 예전 감사에서 설정의 57개 텍스트 요소 중 46개가 12.5px 이하였다. 원인은 Ionic 전역
@@ -172,7 +187,10 @@ test('설정 화면의 모든 글자가 폰에서 읽을 수 있는 크기다', 
   const harness = await boot(page);
   try {
     await openSettings(page);
-    // 접혀 있던 자리가 없어야 스윕이 화면 전부를 본다 — 열어야 보이는 글은 이 화면에 없다.
+    // INT-000030에서 진단·제보가 접힌 자리로 들어갔다. 접힌 글은 `display: none`이라 스윕이
+    // 아예 보지 못한다 — **재지 못한 곳은 통과한 곳이 아니다.** 그래서 먼저 열고 잰다.
+    // (열면 닫힌 상태의 모든 글도 그대로 남으므로 이 한 번의 스윕이 더 넓다.)
+    await openSupport(page);
     const swept = await page.evaluate(READABILITY_SWEEP) as { error: string; findings: unknown[]; swept: number };
 
     expect(swept.error).toBe('');
@@ -218,7 +236,9 @@ test('아직 연결하지 않은 기기에는 무엇을 해야 하는지가 적�
   try {
     await openSettings(page);
     await expect(page.getByText('아직 이 기기가 연결되지 않았어요', { exact: false })).toBeVisible();
-    await expect(page.getByText('개인 링크 필요')).toBeVisible();
+    // 같은 상태 이름이 `앱 정보·지원`의 진단 줄에도 나타난다(같은 값에서 만들기 때문에 그래야 한다).
+    // 여기서 보려는 것은 **계정 묶음에 상태가 적혀 있는가**이므로 그 묶음으로 좁힌다.
+    await expect(page.getByRole('region', { name: '계정·연결' }).getByText('개인 링크 필요')).toBeVisible();
     // 지울 것이 없으면 연결 해제도 누를 수 없어야 한다 — 눌러도 아무 일 없는 버튼은 고장으로 읽힌다.
     await expect(page.getByRole('button', { name: '연결 해제' })).toBeDisabled();
   } finally {
@@ -338,6 +358,7 @@ test('버그 리포트는 메일 초안만 열고, 앱이 스스로 아무것도
   const harness = await boot(page);
   try {
     await openSettings(page);
+    await openSupport(page);
     const before = harness.requests.length;
 
     const link = page.getByRole('link', { name: /버그 리포트 보내기/ });
@@ -380,6 +401,7 @@ test('메일 앱이 없는 기기를 위해 같은 내용을 복사할 수 있�
   try {
     await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
     await openSettings(page);
+    await openSupport(page);
 
     await page.getByRole('button', { name: /내용 복사하기/ }).click();
     await expect(page.getByText('복사했어요', { exact: false })).toBeVisible();
@@ -404,6 +426,7 @@ test('클립보드가 막힌 기기에서는 내용을 그대로 펼쳐 준다',
     await page.reload({ waitUntil: 'domcontentloaded' });
     await expect(page.getByRole('navigation', { name: '주요 화면' })).toBeVisible({ timeout: 20_000 });
     await openSettings(page);
+    await openSupport(page);
 
     await page.getByRole('button', { name: /내용 복사하기/ }).click();
     await expect(page.getByText('자동 복사가 막혀 있어요', { exact: false })).toBeVisible();

@@ -136,9 +136,18 @@ test('detection matrix over realistic scenes', async ({ page: unusedPage }) => {
         draw();
         window.setInterval(draw, 120);
         const stream = (canvas as HTMLCanvasElement & { captureStream: (fps: number) => MediaStream }).captureStream(30);
+        /* 기기 목록에 **카메라 한 대**를 선언한다 (TSK-000220 / INT-000030).
+           예전 값은 빈 배열이었다. 촬영 입구를 쓸 수 있는지가 화면 안에서 즉석 판정되던 시절에는
+           아무 뜻도 없는 값이었지만, 지금은 `services/device-capability.ts`가 `videoInputs === 0`을
+           "이 기기에 카메라가 없다"로 읽는다. 즉 이 파일은 카메라가 없다고 선언해 놓고 바로 다음 줄에서
+           카메라를 여는 자기모순이었다 — 아래 클릭은 미리보기가 아니라 파일 올리기를 열게 된다.
+           이 게이트의 주제는 감지 품질이므로 카메라는 있어야 한다. */
         Object.defineProperty(navigator, 'mediaDevices', {
           configurable: true,
-          value: { getUserMedia: async () => stream, enumerateDevices: async () => [] },
+          value: {
+            getUserMedia: async () => stream,
+            enumerateDevices: async () => [{ kind: 'videoinput', deviceId: 'detect-matrix', label: 'detect matrix', groupId: 'debug' }],
+          },
         });
       }, { frame: FRAME, card: CARD, scene: scenario });
 

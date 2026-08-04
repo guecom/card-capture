@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Camera as CameraIcon, Image as ImageIcon, Lightbulb } from 'lucide-react';
 import {
   CandidateCameraError,
+  type CandidateCameraErrorCode,
   cameraHasTorch,
   type CapturedCameraFrame,
   canvasFromImageData,
@@ -216,6 +217,7 @@ export function CameraCaptureModal({
   onDismiss,
   onCaptured,
   onFinished,
+  onCameraOutcome,
 }: {
   isOpen: boolean;
   initialSide: CardSide;
@@ -225,6 +227,15 @@ export function CameraCaptureModal({
   onDismiss: () => void;
   onCaptured: (side: CardSide, frame: CapturedCameraFrame, meta: CapturedSideMeta) => void;
   onFinished: () => void;
+  /**
+   * 스트림을 **실제로 열어 본** 결과. 성공이면 `null`, 실패면 그 이유 코드다.
+   *
+   * 이 값이 밖으로 나가야 하는 이유 (TSK-000220 통합): 권한 거부는 이 모달 안에서만 보이고
+   * 닫는 순간 잊혔다. 그러면 사용자는 방금 거부한 카메라 입구가 아무 일 없었다는 얼굴로
+   * 다시 서 있는 것을 본다. 조회(`navigator.permissions`)는 방금 거부를 곧바로 말해 주지
+   * 않으므로, **관측된 실패**가 진입 카드가 가진 가장 구체적인 사실이다.
+   */
+  onCameraOutcome?: (failure: CandidateCameraErrorCode | null) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
@@ -325,6 +336,9 @@ export function CameraCaptureModal({
       video.muted = true;
       video.playsInline = true;
       await video.play();
+      // 여기까지 왔으면 이 기기에서 카메라는 **실제로 열린다**. 예전에 관측된 실패가 남아 있다면
+      // 그것은 이제 사실이 아니므로 같이 지운다 — 안 그러면 권한을 다시 허용해도 카드가 계속 막힌다.
+      onCameraOutcome?.(null);
       setTorchAvailable(cameraHasTorch(stream));
       setPhase('streaming');
       setDetail('');
@@ -363,10 +377,13 @@ export function CameraCaptureModal({
     } catch (error) {
       stopPreview();
       const code = error instanceof CandidateCameraError ? error.code : 'camera_failed';
+      // 이 화면 밖으로도 알린다. 모달을 닫으면 사라지는 사실로 두면 진입 카드가 방금 있었던 일을
+      // 모르는 채로 다시 그려진다 (TSK-000220 통합).
+      onCameraOutcome?.(code);
       setPhase('error');
       setDetail(failureCopy[code]);
     }
-  }, [stopPreview]);
+  }, [onCameraOutcome, stopPreview]);
 
   const capturePreviewFrame = useCallback(async (
     source: 'manual' | 'auto' = 'manual',

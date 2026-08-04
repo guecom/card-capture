@@ -1,0 +1,607 @@
+/* 캡처 진입 카드 + 앱 전체의 작성 box — Kairen-Ref: TSK-000220 / INT-000030 / DEC-000105
+ *
+ * founder 판정 둘을 여기서 함께 갚는다.
+ *   (1) "명함 촬영, 직접 입력 … 하나는 설명이 있고 하나는 없고 그래서 시각적으로 뭔가
+ *        통일감이 떨어져."
+ *   (2) "만남 맥락 글 작성하는 박스 포함해서 테두리 뭔가 좀 구려. 다른 곳의 작성하는 박스
+ *        테두리와 통일성도 없고, 이거 작성해야 엄청 좋은건데 왠지 작성해야 할 것 같은
+ *        느낌(설명보다 직관적으로)이 들면 좋겠어."
+ *
+ * ── 이 파일이 따로 있는 이유
+ * `app.css`는 다섯 lane이 함께 쓰는 파일이라 새 규칙을 얹으면 병합이 서로를 덮는다.
+ * 여기 있는 선택자는 전부 `.cc-entry-` / `.cc-field-` 로 시작하거나, 기존 표면을 **덮어쓰는**
+ * 목적이 분명한 소수의 예외뿐이다.
+ *
+ * ── 특정도(specificity)를 손으로 맞춘 자리가 있는 이유
+ * `app.css`가 만남 맥락 입력 칸을 `.capture-card .context-block .capture-context-fields ion-input`
+ * 처럼 깊게 잡고 있다. 공통 token을 얕은 선택자로 쓰면 조용히 지고, 화면은 예전 모양 그대로
+ * 남는다(빌드는 통과한다 — 그래서 더 위험하다). 그 자리만 같은 깊이로 되받는다.
+ * `app.css`를 지우지 않는 쪽을 고른 이유는 같은 파일을 여러 lane이 동시에 고치고 있기 때문이다.
+ *
+ * 색·모서리·그림자는 손으로 박지 않는다. 다크 팔레트가 통째로 바뀌어도 따라가야 하고,
+ * 다크 대비 게이트(int16-surfaces)와 모서리 계단 게이트(surface-polish)가 그 위에서 판정한다.
+ */
+
+/* ── 작성 box 공통 token ────────────────────────────────────────────────
+   "글을 쓰는 자리"는 앱 안에서 여섯 군데다: 만남 맥락, 이름 먼저 확인, 직접 입력 시트,
+   AI 조사 요청, 인물 메모, 대기열 편집. 예전에는 여섯이 전부 다른 테두리를 갖고 있었고
+   한 곳은 아예 없었다. 이제 굵기·색·모서리·focus는 이 한 벌만 정한다. */
+:root {
+  --cc-field-w: 1.5px;
+  --cc-field-line: rgba(42, 63, 89, 0.26);
+  --cc-field-line-filled: rgba(var(--cc-accent), 0.34);
+  --cc-field-line-focus: rgba(var(--cc-accent), 0.62);
+  --cc-field-r: var(--cc-r-md);
+  --cc-field-inset: inset 0 1px 2px rgba(34, 53, 76, 0.05);
+  --cc-field-ring: 0 0 0 3px rgba(var(--cc-accent), 0.18);
+  --cc-field-pad-x: 13px;
+  --cc-field-pad-y: 11px;
+  --cc-field-min-h: 50px;
+
+  /* 카드 안의 보조 한 줄. 새 색이 아니라 이 스타일시트가 이미 `.context-chips button`에서 쓰는
+     값이다 — 같은 위계에 다른 색을 새로 만들지 않으려고 그대로 가져왔다.
+     `--cc-muted`(#66758a)는 강조색이 5% 깔린 카드 위에서 4.36:1이라 본문 기준에 못 미친다. */
+  --cc-entry-outcome: #56657a;
+}
+
+:root[data-theme="dark"] {
+  --cc-field-line: rgba(184, 172, 214, 0.32);
+  --cc-field-inset: inset 0 1px 2px rgba(0, 0, 0, 0.28);
+  /* 어두운 면 위에서는 같은 알파가 훨씬 적게 보인다 — 링은 올리고 눌린 그림자는 진하게. */
+  --cc-field-ring: 0 0 0 3px rgba(var(--cc-accent), 0.3);
+  --cc-entry-outcome: var(--cc-muted);
+}
+
+/* ── 작성 box primitive (`AuthoringField`) ───────────────────────────── */
+.cc-field {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+.cc-field-head {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 7px;
+}
+
+/* 라벨은 박스 **밖**에 선다. Ionic stacked label은 placeholder와 같은 회색조라 칸에 묻힌다. */
+.cc-field-label {
+  color: var(--cc-ink);
+  font-size: 13px;
+  font-weight: 770;
+  letter-spacing: -0.015em;
+  word-break: keep-all;
+}
+
+/* 채워진 칸은 라벨 옆에 작은 점이 켜진다. 체크 표시를 쓰지 않는 이유: 체크는 "검사에 통과했다"로
+   읽히고, 이 영역은 검사하지 않는다. 점은 그냥 "여기는 적혀 있다"는 사실이다. */
+.cc-field.is-filled > .cc-field-head .cc-field-label::after {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 5px;
+  border-radius: 50%;
+  background: rgb(var(--cc-accent));
+  vertical-align: middle;
+}
+
+.cc-field-hint {
+  color: var(--cc-muted);
+  font-size: 11px;
+  font-weight: 640;
+  word-break: keep-all;
+}
+
+.cc-field-foot {
+  min-width: 0;
+}
+
+/* ── 공통 테두리를 실제로 입는 자리 ──────────────────────────────────────
+   박스는 `ion-input` / `ion-textarea` **자신**이다. 테두리를 바깥 div로 옮기면 칸이 두 겹으로
+   보이고, 입력 칸의 테두리를 직접 재는 기존 게이트(int15-surfaces)가 대상을 잃는다. */
+.cc-field > ion-input,
+.cc-field > ion-textarea,
+.capture-card .context-block .capture-context-fields .cc-field > ion-input,
+.capture-card .context-block .capture-context-fields .cc-field > ion-textarea,
+.capture-context-fields.light ion-input,
+.capture-context-fields.light ion-textarea,
+.quick-name-panel.inline ion-input,
+.person-action-composer ion-textarea,
+.name-onboard ion-input,
+.ai-surface ion-textarea,
+:root .manual-sheet ion-textarea.manual-input {
+  min-width: 0;
+  border: var(--cc-field-w) solid var(--cc-field-line);
+  border-radius: var(--cc-field-r);
+  box-shadow: var(--cc-field-inset);
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+/* focus는 두 가지를 동시에 한다: 테두리를 강조색으로 올리고 바깥에 링을 두른다.
+   테두리만 바꾸면 어두운 면에서 거의 안 보이고, 링만 두르면 칸의 경계가 흐려진다. */
+.cc-field > ion-input:focus-within,
+.cc-field > ion-textarea:focus-within,
+.capture-card .context-block .capture-context-fields .cc-field > ion-input:focus-within,
+.capture-card .context-block .capture-context-fields .cc-field > ion-textarea:focus-within,
+.capture-context-fields.light ion-input:focus-within,
+.capture-context-fields.light ion-textarea:focus-within,
+.quick-name-panel.inline ion-input:focus-within,
+.person-action-composer ion-textarea:focus-within,
+.name-onboard ion-input:focus-within,
+.ai-surface ion-textarea:focus-within,
+:root .manual-sheet ion-textarea.manual-input:focus-within {
+  border-color: var(--cc-field-line-focus);
+  box-shadow: var(--cc-field-inset), var(--cc-field-ring);
+}
+
+/* 이미 적힌 칸은 테두리가 강조색 쪽으로 옮겨 간다 — 무엇을 했는지가 화면에 남는다.
+   빨간색도 별표도 쓰지 않는다. 켜진 칸과 안 켜진 칸의 차이만으로 진행이 읽힌다. */
+.cc-field.is-filled > ion-input,
+.cc-field.is-filled > ion-textarea,
+.capture-card .context-block .capture-context-fields .cc-field.is-filled > ion-input,
+.capture-card .context-block .capture-context-fields .cc-field.is-filled > ion-textarea {
+  border-color: var(--cc-field-line-filled);
+}
+
+/* 다크에서 `app.css`가 만남 맥락 칸을 다시 잡는다(0,5,1). 같은 깊이로 되받지 않으면 진다. */
+:root[data-theme="dark"] .cc-field > ion-input,
+:root[data-theme="dark"] .cc-field > ion-textarea,
+:root[data-theme="dark"] .capture-card .context-block .capture-context-fields .cc-field > ion-input,
+:root[data-theme="dark"] .capture-card .context-block .capture-context-fields .cc-field > ion-textarea,
+:root[data-theme="dark"] .manual-sheet ion-textarea.manual-input {
+  border-color: var(--cc-field-line);
+  box-shadow: var(--cc-field-inset);
+}
+
+:root[data-theme="dark"] .cc-field > ion-input:focus-within,
+:root[data-theme="dark"] .cc-field > ion-textarea:focus-within,
+:root[data-theme="dark"] .capture-card .context-block .capture-context-fields .cc-field > ion-input:focus-within,
+:root[data-theme="dark"] .capture-card .context-block .capture-context-fields .cc-field > ion-textarea:focus-within,
+:root[data-theme="dark"] .manual-sheet ion-textarea.manual-input:focus-within {
+  border-color: var(--cc-field-line-focus);
+  box-shadow: var(--cc-field-inset), var(--cc-field-ring);
+}
+
+:root[data-theme="dark"] .cc-field.is-filled > ion-input,
+:root[data-theme="dark"] .cc-field.is-filled > ion-textarea,
+:root[data-theme="dark"] .capture-card .context-block .capture-context-fields .cc-field.is-filled > ion-input,
+:root[data-theme="dark"] .capture-card .context-block .capture-context-fields .cc-field.is-filled > ion-textarea {
+  border-color: var(--cc-field-line-filled);
+}
+
+/* 대기열 편집은 테두리가 **아예 없었다** — 같은 앱 안에서 같은 일을 하는 칸이 하나는 상자고
+   하나는 배경이었다. 여백까지 같은 값으로 맞춘다. */
+.capture-context-fields.light ion-input,
+.capture-context-fields.light ion-textarea {
+  --padding-start: var(--cc-field-pad-x);
+  --padding-end: var(--cc-field-pad-x);
+  --background: var(--cc-sunken);
+  min-height: var(--cc-field-min-h);
+  font-size: 13.5px;
+}
+
+/* `이름 먼저 확인`은 강조색 카드 위에 있어 배경이 다르다 — 배경은 그 카드가 계속 소유하고
+   테두리·모서리·focus만 공통으로 가져온다. */
+.quick-name-panel.inline ion-input {
+  --padding-start: var(--cc-field-pad-x);
+  --padding-end: var(--cc-field-pad-x);
+  --padding-top: 9px;
+  --padding-bottom: 9px;
+  --background: var(--cc-solid);
+  min-height: var(--cc-field-min-h);
+}
+
+/* ── 만남 맥락 ────────────────────────────────────────────────────────
+   founder 요구는 "설명보다 직관적으로" 쓰고 싶어지게 만드는 것이었다. 그래서 늘린 것은
+   문장이 아니라 **작성 면적·focus의 또렷함·채워질수록 켜지는 진행**이다. */
+.capture-card .context-block .capture-context-fields .cc-field > ion-input,
+.capture-card .context-block .capture-context-fields .cc-field > ion-textarea {
+  --background: var(--cc-sunken);
+  --color: var(--cc-ink);
+  --placeholder-color: #7f8da1;
+  --placeholder-opacity: 1;
+  --padding-start: var(--cc-field-pad-x);
+  --padding-end: var(--cc-field-pad-x);
+  --padding-top: var(--cc-field-pad-y);
+  --padding-bottom: var(--cc-field-pad-y);
+  min-height: var(--cc-field-min-h);
+  font-size: 14.5px;
+}
+
+:root[data-theme="dark"] .capture-card .context-block .capture-context-fields .cc-field > ion-input,
+:root[data-theme="dark"] .capture-card .context-block .capture-context-fields .cc-field > ion-textarea {
+  --background: var(--cc-sunken);
+  --placeholder-color: #978eb0;
+}
+
+/* 메모는 한 줄짜리 칸이 아니다. 높이가 곧 "여기에 얼마나 적어도 되는가"라는 초대다. */
+.cc-field.cc-field--block > ion-textarea,
+.capture-card .context-block .capture-context-fields .cc-field.cc-field--block > ion-textarea {
+  min-height: 104px;
+  line-height: 1.6;
+}
+
+/* 진행 rail — 네 칸 중 몇 칸이 적혔는가. 낭독기에는 옆의 `n개`가 이미 같은 사실을 말하므로
+   여기서 한 번 더 읽지 않는다(중복 안내는 그 자체로 잔소리다). */
+.context-rail {
+  display: flex;
+  gap: 3px;
+  margin-top: 1px;
+}
+.context-rail i {
+  display: block;
+  width: 15px;
+  height: 3px;
+  border-radius: var(--cc-r-pill);
+  background: var(--cc-line);
+  transition: background-color 160ms ease;
+}
+.context-rail i.on { background: rgb(var(--cc-accent)); }
+
+/* 예시 chip 줄의 이름표. 설명이 아니라 **이름표**다 — 한 단어를 넘기지 않는다.
+   이름표는 chip들과 **같은 줄에 서지 않는다.** `app.css`는 이 묶음을 통째로 `flex-wrap: wrap`
+   하나로 두었는데, 그러면 첫 줄만 이름표 오른쪽에서 시작하고 둘째 줄부터는 컨테이너 왼쪽 끝에서
+   시작해 이름표 **밑으로** 들어간다(실측 390px: chip left=52 < 이름표 right=72.02).
+   그래서 이름표를 별도의 열로 빼고, 접히는 것은 chip 줄만 접히게 한다. */
+.context-chips {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 6px;
+}
+
+.context-chips-row {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.context-chips-label {
+  /* chip 한 줄의 높이를 그대로 받아 **첫 줄과 눈높이**를 맞춘다. `align-self: center`로 두면
+     chip이 세 줄이 되는 순간 이름표만 가운데로 내려가 어느 줄의 이름인지 알 수 없게 된다. */
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  padding-right: 1px;
+  color: var(--cc-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* 구획 머리에 붙는 연결 전 안내. 카드 셋 모두에 해당하는 사실이라 카드가 아니라 여기 있다.
+   경고가 아니라 안심이므로 경고색을 쓰지 않고, `빠른 등록` 줄과 같은 눈높이에 선다. */
+.capture-deferred {
+  padding: 2px 8px;
+  border-radius: var(--cc-r-pill);
+  background: rgba(var(--cc-accent), 0.1);
+  color: var(--cc-blue-ink);
+  /* 바로 옆 `.capture-sub`와 같은 크기다 — 같은 줄에 선 두 조각이 다른 크기면 그 자체가 이음매다. */
+  font-size: 12px;
+  font-weight: 700;
+  word-break: keep-all;
+}
+
+/* ── 캡처 진입 카드 ───────────────────────────────────────────────────
+   모든 카드가 같은 네 줄을 갖는다: 아이콘 · 제목 · 본문(설명[+이유]) · 행동.
+
+   그리고 **같은 줄에 선 카드들은 그 네 줄을 문자 그대로 공유한다.** 카드가 각자 자기 줄을
+   나눠 가지면 정렬은 "글자가 우연히 같은 줄 수로 접혔는가"에 걸린다 — 서체가 늦게 오거나
+   기기가 달라 한쪽이 한 줄 더 쓰는 순간 조용히 어긋난다. 그래서 줄을 소유하는 것은 바깥
+   grid이고, 카드는 `subgrid`로 그 줄에 얹힌다. 제목·설명·행동의 시작선은 글자 수가 아니라
+   **구조**가 보장한다 (통합 검수 2026-08-04, TSK-000220).
+
+   `1fr`로 마지막 줄을 바닥에 붙이던 예전 방식은 두 카드의 마지막 조각 높이가 같을 때만 맞았다.
+   웹캠 없는 PC에서 `명함 앞면 촬영`의 마지막 조각은 34px짜리 회복 버튼, `직접 입력`은 14px짜리
+   글줄이라 바닥은 맞고 **시작선이 20px 어긋났다.** 줄을 공유하면 그 축 자체가 사라진다. */
+.primary-entries.cc-entries {
+  display: grid;
+  grid-template-columns: repeat(var(--cc-entry-columns, 2), minmax(0, 1fr));
+  /* 카드 한 줄 = 이 grid의 네 줄. 카드 수가 몇이든 암묵적으로 만들어진다. */
+  grid-auto-rows: auto;
+  align-items: stretch;
+  gap: 10px;
+}
+
+/* 홀수로 남은 마지막 카드는 두 칸을 가로지른다 — 반만 그려진 카드는 잘린 것으로 보인다.
+   `camera`·`manual`이 언제나 첫 줄에 나란히 있는 것은 `capture-entry.ts`의 순서가 보장한다. */
+.primary-entries.cc-entries > .cc-entry-card:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+
+/* 그리고 그 카드는 **넓이를 쓴다** (통합 검수 2026-08-04).
+   예전에는 세로로 늘려 갚았다: 두 칸을 가로지른 카드가 위 행과 똑같은 높이(190px)로 부풀면서
+   설명 한 줄(16.68px)이 54.81px짜리 상자 안에 떠 있었고, 설명과 `사진 고르기` 사이가 통째로
+   비었다. 넓이를 두 배로 받은 카드가 그 넓이는 안 쓰고 높이만 늘린 셈이다.
+
+   그래서 넓은 카드에서는 아이콘이 **왼쪽 기둥**으로 간다. 네 조각(아이콘·제목·설명·행동)은
+   그대로이고 배치만 넓이를 따라 눕는다. 카드는 자기 내용만큼만 높아진다.
+   `[data-columns="2"]`로 좁힌 이유: 카드가 하나뿐이면 그것도 `:last-child:nth-child(odd)`라
+   외톨이 카드까지 가로 배치가 되어 버린다. */
+.primary-entries.cc-entries[data-columns="2"] > .cc-entry-card:last-child:nth-child(odd) {
+  grid-template-columns: auto minmax(0, 1fr);
+  /* 명시한 네 줄이 있어야 아이콘의 `1 / -1`이 실제 끝 줄까지 간다. 조각 수는 이제 카드가
+     쓸 수 있든 없든 언제나 넷이다 (`CaptureEntry.tsx`의 본문 자리). */
+  grid-template-rows: repeat(4, auto);
+  align-items: start;
+  column-gap: 13px;
+}
+
+.primary-entries.cc-entries[data-columns="2"] > .cc-entry-card:last-child:nth-child(odd) > * {
+  grid-column: 2;
+}
+
+.primary-entries.cc-entries[data-columns="2"] > .cc-entry-card:last-child:nth-child(odd) > .cc-entry-top {
+  grid-column: 1;
+  grid-row: 1 / -1;
+  width: auto;
+  align-self: center;
+}
+
+.primary-entries .cc-entry-card {
+  display: grid;
+  /* subgrid를 모르는 엔진의 뒷줄. 정렬 보장은 없지만 네 줄 구조와 바닥에 붙는 행동은 남는다. */
+  grid-template-rows: auto auto 1fr auto;
+  align-content: start;
+  /* 브라우저 기본 스타일시트가 `button`에 `align-items: center`를 준다. 그대로 두면 옆 카드
+     때문에 넓어진 줄 안에서 조각이 **세로 가운데로 내려앉아** 시작선이 다시 어긋난다
+     (실측 8.33px). 조각은 자기 줄의 맨 위에서 시작한다. */
+  align-items: start;
+  justify-items: start;
+  gap: 9px;
+  width: 100%;
+  min-width: 0;
+  /* 세로 하한(예전 182/174/190px)은 없앴다. 줄을 바깥 grid가 소유하면 카드의 높이는 track의
+     합이고, 카드에 건 `min-height`는 **아무 일도 하지 않으면서 선언만 남는다** — 나중에 이
+     구조를 되돌린 사람이 카드가 갑자기 38px 부푸는 것으로 그 사실을 알게 되는 종류의 덫이다.
+     하한 계약은 원래 이 값이 아니라 `int30-capture.spec.ts`의 140px과 `int29-manual.spec.ts`의
+     "두 카드가 같은 높이"이고, 둘 다 그대로 지켜진다(실측: 1280px 데스크톱에서 152px).
+     카드는 자기 내용만큼만 높아진다 — 넓은 카드에 이미 적용한 규칙과 같다. */
+  margin: 0;
+  padding: 13px 13px 12px;
+  border: 1px solid rgba(var(--cc-accent), 0.22);
+  border-radius: var(--cc-r-lg);
+  background: rgba(var(--cc-accent), 0.05);
+  box-shadow: var(--cc-elev-1);
+  color: var(--cc-ink);
+  text-align: left;
+  transition: border-color 150ms ease, background-color 150ms ease;
+}
+
+.primary-entries .cc-entry-card:hover {
+  border-color: rgba(var(--cc-accent), 0.4);
+  background: rgba(var(--cc-accent), 0.09);
+}
+.primary-entries .cc-entry-card:active { transform: translateY(1px); }
+
+/* 줄의 소유권을 바깥 grid로 넘긴다 — 같은 줄에 선 카드들이 **같은 track**을 쓴다.
+   `span 4`가 카드 한 장이 차지하는 줄 수이고, 카드가 `gap`을 다시 선언하므로 카드 **안쪽**
+   간격(9px)과 카드 **사이** 간격(10px)은 그대로 갈린다(마지막 줄과 다음 카드 줄 사이의
+   틈만 바깥 값을 쓴다). 이 한 겹이 "글자가 몇 줄로 접혔는가"를 정렬에서 완전히 빼낸다. */
+@supports (grid-template-rows: subgrid) {
+  .primary-entries .cc-entry-card {
+    grid-row: span 4;
+    grid-template-rows: subgrid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .primary-entries.cc-entries[data-columns="2"] > .cc-entry-card:last-child:nth-child(odd) {
+    grid-template-rows: subgrid;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+}
+
+/* 1번째 줄: 아이콘과 상태. 상태 뱃지가 없어도 줄 높이는 아이콘이 정하므로 카드가 흔들리지 않는다. */
+.primary-entries .cc-entry-card .cc-entry-top {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+}
+
+.primary-entries .cc-entry-card .cc-entry-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: var(--cc-r-md);
+  background: linear-gradient(145deg, rgb(var(--cc-accent)), rgb(var(--cc-accent-deep)));
+  color: var(--cc-on-accent);
+  box-shadow: 0 6px 14px rgba(var(--cc-accent), 0.2);
+}
+
+/* 진행 한 조각. 설명 줄을 밀어내지 않는 **다섯 번째 자리**다. */
+.primary-entries .cc-entry-card .cc-entry-status {
+  min-width: 0;
+  padding: 3px 8px;
+  overflow: hidden;
+  border-radius: var(--cc-r-pill);
+  background: rgba(var(--cc-accent), 0.16);
+  color: var(--cc-blue-ink);
+  font-size: 10.5px;
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.primary-entries .cc-entry-card .cc-entry-title {
+  color: var(--cc-ink);
+  font-size: 14px;
+  font-weight: 780;
+  letter-spacing: -0.025em;
+  line-height: 1.3;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+/* 3번째 줄: 본문 자리. 설명 한 줄과, 못 쓰는 카드일 때의 이유가 **이 자리 안에** 함께 산다.
+   조각 수를 넷으로 못 박는 자리이기도 하다 — 이유를 다섯 번째 조각으로 내보내면 옆 카드보다
+   줄이 하나 많아지고, 그 순간 두 카드의 마지막 줄이 서로 다른 track에 놓인다. */
+.primary-entries .cc-entry-card .cc-entry-body {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  align-content: start;
+  row-gap: 9px;
+}
+
+/* 한 줄 outcome. 어느 카드도 이 줄을 비우지 못한다 — 비면 `capture-entry.ts`가 메운다.
+
+   `align-self: start`는 이 상자가 **글자만큼만** 높아지게 한다 (통합 검수 2026-08-04).
+   기본값(`stretch`)이면 옆 카드 때문에 넓어진 본문 줄을 채우려고 상자가 늘어나고,
+   `-webkit-box`가 그 안에서 글자를 세로 가운데로 밀어 한 줄짜리 설명이 8.33px 아래에서
+   시작했다. founder가 말한 "하나는 설명이 있고 하나는 없고 그래서 시각적으로 뭔가 통일감이
+   떨어져"의 실체가 정확히 그 8.33px이었다. 남는 자리는 설명 **아래**에 남는다. */
+.primary-entries .cc-entry-card .cc-entry-outcome {
+  display: -webkit-box;
+  align-self: start;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  color: var(--cc-entry-outcome);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.45;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+/* 4번째 줄: 눌리는 자리라는 표시. 카드마다 있고, 없는 카드가 없다.
+
+   이 줄만 `stretch`다. 옆 카드의 마지막 조각이 34px짜리 회복 버튼이면 줄 자체가 34px가 되는데,
+   글줄을 그 맨 위에 붙여 두면 상자는 맞고 **글자는 안 맞는다.** 줄을 꽉 채우고 안에서 가운데를
+   잡으면 두 카드의 글자가 같은 띠 안에서 같은 높이에 선다. */
+.primary-entries .cc-entry-card .cc-entry-action,
+.primary-entries .cc-entry-card .cc-entry-recovery {
+  align-self: stretch;
+}
+
+.primary-entries .cc-entry-card .cc-entry-action {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 2px;
+  color: var(--cc-blue);
+  font-size: 11.5px;
+  font-weight: 760;
+  word-break: keep-all;
+}
+.primary-entries .cc-entry-card .cc-entry-action svg { flex: 0 0 auto; }
+.primary-entries .cc-entry-card .cc-entry-action.is-off { color: var(--cc-muted); }
+
+/* ── 못 쓰는 입구 ─────────────────────────────────────────────────────
+   카드는 남는다. 사라진 버튼은 사용자가 "원래 없는 것"과 구별할 수 없고, 그 순간 제품이
+   기기 탓인지 자기 탓인지도 알려 주지 못한다. 흐려지되 이유와 할 일은 또렷하게 남는다. */
+.primary-entries .cc-entry-card.is-unavailable {
+  border-color: var(--cc-line);
+  background: var(--cc-soft);
+  box-shadow: none;
+}
+.primary-entries .cc-entry-card.is-unavailable:hover {
+  border-color: var(--cc-line);
+  background: var(--cc-soft);
+}
+/* 회복 행동이 있는 카드는 **눌린다** — 카드 전체가 그 행동의 버튼이다(`CaptureEntry.tsx`).
+   흐린 채로 두되 손을 얹으면 반응해야 한다. 회복이 아예 없는 카드(`aria-disabled`)만 죽어 있다. */
+.primary-entries .cc-entry-card.is-unavailable:not([aria-disabled="true"]):hover {
+  border-color: rgba(var(--cc-accent), 0.34);
+  background: rgba(var(--cc-accent), 0.05);
+}
+.primary-entries .cc-entry-card.is-unavailable[aria-disabled="true"] { cursor: default; }
+.primary-entries .cc-entry-card.is-unavailable .cc-entry-icon {
+  background: var(--cc-quiet);
+  color: var(--cc-muted);
+  box-shadow: none;
+}
+.primary-entries .cc-entry-card.is-unavailable .cc-entry-status {
+  background: var(--cc-quiet);
+  color: var(--cc-muted);
+}
+.primary-entries .cc-entry-card.is-unavailable .cc-entry-title { color: var(--cc-muted); }
+
+.primary-entries .cc-entry-card .cc-entry-reason {
+  color: var(--cc-ink);
+  font-size: 11.5px;
+  font-weight: 640;
+  line-height: 1.45;
+  word-break: keep-all;
+}
+
+.primary-entries .cc-entry-card .cc-entry-recovery {
+  display: inline-flex;
+  min-height: 34px;
+  max-width: 100%;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 11px;
+  border: 1px solid rgba(var(--cc-accent), 0.34);
+  border-radius: var(--cc-r-sm);
+  background: rgba(var(--cc-accent), 0.1);
+  color: var(--cc-blue);
+  font-size: 11.5px;
+  font-weight: 740;
+  word-break: keep-all;
+}
+
+/* ── 파일 올리기 작업면 ────────────────────────────────────────────────
+   `파일 올리기` 카드를 고르면 진입 카드 자리를 `DesktopIntake`(TSK-000545)가 넘겨받는다.
+   카드 위에 겹쳐 띄우지 않는 이유: 같은 이름의 웹캠 입구가 카드와 작업면에 **동시에** 두 개
+   존재하게 되고, 그러면 사용자도 게이트도 어느 쪽이 진짜인지 알 수 없다. */
+.cc-intake-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.cc-intake-back {
+  justify-self: start;
+  min-height: 34px;
+  padding: 7px 11px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-sm);
+  background: var(--cc-solid-soft);
+  color: var(--cc-muted);
+  font-size: 11.5px;
+  font-weight: 720;
+  word-break: keep-all;
+}
+
+/* ── 좁은 폭 ─────────────────────────────────────────────────────────
+   320px에서 카드 하나의 안쪽은 95px 남짓이다. 아이콘을 조금 줄이고 여백을 좁혀
+   네 줄이 전부 살아 있게 한다 — 줄 하나를 버리면 그 순간 카드마다 구조가 달라진다. */
+@media (max-width: 360px) {
+  .primary-entries .cc-entry-card {
+    gap: 8px;
+    padding: 11px 11px 11px;
+  }
+  .primary-entries .cc-entry-card .cc-entry-icon { width: 38px; height: 38px; }
+  .primary-entries .cc-entry-card .cc-entry-title { font-size: 13.5px; }
+}
+
+/* 좁은 칸에서는 같은 문장이 더 많은 줄을 쓴다. 줄 수를 폭과 무관하게 3으로 못 박으면 그 차이가
+   `…`로 나타나고, 잘린 꼬리는 사용자가 있는 줄 알 방법조차 없는 문장이 된다.
+   그래서 클램프는 **칸 폭을 따라간다.** 클램프는 목표가 아니라 천장이므로, 넓혀도 짧은 문장이
+   길어지지는 않는다 — 같은 줄의 두 카드는 grid 줄 높이를 공유하므로 시작선도 그대로 맞는다.
+   위 breakpoint(360px)를 그대로 다시 쓴다: 아이콘과 여백이 줄어드는 지점이 곧 한 줄에 들어가는
+   글자 수가 꺾이는 지점이다. (실측: 320px에서 카드 안쪽은 95px 남짓, `word-break: keep-all`이라
+   한 줄에 한글 7~8자다.) */
+@media (max-width: 420px) {
+  .primary-entries .cc-entry-card .cc-entry-outcome { -webkit-line-clamp: 4; }
+}
+
+@media (max-width: 360px) {
+  .primary-entries .cc-entry-card .cc-entry-outcome { -webkit-line-clamp: 5; }
+}
+
+/* 넓은 화면에서는 카드가 과하게 넓어지지 않게 붙잡는다 — 폭이 커질수록 네 줄 사이가 벌어져
+   같은 카드가 다른 물건으로 보인다. */
+@media (min-width: 760px) {
+  .primary-entries.cc-entries { gap: 12px; }
+  .primary-entries .cc-entry-card { padding: 15px; }
+}

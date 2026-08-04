@@ -14,7 +14,7 @@ import {
   IonToolbar,
   setupIonicReact,
 } from '@ionic/react';
-import { Camera, ChevronRight, CircleAlert, FileText, LifeBuoy, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, Waves } from 'lucide-react';
+import { Camera, ChevronRight, CircleAlert, FileText, LifeBuoy, Mail, MessageCircle, Mic, PenLine, Plus, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, Waves } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 릴리즈 버전은 저장소가 선언한 값 하나만 쓴다 (founder 지시 2026-07-27: "버전이 설정에 표기되었으면 함").
@@ -24,13 +24,30 @@ import { version as APP_VERSION } from '../package.json';
 import type { BriefItem, CaptureQueueItem, PersonTarget, QuickName, RuntimeConfig, SearchItem } from './contracts/capture';
 import { CameraCaptureModal, type CapturedSideMeta, type CardSide } from './components/CameraPreviewModal';
 import { ManualPersonEntry } from './components/ManualPersonSheet';
+import { loadManualDraft } from './services/manual-person';
 import { RecoveryNotice } from './components/RecoveryNotice';
 import { StatusBadge } from './components/StatusBadge';
 import { SettingsPanel } from './components/SettingsPanel';
 import { MarkdownLite } from './components/MarkdownLite';
 import { ActionSection, ContactActions, PersonDocument } from './components/PersonDocument';
 import { AiScopeNote, AiStageRail, AiSurface, AiSurfaceHead } from './components/AiTaskSurface';
-import { focusCaptureProgress, ResearchComposer, type ResearchReceipt } from './components/ResearchComposer';
+import { focusCaptureProgress, focusResearchNotice, ResearchComposer, type ResearchReceipt } from './components/ResearchComposer';
+// 아래 둘은 `int30-capture.css`를 함께 들여온다. `app.css`의 만남 맥락 규칙을 되받아야 하므로
+// 이 import가 `int29-*` 뒤에 와야 한다 — 순서가 곧 cascade다 (TSK-000220).
+import { CaptureEntry } from './components/CaptureEntry';
+import { DesktopIntake } from './components/DesktopIntake';
+import { AuthoringField } from './components/AuthoringField';
+import type { CaptureMethodId, CaptureMethodRecovery } from './contracts/int30';
+import { CONTEXT_EXAMPLE_LABEL, contextWeight } from './services/capture-entry';
+import {
+  captureDeferredNote,
+  captureRecoveryIntent,
+  deviceCaptureMethods,
+  type DeviceEnvironment,
+  type IntakeAssignment,
+  probeDeviceEnvironment,
+  readDeviceEnvironment,
+} from './services/device-capability';
 import { addPersonNote, fetchServerCaptureIds, listBriefsUpTo, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
 import {
   contentEvidence,
@@ -46,7 +63,7 @@ import {
   RESEARCH_PLACEHOLDER,
   type RecallStageKey,
 } from './services/ai-stages';
-import { type CapturedCameraFrame, storedCameraFrame, thumbnailOf } from './services/camera';
+import { type CandidateCameraErrorCode, type CapturedCameraFrame, fileToCameraFrame, storedCameraFrame, thumbnailOf } from './services/camera';
 import {
   QUICK_NAME_LATER_LABEL,
   QUICK_NAME_STATUS_COPY,
@@ -79,8 +96,15 @@ import {
   stageIndexOf,
   syncCaptureStageTelemetry,
 } from './services/capture-progress';
-import { refreshCadenceMs } from './services/refresh-cadence';
-import { createRefreshOrchestrator, refreshIdleText, type RefreshStatus } from './services/refresh-orchestrator';
+import { initialAutoRefreshOn } from './services/refresh-cadence';
+import {
+  createRefreshLoop,
+  createRefreshOrchestrator,
+  refreshCadencePlan,
+  refreshIdleText,
+  type RefreshStatus,
+} from './services/refresh-orchestrator';
+import { RefreshControl } from './components/RefreshControl';
 import { stageWidthPercents } from './services/stage-weights';
 import { disablePushNotifications, enablePushNotifications, inspectPushState, type PushState } from './services/push';
 import { contactCardFromBrief } from './services/contacts';
@@ -112,7 +136,11 @@ import {
   runRecallSearch,
   serverFallbackTerm,
 } from './services/recall-search';
-import { buildResearchInstruction } from './services/research';
+import { buildResearchSubmission, researchSubmitGate } from './services/research';
+// 조사 깊이는 lane 사이 공유 이음매에서 온다. 이 화면은 값을 나르기만 하고 뜻은
+// `services/research-mode.ts`가 소유한다 (TSK-000542).
+import { DEFAULT_RESEARCH_DEPTH, type ResearchDepth } from './contracts/int30';
+import { RESEARCH_SUBMIT_READY, researchSubmitLabel } from './services/research-mode';
 import { recognizeQuickName } from './services/vision';
 import {
   loadCachedBriefs,
@@ -138,6 +166,10 @@ import { applyTheme, resolveTheme, systemPrefersDark, THEME_CHOICES, watchSystem
 import { holdSafeAreaInset } from './services/viewport-shell';
 import { apiRejectionMessage, canEditApiEndpoint } from './services/api-origin';
 import { scrubCredentialParams } from './services/url-credentials';
+/* PC 진입에서 껍데기가 통째로 잠기던 결함을 고친 자리 (TSK-000545 / INT-000030 / DEC-000105).
+   판정은 `bootstrap-gate.ts`가 갖고, 여기서는 그 결론을 그리기만 한다. */
+import { evaluateBootstrap, researchSurfaceVisible, resolveConnectionState } from './services/bootstrap-gate';
+import { ConnectionSetupCard } from './components/ConnectionSetupCard';
 
 setupIonicReact({ mode: 'ios' });
 
@@ -203,6 +235,25 @@ function stageTrackStyle(progress: ReturnType<typeof captureProgress>): CSSPrope
 }
 
 type SearchMode = 'quick' | 'recall';
+
+/**
+ * 조사 접수 조건 안내의 고정 id. 촬영 탭과 인물 시트가 **동시에 떠 있을 수 있으므로** 서로 다르다.
+ *
+ * 제출 버튼은 작성 자리(`ResearchComposer`) 밖에 있다. 막힌 버튼을 눌렀을 때 손을 데려다 놓을
+ * 곳을 이름으로 정해 두지 않으면, 눌러도 아무 일이 없는 버튼이 된다.
+ */
+const CAPTURE_RESEARCH_NOTICE_ID = 'research-notice-capture';
+const PERSON_RESEARCH_NOTICE_ID = 'research-notice-person';
+
+/**
+ * 인물 시트의 조사 요청 하나를 식별하는 값. **같은 요청인지**를 판정하는 데만 쓴다.
+ *
+ * 대상·글·깊이 셋이 그대로면 같은 요청이고, 그때만 멱등 키를 이어 쓴다. 서버가 요청 지문을
+ * `raw`·`mode`·`purposes`·`focusIds`로 만들므로 여기서 보는 것도 그 값을 정하는 입력 전부다.
+ */
+function personActionRequestKey(target: PersonTarget, text: string, depth: ResearchDepth): string {
+  return JSON.stringify([target.person ?? '', target.captureId ?? '', depth, text]);
+}
 
 function formatMoment(value?: string): string {
   if (!value) return '시간 정보 없음';
@@ -377,10 +428,22 @@ function App() {
   const [sendingId, setSendingId] = useState<string | null>(null);
   // owner 게이트는 legacy처럼 localStorage 캐시로 시작해 서버 응답으로 갱신한다 — 오프라인에도 유지.
   const [ownerCanSeeAll, setOwnerCanSeeAll] = useState(() => loadOwnerFlags().seeAll);
-  const [researchInstructionEnabled, setResearchInstructionEnabled] = useState(() => {
-    const flags = loadOwnerFlags();
-    return flags.seeAll && flags.researchInstructionEnabled;
-  });
+  /* `AI 조사 요청` 작성 자리를 그릴 것인가 (TSK-000545).
+     예전 초기값은 `flags.seeAll && flags.researchInstructionEnabled` 하나였는데, 그 두 값은
+     서버 목록 응답에서만 채워지고 목록 조회는 연결이 없으면 시작조차 하지 않는다. 그래서
+     개인 링크 없이 PC로 들어온 첫 화면에서는 **영원히 false**였고, 화면은 서버가 한 번도
+     하지 않은 대답을 `아니오`로 읽어 작성 자리를 DOM에서 통째로 지웠다 (founder 보고
+     2026-08-04: "AI 조사 요청이라든가 그런 게 캡처 화면에 보이지 않아").
+     이제 그 판정은 `researchSurfaceVisible`가 소유한다 — 연결된 뒤의 규칙은 예전 그대로다. */
+  const [researchInstructionEnabled, setResearchInstructionEnabled] = useState(
+    () => researchSurfaceVisible(loadOwnerFlags(), resolveConnectionState(boot.config)),
+  );
+  /* 깊은 조사가 지금 열려 있는가 (TSK-000542 / 계약 §Product Behavior).
+     **기기에 저장하지 않고 `false`에서 시작한다.** `researchInstructionEnabled`와 일부러 다르게
+     두는 자리다 — 저 값은 작성 자리를 그릴지의 문제라 못 들었을 때 지난번 답을 쓰는 편이 낫지만,
+     이 값은 "서버가 지금 이 요청을 받는가"라서 못 들었으면 **닫힘**이어야 한다. 캐시한 `true`는
+     서버가 이미 닫은 뒤에도 사용자에게 접수되지 않을 선택지를 계속 내민다. */
+  const [deepResearchEnabled, setDeepResearchEnabled] = useState(false);
   // 화면이 서버에 요청하는 총 건수. `더 보기`를 누를 때마다 커지고 상한이 없다 —
   // 서버 한 페이지(100건) 안에서만 움직이면 101번째부터는 앱에서 존재하지 않는 것이 된다 (FI-100).
   const listWantedRef = useRef(LIST_PAGE_STEP);
@@ -401,10 +464,15 @@ function App() {
   const [documentNoteTarget, setDocumentNoteTarget] = useState<PersonTarget | null>(null);
   const [personActionComposer, setPersonActionComposer] = useState<PersonActionComposer | null>(null);
   const [personActionText, setPersonActionText] = useState('');
+  // 시트는 열릴 때마다 새 요청이다. 깊이도 그때마다 기본값으로 되돌린다 (TSK-000542).
+  const [personActionDepth, setPersonActionDepth] = useState<ResearchDepth>(DEFAULT_RESEARCH_DEPTH);
   const [personActionSubmitting, setPersonActionSubmitting] = useState(false);
   // 시트에서 보낸 조사 요청이 **접수됐는가 / 접수에 실패했는가**. 접수 뒤의 처리 진행은
   // 여기서 말하지 않는다 — 그건 명함 기록·진행의 블록이 소유한다 (TSK-000535).
   const [personActionOutcome, setPersonActionOutcome] = useState<{ ok: boolean; reason?: string } | null>(null);
+  /* 이 시트가 지금 붙들고 있는 조사 요청의 멱등 키 (TSK-000542). `다시 시도`가 같은 요청임을
+     서버에 알리는 유일한 값이다. 키가 가리키는 요청 내용이 바뀌면 함께 버려진다. */
+  const personActionRequestIdRef = useRef<{ key: string; requestId: string } | null>(null);
   const [queueEdit, setQueueEdit] = useState<CaptureQueueItem | null>(null);
   // 기다리게 하는 동작에는 예외 없이 "지금 하고 있다"가 붙어야 한다 (founder 원칙 2026-07-27).
   const [savingQueueEdit, setSavingQueueEdit] = useState(false);
@@ -425,14 +493,37 @@ function App() {
   const [relKairen, setRelKairen] = useState(sticky.relKairen);
   const [memo, setMemo] = useState('');
   const [researchText, setResearchText] = useState(sticky.research);
+  // 깊이는 **저장하지 않는다**. 새 요청은 언제나 `일반 조사`에서 시작한다 (TSK-000542) —
+  // 더 오래 기다리는 선택이 지난번 습관으로 조용히 따라붙지 않게 한다. 만난 곳·조사 지시문의
+  // 2시간 유지와 일부러 다르게 두는 자리다.
+  const [researchDepth, setResearchDepth] = useState<ResearchDepth>(DEFAULT_RESEARCH_DEPTH);
   const [contextCollapsed, setContextCollapsed] = useState(() => loadSectionCollapsed('context', false));
   const [queueing, setQueueing] = useState(false);
+  // 직접 입력 시트의 열림은 이제 진입 카드가 소유한다 (TSK-000220). 카드가 `CaptureEntry`로
+  // 옮겨 갔기 때문이다 — 두 입구를 서로 다른 파일이 각자 그리던 것이 통일감이 깨진 원인이었다.
+  const [manualOpen, setManualOpen] = useState(false);
+  /* 파일 올리기 작업면(`DesktopIntake`)이 진입 카드 자리를 넘겨받았는가 (TSK-000545 통합).
+     겹쳐 띄우지 않는 이유는 같은 이름의 웹캠 입구가 카드와 작업면에 동시에 두 개 생기기 때문이다. */
+  const [intakeOpen, setIntakeOpen] = useState(false);
+  /* 이 기기가 실제로 할 수 있는 일. 처음에는 **즉시 알 수 있는 것만** 담고, 모르는 축은
+     `unknown`으로 둔다 — 탐지 전 몇 프레임 동안 멀쩡한 카메라가 "없음"으로 그려지면
+     그 첫인상이 사용자가 읽는 유일한 사실이 된다 (`device-capability.ts`). */
+  const [deviceEnv, setDeviceEnv] = useState<DeviceEnvironment>(readDeviceEnvironment);
+  // 쓰다 만 초안이 있는가. 시트를 닫는 순간 다시 읽는다(시트 안에서만 바뀌는 값이다).
+  const [manualDraftText, setManualDraftText] = useState(() => loadManualDraft()?.text.trim() ?? '');
   // 자동 새로고침 안내용: 마지막 갱신 시각과 현재 시각(1초 tick).
   const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
   const [clockTick, setClockTick] = useState(() => Date.now());
   // 사용자가 직접 누르는 갱신의 상태. 자동 갱신이 켜져 있다는 사실과 **지금 요청이 오가는 중**은
   // 서로 다른 사실이라 한 기호(회전)로 합치지 않는다 (ISS-000050 · DEC-000092).
   const [refreshStatus, setRefreshStatus] = useState<RefreshStatus | null>(null);
+  /* 자동 갱신 스위치 (INT-000030 / TSK-000543). 새 session마다 켜진 채로 시작하고 기기에
+     저장하지 않는다 — 끈 것을 잊은 사람에게 멈춘 목록은 설정이 아니라 고장으로 보인다.
+     저장하지 않는다는 계약은 `initialAutoRefreshOn`이 소유하고 테스트가 잠근다. */
+  const [autoRefreshOn, setAutoRefreshOn] = useState(initialAutoRefreshOn);
+  // 오래 사는 listener(앱 복귀 등)가 읽는 최신 값. 스위치를 만질 때마다 listener를 다시 걸지 않는다.
+  const autoRefreshOnRef = useRef(autoRefreshOn);
+  autoRefreshOnRef.current = autoRefreshOn;
   // 단계별 관측 소요시간. 폭을 꾸미지 않고 실제로 재서 쓰기 위한 값이다.
   const [stageStats, setStageStats] = useState(() => captureStageStats());
   const [pushState, setPushState] = useState<PushState>({ status: 'checking' });
@@ -468,7 +559,24 @@ function App() {
   const refreshCallbackSession = refreshSessionRef.current;
 
   const configured = Boolean(config.apiUrl && config.token);
-  const refreshIntervalMs = useMemo(() => refreshCadenceMs(briefs), [briefs]);
+  /* 연결 상태를 boolean 하나가 아니라 **이름 있는 상태**로 읽는다 (TSK-000545).
+     `configured`는 "서버에 물어볼 수 있는가"만 뜻하게 두고, "화면이 무엇을 그릴 것인가"는
+     아래 `bootstrap`이 기능별로 판정한다. 두 질문을 한 boolean에 합쳐 두었던 것이
+     PC 첫 진입에서 멀쩡한 기능까지 잠근 원인이다. */
+  const connectionState = useMemo(() => resolveConnectionState(config), [config]);
+  // 설정을 열었다가 연결하지 않고 나온 경우. 취소해도 제한은 그대로이고 안내 문구만 부드러워진다.
+  const setupVisitedRef = useRef(false);
+  const [setupCancelled, setSetupCancelled] = useState(false);
+  const bootstrap = useMemo(
+    () => evaluateBootstrap({ connection: connectionState, setupCancelled }),
+    [connectionState, setupCancelled],
+  );
+  /* 폴링 계획 하나가 **타이머와 화면 문구를 동시에** 결정한다. 예전에는 간격은 코드에,
+     문구는 JSX에 따로 있어서 박자를 바꾸면 화면이 조용히 거짓말을 시작했다. */
+  const refreshPlan = useMemo(
+    () => refreshCadencePlan({ items: briefs, autoRefreshOn, configured }),
+    [autoRefreshOn, briefs, configured],
+  );
 
   // 자동 trigger끼리는 같은 요청을 공유한다. 반면 사용자의 확인이나 새 작업 직후 trigger가 이미
   // 진행 중인 조회와 겹치면, 그 조회가 끝난 직후 한 번 더 읽는다. 그래야 작업 전 snapshot을
@@ -513,6 +621,9 @@ function App() {
         const research = response.researchInstructionEnabled === true;
         setOwnerCanSeeAll(seeAll);
         setResearchInstructionEnabled(seeAll && research);
+        // 깊은 조사는 서버가 **명시적으로 열었다고 말한 응답에서만** 열린다. 누락·빈 값·false는
+        // 전부 닫힘이고, 이 값은 저장하지 않으므로 다음 응답이 매번 다시 판정한다.
+        setDeepResearchEnabled(seeAll && research && response.deepResearchEnabled === true);
         saveOwnerFlags({ seeAll, researchInstructionEnabled: research });
         const hasMore = response.hasMore === true;
         setHasMoreBriefs(hasMore);
@@ -670,7 +781,11 @@ function App() {
       if (document.hidden) return;
       // 앱 복귀 시 legacy처럼 전송 재시도·브리핑 갱신·스티키 복원을 함께 한다.
       void flushPendingQueue();
-      void silentRefresh(true);
+      /* 자동 갱신을 끈 사용자에게는 복귀도 자동 갱신이다 — 스위치를 껐는데 앱을 다시 열 때마다
+         목록이 새로 불러와지면 그 스위치는 아무것도 끄지 못한 것이다. 전송 재시도와 초안 복원은
+         사용자가 잃어버리면 안 되는 것들이라 그대로 둔다. 최신 값은 ref로 읽는다 —
+         스위치를 만질 때마다 이 effect가 다시 돌면 부팅 갱신이 매번 다시 실행된다. */
+      if (autoRefreshOnRef.current) void silentRefresh(true);
       const restored = loadStickyCaptureContext();
       setEvent((value) => value || restored.event);
       setRelSelf((value) => value || restored.relSelf);
@@ -687,14 +802,22 @@ function App() {
     };
   }, [flushPendingQueue, silentRefresh]);
 
-  // 서버에서 아직 끝나지 않은 명함·조사 receipt가 있을 때만 더 빠르게 확인한다.
-  // setInterval tick이 겹쳐도 refresh single-flight가 같은 요청을 공유한다.
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      if (!document.hidden) void silentRefresh();
-    }, refreshIntervalMs);
-    return () => window.clearInterval(interval);
-  }, [refreshIntervalMs, silentRefresh]);
+  /* 서버에서 아직 끝나지 않은 명함·조사 receipt가 있을 때만 더 빠르게 확인한다.
+     tick이 겹쳐도 refresh single-flight가 같은 요청을 공유한다.
+
+     타이머를 `createRefreshLoop`가 소유하는 이유: 스위치를 끄면 **타이머가 0건이 되는 것**이
+     `자동 갱신 꺼짐`의 증거이고, 그 사실은 화면 글자가 아니라 값으로 잴 수 있어야 한다.
+     `silentRefresh`는 render마다 새로 만들어지지만 박자는 그것과 무관하므로 ref로 넘긴다 —
+     의존성으로 걸면 config가 바뀔 때마다 타이머가 처음부터 다시 시작한다. */
+  const silentRefreshRef = useRef(silentRefresh);
+  silentRefreshRef.current = silentRefresh;
+  const refreshLoop = useMemo(() => createRefreshLoop({
+    tick: () => { void silentRefreshRef.current(); },
+    hidden: () => document.hidden,
+  }), []);
+  // 계획이 바뀌는 것은 `apply`가 스스로 처리한다. 타이머를 거두는 것은 화면을 떠날 때뿐이다.
+  useEffect(() => { refreshLoop.apply(refreshPlan); }, [refreshLoop, refreshPlan]);
+  useEffect(() => () => refreshLoop.stop(), [refreshLoop]);
 
   // 감지 엔진을 유휴 시점에 워커에서 미리 기동한다 — legacy(v1.0)가 페이지 로드 2.5초 뒤
   // OpenCV를 미리 컴파일해 뒀기 때문에 카메라를 열면 곧바로 명함을 잡았다. 카메라를 열 때
@@ -724,6 +847,49 @@ function App() {
   useEffect(() => {
     if (!config.capturer) setNameOnboardOpen(true);
   }, [config.capturer]);
+
+  /* 연결 상태가 바뀌면 조사 작성 자리의 판정을 다시 만든다 (TSK-000545).
+     연결을 새로 맺으면 그 subject에 대해 **이미 증명된 값**으로 곧바로 돌아가고(서버 응답이
+     오면 `refresh`가 다시 덮는다), 연결을 해제하면 대답 없는 상태로 돌아간다.
+     초기값과 같은 규칙 하나만 쓰므로 두 자리가 갈라질 수 없다. */
+  useEffect(() => {
+    setResearchInstructionEnabled(researchSurfaceVisible(loadOwnerFlags(), connectionState));
+  }, [connectionState]);
+
+  /* 연결 설정을 열었다가 그냥 나왔는가. 취소를 벌하지 않는다 — 제한은 그대로이고
+     안내 문구만 "다시 열 수 있어요"로 바뀐다. 연결이 완성되면 이 기억은 사라진다. */
+  useEffect(() => {
+    if (tab === 'settings') {
+      setupVisitedRef.current = true;
+      return;
+    }
+    if (connectionState === 'configured') {
+      setupVisitedRef.current = false;
+      setSetupCancelled(false);
+      return;
+    }
+    if (setupVisitedRef.current) setSetupCancelled(true);
+  }, [connectionState, tab]);
+
+  /* 기기가 무엇을 할 수 있는지 브라우저에 **물어보기만** 한다 (TSK-000545 통합).
+     권한을 요청하지 않는다 — 첫 화면이 뜨자마자 권한 창을 띄우면 사용자는 무엇을 위한
+     요청인지 모른 채로 거절하고, 그 거절이 이 앱에서 가장 되돌리기 어려운 상태가 된다.
+     조회가 없거나 실패하면 그 축은 `unknown`으로 남고, 모름은 "없음"으로 바뀌지 않는다.
+
+     카메라 세션이 열리고 닫힐 때마다 다시 조회한다: 권한을 허용하면 기기 목록의 사실이
+     그때 바뀌고, 이전 조회의 늦은 응답은 `alive`가 막는다.
+
+     관측된 실패(`lastCameraFailure`)는 조회 결과로 덮지 않는다. 브라우저의 permission 조회는
+     방금 거부당한 사실을 곧바로 말해 주지 않아서, 덮으면 카드가 방금 있었던 일을 잊는다.
+     그 축은 카메라가 **실제로 열릴 때** `noteCameraOutcome(null)`이 푼다. */
+  useEffect(() => {
+    let alive = true;
+    void probeDeviceEnvironment(readDeviceEnvironment()).then((next) => {
+      if (!alive) return;
+      setDeviceEnv((current) => ({ ...next, lastCameraFailure: current.lastCameraFailure }));
+    });
+    return () => { alive = false; };
+  }, [cameraSession]);
 
   // 고른 테마를 문서에 적용하고, `시스템`을 고른 사람은 폰 설정 변경을 그대로 따라간다.
   useEffect(() => {
@@ -756,7 +922,74 @@ function App() {
   const contextValue = useMemo(() => ({ event, relKairen, relSelf, memo }), [event, memo, relKairen, relSelf]);
   const contextSummary = useMemo(() => captureContextSummary(contextValue), [contextValue]);
   const contextFilled = useMemo(() => captureContextFilled(contextValue), [contextValue]);
+  const contextRail = useMemo(() => contextWeight(contextFilled), [contextFilled]);
   const eventChips = useMemo(() => buildEventChips(event), [event]);
+
+  /**
+   * 사람을 등록하는 입구들 (TSK-000220 + TSK-000545 / 이음매: `contracts/int30.ts`).
+   *
+   * 카드가 읽는 사실은 이제 전부 생산자(`services/device-capability.ts`)가 만든다. 예전에 이
+   * 자리에 있던 임시 배열은 두 입구를 **언제나 available: true**로 못 박고 있어서, 능력 판정
+   * 전체가 화면에 닿지 않는 죽은 코드였다.
+   *
+   * `connectionState`는 카드 안의 어떤 글자도 바꾸지 않고 가용성에도 닿지 않는다 — 그 계약은
+   * 생산자가 소유하고 단위 시험이 네 연결 상태 전수로 지킨다. 연결 전 저장 안내는
+   * 카드가 아니라 구획 머리가 한 번만 말한다(`captureDeferredNote`).
+   */
+  const captureMethods = useMemo(
+    () => deviceCaptureMethods(deviceEnv, connectionState),
+    [connectionState, deviceEnv],
+  );
+
+  const captureMethodStatus = useMemo(
+    () => (manualDraftText ? { manual: '이어서 쓰기' } : {}),
+    [manualDraftText],
+  );
+
+  /**
+   * 카드를 눌렀을 때 열리는 것. 세 입구가 각자 자기 자리로 간다.
+   */
+  const selectCaptureMethod = useCallback((id: CaptureMethodId) => {
+    if (id === 'manual') { setManualOpen(true); return; }
+    if (id === 'upload') { setIntakeOpen(true); return; }
+    setCameraSession({ side: 'front', withChoice: true });
+  }, []);
+
+  /**
+   * 못 쓰는 카드의 회복 행동. **안내만 남고 할 일이 없는 상태를 만들지 않는다.**
+   * 무엇을 해야 하는지는 이유를 만든 자리가 안다 (`captureRecoveryIntent`).
+   */
+  const recoverCaptureMethod = useCallback((_id: CaptureMethodId, recovery: CaptureMethodRecovery) => {
+    const intent = captureRecoveryIntent(recovery);
+    // 권한 재요청은 브라우저가 카메라를 **실제로 열 때만** 일어난다. 조회로는 물어볼 수 없다.
+    if (intent === 'retry_camera') { setCameraSession({ side: 'front', withChoice: true }); return; }
+    if (intent === 'open_upload') { setIntakeOpen(true); return; }
+    setManualOpen(true);
+  }, []);
+
+  /**
+   * 카메라를 열어 본 결과를 기기 사실에 되먹인다.
+   *
+   * 조회(`navigator.permissions`)는 방금 거부당한 사실을 곧바로 말해 주지 않는다. 그래서 관측된
+   * 실패가 이 화면이 가진 가장 구체적인 사실이고, 그것이 카드의 이유 문구를 정한다.
+   */
+  const noteCameraOutcome = useCallback((failure: CandidateCameraErrorCode | null) => {
+    setDeviceEnv((current) => (current.lastCameraFailure === failure ? current : { ...current, lastCameraFailure: failure }));
+  }, []);
+
+  // 조사 요청의 접수 조건 (계약: "깊은 조사는 목적을 하나 이상 골라야 접수된다").
+  //
+  // 판정은 `services/research-mode.ts`가 소유하고 이 화면은 결과만 읽는다. 두 자리(촬영 탭의
+  // `완료`, 인물 시트의 `조사 요청 접수`)가 같은 함수를 부르므로 한쪽만 고쳐지는 일이 없다.
+  // 조사 기능이 꺼져 있으면 규칙 자체가 없다 — 그때 촬영 저장을 막으면 엉뚱한 이유로 사진을 잃는다.
+  const researchGate = useMemo(
+    () => (researchInstructionEnabled ? researchSubmitGate(researchText, researchDepth, deepResearchEnabled) : RESEARCH_SUBMIT_READY),
+    [deepResearchEnabled, researchDepth, researchInstructionEnabled, researchText],
+  );
+  const personActionGate = useMemo(
+    () => (personActionComposer?.kind === 'research' ? researchSubmitGate(personActionText, personActionDepth, deepResearchEnabled) : RESEARCH_SUBMIT_READY),
+    [deepResearchEnabled, personActionComposer, personActionDepth, personActionText],
+  );
 
   // 방금 저장한 촬영 (FI-049). 다음 장을 찍기 시작하면 내려간다 — 되돌리기가 촬영 중인
   // 초안과 다투면 안 되고, 카메라가 열려 있는 동안 화면을 바꿔치기해서도 안 된다.
@@ -826,9 +1059,11 @@ function App() {
   const lastRefreshAgoMs = refreshedAt === null ? null : clockTick - refreshedAt;
   const autoRefreshHint = refreshStatus && refreshStatus.state !== 'idle'
     ? refreshStatus.text
-    : refreshIdleText({ autoRefreshOn: configured, lastSuccessAgoMs: lastRefreshAgoMs });
-  const refreshBusy = refreshStatus?.busy === true;
-  const refreshActionLabel = refreshStatus?.label ?? '새로고침';
+    : refreshIdleText({ autoRefreshOn, lastSuccessAgoMs: lastRefreshAgoMs, cadence: refreshPlan });
+  /* 회전과 `aria-busy`가 따르는 단 하나의 값. `loading`은 목록 조회가 실제로 떠 있는 동안만
+     참이므로 "요청 중"과 정확히 같은 뜻이다 — 자동 갱신이 켜졌다는 사실과는 아무 관계가 없다.
+     그 사실은 이제 스위치가 따로 말한다. */
+  const refreshBusy = loading;
 
   // 지금 올리고 있는 촬영의 표시 이름. 없으면 빈 문자열이다.
   const sendingItem = useMemo(
@@ -858,19 +1093,27 @@ function App() {
     : awaitingSendCount > 0 ? `전송 대기 ${awaitingSendCount}건`
       : serverPendingCount > 0 ? `서버에서 ${serverPendingCount}건 처리 중`
         : '';
+  /* 갱신 사실(켜짐·박자·마지막 확인)은 이 줄에서 뺐다. 바로 오른쪽 `RefreshControl`이 그것을
+     소유하고, 같은 사실을 두 자리에서 말하면 둘이 어긋나는 순간 어느 쪽이 참인지 알 수 없다.
+     이 줄은 대신 좁은 폰에서 잘리던 건수·전송 사실을 온전히 말할 자리를 되찾는다. */
   const headerStatus = !configured ? '연결 필요 — 개인 링크로 열어주세요'
     // 실제로 올리고 있는 촬영이 있으면 그것이 가장 구체적인 사실이다.
     : sendingId ? `${sendingName || '명함'} 전송 중…`
-      : loading ? '최신 상태 확인 중…'
-        : pendingStatus ? `${pendingStatus} · ${autoRefreshHint}`
-          : feed.length > 0 ? `기록 ${feed.length}건 · ${autoRefreshHint}`
-            : '첫 명함을 기다리고 있어요';
+      : pendingStatus ? pendingStatus
+        : feed.length > 0 ? `기록 ${feed.length}건`
+          : '첫 명함을 기다리고 있어요';
 
-  const setupBannerMessage = !config.apiUrl
-    ? '연결할 서버 주소가 없어요 — 받으신 개인 링크로 접속하거나 설정의 고급 항목에서 주소를 넣어주세요.'
-    : !config.token
-      ? '받으신 개인 링크(?k=토큰 포함)로 접속해 주세요. 토큰이 없으면 업로드가 거부됩니다.'
-      : '';
+  /* 연결 안내 (TSK-000545 / DEC-000105).
+     예전에는 화면 맨 위에 `role="alert"` 전면 경고(`링크 설정이 필요해요`)가 떴다. 그 경고는
+     낭독기를 가로채고, 무엇이 막혔는지 말하지 않았고, 누를 것이 하나도 없었으며, 무엇보다
+     **멀쩡히 되는 일 위에** 떠서 앱 전체가 고장 난 것처럼 보이게 했다(founder 2026-08-04:
+     "일단 들어가면은 링크 설정이 필요해요라고 위에 경고문이 뜨고"). 이제 안내는 실제로 막힌
+     기능(서버 전송) 옆에 inline card 한 장으로 붙고, 손잡이는 앱 안의 연결 설정 하나다 —
+     URL로 코드를 받아 오는 지름길은 만들지 않는다. */
+  const connectionSetup = bootstrap.setup;
+  const renderConnectionSetup = (anchorLabel: string) => connectionSetup && (
+    <ConnectionSetupCard prompt={connectionSetup} anchorLabel={anchorLabel} onAction={() => setTab('settings')} />
+  );
 
   /**
    * 본문 일치의 근거를 뒤늦게 채운다 (FI-104). 결과는 이미 화면에 있고, 근거만 뒤따라온다.
@@ -1154,8 +1397,36 @@ function App() {
     if (frame) window.setTimeout(() => startQuickNameOcr(frame), 250);
   }, [startQuickNameOcr]);
 
+  /**
+   * 올린 파일을 앞·뒷면 프레임으로 옮긴다 (TSK-000545 통합).
+   *
+   * 어느 자리에 갈지는 이미 `DesktopIntake`가 `triageIntakeFiles`로 정해서 준다. 여기서는
+   * 프레임 변환과 화면 상태만 맡는다 — 판정과 변환을 한 자리에 섞지 않는다. 그 결과 올린 사진은
+   * 촬영한 사진과 **같은 자리**로 들어가고, 이름 인식·만남 맥락·완료가 그대로 이어진다.
+   */
+  const acceptIntakeFiles = useCallback(async (assignments: IntakeAssignment<File>[]) => {
+    for (const assignment of assignments) {
+      try {
+        const frame = await fileToCameraFrame(assignment.file);
+        if (assignment.side === 'front') {
+          setFrontFrame(frame);
+          startQuickNameOcr(frame);
+        } else {
+          setBackFrame(frame);
+        }
+      } catch {
+        // 읽지 못한 파일은 조용히 사라지지 않는다 — 이름을 붙여 말한다.
+        setMessage(`${assignment.file.name} 사진을 읽지 못했어요. 다른 파일로 다시 올려 주세요.`);
+      }
+    }
+    // 사진이 들어왔으면 작업면은 할 일을 마쳤다. 완료 뒤에는 세 입구로 돌아온다.
+    setIntakeOpen(false);
+  }, [startQuickNameOcr]);
+
   const completeCapture = useCallback(async () => {
-    if (!frontFrame || queueing) return;
+    // 접수 조건을 못 채운 조사 요청은 **깊이를 낮추거나 조용히 떨어뜨리지 않는다** (계약).
+    // 화면이 이미 이유를 보이고 있으므로 여기서는 저장을 멈추기만 한다 — 사진은 그대로 남는다.
+    if (!frontFrame || queueing || researchGate.blocked) return;
     setQueueing(true);
     try {
       const item = buildQueuedCapture(frontFrame, {
@@ -1164,7 +1435,11 @@ function App() {
         relSelf,
         relKairen,
         memo,
-        researchInstruction: researchInstructionEnabled ? buildResearchInstruction(researchText) : null,
+        // 봉투는 **여기서 한 번** 만들어져 대기열 항목에 저장된다. 전송 재시도는 저장된 그 봉투를
+        // 그대로 다시 보내므로 `requestId`가 바뀌지 않고, 앱을 껐다 켜도 같은 요청으로 남는다.
+        researchInstruction: researchInstructionEnabled
+          ? buildResearchSubmission(researchText, researchDepth, { deepAvailable: deepResearchEnabled })
+          : null,
         quickName,
       });
       // 전송 후 원본이 정리돼도 목록에 남을 104px 썸네일 (legacy thumbOf).
@@ -1195,7 +1470,7 @@ function App() {
     } finally {
       setQueueing(false);
     }
-  }, [backFrame, configured, event, flushPendingQueue, frontFrame, memo, queueing, quickName, relKairen, relSelf, researchInstructionEnabled, researchText, resetQuickName]);
+  }, [backFrame, configured, deepResearchEnabled, event, flushPendingQueue, frontFrame, memo, queueing, quickName, relKairen, relSelf, researchDepth, researchGate, researchInstructionEnabled, researchText, resetQuickName]);
 
   /**
    * 방금 찍은 촬영을 대기열에서 빼서 촬영 화면으로 되돌린다 (FI-049).
@@ -1364,6 +1639,7 @@ function App() {
 
   const promptResearch = useCallback((target: PersonTarget) => {
     setPersonActionText('');
+    setPersonActionDepth(DEFAULT_RESEARCH_DEPTH);
     setPersonActionOutcome(null);
     setPersonActionComposer({ kind: 'research', target });
   }, []);
@@ -1376,6 +1652,8 @@ function App() {
 
   const closePersonActionComposer = useCallback(() => {
     if (personActionSubmitting) return;
+    // 닫으면 이 시트의 요청은 끝난 것이다. 다시 열면 새 요청이므로 멱등 키도 새로 만든다.
+    personActionRequestIdRef.current = null;
     setPersonActionComposer(null);
     setPersonActionText('');
     setPersonActionOutcome(null);
@@ -1383,6 +1661,8 @@ function App() {
 
   const submitPersonAction = useCallback(async () => {
     if (!personActionComposer || !personActionText.trim() || personActionSubmitting) return;
+    // 접수 조건을 못 채운 깊은 조사는 여기서 멈춘다. 시트 안의 안내가 이미 이유를 말하고 있다.
+    if (personActionGate.blocked) return;
     setPersonActionSubmitting(true);
     let success = false;
     if (personActionComposer.kind === 'note') {
@@ -1390,12 +1670,22 @@ function App() {
     } else if (personActionComposer.kind === 'research') {
       // 조사 요청만 `runPersonAction`을 거치지 않는다. 실패 사유와 접수 번호를 시트 안에서
       // 그대로 보여 주고(접수 실패), 접수되면 그 요청의 **진행 블록**으로 손을 넘겨야 하기 때문이다.
-      const submission = buildResearchInstruction(personActionText);
+      // 재시도는 **같은 요청**이다 (계약 §Request Contract: `requestId`는 재시도 idempotency key).
+      // 이 시트에는 대기열이 없어 `다시 시도`가 이 함수를 그대로 다시 부른다. 요청을 이루는 값이
+      // 그대로면 같은 키를 다시 쓰고, 글이나 깊이를 바꿨으면 새 키를 만든다 — 그때는 정말 다른
+      // 요청이기 때문이다. 키를 정하는 자리가 **요청을 구성하는 자리**이지 재시도하는 자리가 아니다.
+      const requestKey = personActionRequestKey(personActionComposer.target, personActionText, personActionDepth);
+      const carried = personActionRequestIdRef.current?.key === requestKey ? personActionRequestIdRef.current.requestId : '';
+      const submission = buildResearchSubmission(personActionText, personActionDepth, {
+        deepAvailable: deepResearchEnabled,
+        requestId: carried,
+      });
       if (!submission) {
         setPersonActionOutcome({ ok: false, reason: '조사할 내용을 적거나 조사 항목을 골라 주세요.' });
       } else {
+        personActionRequestIdRef.current = { key: requestKey, requestId: submission.requestId };
         try {
-          const response = await submitResearchInstruction(config, personActionComposer.target, submission.raw);
+          const response = await submitResearchInstruction(config, personActionComposer.target, submission);
           if (!response.ok) throw new Error(response.error ?? 'request_failed');
           setMessage(response.receiptId ? `조사 요청을 접수했어요 · receipt ${response.receiptId}` : '조사 요청을 접수했어요');
           setPersonActionOutcome({ ok: true });
@@ -1420,11 +1710,14 @@ function App() {
     }
     setPersonActionSubmitting(false);
     if (success) {
+      // 접수된 요청의 멱등 키는 여기서 수명을 다한다. 남겨 두면 다음에 같은 글로 여는 요청이
+      // 이미 접수된 요청의 중복으로 판정돼 새 조사가 시작되지 않는다.
+      personActionRequestIdRef.current = null;
       setPersonActionComposer(null);
       setPersonActionText('');
       setPersonActionOutcome(null);
     }
-  }, [config, personActionComposer, personActionSubmitting, personActionText, refresh, runPersonAction]);
+  }, [config, deepResearchEnabled, personActionComposer, personActionDepth, personActionGate, personActionSubmitting, personActionText, refresh, runPersonAction]);
 
   const retryProcessing = useCallback(async (captureId: string) => {
     if (requeueingId) return;
@@ -1686,17 +1979,17 @@ function App() {
         };
     return (
       <div className="cc-stack">
-        {setupBannerMessage && (
-          <section className="setup-banner" role="alert">
-            <strong>링크 설정이 필요해요</strong>
-            <p>{setupBannerMessage}</p>
-          </section>
-        )}
-
         <section className="surface-card capture-card">
           <div className="capture-head">
             <span className="capture-kicker">빠른 등록</span>
             <span className="capture-sub">사진 한 장이면 끝 — 정리·브리핑은 시스템이 해요</span>
+            {/* 연결 전에도 저장된다는 사실은 입구마다 다르지 않다 — 구획의 사실이므로 구획이
+                한 번만 말한다. 예전에는 이 문장이 세 카드의 설명 꼬리에 각각 붙어 한 화면에
+                세 번 나왔고, 그 길이가 설명 줄을 클램프 밖으로 밀어 `…`를 만들었다
+                (`device-capability.ts`의 `CAPTURE_DEFERRED_NOTE` 참고). */}
+            {captureDeferredNote(connectionState) && (
+              <span className="capture-deferred">{captureDeferredNote(connectionState)}</span>
+            )}
           </div>
 
           {/* 사람을 등록하는 입구는 둘이고 **위계가 같다** (INT-000029 / DEC-000103):
@@ -1708,27 +2001,58 @@ function App() {
             <button className="shot-main filled" type="button" onClick={() => setCameraSession({ side: 'front', withChoice: true })}>
               <img src={frontFrame.dataUrl} alt="앞면 미리보기" />
             </button>
-          ) : (
-            <div className="primary-entries">
-              <button className="shot-main" type="button" onClick={() => setCameraSession({ side: 'front', withChoice: true })}>
-                <span className="shot-icon" aria-hidden="true"><Camera size={24} /></span>
-                <span>명함 앞면 촬영</span>
-              </button>
-              <ManualPersonEntry
-                configured={configured}
-                context={{ event, relKairen, relSelf }}
-                queue={queue}
-                onQueued={(item) => {
-                  setQueue((current) => [item, ...current].sort((a, b) => b.captureId.localeCompare(a.captureId)));
-                  // 기기 저장이 확인된 시점의 사실만 말한다. 서버 접수는 아직 일어나지 않았다 (FI-031).
-                  setMessage(configured
-                    ? '직접 입력을 이 폰에 저장했어요 — 전송은 알아서 이어갑니다.'
-                    : '직접 입력을 이 폰에 저장했어요 — 연결되면 자동으로 전송합니다.');
-                  if (configured) void flushPendingQueue();
-                }}
+          ) : intakeOpen ? (
+            /* `파일 올리기`를 고르면 카드 자리를 파일 작업면이 넘겨받는다 (TSK-000545 통합).
+               카드 아래에 덧붙이지 않는 이유: 작업면 안에도 웹캠 입구가 있어서, 같은 이름의
+               입구가 화면에 둘이 되고 어느 쪽이 진짜인지 사용자도 게이트도 알 수 없게 된다. */
+            <div className="cc-intake-panel">
+              <button className="cc-intake-back" type="button" onClick={() => setIntakeOpen(false)}>다른 방법 고르기</button>
+              <DesktopIntake
+                /* 앞면이 이미 있으면 위 미리보기가 이 자리를 가져간다 — 그래서 여기서 찰 수
+                   있는 것은 뒷면뿐이다. `triageIntakeFiles`가 이 값으로 빈 자리를 센다. */
+                assigned={{ back: backFrame ? '뒷면 사진' : undefined }}
+                onFiles={(assignments) => void acceptIntakeFiles(assignments)}
+                onClear={(side) => (side === 'front' ? setFrontFrame(null) : setBackFrame(null))}
+                webcam={captureMethods.find((card) => card.id === 'camera') ?? captureMethods[0]}
+                onOpenWebcam={() => setCameraSession({ side: 'front', withChoice: true })}
+                onRecovery={(recovery) => recoverCaptureMethod('camera', recovery)}
               />
             </div>
+          ) : (
+            /* 세 카드를 이제 한 컴포넌트가 그린다 (TSK-000220). 예전에는 촬영 버튼은 여기서,
+               직접 입력 버튼은 `ManualPersonSheet`에서 각자 그려졌고 안쪽 구조가 서로 달랐다 —
+               founder가 본 "하나는 설명이 있고 하나는 없고"가 정확히 그 결과였다.
+               무엇을 쓸 수 있는지는 `device-capability.ts`가 판정하고(TSK-000545), 여기서는
+               그 사실을 그대로 넘긴다 — 화면이 가용성을 추측하지 않는다. */
+            <CaptureEntry
+              methods={captureMethods}
+              status={captureMethodStatus}
+              onSelect={selectCaptureMethod}
+              onRecover={recoverCaptureMethod}
+            />
           )}
+
+          {/* 시트는 진입 카드와 분리됐다. 카드가 열고, 여기서는 시트만 산다. */}
+          <ManualPersonEntry
+            configured={configured}
+            context={{ event, relKairen, relSelf }}
+            queue={queue}
+            open={manualOpen}
+            onOpenChange={(next) => {
+              setManualOpen(next);
+              // 닫히는 순간 초안을 다시 읽는다 — 초안은 시트 안에서만 바뀐다.
+              if (!next) setManualDraftText(loadManualDraft()?.text.trim() ?? '');
+            }}
+            onQueued={(item) => {
+              setQueue((current) => [item, ...current].sort((a, b) => b.captureId.localeCompare(a.captureId)));
+              setManualDraftText('');
+              // 기기 저장이 확인된 시점의 사실만 말한다. 서버 접수는 아직 일어나지 않았다 (FI-031).
+              setMessage(configured
+                ? '직접 입력을 이 폰에 저장했어요 — 전송은 알아서 이어갑니다.'
+                : '직접 입력을 이 폰에 저장했어요 — 연결되면 자동으로 전송합니다.');
+              if (configured) void flushPendingQueue();
+            }}
+          />
 
           {frontFrame && (
             <section className="quick-name-panel inline" aria-live="polite">
@@ -1763,6 +2087,12 @@ function App() {
                   <span className="context-mic"><Mic aria-hidden="true" size={11} />키보드 마이크로 말해도 돼요</span>
                 </span>
                 <small>{contextSummary || '나중에 이 사람을 떠올릴 단서예요'}</small>
+                {/* 채워질수록 켜지는 네 칸. 필수 표식도 오류색도 쓰지 않고 **진행**만 보여 준다
+                    (founder 요구: "설명보다 직관적으로"). 낭독기에는 옆의 `n개`가 같은 사실을
+                    이미 말하므로 여기서 한 번 더 읽지 않는다. */}
+                <span className="context-rail" aria-hidden="true">
+                  {contextRail.segments.map((on, index) => <i key={index} className={on ? 'on' : ''} />)}
+                </span>
               </span>
               {contextFilled > 0 && <span className="context-count">{contextFilled}개</span>}
               <ChevronRight className={contextCollapsed ? '' : 'expanded'} aria-hidden="true" size={16} />
@@ -1770,40 +2100,65 @@ function App() {
             {!contextCollapsed && (
               <div className="capture-context-fields plain">
                 <p className="context-note">만난 곳·관계·AI 조사 요청은 2시간 동안 그대로 남아요. 메모는 명함마다 새로 씁니다.</p>
-                {/* Ionic의 stacked label은 입력 박스와 같은 회색조라 "여기가 쓰는 칸"이 안 읽혔다.
-                    라벨을 밖으로 꺼내고 입력 박스에 흰 배경·테두리를 줘 글쓰기 칸임을 분명히 한다
-                    (founder 판정 2026-07-27: "글쓰기 박스인지 구별이 안돼는 등 총체적 난국"). */}
-                <div className="context-field">
-                  <span className="context-label">어디서 만났나요?</span>
+                {/* 네 칸 모두 같은 primitive(`AuthoringField`)를 쓴다 (TSK-000220). 라벨은 박스 밖,
+                    테두리·모서리·focus는 앱 전체가 공유하는 `--cc-field-*` token 한 벌이 정한다 —
+                    예전에는 이 화면과 직접 입력 시트와 AI 조사 요청이 각자 다른 테두리를 갖고 있었고
+                    대기열 편집은 아예 없었다 (founder 판정: "다른 곳의 작성하는 박스 테두리와
+                    통일성도 없고"). 예시 chip은 그대로 두되 이름표를 붙여 한눈에 예시로 읽히게 한다. */}
+                <AuthoringField
+                  label="어디서 만났나요?"
+                  filled={Boolean(event.trim())}
+                  footer={(
+                    /* chip들은 이름표와 **다른 열**에 있다. 한 줄에 같이 두면 둘째 줄부터
+                       이름표 밑으로 파고든다 (`int30-capture.css`의 `.context-chips` 참고). */
+                    <div className="context-chips" role="group" aria-label="만난 상황 예시">
+                      <span className="context-chips-label">{CONTEXT_EXAMPLE_LABEL}</span>
+                      <span className="context-chips-row">
+                        {eventChips.map((chip) => (
+                          <button key={chip} type="button" className={event === chip ? 'on' : ''} onClick={() => setEvent(toggleChipValue(event, chip))}>{chip}</button>
+                        ))}
+                      </span>
+                    </div>
+                  )}
+                >
                   <IonInput aria-label="어디서 만났나요?" placeholder="예: 2026 스마트팩토리전 부스" value={event} onIonInput={(inputEvent) => setEvent(String(inputEvent.detail.value ?? ''))} />
-                  <div className="context-chips" role="group" aria-label="만난 상황 예시">
-                    {eventChips.map((chip) => (
-                      <button key={chip} type="button" className={event === chip ? 'on' : ''} onClick={() => setEvent(toggleChipValue(event, chip))}>{chip}</button>
-                    ))}
-                  </div>
-                </div>
-                <div className="context-field">
-                  <span className="context-label">Kairen과의 관계</span>
+                </AuthoringField>
+                <AuthoringField
+                  label="Kairen과의 관계"
+                  filled={Boolean(relKairen.trim())}
+                  footer={(
+                    <div className="context-chips" role="group" aria-label="Kairen과의 관계 예시">
+                      <span className="context-chips-label">{CONTEXT_EXAMPLE_LABEL}</span>
+                      <span className="context-chips-row">
+                        {KAIREN_RELATION_CHIPS.map((chip) => (
+                          <button key={chip} type="button" className={relKairen === chip ? 'on' : ''} onClick={() => setRelKairen(toggleChipValue(relKairen, chip))}>{chip}</button>
+                        ))}
+                      </span>
+                    </div>
+                  )}
+                >
                   <IonInput aria-label="Kairen과의 관계" placeholder="예: 부품 공급사 담당자" value={relKairen} onIonInput={(inputEvent) => setRelKairen(String(inputEvent.detail.value ?? ''))} />
-                  <div className="context-chips" role="group" aria-label="Kairen과의 관계 예시">
-                    {KAIREN_RELATION_CHIPS.map((chip) => (
-                      <button key={chip} type="button" className={relKairen === chip ? 'on' : ''} onClick={() => setRelKairen(toggleChipValue(relKairen, chip))}>{chip}</button>
-                    ))}
-                  </div>
-                </div>
-                <div className="context-field">
-                  <span className="context-label">나와의 관계</span>
+                </AuthoringField>
+                <AuthoringField
+                  label="나와의 관계"
+                  filled={Boolean(relSelf.trim())}
+                  footer={(
+                    <div className="context-chips" role="group" aria-label="나와의 관계 예시">
+                      <span className="context-chips-label">{CONTEXT_EXAMPLE_LABEL}</span>
+                      <span className="context-chips-row">
+                        {SELF_RELATION_CHIPS.map((chip) => (
+                          <button key={chip} type="button" className={relSelf === chip ? 'on' : ''} onClick={() => setRelSelf(toggleChipValue(relSelf, chip))}>{chip}</button>
+                        ))}
+                      </span>
+                    </div>
+                  )}
+                >
                   <IonInput aria-label="나와의 관계" placeholder="예: 대학 선배" value={relSelf} onIonInput={(inputEvent) => setRelSelf(String(inputEvent.detail.value ?? ''))} />
-                  <div className="context-chips" role="group" aria-label="나와의 관계 예시">
-                    {SELF_RELATION_CHIPS.map((chip) => (
-                      <button key={chip} type="button" className={relSelf === chip ? 'on' : ''} onClick={() => setRelSelf(toggleChipValue(relSelf, chip))}>{chip}</button>
-                    ))}
-                  </div>
-                </div>
-                <div className="context-field">
-                  <span className="context-label">메모</span>
+                </AuthoringField>
+                {/* 메모만 넓은 칸이다. 높이가 곧 "여기에 얼마나 적어도 되는가"라는 초대다. */}
+                <AuthoringField className="cc-field--block" label="메모" filled={Boolean(memo.trim())}>
                   <IonTextarea aria-label="메모" placeholder="예: 공장장님, 우리 부품에 관심 많으심" autoGrow value={memo} onIonInput={(inputEvent) => setMemo(String(inputEvent.detail.value ?? ''))} />
-                </div>
+                </AuthoringField>
               </div>
             )}
           </section>
@@ -1818,11 +2173,29 @@ function App() {
               busy={queueing}
               value={researchText}
               onChange={setResearchText}
+              depth={researchDepth}
+              onDepthChange={setResearchDepth}
+              deepAvailable={deepResearchEnabled}
               receipt={researchReceipt}
+              noticeId={CAPTURE_RESEARCH_NOTICE_ID}
             />
           )}
 
-          <IonButton className="primary-action" expand="block" disabled={!frontFrame || queueing} onClick={() => void completeCapture()}>{queueing ? '저장 중…' : '완료'}</IonButton>
+          {/* 조사 요청이 접수 조건을 못 채웠으면 여기서 멈춘다. **native `disabled`를 쓰지 않는다** —
+              끄면 키보드로 닿을 수 없어 왜 막혔는지 물어볼 방법이 사라진다. 대신 이유를 버튼
+              이름에 싣고(Ionic이 안쪽 버튼으로 옮겨 주는 것은 `aria-label`뿐이다), 누르면
+              설명으로 손을 데려다 놓는다. */}
+          <IonButton
+            className="primary-action"
+            expand="block"
+            data-blocked={researchGate.blocked ? 'research' : undefined}
+            aria-label={researchSubmitLabel(queueing ? '저장 중…' : '완료', researchGate)}
+            disabled={!frontFrame || queueing}
+            onClick={() => {
+              if (researchGate.blocked) { focusResearchNotice(CAPTURE_RESEARCH_NOTICE_ID); return; }
+              void completeCapture();
+            }}
+          >{queueing ? '저장 중…' : '완료'}</IonButton>
           <p className="hint">전파가 약해도 기기에 저장했다가 자동으로 다시 보내요.</p>
 
           {/* 방금 찍은 것을 즉시 되돌리거나 다시 열기 (FI-049). 서버가 이미 받은 촬영에는
@@ -1857,6 +2230,9 @@ function App() {
           {sendingId && <span className="sending-note" role="status">{sendingName || '명함'} 전송 중…</span>}
           <span className="refresh-hint" role="status">{autoRefreshHint}</span>
         </div>
+        {/* 연결 안내는 실제로 막힌 것(서버 전송) 옆에 붙는다. 위 촬영 카드는 연결 없이도
+            전부 동작하므로 그 위에는 아무것도 얹지 않는다. */}
+        {renderConnectionSetup('명함 기록')}
         {!recordsCollapsed && <div className="records-feed">{renderFeedBody()}</div>}
       </div>
     );
@@ -1865,7 +2241,10 @@ function App() {
   function renderActivity() {
     return (
       <div className="cc-stack">
-        {!configured && <EmptyState title="연결 설정이 필요해요" body="받으신 개인 링크(?k=토큰 포함)로 접속하면 같은 진행 상태를 읽습니다." action="설정 열기" onAction={() => setTab('settings')} />}
+        {/* 예전에는 `연결 설정이 필요해요` 빈 상태가 진행 화면 맨 위를 차지했다. 그런데 이 화면의
+            아래 절반(이 기기의 대기열·캐시된 기록)은 연결 없이도 그대로 산다 — 그래서 안내는
+            `EmptyState`가 아니라 막힌 것 옆의 inline card다 (TSK-000545). */}
+        {renderConnectionSetup('진행')}
         {/* `복구 필요` 알림을 눌러 들어온 자리. 무엇이 멈췄는지가 아니라 **무엇이 안전한지**를 먼저
             말한다 — 사용자가 알림을 받고 가장 먼저 걱정하는 것은 사진이 날아갔는가다.
             watcher 내부 어휘(`quarantine` 등)는 화면에 절대 나오지 않는다 (ISS-000045). */}
@@ -2131,7 +2510,10 @@ function App() {
   function renderSettings() {
     /* ISS-000217 · DEC-000093 (Kairen-Ref: TSK-000532) — 설정 화면 전체는 `SettingsPanel`이 소유한다.
        여기 남기는 것은 **앱 상태와의 연결**뿐이다. 화면 문구·구조·시각 규칙이 이 파일에 섞여 있으면
-       설정 한 줄을 고칠 때마다 앱 전체가 열리고, 화면을 재는 게이트가 무엇을 잡는지도 흐려진다. */
+       설정 한 줄을 고칠 때마다 앱 전체가 열리고, 화면을 재는 게이트가 무엇을 잡는지도 흐려진다.
+
+       DEC-000105 (Kairen-Ref: TSK-000544) — 전송 대기 건수와 조사 권한은 앱이 이미 아는 사실이다.
+       설정 화면이 그것을 다시 추측하면 두 번째 진실이 생기므로 값으로 넘긴다. */
     return (
       <SettingsPanel
         config={config}
@@ -2150,6 +2532,8 @@ function App() {
         onPushToggle={() => void handlePushToggle()}
         onPushRefresh={() => void refreshPushState()}
         onSignOut={() => setSignOutOpen(true)}
+        unsentCount={unsentCount}
+        researchAvailable={researchInstructionEnabled}
         currentScreen={screenTitles[tab]}
         appVersion={APP_VERSION}
         buildId={__CARD_CAPTURE_BUILD_ID__}
@@ -2168,10 +2552,18 @@ function App() {
                 <b>{screenTitles[tab]}</b>
                 <small role="status">{headerStatus}</small>
               </span>
+              {/* 갱신은 상단 바 오른쪽 한 덩어리가 소유한다 — 스위치(기능) · 버튼(작업) · 한 줄(신선도).
+                  설정 화면에는 갱신할 목록이 없으므로 덩어리째 없다 (`int13-surfaces` 계약). */}
               {tab !== 'settings' && (
-                <button className="header-refresh" type="button" aria-label="최신 상태 확인" aria-busy={loading} onClick={() => void manualRefresh()}>
-                  <RefreshCw className={loading ? 'spinning' : ''} aria-hidden="true" size={17} />
-                </button>
+                <RefreshControl
+                  autoRefreshOn={autoRefreshOn}
+                  onAutoRefreshChange={setAutoRefreshOn}
+                  onManualRefresh={() => void manualRefresh()}
+                  plan={refreshPlan}
+                  status={refreshStatus}
+                  lastSuccessAgoMs={lastRefreshAgoMs}
+                  busy={refreshBusy}
+                />
               )}
             </div>
           </IonToolbar>
@@ -2249,6 +2641,10 @@ function App() {
                       busy={personActionSubmitting}
                       value={personActionText}
                       onChange={setPersonActionText}
+                      depth={personActionDepth}
+                      onDepthChange={setPersonActionDepth}
+                      deepAvailable={deepResearchEnabled}
+                      noticeId={PERSON_RESEARCH_NOTICE_ID}
                       receipt={personActionOutcome === null
                         ? { state: 'idle' }
                         : personActionOutcome.ok
@@ -2265,7 +2661,18 @@ function App() {
                   {/* 접수 버튼은 시트 아래에 고정한다 — 예시 chip이 늘어나도 화면 밖으로 밀리면 안 된다. */}
                   <div className="person-action-submit">
                     <small>{personActionText.length.toLocaleString()} / 2,000</small>
-                    <IonButton expand="block" disabled={!personActionText.trim() || personActionSubmitting} onClick={() => void submitPersonAction()}>{personActionSubmitting ? '접수 중…' : personActionCopy[personActionComposer.kind].submit}</IonButton>
+                    {/* 막힘은 `disabled`로 표현하지 않는다 — 끄면 키보드로 닿을 수 없어 이유를 물어볼
+                        방법이 사라진다. 이유는 버튼 이름에 실리고, 누르면 시트 안의 설명으로 손이 간다. */}
+                    <IonButton
+                      expand="block"
+                      data-blocked={personActionGate.blocked ? 'research' : undefined}
+                      aria-label={researchSubmitLabel(personActionCopy[personActionComposer.kind].submit, personActionGate)}
+                      disabled={!personActionText.trim() || personActionSubmitting}
+                      onClick={() => {
+                        if (personActionGate.blocked) { focusResearchNotice(PERSON_RESEARCH_NOTICE_ID); return; }
+                        void submitPersonAction();
+                      }}
+                    >{personActionSubmitting ? '접수 중…' : personActionCopy[personActionComposer.kind].submit}</IonButton>
                   </div>
                 </div>
               </IonContent>
@@ -2319,6 +2726,7 @@ function App() {
           onDismiss={closeCameraSession}
           onCaptured={handleCaptured}
           onFinished={closeCameraSession}
+          onCameraOutcome={noteCameraOutcome}
         />
       </IonPage>
     </IonApp>

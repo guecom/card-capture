@@ -118,6 +118,30 @@ test.beforeEach(async ({ page }) => {
     // 기본 카메라 경로(파일 입력)를 쓸 수 있게 둔다.
     localStorage.setItem('cc_galleryFree', 'off');
   });
+  /* 카메라가 **있는** 기기라고 못 박는다 (TSK-000220 / INT-000030).
+     이 게이트가 재는 것은 촬영 세션의 계약이지 기기 가용성이 아니다. 그런데 입구를 쓸 수 있는지는
+     이제 기기가 정하므로(`services/device-capability.ts`), 웹캠 없는 기계 — GitHub Actions
+     `windows-latest` runner가 그렇다 — 에서는 촬영 카드가 이유·회복 줄을 달고 나오고 누르면
+     파일 올리기가 열린다. 선언하지 않으면 이 파일은 코드가 아니라 **실행한 기계**를 재게 된다.
+     못 쓰는 입구 쪽 계약은 `int30-integration.spec.ts`가 따로 잰다.
+
+     **기기 목록만 선언하면 첫 장까지만 맞는다** (2026-08-04 CI 실패의 원인).
+     앱은 목록을 믿고 카드를 열어 두지만, 카메라가 정말 열리는지는 `getUserMedia`로 **관측**하고
+     그 관측이 조회를 이긴다(`lastCameraFailure`, `App.tsx`의 `noteCameraOutcome`). 그래야 방금
+     권한을 거부한 기기가 계속 열리는 척하지 않는다 — 제품 쪽은 옳다.
+     그래서 웹캠 없는 runner에서는 첫 촬영은 통과했다(파일 입력은 modal phase와 무관하게 있다).
+     그 modal 안에서 `getUserMedia`가 `NotFoundError`로 실패하면서 카드가 회복 버튼으로 바뀌었고,
+     **두 번째** 촬영부터 카드를 누르면 촬영 modal이 아니라 파일 올리기 작업면이 열렸다.
+     기계 선언은 목록과 **여는 것**을 함께 해야 완결된다 (`offline-shell.spec.ts`와 같은 규칙). */
+  await page.addInitScript(() => {
+    const media = navigator.mediaDevices;
+    if (!media) return;
+    media.enumerateDevices = async () => [{ kind: 'videoinput', deviceId: '', label: '', groupId: '', toJSON: () => ({}) } as MediaDeviceInfo];
+    // 화면을 재는 게이트가 아니므로 트랙 없는 stream이면 충분하다 — 필요한 사실은 "열린다" 하나다.
+    media.getUserMedia = async () => new MediaStream();
+    // 트랙이 없으면 데이터가 오지 않아 `play()`가 끝나지 않는다. 여는 데 성공했다는 사실만 남긴다.
+    HTMLMediaElement.prototype.play = async () => undefined;
+  });
 });
 
 // ── FI-046 ──────────────────────────────────────────────────────────────────

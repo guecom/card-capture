@@ -1,0 +1,384 @@
+/* 설정 정보구조 — 세 위계의 시각 규칙 (INT-000030 항목 004 · DEC-000105 — Kairen-Ref: TSK-000544)
+   ==============================================================================================
+   founder: "설정 페이지는 전반적으로 세련되지 않은 느낌이야."
+
+   '세련되지 않음'의 실체는 장식이 아니라 **같은 모양으로 그려진 서로 다른 것들**이었다.
+   지속 선택(누르면 값이 바뀌고 저장된다) · 읽기 전용 상태(누를 수 없다) · 되돌릴 수 없는 정리
+   (누르면 지워진다) — 이 셋이 전부 같은 카드 안에 같은 무게로 있으면, 사용자는 무엇을 누를 수
+   있는지 매번 시험해 봐야 한다. 그 시험을 없애는 것이 이 파일의 일이다.
+
+   그래서 규칙은 세 가지뿐이다:
+     1. 조작은 조작처럼 — 둥근 모서리, 채운 배경, 손가락 크기, 포커스 링. (`int29-settings.css`)
+     2. 사실은 사실처럼 — 모서리 0, 배경 없음, 포커스 대상 아님, 행 구분선만. (`.int30-fact`)
+     3. 위험은 위험처럼 — 다른 색의 **자리 자체**. 카드 하나가 아니라 구획이 바뀐다. (`.int30-danger`)
+
+   ── 글자 크기 ──
+   이전 감사에서 설정의 57개 텍스트 요소 중 46개가 12.5px 이하였다. 원인은 Ionic 전역
+   `small { font-size: 75% }` 와 크기를 지정하지 않은 `<p>`·`<button>`이었다. 이 파일이 만드는
+   모든 텍스트 자리에 크기를 명시하고, 아래 첫 규칙이 이 화면 안의 상속 바닥을 세운다.
+
+   색·모서리·그림자는 토큰만 쓴다. 정의되지 않은 변수는 조용히 아무것도 그리지 않는다. */
+
+/* ── 타입 스케일의 바닥 ──
+   크기를 지정하지 않은 텍스트가 12.5px로 굳는 길을 두 겹으로 끊는다.
+
+   (1) 알려진 함정 하나를 정확히 겨눈다. Ionic 전역 `small { font-size: 75% }`는 (0,0,1)이라
+       요소 선택자 하나로는 못 이긴다. 이 화면은 `<small>`을 쓰지 않지만, 나중에 누가 쓰더라도
+       바닥 아래로 떨어지지 않게 한다.
+   (2) 클래스 없는 요소를 위한 바닥. **`:where()`로 특이도를 0으로 만든다** — 아래에서 내가
+       명시한 크기(14px·15px·17px)를 이 바닥이 거꾸로 깎으면 위계가 무너지기 때문이다.
+       바닥이 충분한지는 규칙이 아니라 `int29-settings.spec.ts`의 가독성 스윕이 매번 다시 잰다. */
+.int30-settings small {
+  font-size: 13px;
+}
+
+:where(.int30-settings) :where(p, span, strong, b, li, dt, dd, label, code, legend, a, button) {
+  font-size: 13px;
+}
+
+/* 묶음 사이 간격은 항목 사이보다 확실히 넓다 — 어디까지가 한 덩어리인지가 눈으로 먼저 읽혀야
+   "순서가 있다"가 성립한다. */
+.int30-settings {
+  gap: 30px;
+}
+
+.int30-group {
+  gap: 12px;
+}
+
+/* ── 지금 할 일 (첫 방문) ──
+   연결되지 않은 기기에서 화면 맨 위에 오는 단 하나의 블록. 카드보다 강하게 말한다 —
+   여기서 못 찾으면 사용자는 나머지 설정을 아무리 잘 만들어도 제품을 쓰지 못한다.
+   연결되면 사라진다. 끝난 일을 계속 보여 주는 화면은 잔소리가 된다. */
+.int30-next {
+  display: grid;
+  gap: 9px;
+  padding: 18px;
+  border: 1px solid rgba(var(--cc-accent), 0.34);
+  border-radius: var(--cc-r-xl);
+  background: var(--cc-blue-soft);
+  box-shadow: var(--cc-elev-1);
+}
+
+.int30-next-eyebrow {
+  color: var(--cc-blue);
+  font-size: 13px;
+  font-weight: 780;
+  letter-spacing: 0.02em;
+}
+
+.int30-next > strong {
+  color: var(--cc-ink);
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1.4;
+  letter-spacing: -0.025em;
+  word-break: keep-all;
+}
+
+.int30-next > p {
+  margin: 0;
+  color: var(--cc-muted);
+  font-size: 14px;
+  line-height: 1.65;
+  word-break: keep-all;
+}
+
+.int30-next > p b {
+  color: var(--cc-ink);
+  font-weight: 760;
+}
+
+/* ── 읽기 전용 사실 ──
+   **조작처럼 보이지 않는 것이 이 자리의 전부다.** 그래서 버튼이 가진 모든 신호를 뺀다:
+   둥근 모서리 없음, 채운 배경 없음, 그림자 없음, 포커스 대상 아님, 손가락 크기 아님.
+   남는 것은 이름 → 값의 행 하나와 그 사이의 실선뿐이다. */
+.int30-facts {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--cc-line);
+}
+
+.int30-fact {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 9px 1px;
+  /* 모서리를 0으로 **명시**한다. 게이트가 이 값으로 "조작이 아님"을 판정한다. */
+  border-radius: 0;
+  border-bottom: 1px solid var(--cc-line);
+  background: none;
+  cursor: auto;
+}
+
+.int30-fact > dt {
+  flex: 0 0 auto;
+  color: var(--cc-muted);
+  font-size: 13px;
+  font-weight: 650;
+  word-break: keep-all;
+}
+
+.int30-fact > dd {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  color: var(--cc-ink);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: right;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+/* 값 자체가 주의를 요구하는 경우(전송 대기·오프라인)만 색을 쓴다. 색은 상태이지 장식이 아니다. */
+.int30-fact > dd.is-warn {
+  color: var(--cc-warn);
+}
+
+/* ── 위험 영역 ──
+   카드 하나가 아니라 **구획이 바뀐다.** 여기까지 스크롤한 사람은 문장을 읽기 전에
+   "이 아래는 다른 종류의 자리"라는 것을 먼저 안다. 묶음의 맨 마지막에만 온다. */
+.int30-danger {
+  display: grid;
+  gap: 0;
+  border: 1px solid rgba(165, 72, 72, 0.32);
+  border-radius: var(--cc-r-xl);
+  background: var(--cc-surface);
+  overflow: hidden;
+}
+
+.int30-danger-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 18px;
+  border-bottom: 1px solid rgba(165, 72, 72, 0.24);
+  background: var(--cc-danger-soft);
+  color: var(--cc-danger);
+}
+
+.int30-danger-head > svg {
+  flex: 0 0 auto;
+}
+
+.int30-danger-head > strong {
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.int30-danger-body {
+  display: grid;
+  gap: 13px;
+  padding: 18px;
+}
+
+/* 무엇이 지워지고 무엇이 남는가. 되돌릴 수 없는 조작 **앞에** 있어야 의미가 있다 —
+   확인 시트에만 적으면 이미 누른 뒤에 읽는 글이 된다. */
+.int30-impact {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.int30-impact li {
+  display: grid;
+  grid-template-columns: 66px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.int30-impact li > span:first-child {
+  padding: 3px 0 0;
+  font-size: 13px;
+  font-weight: 780;
+  white-space: nowrap;
+}
+
+.int30-impact li.is-remove > span:first-child {
+  color: var(--cc-danger);
+}
+
+.int30-impact li.is-keep > span:first-child {
+  color: var(--cc-teal-ink);
+}
+
+.int30-impact li > span:last-child {
+  color: var(--cc-muted);
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: keep-all;
+}
+
+.int30-danger-note {
+  margin: 0;
+  color: var(--cc-muted);
+  font-size: 13px;
+  line-height: 1.6;
+  word-break: keep-all;
+}
+
+.int30-danger-note b {
+  color: var(--cc-danger);
+  font-weight: 780;
+}
+
+.int30-danger-note.is-alert {
+  padding: 11px 13px;
+  border-radius: var(--cc-r-md);
+  background: var(--cc-danger-soft);
+  color: var(--cc-danger);
+}
+
+.int30-danger-note.is-alert b {
+  color: var(--cc-danger);
+}
+
+/* ── 접힌 지원 진입 ──
+   감추는 것이 아니라 **막히지 않은 날에는 필요 없는 것**을 접어 두는 것이다.
+   그래서 접힌 상태에서도 무엇이 들어 있는지 두 번째 줄에 그대로 적는다 —
+   제목만 있는 접기는 열어 보기 전에는 쓸모를 알 수 없어 아무도 열지 않는다. */
+.int30-support {
+  display: grid;
+  gap: 0;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-xl);
+  background: var(--cc-surface);
+  box-shadow: var(--cc-elev-1);
+  overflow: hidden;
+}
+
+.int30-support-toggle {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  min-height: 62px;
+  padding: 13px 18px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--cc-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.int30-support-toggle > svg {
+  flex: 0 0 auto;
+  color: var(--cc-muted);
+}
+
+.int30-support-toggle-copy {
+  display: grid;
+  gap: 3px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.int30-support-toggle-copy > strong {
+  color: var(--cc-ink);
+  font-size: 15px;
+  font-weight: 760;
+  letter-spacing: -0.02em;
+}
+
+.int30-support-toggle-copy > span {
+  color: var(--cc-muted);
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+.int30-support-chevron {
+  flex: 0 0 auto;
+  color: var(--cc-muted);
+  transition: transform 160ms ease;
+}
+
+.int30-support-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.int30-support-toggle:focus-visible {
+  outline: 3px solid rgba(var(--cc-accent), 0.4);
+  outline-offset: -3px;
+}
+
+.int30-support-body {
+  display: grid;
+  gap: 13px;
+  padding: 4px 18px 18px;
+  border-top: 1px solid var(--cc-line);
+}
+
+/* `hidden`은 UA 기본 규칙이라 다른 `display` 선언에 쉽게 진다. 이 화면에서는 확실히 접힌다. */
+.int30-support-body[hidden] {
+  display: none;
+}
+
+/* ── 다크 ──
+   위험 영역만 라이트 전용 값이 아니다(둘 다 토큰). 다만 danger 테두리는 다크 팔레트에서
+   따로 만들어야 대비가 살아난다. */
+:root[data-theme='dark'] .int30-danger {
+  border-color: rgba(214, 109, 96, 0.42);
+}
+
+:root[data-theme='dark'] .int30-danger-head {
+  border-bottom-color: rgba(214, 109, 96, 0.3);
+}
+
+:root[data-theme='dark'] .int30-next {
+  border-color: rgba(var(--cc-accent), 0.42);
+}
+
+/* ── 움직임 줄이기 ──
+   폰의 접근성 설정이 언제나 이긴다. 앱 안에 이를 덮어쓰는 선택지를 두지 않는다. */
+@media (prefers-reduced-motion: reduce) {
+  .int30-support-chevron {
+    transition: none;
+  }
+}
+
+/* ── 아주 좁은 폭 (320px) ──
+   `dt`/`dd` 한 줄 배치는 값이 길어지면 부딪친다. 320px에서는 위아래로 쌓고 왼쪽 정렬한다. */
+@media (max-width: 359px) {
+  .int30-next,
+  .int30-danger-body,
+  .int30-support-body {
+    padding-left: 15px;
+    padding-right: 15px;
+  }
+
+  .int30-support-toggle {
+    padding-left: 15px;
+    padding-right: 15px;
+  }
+
+  .int30-danger-head {
+    padding-left: 15px;
+    padding-right: 15px;
+  }
+
+  .int30-fact {
+    display: grid;
+    gap: 2px;
+  }
+
+  .int30-fact > dd {
+    text-align: left;
+  }
+
+  .int30-impact li {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+}

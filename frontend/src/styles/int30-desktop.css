@@ -1,0 +1,336 @@
+/* PC 진입과 inline 연결 안내 (TSK-000545 / INT-000030).
+   `ConnectionSetupCard.tsx`와 `DesktopIntake.tsx`가 각자 맨 위에서 이 파일을 불러온다.
+   공용 `app.css`에는 아무것도 더하지 않는다.
+
+   색은 전부 기존 토큰에서 온다 — 새 변수를 만들지 않는다. 정의되지 않은 변수를 쓰면
+   브라우저는 조용히 아무것도 그리지 않고 빌드는 통과한다.
+
+   글자 크기 주의: Ionic 전역에 `small { font-size: 75% }`가 있어 상속에 맡기면 12px 아래로
+   떨어진다. 여기 있는 모든 `small`은 크기를 직접 못 박는다. */
+
+/* ── inline 연결 안내 ───────────────────────────────────────────────────────
+   전면 경고가 아니다. 막힌 기능 옆에 붙는 한 장짜리 카드이고, 손잡이는 하나다. */
+.cc-setup-card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 10px;
+  padding: 13px 14px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-lg);
+  background: var(--cc-soft);
+  box-shadow: var(--cc-elev-1);
+}
+
+/* 경고 색조는 **토큰에서 파생**한다 (통합 검수 2026-08-04).
+   예전에는 라이트 `rgba(138,106,39,…)`와 다크 `rgba(224,183,109,…)`를 손으로 베껴 뒀는데,
+   다크 `--cc-warn`은 `#e2b76d` = `(226,183,109)`였다. 두 채널이 조용히 어긋나 있었고
+   빌드도 게이트도 그것을 몰랐다 — 손으로 베낀 값은 팔레트가 바뀌는 순간 언제나 이렇게 된다.
+   `color-mix`로 토큰에서 뽑으면 다크 override 자체가 필요 없어진다(테마가 `--cc-warn`을 바꾸면
+   색조도 같이 간다). 엔진이 `color-mix`를 모르면 이 선언만 무효가 되고 바로 위의 중립 카드
+   모양(`--cc-soft` / `--cc-line`)이 남는다 — 아무것도 안 그려지는 상태가 되지 않는다. */
+.cc-setup-card[data-tone="warn"] {
+  border-color: color-mix(in srgb, var(--cc-warn) 35%, transparent);
+  background: color-mix(in srgb, var(--cc-warn) 7%, transparent);
+}
+
+.cc-setup-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: var(--cc-r-sm);
+  background: rgba(var(--cc-accent), 0.12);
+  color: var(--cc-blue);
+}
+
+.cc-setup-card[data-tone="warn"] .cc-setup-icon {
+  background: color-mix(in srgb, var(--cc-warn) 14%, transparent);
+  color: var(--cc-warn);
+}
+
+.cc-setup-copy { min-width: 0; }
+
+.cc-setup-copy strong {
+  display: block;
+  color: var(--cc-ink);
+  font-size: 13.5px;
+  font-weight: 760;
+  letter-spacing: -0.02em;
+  word-break: keep-all;
+}
+
+.cc-setup-copy p {
+  margin: 4px 0 0;
+  color: var(--cc-muted);
+  font-size: 12.5px;
+  line-height: 1.55;
+  word-break: keep-all;
+}
+
+.cc-setup-action {
+  grid-column: 2;
+  justify-self: start;
+  margin-top: 10px;
+  padding: 8px 14px;
+  min-height: 36px;
+  border: 0;
+  border-radius: var(--cc-r-md);
+  background: rgb(var(--cc-accent));
+  color: var(--cc-on-accent);
+  font-size: 13px;
+  font-weight: 720;
+}
+
+.cc-setup-action:focus-visible,
+.cc-drop-main:focus-visible,
+.cc-slot-clear:focus-visible,
+.cc-webcam-main:focus-visible,
+.cc-webcam-recovery:focus-visible {
+  outline: 2px solid rgb(var(--cc-accent));
+  outline-offset: 2px;
+}
+
+/* ── PC 캡처 입구 ──────────────────────────────────────────────────────────── */
+.cc-desktop-intake {
+  display: grid;
+  gap: 12px;
+}
+
+.cc-drop-zone {
+  padding: 14px;
+  border: 1.5px dashed var(--cc-line);
+  border-radius: var(--cc-r-lg);
+  background: var(--cc-soft);
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.cc-drop-zone.dragging {
+  border-color: rgb(var(--cc-accent));
+  background: var(--cc-blue-soft);
+}
+
+.cc-drop-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 128px;
+  padding: 12px;
+  border: 1px solid rgba(var(--cc-accent), 0.2);
+  border-radius: var(--cc-r-md);
+  background: rgba(var(--cc-accent), 0.05);
+  color: var(--cc-blue);
+  font-size: 15px;
+  font-weight: 750;
+}
+
+.cc-drop-icon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  border-radius: var(--cc-r-md);
+  background: linear-gradient(145deg, rgb(var(--cc-accent)), rgb(var(--cc-accent-deep)));
+  color: var(--cc-on-accent);
+  box-shadow: 0 7px 16px rgba(var(--cc-accent), 0.2);
+}
+
+.cc-drop-title { word-break: keep-all; }
+
+.cc-drop-hint {
+  margin: 9px 2px 0;
+  color: var(--cc-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+/* 진짜 파일 입력. 화면에서 빼되 접근성 트리에서는 살려 둔다 —
+   `display: none`이면 낭독기와 자동화가 이 칸을 아예 찾지 못한다. */
+.cc-drop-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.cc-slot-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cc-slot {
+  display: grid;
+  gap: 3px;
+  padding: 10px 11px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-soft);
+}
+
+.cc-slot.filled { border-color: rgba(var(--cc-accent), 0.32); background: var(--cc-blue-soft); }
+
+.cc-slot-label {
+  color: var(--cc-muted);
+  font-size: 11.5px;
+  font-weight: 720;
+  letter-spacing: -0.01em;
+}
+
+.cc-slot-name {
+  overflow: hidden;
+  color: var(--cc-ink);
+  font-size: 13px;
+  font-weight: 640;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cc-slot-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  justify-self: start;
+  margin-top: 4px;
+  padding: 5px 9px;
+  min-height: 32px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-sm);
+  background: var(--cc-solid);
+  color: var(--cc-muted);
+  font-size: 12.5px;
+  font-weight: 660;
+}
+
+.cc-intake-rejects {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--cc-warn) 30%, transparent);
+  border-radius: var(--cc-r-md);
+  background: color-mix(in srgb, var(--cc-warn) 7%, transparent);
+  color: var(--cc-warn);
+  font-size: 12.5px;
+  line-height: 1.5;
+  list-style: none;
+  word-break: keep-all;
+}
+
+.cc-webcam-entry {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-lg);
+  background: var(--cc-soft);
+}
+
+.cc-webcam-main {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  padding: 4px 2px;
+  border: 0;
+  background: none;
+  text-align: left;
+}
+
+.cc-webcam-icon {
+  display: grid;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: var(--cc-r-md);
+  background: rgba(var(--cc-accent), 0.12);
+  color: var(--cc-blue);
+}
+
+.cc-webcam-copy { display: grid; gap: 3px; min-width: 0; }
+
+.cc-webcam-copy strong {
+  color: var(--cc-ink);
+  font-size: 14px;
+  font-weight: 740;
+  letter-spacing: -0.02em;
+}
+
+.cc-webcam-copy small {
+  color: var(--cc-muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+/* 못 쓰는 상태는 **흐려지되 사라지지 않는다**. 이유와 회복 행동은 흐려지지 않는다 —
+   지금 읽어야 할 문장이 가장 안 읽히면 안내가 아니다. */
+.cc-webcam-entry.blocked .cc-webcam-main { opacity: 0.55; }
+.cc-webcam-entry.blocked .cc-webcam-icon { background: var(--cc-quiet); color: var(--cc-muted); }
+
+.cc-webcam-reason {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  color: var(--cc-warn);
+  font-size: 12.5px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+.cc-webcam-reason svg { flex: none; margin-top: 1px; }
+
+.cc-webcam-recovery {
+  justify-self: start;
+  padding: 7px 13px;
+  min-height: 34px;
+  border: 1px solid rgba(var(--cc-accent), 0.35);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-solid);
+  color: var(--cc-blue);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+/* 좁은 폭에서는 두 자리를 한 줄로 세운다. 앞·뒷면 이름이 잘려 읽히는 것보다 낫다. */
+@media (max-width: 420px) {
+  .cc-slot-row { grid-template-columns: 1fr; }
+}
+
+/* 넓은 화면에서는 파일 자리와 웹캠 자리가 나란히 선다 — PC에서 위아래로 긴 폰 화면을
+   그대로 늘여 놓으면 두 입구 사이의 위계가 없어 보인다. */
+@media (min-width: 900px) {
+  .cc-desktop-intake {
+    grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+    align-items: start;
+  }
+  .cc-drop-zone { grid-column: 1; }
+  .cc-slot-row { grid-column: 1; }
+  .cc-intake-rejects { grid-column: 1; }
+  .cc-webcam-entry { grid-column: 2; grid-row: 1 / span 2; }
+}
+
+/* 다크 경고 색조 override는 없다 — 위 규칙이 `--cc-warn`에서 파생하므로 테마가 바뀌면 함께 간다.
+   여기 있던 세 줄이 정확히 `224` vs `226` 어긋남의 출처였다. */
+:root[data-theme="dark"] .cc-slot-clear,
+:root[data-theme="dark"] .cc-webcam-recovery { background: rgba(255, 255, 255, 0.06); }
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-drop-zone { transition: none; }
+}

@@ -58,6 +58,15 @@ test.beforeEach(async ({ page }) => {
   // 실제 자산 컴파일이 메인 스레드를 점유해 클릭 안정성 판정이 흔들린다.
   // service worker fetch까지 잡으려면 context 레벨이어야 한다 (page.route는 SW 요청을 못 잡는다).
   await page.context().route('**/vendor/**', (route) => route.abort());
+  /* 카메라가 **있는** 기기라고 못 박는다 (TSK-000220 / INT-000030).
+     legacy 파리티는 "한 화면에 촬영·맥락·완료가 같이 있다"는 사실을 잰다. 촬영 입구의 모양은 이제
+     기기 능력이 정하므로(`services/device-capability.ts`), 선언하지 않으면 웹캠 없는 기계에서
+     파리티 판정이 조용히 다른 화면을 보게 된다. */
+  await page.addInitScript(() => {
+    const media = navigator.mediaDevices;
+    if (!media) return;
+    media.enumerateDevices = async () => [{ kind: 'videoinput', deviceId: '', label: '', groupId: '', toJSON: () => ({}) } as MediaDeviceInfo];
+  });
 });
 
 const processedBrief = [
@@ -298,8 +307,15 @@ test('restores the legacy one-screen capture surface and link-first onboarding',
     await expect(page.locator('ion-input[aria-label="어디서 만났나요?"]')).toBeVisible();
     await expect(page.locator('ion-textarea[aria-label="메모"]')).toBeVisible();
     await expect(page.getByRole('button', { name: '완료', exact: true })).toBeDisabled();
-    // 토큰이 없으면 legacy처럼 개인 링크 안내 배너가 뜬다.
-    await expect(page.getByText(/받으신 개인 링크\(\?k=토큰 포함\)로 접속해 주세요/)).toBeVisible();
+    /* 토큰이 없으면 연결 안내가 뜬다 — 다만 **전면 배너가 아니다** (TSK-000545 / DEC-000105).
+       legacy의 `링크 설정이 필요해요` 배너는 화면 맨 위에서 멀쩡히 되는 기능들 위를 덮었고,
+       founder가 PC 진입에서 본 결함이 그것이었다. 지켜야 할 계약은 "연결이 없다는 사실과
+       그 해결 경로를 화면이 말한다"이지 배너의 자리·모양이 아니므로, 같은 계약을 새 표면에서
+       확인한다: 실제로 막힌 기능(명함 기록) 옆의 inline card와 손잡이 하나. */
+    await expect(page.getByText('링크 설정이 필요해요')).toHaveCount(0);
+    const setupCard = page.getByRole('status', { name: '명함 기록 연결 안내' });
+    await expect(setupCard).toBeVisible();
+    await expect(setupCard.getByRole('button', { name: '연결 설정 열기' })).toBeVisible();
 
     // 최근 캡처·브리핑 섹션이 같은 스크롤에 있고 접기 상태가 legacy 키로 저장된다.
     const recordsToggle = page.getByRole('button', { name: /명함 기록/ });

@@ -12,13 +12,18 @@
 //   4. 상태 기계 — `idle → in-flight → success | failure`, 승인된 문구 그대로.
 
 import type { BriefItem } from '../contracts/capture';
-import { ACTIVE_REFRESH_MS, IDLE_REFRESH_MS, hasActiveBriefs } from './refresh-cadence';
+import { ACTIVE_REFRESH_MS, IDLE_REFRESH_MS, cadenceSeconds, hasActiveBriefs } from './refresh-cadence';
 
 // ── 승인 문구 (INT-000025 / ISS-000050) ─────────────────────────────────────
 // v2.20.0에는 `방금 업데이트`가 0건이었고 대신 `마지막 갱신 방금`이 나갔다.
 // 인터뷰와 ISS-000050이 둘 다 `방금 업데이트`를 그대로 지정한다. 승인 문구를 정본으로 쓴다.
 export const REFRESH_SUCCESS_TEXT = '방금 업데이트';
 export const REFRESH_FAILURE_TEXT = '갱신 실패 · 다시 시도';
+/**
+ * 상단 바처럼 좁은 자리에서 쓰는 실패 문구. 뜻이 줄지 않는 이유: `다시 시도`가 가리키던
+ * 행동이 바로 옆 `새로고침` 버튼으로 실물이 됐다. 전문은 낭독기 통지에 그대로 나간다.
+ */
+export const REFRESH_FAILURE_SHORT_TEXT = '갱신 실패';
 /** 요청이 떠 있는 동안의 문구. 회전 애니메이션도 이 상태에서만 존재한다. */
 export const REFRESH_BUSY_TEXT = '갱신 중';
 /** 접근 이름 한 쌍. 버튼 이름은 앱 전체에서 이 둘뿐이다. */
@@ -193,27 +198,51 @@ export function createRefreshOrchestrator<T>(options: RefreshOrchestratorOptions
   };
 }
 
-/**
- * idle에서 새로고침 버튼 옆에 쓰는 문구 (DEC-000092 §2).
- * 다음 갱신 시각은 지어내지 않는다 — 자동 갱신이 켜져 있다는 사실과 마지막 성공만 말한다.
- */
-export function refreshIdleText(input: { autoRefreshOn: boolean; lastSuccessAgoMs?: number | null }): string {
-  const ago = input.lastSuccessAgoMs;
-  const since = ago === null || ago === undefined || !Number.isFinite(ago)
-    ? null
-    : ago < 5_000 ? '방금'
-      : ago < 60_000 ? `${Math.floor(ago / 1000)}초 전`
-        : ago < 3_600_000 ? `${Math.floor(ago / 60_000)}분 전`
-          : `${Math.floor(ago / 3_600_000)}시간 전`;
-  if (!input.autoRefreshOn) return since ? `자동 갱신 꺼짐 · ${since}` : '자동 갱신 꺼짐';
-  return since ? `자동 갱신 켜짐 · ${since}` : '자동 갱신 켜짐';
+/** 마지막 성공에서 지난 시간을 사람 말로. 없으면 빈 문자열이고 호출자가 그 조각을 뺀다. */
+export function refreshAgoText(ago?: number | null): string {
+  if (ago === null || ago === undefined || !Number.isFinite(ago)) return '';
+  if (ago < 5_000) return '방금';
+  if (ago < 60_000) return `${Math.floor(ago / 1000)}초 전`;
+  if (ago < 3_600_000) return `${Math.floor(ago / 60_000)}분 전`;
+  return `${Math.floor(ago / 3_600_000)}시간 전`;
 }
 
-export type RefreshCadenceReason = 'active' | 'idle' | 'hidden' | 'disconnected';
+/**
+ * 목록 구획에 쓰는 한 줄 (DEC-000092 §2).
+ * 다음 갱신 **시각**은 지어내지 않는다 — 켜짐/꺼짐, 지금 걸려 있는 박자, 마지막 성공만 말한다.
+ * `cadence`를 주면 그 계획의 실제 간격을 그대로 읽어 넣는다.
+ *
+ * ── 박자 조각이 `refreshCadenceText`에서 오는 이유 (통합 검수 2026-08-04)
+ * 예전에는 이 함수가 박자 문구를 **직접 조립**했고, 멈춰 있는 계획에서는 그 조각을 통째로
+ * 지웠다. 그래서 미연결 PC에서 상단은 `연결되면 확인`인데 이 줄은 `자동 갱신 켜짐`만 남아,
+ * 두 표면이 같은 사실을 서로 모순되게 말했다 — 하나는 "지금 안 본다", 다른 하나는 "켜져 있다".
+ *
+ * 두 곳이 각자 문장을 만드는 한 이런 어긋남은 다시 생긴다. 그래서 이 줄의 가운데 조각은
+ * 상단 바가 쓰는 것과 **같은 함수의 파생**이다. 뜻은 그대로다: 이 자리는 원래도
+ * "지금 걸려 있는 박자"를 말하는 자리였고, 박자가 없을 때 왜 없는지를 말하는 것이
+ * 그 자리를 비우는 것보다 정직하다.
+ *
+ * `off`만 빼는 이유: 그때 `refreshCadenceText`는 `자동 꺼짐`을 돌려주는데 머리말이 이미
+ * `자동 갱신 꺼짐`이다. 같은 사실을 한 줄에 두 번 쓰지 않는다.
+ */
+export function refreshIdleText(input: {
+  autoRefreshOn: boolean;
+  lastSuccessAgoMs?: number | null;
+  cadence?: RefreshCadencePlan | null;
+}): string {
+  const since = refreshAgoText(input.lastSuccessAgoMs);
+  const head = input.autoRefreshOn ? '자동 갱신 켜짐' : '자동 갱신 꺼짐';
+  const beat = input.cadence && input.autoRefreshOn && input.cadence.reason !== 'off'
+    ? refreshCadenceText(input.cadence)
+    : '';
+  return [head, beat, since].filter(Boolean).join(' · ');
+}
+
+export type RefreshCadenceReason = 'active' | 'idle' | 'hidden' | 'disconnected' | 'off';
 
 export interface RefreshCadencePlan {
   intervalMs: number;
-  /** 지금은 폴링하지 않는다. 화면이 가려졌거나 연결이 없을 때다. */
+  /** 지금은 폴링하지 않는다. 사용자가 껐거나, 화면이 가려졌거나, 연결이 없을 때다. */
   paused: boolean;
   reason: RefreshCadenceReason;
 }
@@ -224,15 +253,144 @@ export interface RefreshCadencePlan {
  * 기존 박자를 그대로 유지한다 (`status-truth.spec.ts` 게이트: 활성 목록 요청은 5초 안에 시작되고,
  * 종료 뒤 5.5초 안에 멈추며, 숨김→표시 복귀는 1초 안에 재개된다). 달라진 것은 그 판단이
  * 이제 App 안 인라인이 아니라 테스트되는 자리에 있다는 점이다.
+ *
+ * `autoRefreshOn: false`가 가장 먼저다. 그것은 세상의 사정이 아니라 **사용자가 방금 내린
+ * 결정**이고, 다른 이유로 덮어 말하면 스위치를 끈 사람에게 화면이 딴소리를 한다.
  */
 export function refreshCadencePlan(input: {
   items?: ReadonlyArray<BriefItem> | null;
   hidden?: boolean;
   configured?: boolean;
+  /** 기본은 켜짐. 값을 주지 않는 호출자(기존 계산)는 예전과 똑같이 동작한다. */
+  autoRefreshOn?: boolean;
 }): RefreshCadencePlan {
   const items = input.items ?? [];
   const intervalMs = hasActiveBriefs([...items]) ? ACTIVE_REFRESH_MS : IDLE_REFRESH_MS;
+  if (input.autoRefreshOn === false) return { intervalMs, paused: true, reason: 'off' };
   if (input.configured === false) return { intervalMs, paused: true, reason: 'disconnected' };
   if (input.hidden) return { intervalMs, paused: true, reason: 'hidden' };
   return { intervalMs, paused: false, reason: intervalMs === ACTIVE_REFRESH_MS ? 'active' : 'idle' };
+}
+
+/**
+ * 좁은 상단 바에 들어가는 **짧은** 박자 조각 (`20초마다`).
+ *
+ * 숫자는 `plan.intervalMs`에서만 나온다. 그래서 활성 4초 ↔ 유휴 20초로 박자가 바뀌면
+ * 이 글자도 같은 순간에 바뀐다 — 평균값이나 대표값을 적어 두는 자리가 아예 없다.
+ */
+export function refreshCadenceText(plan: RefreshCadencePlan): string {
+  if (plan.reason === 'off') return '자동 꺼짐';
+  if (plan.reason === 'disconnected') return '연결되면 확인';
+  if (plan.reason === 'hidden') return '돌아오면 확인';
+  return `${cadenceSeconds(plan.intervalMs)}초마다`;
+}
+
+/**
+ * 같은 사실의 **정직한 전문**. 짧은 조각은 지금 값 하나만 말하므로, 낭독기와 설명 자리에는
+ * 지금 몇 초인지와 **왜 달라지는지**를 함께 준다. 적응형 박자를 "20초마다"라고만 쓰면
+ * 처리 중일 때의 실제 동작과 어긋난다.
+ */
+export function refreshCadenceSentence(plan: RefreshCadencePlan): string {
+  if (plan.reason === 'off') return '자동 갱신이 꺼져 있어요. 새로고침을 누를 때만 확인합니다.';
+  if (plan.reason === 'disconnected') return '연결되면 자동으로 확인합니다.';
+  if (plan.reason === 'hidden') return '화면을 다시 열면 바로 확인합니다.';
+  const fast = cadenceSeconds(ACTIVE_REFRESH_MS);
+  const slow = cadenceSeconds(IDLE_REFRESH_MS);
+  return plan.reason === 'active'
+    ? `처리 중인 항목이 있어 지금은 ${fast}초마다 확인합니다. 모두 끝나면 ${slow}초마다로 돌아갑니다.`
+    : `지금은 ${slow}초마다 확인합니다. 처리 중인 항목이 생기면 ${fast}초마다 더 자주 확인합니다.`;
+}
+
+/**
+ * 스위치·버튼 아래 한 줄이 지금 무엇을 말해야 하는가.
+ *
+ * 세 가지 사실을 **한 기호에 합치지 않기 위한** 마지막 조립 지점이다.
+ *   - 기능 상태(자동 켜짐/꺼짐)는 스위치가 스스로 말한다.
+ *   - 작업 상태(요청 중)는 `busy`가 소유한다 — 회전과 `aria-busy`도 이것만 따른다.
+ *   - 이 줄은 신선도와 박자다. 다만 요청이 실제로 떠 있거나 방금 영수증이 나온 순간에는
+ *     그것이 더 급한 사실이므로 잠깐 자리를 내준다. 애매한 기호가 아니라 **글자**라서
+ *     무엇을 말하는지 헷갈릴 여지가 없다.
+ */
+export function refreshHeadlineText(input: {
+  plan: RefreshCadencePlan;
+  status?: RefreshStatus | null;
+  lastSuccessAgoMs?: number | null;
+  busy?: boolean;
+}): string {
+  const state = input.status?.state;
+  if (input.busy === true || state === 'in-flight') return REFRESH_BUSY_TEXT;
+  if (state === 'success') return REFRESH_SUCCESS_TEXT;
+  if (state === 'failure') return REFRESH_FAILURE_SHORT_TEXT;
+  const beat = refreshCadenceText(input.plan);
+  const since = refreshAgoText(input.lastSuccessAgoMs);
+  return since ? `${since} · ${beat}` : beat;
+}
+
+export interface RefreshLoopTimers {
+  set(handler: () => void, ms: number): number;
+  clear(id: number): void;
+}
+
+export interface RefreshLoopOptions {
+  /** 한 박자마다 부르는 갱신. 폴링이므로 이미 떠 있는 요청에 합류한다. */
+  tick(): void;
+  /**
+   * 화면이 가려졌는가. 가려진 동안에는 요청하지 않지만 타이머는 그대로 둔다 —
+   * 복귀 즉시 재개하는 기존 계약(`status-truth.spec.ts`)을 지키기 위해서다.
+   */
+  hidden?(): boolean;
+  /** 시계 주입 지점. 테스트에서 가짜 타이머를 넣어 박자를 결정적으로 잰다. */
+  timers?: RefreshLoopTimers;
+}
+
+export interface RefreshLoop {
+  /** 새 계획을 적용한다. 간격이 그대로면 타이머를 다시 걸지 않는다(박자가 밀리지 않는다). */
+  apply(plan: RefreshCadencePlan): void;
+  /**
+   * 지금 걸려 있는 타이머 수(0 또는 1).
+   * `자동 갱신 꺼짐`의 증거는 문구가 아니라 **이 값이 0이라는 사실**이다.
+   */
+  timerCount(): number;
+  /** 지금 걸린 간격. 멈춰 있으면 null. */
+  intervalMs(): number | null;
+  stop(): void;
+}
+
+/**
+ * 폴링 타이머를 소유한다. 계획 하나가 타이머와 화면 문구를 **동시에** 결정하므로
+ * "화면은 20초라고 쓰는데 실제로는 4초마다 돈다"가 구조적으로 불가능하다.
+ */
+export function createRefreshLoop(options: RefreshLoopOptions): RefreshLoop {
+  const timers: RefreshLoopTimers = options.timers ?? {
+    set: (handler, ms) => window.setInterval(handler, ms),
+    clear: (id) => window.clearInterval(id),
+  };
+  let handle: number | null = null;
+  let current: number | null = null;
+
+  function stop(): void {
+    if (handle === null) return;
+    timers.clear(handle);
+    handle = null;
+    current = null;
+  }
+
+  return {
+    apply(plan: RefreshCadencePlan): void {
+      if (plan.paused) {
+        stop();
+        return;
+      }
+      if (handle !== null && current === plan.intervalMs) return;
+      stop();
+      current = plan.intervalMs;
+      handle = timers.set(() => {
+        if (options.hidden?.() === true) return;
+        options.tick();
+      }, plan.intervalMs);
+    },
+    timerCount: () => (handle === null ? 0 : 1),
+    intervalMs: () => current,
+    stop,
+  };
 }

@@ -75,6 +75,16 @@ test.beforeEach(async ({ page }) => {
     status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, items: [], seeAll: true }),
   }));
   await page.addInitScript(() => localStorage.setItem('cc_name', 'E2E Owner'));
+  /* 카메라가 **있는** 기기라고 못 박는다 (TSK-000220 / INT-000030).
+     이 파일은 캡처 화면의 실제 픽셀(가로 넘침·터치 높이·포커스 링·접근 이름)을 잰다. 그런데 촬영
+     카드의 줄 수와 문구는 이제 기기 능력이 정하므로(`services/device-capability.ts`), 선언하지 않으면
+     같은 코드가 웹캠 있는 기계와 없는 기계에서 서로 다른 화면을 재게 된다.
+     못 쓰는 입구의 접근성 계약은 `int30-integration.spec.ts`가 자기 축으로 따로 잰다. */
+  await page.addInitScript(() => {
+    const media = navigator.mediaDevices;
+    if (!media) return;
+    media.enumerateDevices = async () => [{ kind: 'videoinput', deviceId: '', label: '', groupId: '', toJSON: () => ({}) } as MediaDeviceInfo];
+  });
 });
 
 async function openApp(page: Page, origin: string): Promise<void> {
