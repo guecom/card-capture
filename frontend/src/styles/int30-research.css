@@ -223,6 +223,28 @@
   background: rgba(var(--cc-accent), 0.13);
 }
 
+/* 지금 고를 수 없는 칸 (TSK-000542). **사라지지 않는다** — 어제 있던 선택지가 오늘 없으면
+   사용자는 그것을 고장으로 읽는다. 대신 눌러도 안 된다는 것이 손과 눈에 모두 보여야 한다.
+   상태를 색으로만 말하지 않는다: 칸 안의 글자가 `지금은 못 골라요`로 바뀌고 낭독기에는 이유가
+   문장으로 간다. 여기서는 흐리기와 커서만 맡는다. */
+.research-depth-option.off {
+  border-style: dashed;
+  background: var(--cc-solid-faint);
+  cursor: not-allowed;
+}
+
+/* 이름은 흐려도 읽을 수 있어야 한다. 대비 하한(4.5:1)을 지키려고 본문 색을 그대로 쓰고
+   투명도만 낮춘다 — 회색을 새로 만들면 다크 모드에서 대비가 무너진다. */
+.research-depth-option.off .research-depth-name,
+.research-depth-option.off .research-depth-short {
+  opacity: 0.72;
+}
+
+.research-depth-option.off .research-depth-meter i,
+.research-depth-option.off .research-depth-meter i.on {
+  background: var(--cc-line);
+}
+
 /* 진짜 라디오를 쓴다 — 좌우 화살표 이동과 묶음 읽기를 브라우저가 해 준다.
    눈에서만 치우고 포커스는 살려 둔다. */
 .research-depth-option input {
@@ -288,6 +310,80 @@
   font-size: 11px;
   line-height: 1.5;
   word-break: keep-all;
+}
+
+/* ── 5. 접수 조건 안내 ───────────────────────────────────────────────────────
+   계약: "깊은 조사는 목적을 하나 이상 골라야 접수된다."
+
+   이 블록은 **실패가 아니라 남은 조건**이다. 그래서 위험색(`--cc-danger`)이 아니라 주의색
+   (`--cc-warn`)을 쓰고, 접수 실패 영수증과 다른 모양으로 선다 — 둘이 닮으면 사용자는 이미
+   보냈다가 거절당한 줄로 읽는다.
+
+   글자를 주변(11px)보다 크게 잡는 것은 실수가 아니다. 지금 이 표면에서 가장 먼저 읽혀야 하는
+   문장이고, Ionic의 `<p>` 미리셋과 `small{75%}`이 조용히 더 줄이는 자리이기도 하다. */
+
+.research-block {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--cc-warn);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-solid-faint);
+}
+
+/* 아직 적은 것이 없어 막지는 않는 상태. 같은 말을 미리 하되 무게를 낮춘다 —
+   점선은 "지금 거절당한 것이 아니라 앞으로의 조건"이라는 뜻이다. */
+.research-block[data-blocked="not-yet"] { border-style: dashed; }
+
+/* 밖에 있는 제출 버튼에서 손이 여기로 온다(`focusResearchNotice`). 프로그램으로 준 포커스는
+   `:focus-visible`이 안 걸리는 브라우저가 있어 `:focus`로 잡는다. */
+.research-block:focus {
+  outline: 2px solid var(--cc-warn);
+  outline-offset: 2px;
+}
+
+.research-block-mark {
+  display: grid;
+  flex: 0 0 auto;
+  padding-top: 1px;
+  color: var(--cc-warn);
+  place-items: center;
+}
+
+.research-block-copy {
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 3px;
+  color: var(--cc-ink);
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: keep-all;
+}
+
+.research-block-copy strong {
+  color: var(--cc-warn);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+/* 무엇을 하면 풀리는지가 가장 행동에 가까운 줄이다. 흐리게 하지 않는다 — 회복 경로를
+   가장 옅은 글자로 두면 막다른 길처럼 읽힌다. */
+.research-block-fix { font-weight: 700; }
+
+/* 밖에 있는 제출 버튼이 막혔을 때.
+   **Ionic 함정 두 가지** 때문에 여기서 `aria-*`를 쓰지 않는다.
+     1. `ion-button`은 host의 `aria-disabled`를 자기 `disabled` prop에서 직접 그린다 —
+        밖에서 얹으면 다음 렌더에 지워질 수 있다.
+     2. 안쪽 native button으로 옮겨 주는 것은 `aria-checked·aria-label·aria-pressed`뿐이라
+        `aria-describedby`는 낭독기가 읽는 버튼에 닿지 않는다.
+   그래서 이유는 `aria-label`(=이름)에 싣고, 눈에 보이는 상태는 이 전용 속성으로 그린다.
+   `pointer-events`는 건드리지 않는다 — 눌러야 막힘 안내로 손이 간다. */
+ion-button[data-blocked="research"] {
+  opacity: 0.62;
 }
 
 /* ── 눈에는 없고 읽어 주는 말에는 있는 글 ────────────────────────────────────

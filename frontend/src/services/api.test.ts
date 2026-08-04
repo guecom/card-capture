@@ -1,12 +1,29 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { CaptureQueueItem, RuntimeConfig } from '../contracts/capture';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CaptureQueueItem, ResearchMode, RuntimeConfig } from '../contracts/capture';
 import { addPersonNote, buildDocumentUrl, buildListUrl, buildSearchUrl, fetchServerCaptureIds, isTerminalStatus, listBriefsUpTo, manualIntakeUnsupported, MANUAL_INTAKE_NOT_DEPLOYED, requestCorrection, submitResearchInstruction, toManualPersonPayload, toUploadPayload, uploadCapture, UploadError } from './api';
+import type { ResearchSubmission } from './research';
+import { clearResearchRouteLog, readResearchRouteLog } from './research-telemetry';
 
 const config: RuntimeConfig = {
   apiUrl: 'https://script.google.com/macros/s/example/exec',
   token: 'fixture-token',
   capturer: 'Fixture Owner',
 };
+
+/** 조사 요청 봉투 하나. 값이 고정이라 나가는 본문을 글자 단위로 잠글 수 있다. */
+function researchSubmission(mode: ResearchMode): ResearchSubmission {
+  return {
+    raw: 'research',
+    channel: 'owner_ui',
+    policyVersion: 'public-research-v1',
+    riskFlags: [],
+    depth: mode === 'deep_evidence_graph' ? 'deep' : mode,
+    mode,
+    purposes: mode === 'deep_evidence_graph' ? ['meeting_preparation'] : [],
+    focusIds: ['career'],
+    requestId: 'rr-fixture01',
+  };
+}
 
 describe('legacy GAS contract adapter', () => {
   it('builds the cache-busting list request without changing action names', () => {
@@ -32,11 +49,19 @@ describe('legacy GAS contract adapter', () => {
     const fetchMock = vi.fn().mockResolvedValue({ json: async () => ({ ok: true, receiptId: 'receipt-1' }) });
     vi.stubGlobal('fetch', fetchMock);
     await addPersonNote(config, { person: 'PER-000001' }, ' note ');
-    await submitResearchInstruction(config, { captureId: 'CAP-1' }, ' research ');
+    await submitResearchInstruction(config, { captureId: 'CAP-1' }, researchSubmission('standard'));
     await requestCorrection(config, 'CAP-1', ' correction ');
     expect(fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)))).toEqual([
       { action: 'addnote', person: 'PER-000001', text: 'note', k: 'fixture-token' },
-      { action: 'researchinstruction', captureId: 'CAP-1', text: 'research', k: 'fixture-token' },
+      {
+        action: 'researchinstruction',
+        captureId: 'CAP-1',
+        // 옛 서버를 위한 자유 입력 자리. 고른 항목을 여기 다시 섞지 않는다.
+        text: 'research',
+        // 계약 §Request Contract의 다섯 칸이 구조화된 봉투로 나간다.
+        instruction: { raw: 'research', mode: 'standard', purposes: [], focusIds: ['career'], requestId: 'rr-fixture01' },
+        k: 'fixture-token',
+      },
       { action: 'correction', captureId: 'CAP-1', text: 'correction', k: 'fixture-token' },
     ]);
   });
@@ -355,5 +380,124 @@ describe('manual person intake shares one send path with photo captures', () => 
     expect(manualIntakeUnsupported('unknown_action')).toBe(true);
     expect(manualIntakeUnsupported('daily_limit')).toBe(false);
     expect(manualIntakeUnsupported(undefined)).toBe(false);
+  });
+});
+
+// ── GAS 재배포 전의 `빠른 조사` (TSK-000542) ──
+//
+// `Code.gs`는 사람이 따로 재배포하므로 **앱은 아는데 서버는 모르는 구간**이 반드시 생긴다.
+// 그 구간의 계약은 셋이다: (1) 사용자의 조사는 된다, (2) 내려간 사실은 개발자 채널에만 남는다,
+// (3) **다른 이유로 난 실패를 이 길로 감추지 않는다.**
+describe('quick mode fallback — 배포 창을 건너는 한 번의 되돌림', () => {
+  const target = { person: 'PER-000001' };
+  const quickCapture: CaptureQueueItem = {
+    captureId: '20260804-090000-quick',
+    capturedAt: '2026-08-04T00:00:00.000Z',
+    images: [{ name: 'front.jpg', mime: 'image/jpeg', dataB64: 'front-data' }],
+    state: 'queued',
+    tries: 0,
+    researchInstruction: researchSubmission('quick'),
+  };
+
+  /** 옛 서버: `quick`은 모르고 `standard`는 받는다. 그 밖의 모든 검사는 두 mode에서 같다. */
+  function oldServer() {
+    return vi.fn().mockImplementation(async (_url: string, init: { body: string }) => {
+      const body = JSON.parse(String(init.body));
+      const mode = body.instruction?.mode ?? body.researchInstruction?.mode;
+      return mode === 'quick'
+        ? { ok: true, json: async () => ({ ok: false, error: 'bad_research_request' }) }
+        : { ok: true, json: async () => ({ ok: true, receiptId: 'research-0001' }) };
+    });
+  }
+
+  beforeEach(() => { clearResearchRouteLog(); });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('인물 시트: 옛 서버가 거절하면 같은 요청을 표준으로 한 번 더 보내 접수시킨다', async () => {
+    const fetchMock = oldServer();
+    vi.stubGlobal('fetch', fetchMock);
+    const response = await submitResearchInstruction(config, target, researchSubmission('quick'));
+    expect(response).toMatchObject({ ok: true, receiptId: 'research-0001' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const [first, second] = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)));
+    expect(first.instruction.mode).toBe('quick');
+    expect(second.instruction.mode).toBe('standard');
+    // 같은 요청이므로 멱등 키를 포함한 나머지 칸은 한 글자도 달라지지 않는다.
+    expect({ ...second.instruction, mode: 'quick' }).toEqual(first.instruction);
+  });
+
+  it('내려간 사실은 개발자 채널에만 남는다 — 사용자 응답에는 아무 표식도 없다', async () => {
+    vi.stubGlobal('fetch', oldServer());
+    const response = await submitResearchInstruction(config, target, researchSubmission('quick'));
+    expect(Object.keys(response).sort()).toEqual(['ok', 'receiptId']);
+
+    const [receipt] = readResearchRouteLog();
+    expect(receipt).toMatchObject({ event: 'degraded', degraded: true, reason: 'quick_mode_unsupported', requestedDepth: 'quick' });
+    // 요청의 멱등 키로 기록돼 있어야 나중에 이 한 건을 이어 볼 수 있다.
+    expect(receipt.requestId).toBe('rr-fixture01');
+  });
+
+  it('촬영 업로드: 옛 서버가 거절해도 사진까지 함께 잃지 않는다', async () => {
+    const fetchMock = oldServer();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(uploadCapture(config, quickCapture)).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [first, second] = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)));
+    expect([first.researchInstruction.mode, second.researchInstruction.mode]).toEqual(['quick', 'standard']);
+    // 사진과 나머지 payload는 두 번 다 같다 — 되돌림은 mode 한 칸만 건드린다.
+    expect({ ...second, researchInstruction: first.researchInstruction }).toEqual(first);
+  });
+
+  it('저장된 요청을 몰래 고치지 않는다 — 재배포되면 다음 전송이 저절로 `quick`으로 돌아간다', async () => {
+    vi.stubGlobal('fetch', oldServer());
+    await uploadCapture(config, quickCapture);
+    expect(quickCapture.researchInstruction?.mode).toBe('quick');
+  });
+
+  // ── 여기부터가 "가리지 않는다"의 증거 ──
+
+  it('mode 말고 다른 이유로 난 `bad_research_request`는 두 번째 시도도 똑같이 실패한다', async () => {
+    // 서버의 나머지 검사는 quick·standard에서 동일하므로 mode를 바꿔도 결과가 바뀌지 않는다.
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: false, error: 'bad_research_request' }) });
+    vi.stubGlobal('fetch', fetchMock);
+    const response = await submitResearchInstruction(config, target, researchSubmission('quick'));
+    expect(response).toMatchObject({ ok: false, error: 'bad_research_request' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // 성공으로 위장하지 않았고, 개발자 채널에는 **실패**로 남는다.
+    expect(readResearchRouteLog()[0]).toMatchObject({ event: 'failed', reason: 'bad_research_request' });
+  });
+
+  it.each(['daily_limit', 'owner_only', 'feature_disabled', 'target_mismatch', 'not_configured'])(
+    '%s는 되돌리지 않는다 — 한 번만 보내고 그대로 실패한다',
+    async (error) => {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: false, error }) });
+      vi.stubGlobal('fetch', fetchMock);
+      await expect(submitResearchInstruction(config, target, researchSubmission('quick'))).resolves.toMatchObject({ ok: false, error });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(readResearchRouteLog()).toHaveLength(0);
+    },
+  );
+
+  it.each(['standard', 'deep_evidence_graph'] as const)('%s 요청은 절대 되돌리지 않는다 — 깊이를 몰래 낮추지 않는다', async (mode) => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: false, error: 'bad_research_request' }) });
+    vi.stubGlobal('fetch', fetchMock);
+    await submitResearchInstruction(config, target, researchSubmission(mode));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('조사 요청이 없는 업로드는 이 길을 지나지 않는다', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: false, error: 'bad_research_request' }) });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(uploadCapture(config, { ...quickCapture, researchInstruction: null }))
+      .rejects.toMatchObject({ kind: 'rejected', message: 'bad_research_request' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('응답을 못 받은 첫 시도는 다시 보내지 않는다 — 접수 여부를 모르는 상태에서 재전송하지 않는다', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(uploadCapture(config, quickCapture)).rejects.toMatchObject({ kind: 'ambiguous' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

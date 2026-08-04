@@ -55,6 +55,14 @@ export function createResearchRequestId(random: () => number = Math.random): str
 export interface ResearchRouteRecordOptions {
   /** 사건을 직접 지정한다. 생략하면 `route.degraded`가 정한다. */
   event?: ResearchRouteEvent;
+  /**
+   * 내려감 여부를 직접 지정한다. 생략하면 `route.degraded`가 정한다.
+   *
+   * 라우팅 자체는 멀쩡했는데 **전송 단계에서** 내려간 경우가 있다 — 옛 서버가 mode를 몰라
+   * 같은 요청을 표준 깊이로 다시 보낸 경우가 그렇다. 그때 `route.degraded`는 거짓이지만
+   * 이 요청은 분명히 내려갔다. 그 사실을 잃지 않게 한 칸을 연다.
+   */
+  degraded?: boolean;
   /** 걸러지기 전의 사유. `redactReason`을 통과한 값만 남는다. */
   reason?: unknown;
   requestId?: string;
@@ -77,7 +85,7 @@ export function recordResearchRoute(route: ResearchRoute, options: ResearchRoute
     depth: route.depth,
     binding: route.binding,
     routeVersion: route.version,
-    degraded: route.degraded,
+    degraded: options.degraded ?? route.degraded,
   };
   const reason = redactReason(options.reason ?? route.reason);
   if (reason) receipt.reason = reason;

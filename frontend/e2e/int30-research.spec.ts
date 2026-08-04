@@ -92,12 +92,18 @@ interface Harness {
   submitted: Array<Record<string, unknown>>;
 }
 
-async function boot(page: Page, options: { theme?: string; width?: number; height?: number } = {}): Promise<Harness> {
+async function boot(
+  page: Page,
+  options: { theme?: string; width?: number; height?: number; deepOpen?: boolean } = {},
+): Promise<Harness> {
   const server = await startStaticServer();
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
 
   const submitted: Array<Record<string, unknown>> = [];
+  /* 계약 §Product Behavior: 깊은 조사는 서버가 `DEEP_RESEARCH_ENABLED=true`라고 말한 경우에만
+     열린다. 기본 harness는 열린 서버다 — 닫힌 서버는 그 경우를 보는 검사가 직접 끈다. */
+  const deepOpen = options.deepOpen !== false;
 
   await page.context().route('**/vendor/**', (route) => route.abort());
   await page.route('https://api.example.test/**', async (route) => {
@@ -105,7 +111,7 @@ async function boot(page: Page, options: { theme?: string; width?: number; heigh
     const action = new URL(request.url()).searchParams.get('action');
     if (action === 'list') {
       const items = [person(1, '김민서', '한화시스템'), person(2, '이서연', '넥스트로보')];
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, seeAll: true, researchInstructionEnabled: true, hasMore: false, items }) });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, seeAll: true, researchInstructionEnabled: true, deepResearchEnabled: deepOpen, hasMore: false, items }) });
       return;
     }
     if (request.method() === 'POST') {
@@ -296,7 +302,7 @@ test('깊이를 바꾸면 무엇이 달라지는지 한 줄로 말한다', async
   }
 });
 
-test('고른 깊이가 실제 요청에 실려 나간다', async ({ page }) => {
+test('고른 깊이가 서버가 읽는 mode로 실려 나간다', async ({ page }) => {
   const harness = await boot(page);
   try {
     await openPersonSheet(page);
@@ -306,7 +312,20 @@ test('고른 깊이가 실제 요청에 실려 나간다', async ({ page }) => {
     await sheet.getByRole('button', { name: '조사 요청 접수' }).click();
 
     await expect.poll(() => harness.submitted.length, { timeout: 10_000 }).toBe(1);
-    expect(harness.submitted[0].depth, '요청에 깊이가 실리지 않았다').toBe('deep');
+    // **화면 상태가 아니라 나가는 값**을 본다. 예전 결함은 화면에는 다 있었고 요청에만 없었다.
+    const envelope = harness.submitted[0].instruction as Record<string, unknown> | undefined;
+    expect(envelope, '요청에 구조화된 봉투가 없다').toBeTruthy();
+    expect(envelope!.mode, '깊은 조사가 서버 mode로 옮겨지지 않았다').toBe('deep_evidence_graph');
+    // 계약: 깊은 조사는 목적 1개 이상. 화면의 `범위 1개 이상`이 실제로 그 조건을 만족시켜야 한다.
+    expect((envelope!.purposes as string[]).length, '깊은 조사에 목적이 실리지 않았다').toBeGreaterThanOrEqual(1);
+    // 아홉 개를 다 골랐으면 서버 여덟 자리가 모두 채워진다.
+    expect(envelope!.focusIds).toEqual(['expertise', 'authority', 'reputation', 'outcomes', 'interests', 'career', 'company', 'connection']);
+    expect(String(envelope!.requestId), '재시도 멱등 키가 없다').toMatch(/^[A-Za-z0-9-]{8,64}$/);
+    // 제 칸이 있는 항목 이름은 자유 입력에 다시 쓰지 않는다 (계약: 선택 항목과 별도 저장).
+    expect(String(envelope!.raw).startsWith('조사 항목: '), '예전 합쳐 보내던 형식이 남아 있다').toBe(false);
+    expect(String(envelope!.raw)).not.toContain('의사결정 권한·직급');
+    expect(String(envelope!.raw)).not.toContain('실력·역량 근거');
+
     // 어디로 보내는지는 클라이언트가 정하지도, 보내지도 않는다.
     const wire = JSON.stringify(harness.submitted[0]).toLowerCase();
     for (const needle of FORBIDDEN_LATIN) {
@@ -314,6 +333,147 @@ test('고른 깊이가 실제 요청에 실려 나간다', async ({ page }) => {
     }
   } finally {
     await stopServer(harness.server);
+  }
+});
+
+test('세 깊이가 서버에서 서로 다른 요청이 된다', async ({ page }) => {
+  const harness = await boot(page);
+  try {
+    for (const depth of ['quick', 'standard', 'deep'] as const) {
+      // 접수되면 앱이 진행 블록으로 손을 넘긴다. 매번 같은 자리에서 시작하도록 처음부터 다시 연다.
+      if (depth !== 'quick') await page.reload({ waitUntil: 'networkidle' });
+      await openPersonSheet(page);
+      const sheet = page.locator('ion-modal.person-action-modal');
+      await sheet.locator('ion-textarea[aria-label="AI 조사 요청"] textarea').fill('공개 경력을 확인해 주세요');
+      await depthOption(sheet.locator('.ai-surface.research-request'), depth).click();
+      await sheet.getByRole('button', { name: '모두 선택' }).click();
+      await sheet.getByRole('button', { name: '조사 요청 접수' }).click();
+      await expect(sheet).toBeHidden({ timeout: 10_000 });
+    }
+    await expect.poll(() => harness.submitted.length, { timeout: 10_000 }).toBe(3);
+    const modes = harness.submitted.map((body) => (body.instruction as Record<string, unknown>).mode);
+    // 예전에는 셋 다 서버에서 같은 요청이었다 — 화면만 달랐다.
+    expect(modes, `세 깊이가 같은 요청이 됐다: ${JSON.stringify(modes)}`).toEqual(['quick', 'standard', 'deep_evidence_graph']);
+    // 요청마다 자기 멱등 키를 갖는다 — 서로 다른 요청이 같은 이름으로 접수되면 안 된다.
+    const ids = harness.submitted.map((body) => String((body.instruction as Record<string, unknown>).requestId));
+    expect(new Set(ids).size, `서로 다른 요청이 같은 멱등 키를 썼다: ${ids.join(', ')}`).toBe(3);
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+// ── 깊은 조사 fail-closed (계약: `DEEP_RESEARCH_ENABLED=true`인 경우에만 열린다) ──
+
+test('서버가 열어 두지 않았다고 말하면 깊은 조사를 고를 수 없다', async ({ page }) => {
+  const harness = await boot(page, { deepOpen: false });
+  try {
+    const scope = composer(page);
+    // 사라지지 않는다 — 없어진 선택지는 고장으로 읽힌다.
+    await expect(depthOption(scope, 'deep')).toHaveCount(1);
+    await expect(depthInput(scope, 'deep')).toBeDisabled();
+    await expect(depthOption(scope, 'deep')).toHaveAttribute('data-unavailable', 'yes');
+    // 상태를 색으로만 말하지 않는다. 칸 안에 지금의 사실이 글자로 있다.
+    await expect(depthOption(scope, 'deep')).toContainText('지금은 못 골라요');
+    // 나머지 둘은 그대로 열려 있다 — 하나가 닫혔다고 전부 닫히지 않는다.
+    await expect(depthInput(scope, 'quick')).toBeEnabled();
+    await expect(depthInput(scope, 'standard')).toBeEnabled();
+    // 서버 설정 이름·오류 코드는 화면에 없다.
+    const text = (await scope.innerText()).toLowerCase();
+    for (const leak of ['deep_research', 'deep_feature_disabled', 'bad_research_request', 'script', 'enabled']) {
+      expect(text.includes(leak), `화면에 내부 이름이 있다: ${leak}`).toBe(false);
+    }
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+test('서버가 응답에서 아예 말하지 않아도 닫힘이다 — 못 들음과 안 됨을 같게 읽는다', async ({ page }) => {
+  const server = await startStaticServer();
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
+  try {
+    await page.context().route('**/vendor/**', (route) => route.abort());
+    // 옛 서버 흉내: `deepResearchEnabled` 칸 자체가 없다.
+    await page.route('https://api.example.test/**', async (route) => {
+      const action = new URL(route.request().url()).searchParams.get('action');
+      const items = action === 'list' ? [person(1, '김민서', '한화시스템')] : [];
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, seeAll: true, researchInstructionEnabled: true, hasMore: false, items }),
+      });
+    });
+    await page.addInitScript(() => localStorage.setItem('cc_name', '이강규'));
+    await page.setViewportSize({ width: 390, height: 844 });
+    const api = encodeURIComponent('https://api.example.test/exec');
+    await page.goto(`http://127.0.0.1:${address.port}/next/?api=${api}&k=owner-token`, { waitUntil: 'networkidle' });
+
+    await expect(depthInput(composer(page), 'deep')).toBeDisabled();
+    // 작성 자리 자체는 살아 있다 — 깊은 조사 하나가 닫혔다고 조사 기능이 사라지지 않는다.
+    await expect(depthInput(composer(page), 'standard')).toBeEnabled();
+  } finally {
+    await stopServer(server);
+  }
+});
+
+test('닫혀 있는데 이미 깊은 조사를 고른 상태면 몰래 낮추지 않고 막는다', async ({ page }) => {
+  // 열린 서버에서 깊은 조사를 고른 뒤, 같은 화면에서 서버가 닫아 버린 경우.
+  const server = await startStaticServer();
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
+  const submitted: Array<Record<string, unknown>> = [];
+  let deepOpen = true;
+  try {
+    await page.context().route('**/vendor/**', (route) => route.abort());
+    await page.route('https://api.example.test/**', async (route) => {
+      const request = route.request();
+      const action = new URL(request.url()).searchParams.get('action');
+      if (action === 'list') {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ ok: true, seeAll: true, researchInstructionEnabled: true, deepResearchEnabled: deepOpen, hasMore: false, items: [person(1, '김민서', '한화시스템')] }),
+        });
+        return;
+      }
+      if (request.method() === 'POST') {
+        const body = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
+        submitted.push(body);
+        await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, receiptId: RESEARCH_RECEIPT_ID }) });
+        return;
+      }
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, items: [] }) });
+    });
+    await page.addInitScript(() => localStorage.setItem('cc_name', '이강규'));
+    await page.setViewportSize({ width: 390, height: 844 });
+    const api = encodeURIComponent('https://api.example.test/exec');
+    await page.goto(`http://127.0.0.1:${address.port}/next/?api=${api}&k=owner-token`, { waitUntil: 'networkidle' });
+
+    const scope = composer(page);
+    await scope.locator('ion-textarea textarea').fill('의사결정 권한을 확인해 주세요');
+    await scope.locator('.research-scope-all').click();
+    await depthOption(scope, 'deep').click();
+    await expect(depthInput(scope, 'deep')).toBeChecked();
+
+    // 서버가 닫는다. 다음 목록 갱신이 그 사실을 가져온다.
+    deepOpen = false;
+    await page.locator('.int30-refresh-now').click();
+    await expect(depthInput(scope, 'deep')).toBeDisabled({ timeout: 10_000 });
+
+    // 고른 것은 고른 채로 남는다 — 대신 다른 깊이로 바꿔치기하지 않는다.
+    await expect(depthInput(scope, 'deep'), '고른 깊이를 몰래 다른 것으로 바꿨다').toBeChecked();
+    await expect(scope.locator('.research-block')).toBeVisible();
+    await expect(page.locator('ion-button.primary-action')).toHaveAttribute('data-blocked', 'research');
+    // 하게 될 일을 설명하지 않는다 — 하지 않을 일을 설명하는 문장은 거짓말이다.
+    await expect(scope.locator('.research-depth-summary')).toContainText('지금은 깊은 조사를');
+
+    // 그동안 어떤 조사 요청도 나가지 않았다. (막힌 버튼을 눌렀을 때의 동작 자체는
+    // `int30-conformance.spec.ts`가, 마지막 방어선은 `services/research.test.ts`가 잠근다.)
+    await page.waitForTimeout(400);
+    expect(submitted.filter((body) => body.action === 'researchinstruction' || body.researchInstruction),
+      '막힌 요청이 서버로 나갔다').toHaveLength(0);
+  } finally {
+    await stopServer(server);
   }
 });
 

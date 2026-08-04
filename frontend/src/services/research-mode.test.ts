@@ -7,14 +7,17 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { DEFAULT_RESEARCH_DEPTH } from '../contracts/int30';
 import {
+  RESEARCH_DEEP_MIN_SCOPES,
   RESEARCH_DEPTHS,
   RESEARCH_ROUTE_R1,
   RESEARCH_WAIT_STEPS,
   type ResearchRouteConfig,
+  evaluateResearchSubmit,
   normalizeResearchDepth,
   researchDepthOption,
   researchDepthSummary,
   researchRouteConfig,
+  researchSubmitLabel,
   resetResearchRouteConfig,
   resolveResearchRoute,
   setResearchRouteConfig,
@@ -30,8 +33,15 @@ const FORBIDDEN_KOREAN = ['모델', '엔진', '공급자'];
 
 /** 사용자가 실제로 읽는 문자열만 모은다 — 키 이름(`depth`)은 화면에 나가지 않으므로 뺀다. */
 function userFacingCopy(): string[] {
+  const blocked = evaluateResearchSubmit({ depth: 'deep', scopeCount: 0, hasText: true, deepAvailable: true });
+  // 깊은 조사가 닫혔을 때의 안내도 사용자가 읽는 말이다. 서버 설정 이름·오류 코드가 새기 가장 쉬운 자리다.
+  const closed = evaluateResearchSubmit({ depth: 'deep', scopeCount: 1, hasText: true, deepAvailable: false });
   return RESEARCH_DEPTHS.flatMap((option) => [option.label, option.short, option.detail])
-    .concat(RESEARCH_DEPTHS.map((option) => researchDepthSummary(option.depth)));
+    .concat(RESEARCH_DEPTHS.map((option) => researchDepthSummary(option.depth)))
+    // 막힘 안내도 사용자가 읽는 말이다. 새로 생긴 문장이 이름 유출 검사 밖에 있으면 안 된다.
+    .concat([blocked.notice!.title, blocked.notice!.reason, blocked.notice!.fix])
+    .concat([closed.notice!.title, closed.notice!.reason, closed.notice!.fix])
+    .concat([researchSubmitLabel('완료', blocked), researchSubmitLabel('완료', closed)]);
 }
 
 describe('research depth — 사용자가 고르는 것', () => {
@@ -95,6 +105,121 @@ describe('research depth — 무엇이 연결되는지는 사용자에게 없다
     for (const option of RESEARCH_DEPTHS) {
       expect(Object.keys(option).sort()).toEqual(['depth', 'detail', 'label', 'short', 'wait']);
     }
+  });
+});
+
+// 계약 (`63_Research_Instruction_Contract.md` §Product Behavior):
+//   "깊은 조사는 목적을 하나 이상 골라야 접수된다."
+// 이 규칙이 화면이 아니라 여기 있어야 두 제출 자리가 같은 판정을 쓴다.
+describe('research submit — 깊은 조사의 접수 조건', () => {
+  const gate = (depth: unknown, scopeCount: number, hasText: boolean, deepAvailable = true) =>
+    evaluateResearchSubmit({ depth, scopeCount, hasText, deepAvailable });
+
+  it('계약의 `하나 이상`이 실제로 1이다', () => {
+    expect(RESEARCH_DEEP_MIN_SCOPES).toBe(1);
+    expect(gate('deep', RESEARCH_DEEP_MIN_SCOPES, false).blocked).toBe(false);
+    expect(gate('deep', RESEARCH_DEEP_MIN_SCOPES - 1, true).blocked).toBe(true);
+  });
+
+  it('깊은 조사 + 범위 0개 + 적은 내용 있음 → 막는다', () => {
+    const result = gate('deep', 0, true);
+    expect(result.state).toBe('blocked');
+    expect(result.notice?.block).toBe('deep_requires_scope');
+  });
+
+  it('막을 때 깊이를 몰래 낮추지도, 범위를 대신 고르지도 않는다', () => {
+    const result = gate('deep', 0, true);
+    // 판정 결과에는 "고쳐 놓은 값"이 아예 없다. 고치는 것은 언제나 사람의 손이다.
+    expect(Object.keys(result).sort()).toEqual(['blocked', 'notice', 'state']);
+  });
+
+  it('아직 아무것도 없으면 막지 않는다 — 촬영 저장까지 인질로 잡지 않는다', () => {
+    const result = gate('deep', 0, false);
+    expect(result.blocked).toBe(false);
+    // 그래도 조건은 미리 말해 준다. 긴 글을 다 적은 뒤에 처음 알게 되면 늦다.
+    expect(result.notice?.block).toBe('deep_requires_scope');
+  });
+
+  it('범위를 하나라도 고르면 즉시 풀리고 설명도 사라진다', () => {
+    expect(gate('deep', 1, false)).toEqual({ state: 'ready', blocked: false, notice: null });
+  });
+
+  it.each(['quick', 'standard', 'turbo', undefined, null])('%s는 범위 0개여도 조이지 않는다', (depth) => {
+    expect(gate(depth, 0, true)).toEqual({ state: 'ready', blocked: false, notice: null });
+    expect(gate(depth, 0, false)).toEqual({ state: 'empty', blocked: false, notice: null });
+  });
+
+  it('이상한 숫자가 와도 규칙이 느슨해지지 않는다', () => {
+    for (const count of [Number.NaN, -3, 0.4]) {
+      expect(gate('deep', count, true).blocked, `범위 수 ${count}에서 규칙이 풀린다`).toBe(true);
+    }
+  });
+
+  it('막힌 제출 버튼은 이름 자체로 이유와 회복 방법을 말한다', () => {
+    // Ionic이 안쪽 버튼에 옮겨 주는 것은 `aria-label`뿐이라 이유가 **이름에** 실려야 도착한다.
+    const label = researchSubmitLabel('완료', gate('deep', 0, true));
+    expect(label).toContain('완료');
+    expect(label).toContain('보낼 수 없어요');
+    expect(label).toContain('일반 조사');
+  });
+
+  it('풀리면 이름이 원래대로 돌아온다 — 빈 값이 아니라 원래 글자로', () => {
+    // `undefined`를 돌려주면 `ion-button`이 물려받은 옛 이름을 그대로 기억한 채 계속 읽는다.
+    // 그 결함을 `e2e/int30-conformance.spec.ts`가 실제로 잡았으므로 여기서 형태로 못 박는다.
+    expect(researchSubmitLabel('완료', gate('deep', 2, true))).toBe('완료');
+    expect(researchSubmitLabel('완료', gate('standard', 0, true))).toBe('완료');
+    expect(researchSubmitLabel('완료', gate('deep', 0, false))).toBe('완료');
+  });
+});
+
+// 계약 (§Product Behavior): "Deep mode는 `DEEP_RESEARCH_ENABLED=true`가 명시된 경우에만 열린다.
+// 누락·빈 값·`false`는 모두 fail-closed이며 `RESEARCH_INSTRUCTION_ENABLED=false`와 독립이다."
+//
+// 서버는 이 사실을 오래전부터 응답에 실어 보냈고 앱만 읽지 않았다. 규칙이 여기 있어야 두 제출
+// 자리와 작성 자리가 같은 판정을 쓴다.
+describe('research submit — 깊은 조사가 닫혀 있을 때', () => {
+  const gate = (scopeCount: number, hasText: boolean, deepAvailable: unknown) =>
+    evaluateResearchSubmit({ depth: 'deep', scopeCount, hasText, deepAvailable: deepAvailable as boolean });
+
+  it('`true`가 아닌 모든 값이 닫힘이다', () => {
+    // 참 같은 값(`'true'`·`1`)도 닫힘이다. 서버가 `true`라고 말한 경우에만 연다.
+    for (const value of [true, false, undefined, null, '', 'true', 0, 1]) {
+      expect(gate(3, true, value).blocked, `${String(value)}를 잘못 읽었다`).toBe(value !== true);
+    }
+  });
+
+  it('범위를 다 골라도 열리지 않는다 — 사용자가 이 자리에서 풀 수 있는 조건이 아니다', () => {
+    const result = gate(9, true, false);
+    expect(result.state).toBe('blocked');
+    expect(result.notice?.block).toBe('deep_unavailable');
+  });
+
+  it('범위 조건보다 먼저 판정한다 — 풀 수 없는 조건을 뒤에 두면 사용자가 헛수고한다', () => {
+    expect(gate(0, true, false).notice?.block).toBe('deep_unavailable');
+  });
+
+  it('아직 아무것도 없으면 막지 않되 같은 설명을 미리 보인다', () => {
+    const result = gate(0, false, false);
+    expect(result.blocked).toBe(false);
+    expect(result.notice?.block).toBe('deep_unavailable');
+  });
+
+  it('깊이를 대신 낮추지 않는다 — 판정 결과에 고쳐 놓은 값이 없다', () => {
+    expect(Object.keys(gate(3, true, false)).sort()).toEqual(['blocked', 'notice', 'state']);
+  });
+
+  it('빠른·일반은 이 스위치와 독립이다 — 하나가 닫혔다고 전부 닫히지 않는다', () => {
+    for (const depth of ['quick', 'standard']) {
+      expect(evaluateResearchSubmit({ depth, scopeCount: 0, hasText: true, deepAvailable: false }))
+        .toEqual({ state: 'ready', blocked: false, notice: null });
+    }
+  });
+
+  it('막힌 제출 버튼 이름이 이유와 회복 방법을 함께 말한다', () => {
+    const label = researchSubmitLabel('조사 요청 접수', gate(3, true, false));
+    expect(label).toContain('조사 요청 접수');
+    expect(label).toContain('보낼 수 없어요');
+    expect(label).toContain('일반 조사');
   });
 });
 

@@ -31,7 +31,7 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { MarkdownLite } from './components/MarkdownLite';
 import { ActionSection, ContactActions, PersonDocument } from './components/PersonDocument';
 import { AiScopeNote, AiStageRail, AiSurface, AiSurfaceHead } from './components/AiTaskSurface';
-import { focusCaptureProgress, ResearchComposer, type ResearchReceipt } from './components/ResearchComposer';
+import { focusCaptureProgress, focusResearchNotice, ResearchComposer, type ResearchReceipt } from './components/ResearchComposer';
 // 아래 둘은 `int30-capture.css`를 함께 들여온다. `app.css`의 만남 맥락 규칙을 되받아야 하므로
 // 이 import가 `int29-*` 뒤에 와야 한다 — 순서가 곧 cascade다 (TSK-000220).
 import { CaptureEntry } from './components/CaptureEntry';
@@ -135,10 +135,11 @@ import {
   runRecallSearch,
   serverFallbackTerm,
 } from './services/recall-search';
-import { buildResearchSubmission } from './services/research';
+import { buildResearchSubmission, researchSubmitGate } from './services/research';
 // 조사 깊이는 lane 사이 공유 이음매에서 온다. 이 화면은 값을 나르기만 하고 뜻은
 // `services/research-mode.ts`가 소유한다 (TSK-000542).
 import { DEFAULT_RESEARCH_DEPTH, type ResearchDepth } from './contracts/int30';
+import { RESEARCH_SUBMIT_READY, researchSubmitLabel } from './services/research-mode';
 import { recognizeQuickName } from './services/vision';
 import {
   loadCachedBriefs,
@@ -233,6 +234,25 @@ function stageTrackStyle(progress: ReturnType<typeof captureProgress>): CSSPrope
 }
 
 type SearchMode = 'quick' | 'recall';
+
+/**
+ * 조사 접수 조건 안내의 고정 id. 촬영 탭과 인물 시트가 **동시에 떠 있을 수 있으므로** 서로 다르다.
+ *
+ * 제출 버튼은 작성 자리(`ResearchComposer`) 밖에 있다. 막힌 버튼을 눌렀을 때 손을 데려다 놓을
+ * 곳을 이름으로 정해 두지 않으면, 눌러도 아무 일이 없는 버튼이 된다.
+ */
+const CAPTURE_RESEARCH_NOTICE_ID = 'research-notice-capture';
+const PERSON_RESEARCH_NOTICE_ID = 'research-notice-person';
+
+/**
+ * 인물 시트의 조사 요청 하나를 식별하는 값. **같은 요청인지**를 판정하는 데만 쓴다.
+ *
+ * 대상·글·깊이 셋이 그대로면 같은 요청이고, 그때만 멱등 키를 이어 쓴다. 서버가 요청 지문을
+ * `raw`·`mode`·`purposes`·`focusIds`로 만들므로 여기서 보는 것도 그 값을 정하는 입력 전부다.
+ */
+function personActionRequestKey(target: PersonTarget, text: string, depth: ResearchDepth): string {
+  return JSON.stringify([target.person ?? '', target.captureId ?? '', depth, text]);
+}
 
 function formatMoment(value?: string): string {
   if (!value) return '시간 정보 없음';
@@ -417,6 +437,12 @@ function App() {
   const [researchInstructionEnabled, setResearchInstructionEnabled] = useState(
     () => researchSurfaceVisible(loadOwnerFlags(), resolveConnectionState(boot.config)),
   );
+  /* 깊은 조사가 지금 열려 있는가 (TSK-000542 / 계약 §Product Behavior).
+     **기기에 저장하지 않고 `false`에서 시작한다.** `researchInstructionEnabled`와 일부러 다르게
+     두는 자리다 — 저 값은 작성 자리를 그릴지의 문제라 못 들었을 때 지난번 답을 쓰는 편이 낫지만,
+     이 값은 "서버가 지금 이 요청을 받는가"라서 못 들었으면 **닫힘**이어야 한다. 캐시한 `true`는
+     서버가 이미 닫은 뒤에도 사용자에게 접수되지 않을 선택지를 계속 내민다. */
+  const [deepResearchEnabled, setDeepResearchEnabled] = useState(false);
   // 화면이 서버에 요청하는 총 건수. `더 보기`를 누를 때마다 커지고 상한이 없다 —
   // 서버 한 페이지(100건) 안에서만 움직이면 101번째부터는 앱에서 존재하지 않는 것이 된다 (FI-100).
   const listWantedRef = useRef(LIST_PAGE_STEP);
@@ -443,6 +469,9 @@ function App() {
   // 시트에서 보낸 조사 요청이 **접수됐는가 / 접수에 실패했는가**. 접수 뒤의 처리 진행은
   // 여기서 말하지 않는다 — 그건 명함 기록·진행의 블록이 소유한다 (TSK-000535).
   const [personActionOutcome, setPersonActionOutcome] = useState<{ ok: boolean; reason?: string } | null>(null);
+  /* 이 시트가 지금 붙들고 있는 조사 요청의 멱등 키 (TSK-000542). `다시 시도`가 같은 요청임을
+     서버에 알리는 유일한 값이다. 키가 가리키는 요청 내용이 바뀌면 함께 버려진다. */
+  const personActionRequestIdRef = useRef<{ key: string; requestId: string } | null>(null);
   const [queueEdit, setQueueEdit] = useState<CaptureQueueItem | null>(null);
   // 기다리게 하는 동작에는 예외 없이 "지금 하고 있다"가 붙어야 한다 (founder 원칙 2026-07-27).
   const [savingQueueEdit, setSavingQueueEdit] = useState(false);
@@ -591,6 +620,9 @@ function App() {
         const research = response.researchInstructionEnabled === true;
         setOwnerCanSeeAll(seeAll);
         setResearchInstructionEnabled(seeAll && research);
+        // 깊은 조사는 서버가 **명시적으로 열었다고 말한 응답에서만** 열린다. 누락·빈 값·false는
+        // 전부 닫힘이고, 이 값은 저장하지 않으므로 다음 응답이 매번 다시 판정한다.
+        setDeepResearchEnabled(seeAll && research && response.deepResearchEnabled === true);
         saveOwnerFlags({ seeAll, researchInstructionEnabled: research });
         const hasMore = response.hasMore === true;
         setHasMoreBriefs(hasMore);
@@ -942,6 +974,20 @@ function App() {
   const noteCameraOutcome = useCallback((failure: CandidateCameraErrorCode | null) => {
     setDeviceEnv((current) => (current.lastCameraFailure === failure ? current : { ...current, lastCameraFailure: failure }));
   }, []);
+
+  // 조사 요청의 접수 조건 (계약: "깊은 조사는 목적을 하나 이상 골라야 접수된다").
+  //
+  // 판정은 `services/research-mode.ts`가 소유하고 이 화면은 결과만 읽는다. 두 자리(촬영 탭의
+  // `완료`, 인물 시트의 `조사 요청 접수`)가 같은 함수를 부르므로 한쪽만 고쳐지는 일이 없다.
+  // 조사 기능이 꺼져 있으면 규칙 자체가 없다 — 그때 촬영 저장을 막으면 엉뚱한 이유로 사진을 잃는다.
+  const researchGate = useMemo(
+    () => (researchInstructionEnabled ? researchSubmitGate(researchText, researchDepth, deepResearchEnabled) : RESEARCH_SUBMIT_READY),
+    [deepResearchEnabled, researchDepth, researchInstructionEnabled, researchText],
+  );
+  const personActionGate = useMemo(
+    () => (personActionComposer?.kind === 'research' ? researchSubmitGate(personActionText, personActionDepth, deepResearchEnabled) : RESEARCH_SUBMIT_READY),
+    [deepResearchEnabled, personActionComposer, personActionDepth, personActionText],
+  );
 
   // 방금 저장한 촬영 (FI-049). 다음 장을 찍기 시작하면 내려간다 — 되돌리기가 촬영 중인
   // 초안과 다투면 안 되고, 카메라가 열려 있는 동안 화면을 바꿔치기해서도 안 된다.
@@ -1376,7 +1422,9 @@ function App() {
   }, [startQuickNameOcr]);
 
   const completeCapture = useCallback(async () => {
-    if (!frontFrame || queueing) return;
+    // 접수 조건을 못 채운 조사 요청은 **깊이를 낮추거나 조용히 떨어뜨리지 않는다** (계약).
+    // 화면이 이미 이유를 보이고 있으므로 여기서는 저장을 멈추기만 한다 — 사진은 그대로 남는다.
+    if (!frontFrame || queueing || researchGate.blocked) return;
     setQueueing(true);
     try {
       const item = buildQueuedCapture(frontFrame, {
@@ -1385,7 +1433,11 @@ function App() {
         relSelf,
         relKairen,
         memo,
-        researchInstruction: researchInstructionEnabled ? buildResearchSubmission(researchText, researchDepth) : null,
+        // 봉투는 **여기서 한 번** 만들어져 대기열 항목에 저장된다. 전송 재시도는 저장된 그 봉투를
+        // 그대로 다시 보내므로 `requestId`가 바뀌지 않고, 앱을 껐다 켜도 같은 요청으로 남는다.
+        researchInstruction: researchInstructionEnabled
+          ? buildResearchSubmission(researchText, researchDepth, { deepAvailable: deepResearchEnabled })
+          : null,
         quickName,
       });
       // 전송 후 원본이 정리돼도 목록에 남을 104px 썸네일 (legacy thumbOf).
@@ -1416,7 +1468,7 @@ function App() {
     } finally {
       setQueueing(false);
     }
-  }, [backFrame, configured, event, flushPendingQueue, frontFrame, memo, queueing, quickName, relKairen, relSelf, researchDepth, researchInstructionEnabled, researchText, resetQuickName]);
+  }, [backFrame, configured, deepResearchEnabled, event, flushPendingQueue, frontFrame, memo, queueing, quickName, relKairen, relSelf, researchDepth, researchGate, researchInstructionEnabled, researchText, resetQuickName]);
 
   /**
    * 방금 찍은 촬영을 대기열에서 빼서 촬영 화면으로 되돌린다 (FI-049).
@@ -1598,6 +1650,8 @@ function App() {
 
   const closePersonActionComposer = useCallback(() => {
     if (personActionSubmitting) return;
+    // 닫으면 이 시트의 요청은 끝난 것이다. 다시 열면 새 요청이므로 멱등 키도 새로 만든다.
+    personActionRequestIdRef.current = null;
     setPersonActionComposer(null);
     setPersonActionText('');
     setPersonActionOutcome(null);
@@ -1605,6 +1659,8 @@ function App() {
 
   const submitPersonAction = useCallback(async () => {
     if (!personActionComposer || !personActionText.trim() || personActionSubmitting) return;
+    // 접수 조건을 못 채운 깊은 조사는 여기서 멈춘다. 시트 안의 안내가 이미 이유를 말하고 있다.
+    if (personActionGate.blocked) return;
     setPersonActionSubmitting(true);
     let success = false;
     if (personActionComposer.kind === 'note') {
@@ -1612,12 +1668,22 @@ function App() {
     } else if (personActionComposer.kind === 'research') {
       // 조사 요청만 `runPersonAction`을 거치지 않는다. 실패 사유와 접수 번호를 시트 안에서
       // 그대로 보여 주고(접수 실패), 접수되면 그 요청의 **진행 블록**으로 손을 넘겨야 하기 때문이다.
-      const submission = buildResearchSubmission(personActionText, personActionDepth);
+      // 재시도는 **같은 요청**이다 (계약 §Request Contract: `requestId`는 재시도 idempotency key).
+      // 이 시트에는 대기열이 없어 `다시 시도`가 이 함수를 그대로 다시 부른다. 요청을 이루는 값이
+      // 그대로면 같은 키를 다시 쓰고, 글이나 깊이를 바꿨으면 새 키를 만든다 — 그때는 정말 다른
+      // 요청이기 때문이다. 키를 정하는 자리가 **요청을 구성하는 자리**이지 재시도하는 자리가 아니다.
+      const requestKey = personActionRequestKey(personActionComposer.target, personActionText, personActionDepth);
+      const carried = personActionRequestIdRef.current?.key === requestKey ? personActionRequestIdRef.current.requestId : '';
+      const submission = buildResearchSubmission(personActionText, personActionDepth, {
+        deepAvailable: deepResearchEnabled,
+        requestId: carried,
+      });
       if (!submission) {
         setPersonActionOutcome({ ok: false, reason: '조사할 내용을 적거나 조사 항목을 골라 주세요.' });
       } else {
+        personActionRequestIdRef.current = { key: requestKey, requestId: submission.requestId };
         try {
-          const response = await submitResearchInstruction(config, personActionComposer.target, submission.raw, submission.depth);
+          const response = await submitResearchInstruction(config, personActionComposer.target, submission);
           if (!response.ok) throw new Error(response.error ?? 'request_failed');
           setMessage(response.receiptId ? `조사 요청을 접수했어요 · receipt ${response.receiptId}` : '조사 요청을 접수했어요');
           setPersonActionOutcome({ ok: true });
@@ -1642,11 +1708,14 @@ function App() {
     }
     setPersonActionSubmitting(false);
     if (success) {
+      // 접수된 요청의 멱등 키는 여기서 수명을 다한다. 남겨 두면 다음에 같은 글로 여는 요청이
+      // 이미 접수된 요청의 중복으로 판정돼 새 조사가 시작되지 않는다.
+      personActionRequestIdRef.current = null;
       setPersonActionComposer(null);
       setPersonActionText('');
       setPersonActionOutcome(null);
     }
-  }, [config, personActionComposer, personActionDepth, personActionSubmitting, personActionText, refresh, runPersonAction]);
+  }, [config, deepResearchEnabled, personActionComposer, personActionDepth, personActionGate, personActionSubmitting, personActionText, refresh, runPersonAction]);
 
   const retryProcessing = useCallback(async (captureId: string) => {
     if (requeueingId) return;
@@ -2089,11 +2158,27 @@ function App() {
               onChange={setResearchText}
               depth={researchDepth}
               onDepthChange={setResearchDepth}
+              deepAvailable={deepResearchEnabled}
               receipt={researchReceipt}
+              noticeId={CAPTURE_RESEARCH_NOTICE_ID}
             />
           )}
 
-          <IonButton className="primary-action" expand="block" disabled={!frontFrame || queueing} onClick={() => void completeCapture()}>{queueing ? '저장 중…' : '완료'}</IonButton>
+          {/* 조사 요청이 접수 조건을 못 채웠으면 여기서 멈춘다. **native `disabled`를 쓰지 않는다** —
+              끄면 키보드로 닿을 수 없어 왜 막혔는지 물어볼 방법이 사라진다. 대신 이유를 버튼
+              이름에 싣고(Ionic이 안쪽 버튼으로 옮겨 주는 것은 `aria-label`뿐이다), 누르면
+              설명으로 손을 데려다 놓는다. */}
+          <IonButton
+            className="primary-action"
+            expand="block"
+            data-blocked={researchGate.blocked ? 'research' : undefined}
+            aria-label={researchSubmitLabel(queueing ? '저장 중…' : '완료', researchGate)}
+            disabled={!frontFrame || queueing}
+            onClick={() => {
+              if (researchGate.blocked) { focusResearchNotice(CAPTURE_RESEARCH_NOTICE_ID); return; }
+              void completeCapture();
+            }}
+          >{queueing ? '저장 중…' : '완료'}</IonButton>
           <p className="hint">전파가 약해도 기기에 저장했다가 자동으로 다시 보내요.</p>
 
           {/* 방금 찍은 것을 즉시 되돌리거나 다시 열기 (FI-049). 서버가 이미 받은 촬영에는
@@ -2541,6 +2626,8 @@ function App() {
                       onChange={setPersonActionText}
                       depth={personActionDepth}
                       onDepthChange={setPersonActionDepth}
+                      deepAvailable={deepResearchEnabled}
+                      noticeId={PERSON_RESEARCH_NOTICE_ID}
                       receipt={personActionOutcome === null
                         ? { state: 'idle' }
                         : personActionOutcome.ok
@@ -2557,7 +2644,18 @@ function App() {
                   {/* 접수 버튼은 시트 아래에 고정한다 — 예시 chip이 늘어나도 화면 밖으로 밀리면 안 된다. */}
                   <div className="person-action-submit">
                     <small>{personActionText.length.toLocaleString()} / 2,000</small>
-                    <IonButton expand="block" disabled={!personActionText.trim() || personActionSubmitting} onClick={() => void submitPersonAction()}>{personActionSubmitting ? '접수 중…' : personActionCopy[personActionComposer.kind].submit}</IonButton>
+                    {/* 막힘은 `disabled`로 표현하지 않는다 — 끄면 키보드로 닿을 수 없어 이유를 물어볼
+                        방법이 사라진다. 이유는 버튼 이름에 실리고, 누르면 시트 안의 설명으로 손이 간다. */}
+                    <IonButton
+                      expand="block"
+                      data-blocked={personActionGate.blocked ? 'research' : undefined}
+                      aria-label={researchSubmitLabel(personActionCopy[personActionComposer.kind].submit, personActionGate)}
+                      disabled={!personActionText.trim() || personActionSubmitting}
+                      onClick={() => {
+                        if (personActionGate.blocked) { focusResearchNotice(PERSON_RESEARCH_NOTICE_ID); return; }
+                        void submitPersonAction();
+                      }}
+                    >{personActionSubmitting ? '접수 중…' : personActionCopy[personActionComposer.kind].submit}</IonButton>
                   </div>
                 </div>
               </IonContent>

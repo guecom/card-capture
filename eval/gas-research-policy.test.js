@@ -170,6 +170,47 @@ var missingPurpose = body(sandbox.researchInstruction_({
 }));
 assert.deepStrictEqual(missingPurpose, { ok: false, error: 'bad_research_request' });
 
+/* mode allowlist는 계약(`63_Research_Instruction_Contract.md` §Request Contract)의 셋이다.
+   `quick`은 계약에 처음부터 있었는데 서버만 빠져 있어, 앱의 `빠른 조사`가 요청 자체로 거절됐다. */
+assert.deepStrictEqual(Array.from(sandbox.RESEARCH_MODES_), ['quick', 'standard', 'deep_evidence_graph']);
+var quickReceipt = body(sandbox.researchInstruction_({
+  k: 'owner-token', person: 'PER-999911', instruction: {
+    raw: '핵심만 빠르게 확인', mode: 'quick', focusIds: ['outcomes'],
+    purposes: ['expertise_execution'], requestId: 'request-quick-001',
+    policy: { publicLawfulSourcesOnly: false }, budget: { timeCapMinutes: 9999 }
+  }
+}));
+assert.strictEqual(quickReceipt.ok, true, 'quick mode must be accepted');
+var quickMeta = JSON.parse(created[created.length - 1].files[0].getBlob().getDataAsString());
+assert.strictEqual(quickMeta.researchInstruction.mode, 'quick');
+/* 계약 flowchart: quick은 `public-research-v1`의 **quick budget**이다. 정책 판은 standard와 같고
+   예산만 좁다 — 사용자가 고른 것은 짧은 기다림이지 다른 권한이 아니다. */
+assert.strictEqual(quickMeta.researchInstruction.policy.version, 'public-research-v1');
+assert.strictEqual(quickMeta.researchInstruction.policy.mode, 'bounded_plan_required');
+assert.ok(quickMeta.researchInstruction.policy.branchCap < 10, 'quick budget must be narrower than standard');
+assert.ok(quickMeta.researchInstruction.policy.timeCapMinutes < 30, 'quick budget must be shorter than standard');
+assert.strictEqual(quickMeta.researchInstruction.policy.publicLawfulSourcesOnly, true, 'client cannot widen quick authority');
+assert.strictEqual(quickMeta.researchInstruction.policy.sensitiveTraitInference, false);
+/* quick은 Deep이 아니므로 목적을 저장하지 않고 Deep switch도 통과하지 않는다. */
+assert.deepStrictEqual(Array.from(quickMeta.researchInstruction.purposes), []);
+assert.deepStrictEqual(Array.from(quickMeta.researchInstruction.focusIds), ['outcomes']);
+assert.strictEqual(quickMeta.researchInstruction.requestId, 'request-quick-001');
+
+/* allowlist 밖의 mode는 여전히 요청 전체를 거절한다. 넓힌 것은 계약의 셋뿐이다. */
+['turbo', 'deep', 'evidence_graph', 'QUICK'].forEach(function (mode) {
+  assert.deepStrictEqual(
+    body(sandbox.researchInstruction_({ k: 'owner-token', person: 'PER-999912', instruction: { raw: '조사', mode: mode } })),
+    { ok: false, error: 'bad_research_request' }, mode + ' must stay outside the allowlist'
+  );
+});
+/* 누락·빈 값은 계약대로 standard다. */
+assert.strictEqual(sandbox.normalizeResearchRequest_({ raw: '조사' }).mode, 'standard');
+assert.strictEqual(sandbox.normalizeResearchRequest_({ raw: '조사', mode: '' }).mode, 'standard');
+/* standard 예산은 그대로다 — quick을 넣으면서 기존 판정을 흔들지 않는다. */
+var standardPolicy = sandbox.researchEnvelope_({ raw: '조사', mode: 'standard' }, 'Owner', { person: 'PER-999913' }, 'r').policy;
+assert.strictEqual(standardPolicy.branchCap, 10);
+assert.strictEqual(standardPolicy.timeCapMinutes, 30);
+
 var deep = body(sandbox.researchInstruction_({
   k: 'owner-token', person: 'PER-999904', instruction: {
     raw: '공개 결과물과 반증을 함께 확인', mode: 'deep_evidence_graph',
