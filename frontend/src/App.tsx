@@ -30,7 +30,7 @@ import { SettingsPanel } from './components/SettingsPanel';
 import { MarkdownLite } from './components/MarkdownLite';
 import { ActionSection, ContactActions, PersonDocument } from './components/PersonDocument';
 import { AiScopeNote, AiStageRail, AiSurface, AiSurfaceHead } from './components/AiTaskSurface';
-import { focusCaptureProgress, ResearchComposer, type ResearchReceipt } from './components/ResearchComposer';
+import { focusCaptureProgress, focusResearchNotice, ResearchComposer, type ResearchReceipt } from './components/ResearchComposer';
 import { addPersonNote, fetchServerCaptureIds, listBriefsUpTo, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
 import {
   contentEvidence,
@@ -119,10 +119,11 @@ import {
   runRecallSearch,
   serverFallbackTerm,
 } from './services/recall-search';
-import { buildResearchSubmission } from './services/research';
+import { buildResearchSubmission, researchSubmitGate } from './services/research';
 // 조사 깊이는 lane 사이 공유 이음매에서 온다. 이 화면은 값을 나르기만 하고 뜻은
 // `services/research-mode.ts`가 소유한다 (TSK-000542).
 import { DEFAULT_RESEARCH_DEPTH, type ResearchDepth } from './contracts/int30';
+import { RESEARCH_SUBMIT_READY, researchSubmitLabel } from './services/research-mode';
 import { recognizeQuickName } from './services/vision';
 import {
   loadCachedBriefs,
@@ -217,6 +218,15 @@ function stageTrackStyle(progress: ReturnType<typeof captureProgress>): CSSPrope
 }
 
 type SearchMode = 'quick' | 'recall';
+
+/**
+ * 조사 접수 조건 안내의 고정 id. 촬영 탭과 인물 시트가 **동시에 떠 있을 수 있으므로** 서로 다르다.
+ *
+ * 제출 버튼은 작성 자리(`ResearchComposer`) 밖에 있다. 막힌 버튼을 눌렀을 때 손을 데려다 놓을
+ * 곳을 이름으로 정해 두지 않으면, 눌러도 아무 일이 없는 버튼이 된다.
+ */
+const CAPTURE_RESEARCH_NOTICE_ID = 'research-notice-capture';
+const PERSON_RESEARCH_NOTICE_ID = 'research-notice-person';
 
 function formatMoment(value?: string): string {
   if (!value) return '시간 정보 없음';
@@ -843,6 +853,20 @@ function App() {
   const contextFilled = useMemo(() => captureContextFilled(contextValue), [contextValue]);
   const eventChips = useMemo(() => buildEventChips(event), [event]);
 
+  // 조사 요청의 접수 조건 (계약: "깊은 조사는 목적을 하나 이상 골라야 접수된다").
+  //
+  // 판정은 `services/research-mode.ts`가 소유하고 이 화면은 결과만 읽는다. 두 자리(촬영 탭의
+  // `완료`, 인물 시트의 `조사 요청 접수`)가 같은 함수를 부르므로 한쪽만 고쳐지는 일이 없다.
+  // 조사 기능이 꺼져 있으면 규칙 자체가 없다 — 그때 촬영 저장을 막으면 엉뚱한 이유로 사진을 잃는다.
+  const researchGate = useMemo(
+    () => (researchInstructionEnabled ? researchSubmitGate(researchText, researchDepth) : RESEARCH_SUBMIT_READY),
+    [researchDepth, researchInstructionEnabled, researchText],
+  );
+  const personActionGate = useMemo(
+    () => (personActionComposer?.kind === 'research' ? researchSubmitGate(personActionText, personActionDepth) : RESEARCH_SUBMIT_READY),
+    [personActionComposer, personActionDepth, personActionText],
+  );
+
   // 방금 저장한 촬영 (FI-049). 다음 장을 찍기 시작하면 내려간다 — 되돌리기가 촬영 중인
   // 초안과 다투면 안 되고, 카메라가 열려 있는 동안 화면을 바꿔치기해서도 안 된다.
   const lastSavedItem = useMemo(
@@ -1250,7 +1274,9 @@ function App() {
   }, [startQuickNameOcr]);
 
   const completeCapture = useCallback(async () => {
-    if (!frontFrame || queueing) return;
+    // 접수 조건을 못 채운 조사 요청은 **깊이를 낮추거나 조용히 떨어뜨리지 않는다** (계약).
+    // 화면이 이미 이유를 보이고 있으므로 여기서는 저장을 멈추기만 한다 — 사진은 그대로 남는다.
+    if (!frontFrame || queueing || researchGate.blocked) return;
     setQueueing(true);
     try {
       const item = buildQueuedCapture(frontFrame, {
@@ -1290,7 +1316,7 @@ function App() {
     } finally {
       setQueueing(false);
     }
-  }, [backFrame, configured, event, flushPendingQueue, frontFrame, memo, queueing, quickName, relKairen, relSelf, researchDepth, researchInstructionEnabled, researchText, resetQuickName]);
+  }, [backFrame, configured, event, flushPendingQueue, frontFrame, memo, queueing, quickName, relKairen, relSelf, researchDepth, researchGate, researchInstructionEnabled, researchText, resetQuickName]);
 
   /**
    * 방금 찍은 촬영을 대기열에서 빼서 촬영 화면으로 되돌린다 (FI-049).
@@ -1479,6 +1505,8 @@ function App() {
 
   const submitPersonAction = useCallback(async () => {
     if (!personActionComposer || !personActionText.trim() || personActionSubmitting) return;
+    // 접수 조건을 못 채운 깊은 조사는 여기서 멈춘다. 시트 안의 안내가 이미 이유를 말하고 있다.
+    if (personActionGate.blocked) return;
     setPersonActionSubmitting(true);
     let success = false;
     if (personActionComposer.kind === 'note') {
@@ -1520,7 +1548,7 @@ function App() {
       setPersonActionText('');
       setPersonActionOutcome(null);
     }
-  }, [config, personActionComposer, personActionDepth, personActionSubmitting, personActionText, refresh, runPersonAction]);
+  }, [config, personActionComposer, personActionDepth, personActionGate, personActionSubmitting, personActionText, refresh, runPersonAction]);
 
   const retryProcessing = useCallback(async (captureId: string) => {
     if (requeueingId) return;
@@ -1910,10 +1938,25 @@ function App() {
               depth={researchDepth}
               onDepthChange={setResearchDepth}
               receipt={researchReceipt}
+              noticeId={CAPTURE_RESEARCH_NOTICE_ID}
             />
           )}
 
-          <IonButton className="primary-action" expand="block" disabled={!frontFrame || queueing} onClick={() => void completeCapture()}>{queueing ? '저장 중…' : '완료'}</IonButton>
+          {/* 조사 요청이 접수 조건을 못 채웠으면 여기서 멈춘다. **native `disabled`를 쓰지 않는다** —
+              끄면 키보드로 닿을 수 없어 왜 막혔는지 물어볼 방법이 사라진다. 대신 이유를 버튼
+              이름에 싣고(Ionic이 안쪽 버튼으로 옮겨 주는 것은 `aria-label`뿐이다), 누르면
+              설명으로 손을 데려다 놓는다. */}
+          <IonButton
+            className="primary-action"
+            expand="block"
+            data-blocked={researchGate.blocked ? 'research' : undefined}
+            aria-label={researchSubmitLabel(queueing ? '저장 중…' : '완료', researchGate)}
+            disabled={!frontFrame || queueing}
+            onClick={() => {
+              if (researchGate.blocked) { focusResearchNotice(CAPTURE_RESEARCH_NOTICE_ID); return; }
+              void completeCapture();
+            }}
+          >{queueing ? '저장 중…' : '완료'}</IonButton>
           <p className="hint">전파가 약해도 기기에 저장했다가 자동으로 다시 보내요.</p>
 
           {/* 방금 찍은 것을 즉시 되돌리거나 다시 열기 (FI-049). 서버가 이미 받은 촬영에는
@@ -2361,6 +2404,7 @@ function App() {
                       onChange={setPersonActionText}
                       depth={personActionDepth}
                       onDepthChange={setPersonActionDepth}
+                      noticeId={PERSON_RESEARCH_NOTICE_ID}
                       receipt={personActionOutcome === null
                         ? { state: 'idle' }
                         : personActionOutcome.ok
@@ -2377,7 +2421,18 @@ function App() {
                   {/* 접수 버튼은 시트 아래에 고정한다 — 예시 chip이 늘어나도 화면 밖으로 밀리면 안 된다. */}
                   <div className="person-action-submit">
                     <small>{personActionText.length.toLocaleString()} / 2,000</small>
-                    <IonButton expand="block" disabled={!personActionText.trim() || personActionSubmitting} onClick={() => void submitPersonAction()}>{personActionSubmitting ? '접수 중…' : personActionCopy[personActionComposer.kind].submit}</IonButton>
+                    {/* 막힘은 `disabled`로 표현하지 않는다 — 끄면 키보드로 닿을 수 없어 이유를 물어볼
+                        방법이 사라진다. 이유는 버튼 이름에 실리고, 누르면 시트 안의 설명으로 손이 간다. */}
+                    <IonButton
+                      expand="block"
+                      data-blocked={personActionGate.blocked ? 'research' : undefined}
+                      aria-label={researchSubmitLabel(personActionCopy[personActionComposer.kind].submit, personActionGate)}
+                      disabled={!personActionText.trim() || personActionSubmitting}
+                      onClick={() => {
+                        if (personActionGate.blocked) { focusResearchNotice(PERSON_RESEARCH_NOTICE_ID); return; }
+                        void submitPersonAction();
+                      }}
+                    >{personActionSubmitting ? '접수 중…' : personActionCopy[personActionComposer.kind].submit}</IonButton>
                   </div>
                 </div>
               </IonContent>

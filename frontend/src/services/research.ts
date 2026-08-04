@@ -1,6 +1,12 @@
 import type { ResearchInstruction } from '../contracts/capture';
 import { DEFAULT_RESEARCH_DEPTH, type ResearchDepth } from '../contracts/int30';
-import { normalizeResearchDepth, resolveResearchRoute } from './research-mode';
+import {
+  type ResearchSubmitGate,
+  evaluateResearchSubmit,
+  normalizeResearchDepth,
+  resolveResearchRoute,
+} from './research-mode';
+import { decomposeResearchInstruction, normalizeResearchScopeKeys } from './research-scope';
 import { recordResearchRoute } from './research-telemetry';
 
 const MAX_LENGTH = 2000;
@@ -49,7 +55,27 @@ export interface ResearchSubmission extends ResearchInstruction {
   depth: ResearchDepth;
 }
 
+/**
+ * 화면이 들고 있는 **합쳐진 한 문장**에 대해 접수 조건을 판정한다 (TSK-000542 / 계약 §Product Behavior).
+ *
+ * 규칙 자체는 `research-mode.ts`가 소유하고 여기서는 문자열을 (고른 범위, 자유 입력)으로 되돌려
+ * 넘겨 주기만 한다. 두 제출 자리(촬영 탭의 `완료`, 인물 시트의 `조사 요청 접수`)가 같은 판정을
+ * 쓰게 하려면 둘 다 이 한 줄만 부르면 되어야 한다.
+ */
+export function researchSubmitGate(value: string, depth: unknown = DEFAULT_RESEARCH_DEPTH): ResearchSubmitGate {
+  const draft = decomposeResearchInstruction(String(value ?? ''));
+  return evaluateResearchSubmit({
+    depth,
+    scopeCount: normalizeResearchScopeKeys(draft.scopeKeys).length,
+    hasText: Boolean(draft.text.trim()),
+  });
+}
+
 export function buildResearchSubmission(value: string, depth: unknown = DEFAULT_RESEARCH_DEPTH): ResearchSubmission | null {
+  // 마지막 방어선. 화면이 막지 못하고 흘러들어와도 **깊이를 낮추거나 조용히 보내지 않는다** —
+  // 여기서 멈추면 호출한 쪽은 "보낼 것이 없다"와 같은 모양(null)을 받으므로, 이 자리에 오기 전에
+  // `researchSubmitGate`로 이유를 보여 주는 것이 화면의 책임이다.
+  if (researchSubmitGate(value, depth).blocked) return null;
   const instruction = buildResearchInstruction(value);
   if (!instruction) return null;
   // 라우팅은 지금 일어나지 않는다. 지금 남기는 것은 "이 깊이로 접수됐고, 이 설정 판에서는

@@ -30,7 +30,7 @@
 // 항목 선택(TSK-000536)은 `research-scope.ts`가 소유한다. 이 파일은 그 상태를 그리기만 한다.
 import './../styles/int29-research.css';
 import './../styles/int30-research.css';
-import { CircleAlert, CircleCheck, Eraser, ListChecks } from 'lucide-react';
+import { CircleAlert, CircleCheck, Eraser, ListChecks, TriangleAlert } from 'lucide-react';
 import { IonTextarea } from '@ionic/react';
 import { useEffect, useId, useMemo, useRef } from 'react';
 import { AiScopeNote, AiSurface, AiSurfaceHead } from './AiTaskSurface';
@@ -40,6 +40,7 @@ import {
   RESEARCH_DEPTHS,
   RESEARCH_WAIT_STEPS,
   type ResearchDepth,
+  evaluateResearchSubmit,
   normalizeResearchDepth,
   researchDepthSummary,
   resolveResearchRoute,
@@ -80,9 +81,33 @@ export interface ResearchComposerProps {
   busy?: boolean;
   autofocus?: boolean;
   receipt?: ResearchReceipt;
+  /**
+   * 막힘 안내에 붙일 고정 id.
+   *
+   * 이 자리는 제출 버튼을 소유하지 않는다(촬영 탭의 `완료`, 인물 시트의 `조사 요청 접수`는 밖에 있다).
+   * 밖에 있는 그 버튼이 막혔을 때 **이 설명으로 손을 데려다 놓아야** 막다른 길이 되지 않으므로,
+   * 부르는 쪽이 이름을 정해 준다. 주지 않으면 인스턴스별 id를 쓴다.
+   */
+  noticeId?: string;
 }
 
 const IDLE: ResearchReceipt = { state: 'idle' };
+
+/**
+ * 막힘 안내로 손을 데려다 놓는다 — 화면 밖에 있는 제출 버튼을 눌렀을 때의 유일한 응답이다.
+ *
+ * 아무 일도 일어나지 않는 버튼은 고장으로 읽힌다. 스크롤과 포커스를 함께 옮겨서, 눈으로 보는
+ * 사람에게는 이유가 화면 안으로 들어오고 낭독기를 쓰는 사람에게는 그 문장이 읽힌다.
+ */
+export function focusResearchNotice(noticeId: string): boolean {
+  if (!noticeId || typeof document === 'undefined') return false;
+  const node = document.getElementById(noticeId);
+  if (!node) return false;
+  if (!node.hasAttribute('tabindex')) node.setAttribute('tabindex', '-1');
+  node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  node.focus({ preventScroll: true });
+  return true;
+}
 
 /** `모두 선택` 버튼의 두 번째 줄. 지금 상태에서 **누르면 무슨 일이 일어나는지**를 말한다. */
 function selectAllSubLabel(selection: 'none' | 'partial' | 'all'): string {
@@ -151,6 +176,7 @@ export function ResearchComposer({
   busy = false,
   autofocus = false,
   receipt = IDLE,
+  noticeId,
 }: ResearchComposerProps) {
   const draft = useMemo(() => decomposeResearchInstruction(value), [value]);
   const selection = researchSelectionState(draft.scopeKeys);
@@ -158,6 +184,13 @@ export function ResearchComposer({
   const budget = researchTextBudget(draft.scopeKeys);
   const preview = composeResearchInstruction(draft);
   const activeDepth = normalizeResearchDepth(depth);
+  // 접수 조건은 `research-mode.ts`가 판정한다. 이 파일은 그 결과를 **그리기만** 한다 —
+  // 같은 규칙을 JSX에 한 벌 더 쓰면 두 화면 중 하나만 고쳐지는 날이 온다.
+  const gate = evaluateResearchSubmit({
+    depth: activeDepth,
+    scopeCount: draft.scopeKeys.length,
+    hasText: Boolean(draft.text.trim()),
+  });
 
   // 두 화면(촬영 탭·인물 시트)이 동시에 떠 있을 수 있다. 라디오 묶음 이름이 같으면 한쪽을 고를 때
   // 다른 쪽이 조용히 풀린다 — 브라우저는 문서 전체에서 같은 `name`을 한 묶음으로 본다.
@@ -165,6 +198,7 @@ export function ResearchComposer({
   const depthGroupName = `research-depth-${instanceId}`;
   const depthTitleId = `research-depth-title-${instanceId}`;
   const countId = `research-scope-count-${instanceId}`;
+  const blockId = noticeId ?? `research-block-${instanceId}`;
 
   const applyScopes = (scopeKeys: string[]) => onChange(composeResearchInstruction({ scopeKeys, text: draft.text }));
   const applyText = (text: string) => onChange(composeResearchInstruction({ scopeKeys: draft.scopeKeys, text }));
@@ -208,7 +242,9 @@ export function ResearchComposer({
           className="research-scope-all"
           type="button"
           aria-pressed={researchSelectAllPressed(draft.scopeKeys)}
-          aria-describedby={countId}
+          /* 막혀 있을 때는 이 버튼이 그 상태를 푸는 가장 큰 길이다 — 개수뿐 아니라 **왜 필요한지**도
+             함께 읽히게 잇는다. 여기는 진짜 `<button>`이라 `aria-describedby`가 그대로 닿는다. */
+          aria-describedby={gate.notice ? `${countId} ${blockId}` : countId}
           disabled={busy}
           onClick={() => applyScopes(nextResearchScopeSelection(draft.scopeKeys))}
         >
@@ -277,6 +313,8 @@ export function ResearchComposer({
                   value={option.depth}
                   checked={on}
                   disabled={busy}
+                  /* 조건이 붙은 것은 이 칸이다. 고른 순간 낭독기가 이름 다음에 조건을 읽는다. */
+                  aria-describedby={gate.notice && option.depth === 'deep' ? blockId : undefined}
                   onChange={() => onDepthChange?.(option.depth)}
                 />
                 {/* 기다림의 무게는 눈금으로도 보인다. 분·초를 약속하지 않고 **순서만** 말한다. */}
@@ -305,6 +343,23 @@ export function ResearchComposer({
           ? <p className="research-preview-body">{preview}</p>
           : <p className="research-preview-empty">아직 고른 항목도, 적은 내용도 없어요. 위에서 항목을 고르거나 직접 적으면 보낼 문장이 여기 그대로 보입니다.</p>}
       </div>
+
+      {/* 접수 조건 안내 (계약: "깊은 조사는 목적을 하나 이상 골라야 접수된다").
+          자리는 **제출 버튼 바로 위**다 — 제출은 이 컴포넌트 밖에 있고(촬영 탭의 `완료`,
+          인물 시트의 `조사 요청 접수`), 눌러서 튕겨 나온 사람이 가장 먼저 보는 곳이 여기다.
+          실패가 아니라 **아직 남은 조건**이므로 `role="alert"`가 아니라 `role="status"`다.
+          막히기 전(범위 0개로 깊은 조사를 고른 직후)에도 같은 말을 미리 보여 준다 — 긴 글을
+          다 적은 뒤에 처음 알게 되면 늦다. */}
+      {gate.notice && (
+        <p className="research-block" data-blocked={gate.blocked ? 'yes' : 'not-yet'} id={blockId} role="status">
+          <span className="research-block-mark" aria-hidden="true"><TriangleAlert size={15} /></span>
+          <span className="research-block-copy">
+            <strong>{gate.notice.title}</strong>
+            <span>{gate.notice.reason}</span>
+            <span className="research-block-fix">{gate.notice.fix}</span>
+          </span>
+        </p>
+      )}
 
       {receipt.state === 'accepted' && (
         <div className="research-receipt is-accepted" role="status">
