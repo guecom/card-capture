@@ -1,0 +1,174 @@
+/* 상단 바 갱신 덩어리 (INT-000030 / TSK-000543)
+ *
+ * 세 가지 사실이 각자 다른 모양을 갖는다.
+ *   - 스위치(알약 트랙)  = 자동 갱신이 켜져 있는가          → 기능 상태
+ *   - 사각 아이콘 버튼    = 지금 요청이 실제로 떠 있는가      → 작업 상태
+ *   - 아래 한 줄          = 언제 받았고 지금 박자가 몇 초인가 → 신선도
+ * 모양이 다른 이유가 이것이다. 둘 다 둥근 아이콘이면 예전의 "회전 하나가 세 뜻"으로 돌아간다.
+ *
+ * 지키는 것들:
+ *   - 색은 전부 토큰이다. 하드코딩한 색이 하나라도 있으면 다크 팔레트에서 혼자 파랗게 남는다.
+ *   - 글자는 12.5px 아래로 내려가지 않는다. Ionic 전역 `small { font-size: 75% }` 때문에
+ *     한 번 작아진 글자는 더 작아지고, 상단 바는 통화하면서 읽는 자리다.
+ *   - 누르는 자리에 알약(999px)을 쓰지 않는다 — `surface-polish` 모서리 계단 게이트가 잡는다.
+ *     트랙은 누르는 자리가 아니라 스위치 **안의 그림**이라 알약이어도 된다.
+ *   - 320px에서 상단 바가 넘치지 않게 덩어리 폭을 묶는다 (`accessible-surface` 320px 게이트).
+ */
+
+.int30-refresh {
+  display: grid;
+  position: relative;
+  flex: 0 0 auto;
+  justify-items: end;
+  gap: 2px;
+  /* 좁은 화면에서 제목이 사라질 만큼 가져가지 않는다. 문구는 `text-overflow`로 줄어든다. */
+  max-width: 46vw;
+}
+
+.int30-refresh-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* ── 1. 기능 상태: 자동 갱신 스위치 ───────────────────────────────────────── */
+
+.int30-refresh-switch {
+  display: inline-flex;
+  height: 40px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-solid-soft);
+  color: var(--cc-muted);
+  font-size: 12.5px;
+  font-weight: 720;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.int30-refresh-switch[aria-checked="true"] {
+  border-color: rgba(var(--cc-accent), 0.34);
+  background: rgba(var(--cc-accent), 0.1);
+  color: var(--cc-blue-ink);
+}
+
+.int30-refresh-switch-text {
+  /* Ionic 전역 규칙이 건드리지 못하게 크기를 여기서 못 박는다. */
+  font-size: 12.5px;
+}
+
+/* 트랙과 손잡이. 켜짐/꺼짐을 색 하나로만 말하지 않는다 — 손잡이 **위치**가 함께 말하므로
+   색을 구별하지 못하는 사용자도 상태를 읽는다. */
+.int30-refresh-track {
+  display: block;
+  position: relative;
+  width: 26px;
+  height: 15px;
+  flex: 0 0 auto;
+  border-radius: var(--cc-r-pill);
+  background: var(--cc-quiet);
+  box-shadow: inset 0 0 0 1px var(--cc-line);
+}
+
+.int30-refresh-track i {
+  display: block;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: var(--cc-r-pill);
+  background: var(--cc-muted);
+  transition: transform 160ms ease, background-color 160ms ease;
+}
+
+.int30-refresh-switch[aria-checked="true"] .int30-refresh-track {
+  background: rgb(var(--cc-accent));
+  box-shadow: none;
+}
+
+.int30-refresh-switch[aria-checked="true"] .int30-refresh-track i {
+  transform: translateX(11px);
+  background: var(--cc-on-accent);
+}
+
+/* ── 2. 작업 상태: 수동 새로고침 버튼 ─────────────────────────────────────── */
+
+.int30-refresh-now {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-md);
+  background: var(--cc-solid-soft);
+  color: var(--cc-muted);
+}
+
+.int30-refresh-now:active {
+  background: rgba(var(--cc-accent), 0.08);
+  color: var(--cc-blue);
+}
+
+/* 요청이 떠 있는 동안의 모습. **정지 상태로도 구별된다** — 테두리와 바탕이 함께 바뀌므로
+   회전이 꺼진 폰에서도 "지금 가져오는 중"을 눈으로 알 수 있다. */
+.int30-refresh-now[aria-busy="true"] {
+  border-color: rgba(var(--cc-accent), 0.4);
+  background: rgba(var(--cc-accent), 0.12);
+  color: var(--cc-blue);
+}
+
+/* 마지막 프레임(360°)이 회전 0°과 같은 그림이다. 전역 reduced-motion 규칙이
+   `animation-duration: 0.01ms`로 끝 프레임에 바로 붙이므로, 움직임을 끈 폰에서는
+   아이콘이 **비뚤어진 채 멈추지 않고** 원래 모양 그대로 선다. */
+.int30-refresh-spin {
+  animation: int30-refresh-turn 900ms linear infinite;
+}
+
+@keyframes int30-refresh-turn {
+  to { transform: rotate(360deg); }
+}
+
+/* ── 3. 신선도: 한 줄 ─────────────────────────────────────────────────────── */
+
+.int30-refresh-line {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--cc-muted);
+  font-size: 12.5px;
+  font-weight: 660;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.int30-refresh-line.is-busy,
+.int30-refresh-line[data-reason="active"] {
+  color: var(--cc-blue-ink);
+}
+
+/* 실패는 색으로만 말하지 않는다 — 글자가 이미 `갱신 실패`라고 쓰여 있고, 색은 거들 뿐이다.
+   상태는 문구를 되읽어 판정하지 않고 orchestrator가 준 값을 그대로 속성으로 받는다. */
+.int30-refresh-line[data-state="failure"] {
+  color: var(--cc-danger);
+}
+
+/* 낭독기 전용. `display: none`이면 낭독기도 못 읽으므로 화면에서만 지운다.
+   담는 상자를 `.int30-refresh`로 못 박아 1px 조각이 화면 밖으로 새지 않게 한다. */
+.int30-refresh-sentence {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

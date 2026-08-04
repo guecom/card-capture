@@ -14,7 +14,7 @@ import {
   IonToolbar,
   setupIonicReact,
 } from '@ionic/react';
-import { Camera, ChevronRight, CircleAlert, FileText, LifeBuoy, Mail, MessageCircle, Mic, PenLine, Plus, RefreshCw, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, Waves } from 'lucide-react';
+import { Camera, ChevronRight, CircleAlert, FileText, LifeBuoy, Mail, MessageCircle, Mic, PenLine, Plus, RotateCcw, Search, Settings2, ShieldCheck, Sparkles, Waves } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 // 릴리즈 버전은 저장소가 선언한 값 하나만 쓴다 (founder 지시 2026-07-27: "버전이 설정에 표기되었으면 함").
@@ -79,8 +79,15 @@ import {
   stageIndexOf,
   syncCaptureStageTelemetry,
 } from './services/capture-progress';
-import { refreshCadenceMs } from './services/refresh-cadence';
-import { createRefreshOrchestrator, refreshIdleText, type RefreshStatus } from './services/refresh-orchestrator';
+import { initialAutoRefreshOn } from './services/refresh-cadence';
+import {
+  createRefreshLoop,
+  createRefreshOrchestrator,
+  refreshCadencePlan,
+  refreshIdleText,
+  type RefreshStatus,
+} from './services/refresh-orchestrator';
+import { RefreshControl } from './components/RefreshControl';
 import { stageWidthPercents } from './services/stage-weights';
 import { disablePushNotifications, enablePushNotifications, inspectPushState, type PushState } from './services/push';
 import { contactCardFromBrief } from './services/contacts';
@@ -433,6 +440,13 @@ function App() {
   // 사용자가 직접 누르는 갱신의 상태. 자동 갱신이 켜져 있다는 사실과 **지금 요청이 오가는 중**은
   // 서로 다른 사실이라 한 기호(회전)로 합치지 않는다 (ISS-000050 · DEC-000092).
   const [refreshStatus, setRefreshStatus] = useState<RefreshStatus | null>(null);
+  /* 자동 갱신 스위치 (INT-000030 / TSK-000543). 새 session마다 켜진 채로 시작하고 기기에
+     저장하지 않는다 — 끈 것을 잊은 사람에게 멈춘 목록은 설정이 아니라 고장으로 보인다.
+     저장하지 않는다는 계약은 `initialAutoRefreshOn`이 소유하고 테스트가 잠근다. */
+  const [autoRefreshOn, setAutoRefreshOn] = useState(initialAutoRefreshOn);
+  // 오래 사는 listener(앱 복귀 등)가 읽는 최신 값. 스위치를 만질 때마다 listener를 다시 걸지 않는다.
+  const autoRefreshOnRef = useRef(autoRefreshOn);
+  autoRefreshOnRef.current = autoRefreshOn;
   // 단계별 관측 소요시간. 폭을 꾸미지 않고 실제로 재서 쓰기 위한 값이다.
   const [stageStats, setStageStats] = useState(() => captureStageStats());
   const [pushState, setPushState] = useState<PushState>({ status: 'checking' });
@@ -468,7 +482,12 @@ function App() {
   const refreshCallbackSession = refreshSessionRef.current;
 
   const configured = Boolean(config.apiUrl && config.token);
-  const refreshIntervalMs = useMemo(() => refreshCadenceMs(briefs), [briefs]);
+  /* 폴링 계획 하나가 **타이머와 화면 문구를 동시에** 결정한다. 예전에는 간격은 코드에,
+     문구는 JSX에 따로 있어서 박자를 바꾸면 화면이 조용히 거짓말을 시작했다. */
+  const refreshPlan = useMemo(
+    () => refreshCadencePlan({ items: briefs, autoRefreshOn, configured }),
+    [autoRefreshOn, briefs, configured],
+  );
 
   // 자동 trigger끼리는 같은 요청을 공유한다. 반면 사용자의 확인이나 새 작업 직후 trigger가 이미
   // 진행 중인 조회와 겹치면, 그 조회가 끝난 직후 한 번 더 읽는다. 그래야 작업 전 snapshot을
@@ -670,7 +689,11 @@ function App() {
       if (document.hidden) return;
       // 앱 복귀 시 legacy처럼 전송 재시도·브리핑 갱신·스티키 복원을 함께 한다.
       void flushPendingQueue();
-      void silentRefresh(true);
+      /* 자동 갱신을 끈 사용자에게는 복귀도 자동 갱신이다 — 스위치를 껐는데 앱을 다시 열 때마다
+         목록이 새로 불러와지면 그 스위치는 아무것도 끄지 못한 것이다. 전송 재시도와 초안 복원은
+         사용자가 잃어버리면 안 되는 것들이라 그대로 둔다. 최신 값은 ref로 읽는다 —
+         스위치를 만질 때마다 이 effect가 다시 돌면 부팅 갱신이 매번 다시 실행된다. */
+      if (autoRefreshOnRef.current) void silentRefresh(true);
       const restored = loadStickyCaptureContext();
       setEvent((value) => value || restored.event);
       setRelSelf((value) => value || restored.relSelf);
@@ -687,14 +710,22 @@ function App() {
     };
   }, [flushPendingQueue, silentRefresh]);
 
-  // 서버에서 아직 끝나지 않은 명함·조사 receipt가 있을 때만 더 빠르게 확인한다.
-  // setInterval tick이 겹쳐도 refresh single-flight가 같은 요청을 공유한다.
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      if (!document.hidden) void silentRefresh();
-    }, refreshIntervalMs);
-    return () => window.clearInterval(interval);
-  }, [refreshIntervalMs, silentRefresh]);
+  /* 서버에서 아직 끝나지 않은 명함·조사 receipt가 있을 때만 더 빠르게 확인한다.
+     tick이 겹쳐도 refresh single-flight가 같은 요청을 공유한다.
+
+     타이머를 `createRefreshLoop`가 소유하는 이유: 스위치를 끄면 **타이머가 0건이 되는 것**이
+     `자동 갱신 꺼짐`의 증거이고, 그 사실은 화면 글자가 아니라 값으로 잴 수 있어야 한다.
+     `silentRefresh`는 render마다 새로 만들어지지만 박자는 그것과 무관하므로 ref로 넘긴다 —
+     의존성으로 걸면 config가 바뀔 때마다 타이머가 처음부터 다시 시작한다. */
+  const silentRefreshRef = useRef(silentRefresh);
+  silentRefreshRef.current = silentRefresh;
+  const refreshLoop = useMemo(() => createRefreshLoop({
+    tick: () => { void silentRefreshRef.current(); },
+    hidden: () => document.hidden,
+  }), []);
+  // 계획이 바뀌는 것은 `apply`가 스스로 처리한다. 타이머를 거두는 것은 화면을 떠날 때뿐이다.
+  useEffect(() => { refreshLoop.apply(refreshPlan); }, [refreshLoop, refreshPlan]);
+  useEffect(() => () => refreshLoop.stop(), [refreshLoop]);
 
   // 감지 엔진을 유휴 시점에 워커에서 미리 기동한다 — legacy(v1.0)가 페이지 로드 2.5초 뒤
   // OpenCV를 미리 컴파일해 뒀기 때문에 카메라를 열면 곧바로 명함을 잡았다. 카메라를 열 때
@@ -826,9 +857,11 @@ function App() {
   const lastRefreshAgoMs = refreshedAt === null ? null : clockTick - refreshedAt;
   const autoRefreshHint = refreshStatus && refreshStatus.state !== 'idle'
     ? refreshStatus.text
-    : refreshIdleText({ autoRefreshOn: configured, lastSuccessAgoMs: lastRefreshAgoMs });
-  const refreshBusy = refreshStatus?.busy === true;
-  const refreshActionLabel = refreshStatus?.label ?? '새로고침';
+    : refreshIdleText({ autoRefreshOn, lastSuccessAgoMs: lastRefreshAgoMs, cadence: refreshPlan });
+  /* 회전과 `aria-busy`가 따르는 단 하나의 값. `loading`은 목록 조회가 실제로 떠 있는 동안만
+     참이므로 "요청 중"과 정확히 같은 뜻이다 — 자동 갱신이 켜졌다는 사실과는 아무 관계가 없다.
+     그 사실은 이제 스위치가 따로 말한다. */
+  const refreshBusy = loading;
 
   // 지금 올리고 있는 촬영의 표시 이름. 없으면 빈 문자열이다.
   const sendingItem = useMemo(
@@ -858,13 +891,15 @@ function App() {
     : awaitingSendCount > 0 ? `전송 대기 ${awaitingSendCount}건`
       : serverPendingCount > 0 ? `서버에서 ${serverPendingCount}건 처리 중`
         : '';
+  /* 갱신 사실(켜짐·박자·마지막 확인)은 이 줄에서 뺐다. 바로 오른쪽 `RefreshControl`이 그것을
+     소유하고, 같은 사실을 두 자리에서 말하면 둘이 어긋나는 순간 어느 쪽이 참인지 알 수 없다.
+     이 줄은 대신 좁은 폰에서 잘리던 건수·전송 사실을 온전히 말할 자리를 되찾는다. */
   const headerStatus = !configured ? '연결 필요 — 개인 링크로 열어주세요'
     // 실제로 올리고 있는 촬영이 있으면 그것이 가장 구체적인 사실이다.
     : sendingId ? `${sendingName || '명함'} 전송 중…`
-      : loading ? '최신 상태 확인 중…'
-        : pendingStatus ? `${pendingStatus} · ${autoRefreshHint}`
-          : feed.length > 0 ? `기록 ${feed.length}건 · ${autoRefreshHint}`
-            : '첫 명함을 기다리고 있어요';
+      : pendingStatus ? pendingStatus
+        : feed.length > 0 ? `기록 ${feed.length}건`
+          : '첫 명함을 기다리고 있어요';
 
   const setupBannerMessage = !config.apiUrl
     ? '연결할 서버 주소가 없어요 — 받으신 개인 링크로 접속하거나 설정의 고급 항목에서 주소를 넣어주세요.'
@@ -2168,10 +2203,18 @@ function App() {
                 <b>{screenTitles[tab]}</b>
                 <small role="status">{headerStatus}</small>
               </span>
+              {/* 갱신은 상단 바 오른쪽 한 덩어리가 소유한다 — 스위치(기능) · 버튼(작업) · 한 줄(신선도).
+                  설정 화면에는 갱신할 목록이 없으므로 덩어리째 없다 (`int13-surfaces` 계약). */}
               {tab !== 'settings' && (
-                <button className="header-refresh" type="button" aria-label="최신 상태 확인" aria-busy={loading} onClick={() => void manualRefresh()}>
-                  <RefreshCw className={loading ? 'spinning' : ''} aria-hidden="true" size={17} />
-                </button>
+                <RefreshControl
+                  autoRefreshOn={autoRefreshOn}
+                  onAutoRefreshChange={setAutoRefreshOn}
+                  onManualRefresh={() => void manualRefresh()}
+                  plan={refreshPlan}
+                  status={refreshStatus}
+                  lastSuccessAgoMs={lastRefreshAgoMs}
+                  busy={refreshBusy}
+                />
               )}
             </div>
           </IonToolbar>
