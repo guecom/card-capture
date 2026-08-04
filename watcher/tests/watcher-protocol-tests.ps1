@@ -797,8 +797,14 @@ TB 'ISS-000232 stdin: 처리기가 받는 프롬프트 바이트가 한글에서
                 if ($actual[$i] -ne $expected[$i]) { $sameBytes = $false; break }
             }
         }
-        $firstActual = if ($actual.Length -gt 0) { $actual[0] } else { -1 }
-        Write-Host ('  stdin probe: bytes=' + $actual.Length + ' expected=' + $expected.Length + ' first=' + $firstActual + ' expectedFirst=' + $expected[0])
+        # 실패했을 때 "왜"를 로그만 보고 가릴 수 있도록 런타임 사실까지 함께 적는다 — 이 게이트는
+        # 인코딩 환경에 따라 갈리므로 숫자만 남으면 CI에서 원인을 좁힐 수 없다.
+        $head = (@($actual | Select-Object -First 8) -join ',')
+        $want = (@($expected | Select-Object -First 8) -join ',')
+        $hasProp = ((New-Object System.Diagnostics.ProcessStartInfo).PSObject.Properties.Name -contains 'StandardInputEncoding')
+        Write-Host ('  stdin probe: bytes=' + $actual.Length + ' expected=' + $expected.Length + ' promptChars=' + ([string]$prompt).Length)
+        Write-Host ('  stdin probe: head=[' + $head + '] want=[' + $want + ']')
+        Write-Host ('  stdin probe: hasStdinEncodingProp=' + $hasProp + ' outCP=' + [Console]::OutputEncoding.CodePage + ' psv=' + $PSVersionTable.PSVersion)
         return $sameBytes
     } finally {
         $CardCaptureWatcherTestMode = $oldMode
