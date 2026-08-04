@@ -1,4 +1,4 @@
-/* 상단 바 갱신 덩어리 (INT-000030 / TSK-000543)
+/* 상단 바 갱신 덩어리 (INT-000030 / TSK-000543, INT-000036 / TSK-000559)
  *
  * 세 가지 사실이 각자 다른 모양을 갖는다.
  *   - 스위치(알약 트랙)  = 자동 갱신이 켜져 있는가          → 기능 상태
@@ -13,16 +13,45 @@
  *   - 누르는 자리에 알약(999px)을 쓰지 않는다 — `surface-polish` 모서리 계단 게이트가 잡는다.
  *     트랙은 누르는 자리가 아니라 스위치 **안의 그림**이라 알약이어도 된다.
  *   - 320px에서 상단 바가 넘치지 않게 덩어리 폭을 묶는다 (`accessible-surface` 320px 게이트).
+ *
+ * ── 두께와 균형 (TSK-000559 / ISS-000084)
+ * founder 판정: "자동 토글 버튼도 명함 캡처 요 블록 두께랑 좀 이상하게 잘 안 맞는 것 같아."
+ *
+ * 실측이 그 말과 정확히 같았다. 조작 줄이 40px이라 34px인 K 표식·화면 이름 블록보다 두꺼웠고,
+ * 상단 바에서 **가장 두꺼운 것이 보조 조작**이었다. 게다가 아래 신선도 줄이 덩어리를 위로
+ * 밀어 올려 조작의 광학 중심이 K 표식보다 8.5px 높았다. 두꺼운데 높이까지 어긋나면 한 덩어리로
+ * 읽히지 않고 따로 떠 있는 카드로 읽힌다.
+ *
+ * 그래서 두 가지를 바꿨다.
+ *   1. 보이는 chrome을 26px로 낮췄다. 손가락은 잃지 않는다 — 가상 요소로 hit area만 44px 위로
+ *      넓힌다. 눌리는 것은 그림이 아니라 hit area이므로 둘을 같은 값으로 둘 이유가 없다.
+ *   2. 신선도 줄과 **같은 높이의 빈 자리**를 위에 둬서 덩어리를 자기 중심에 대해 대칭으로
+ *      만들었다. 그러면 조작 줄의 중심이 덩어리 중심 = 상단 바 중심 = K 표식 중심에 선다.
  */
 
 .int30-refresh {
+  /* 신선도 줄의 높이를 한 곳에서 정한다. 위쪽 빈 자리가 이 값에서 파생되므로
+     글자 크기를 바꿔도 대칭이 저절로 유지된다. */
+  --int30-line-h: 14px;
+  --int30-row-h: 26px;
   display: grid;
   position: relative;
   flex: 0 0 auto;
   justify-items: end;
   gap: 2px;
+  /* 아래 신선도 줄(+틈)과 같은 높이의 빈 자리. 조작 줄을 덩어리 한가운데로 끌어온다. */
+  padding-top: calc(var(--int30-line-h) + 2px);
   /* 좁은 화면에서 제목이 사라질 만큼 가져가지 않는다. 문구는 `text-overflow`로 줄어든다. */
   max-width: 46vw;
+}
+
+/* 막힘·실패 안내가 떠 있는 동안에는 대칭을 풀어 그만큼 세로를 아낀다.
+   광학 중심 맞추기는 평상시의 인상을 위한 것이고, 이때는 안내가 더 급한 사실이다. */
+.int30-refresh.has-notice {
+  padding-top: 0;
+  /* 안내가 들어갈 자리를 조금 더 준다. 제목이 사라질 만큼 가져가지는 않는다
+     (`int30-refresh` 320px 게이트가 두 상태를 모두 잰다). */
+  max-width: min(58vw, 300px);
 }
 
 .int30-refresh-row {
@@ -35,12 +64,13 @@
 
 .int30-refresh-switch {
   display: inline-flex;
-  height: 40px;
+  position: relative;
+  height: var(--int30-row-h);
   align-items: center;
   gap: 6px;
   padding: 0 8px;
   border: 1px solid var(--cc-line);
-  border-radius: var(--cc-r-md);
+  border-radius: var(--cc-r-sm);
   background: var(--cc-solid-soft);
   color: var(--cc-muted);
   font-size: 12.5px;
@@ -60,8 +90,21 @@
   font-size: 12.5px;
 }
 
+/* 손가락이 닿는 자리. **보이는 상자와 일부러 다르다** — chrome을 상단 바에 맞게 얇게 두면서
+   누르는 크기는 44px을 지킨다. 안쪽(두 조작 사이)으로는 3px씩만 나가 서로의 자리를 뺏지
+   않고, 바깥쪽으로 10px 나가 상단 바 여백을 쓴다. */
+.int30-refresh-switch::after,
+.int30-refresh-now::after {
+  position: absolute;
+  inset-block: -10px;
+  content: "";
+}
+
+.int30-refresh-switch::after { inset-inline: -10px -3px; }
+.int30-refresh-now::after { inset-inline: -3px -10px; }
+
 /* 트랙과 손잡이. 켜짐/꺼짐을 색 하나로만 말하지 않는다 — 손잡이 **위치**가 함께 말하므로
-   색을 구별하지 못하는 사용자도 상태를 읽는다. */
+   색을 구별하지 못하는 사용자도 상태를 읽는다. 꺼짐에만 있는 안쪽 테두리가 두 번째 축이다. */
 .int30-refresh-track {
   display: block;
   position: relative;
@@ -99,19 +142,23 @@
 
 .int30-refresh-now {
   display: grid;
-  width: 40px;
-  height: 40px;
+  position: relative;
+  width: 32px;
+  height: var(--int30-row-h);
   flex: 0 0 auto;
   place-items: center;
   border: 1px solid var(--cc-line);
-  border-radius: var(--cc-r-md);
+  border-radius: var(--cc-r-sm);
   background: var(--cc-solid-soft);
   color: var(--cc-muted);
 }
 
+/* 누르는 순간의 반응. 전역 움직임 최소화가 transition을 0으로 만들어도 이 값은 **즉시**
+   적용되므로, 회전을 끈 폰에서도 누름이 사라지지 않는다. */
 .int30-refresh-now:active {
   background: rgba(var(--cc-accent), 0.08);
   color: var(--cc-blue);
+  transform: scale(0.94);
 }
 
 /* 요청이 떠 있는 동안의 모습. **정지 상태로도 구별된다** — 테두리와 바탕이 함께 바뀌므로
@@ -120,6 +167,13 @@
   border-color: rgba(var(--cc-accent), 0.4);
   background: rgba(var(--cc-accent), 0.12);
   color: var(--cc-blue);
+}
+
+/* 이미 요청이 떠 있을 때의 두 번째 누름. 새 요청은 만들지 않지만(single-flight) 떠 있는
+   조회 **직후 한 번 더** 읽으므로 아무 일도 없었던 것이 아니다. 화면도 그만큼 되돌려 준다. */
+.int30-refresh-now[data-pressed="true"] {
+  border-color: rgba(var(--cc-accent), 0.55);
+  box-shadow: 0 0 0 3px rgba(var(--cc-accent), 0.16);
 }
 
 /* 마지막 프레임(360°)이 회전 0°과 같은 그림이다. 전역 reduced-motion 규칙이
@@ -137,28 +191,87 @@
 
 .int30-refresh-line {
   max-width: 100%;
+  height: var(--int30-line-h);
   overflow: hidden;
   color: var(--cc-muted);
   font-size: 12.5px;
   font-weight: 660;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.03em;
-  line-height: 1.2;
+  line-height: var(--int30-line-h);
   text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.int30-refresh-line.is-busy,
+/* 강조는 **박자**에만 붙는다. 진행 중 강조(`.is-busy`)가 여기 있었는데, 그것은 버튼이 이미
+   소유한 사실을 이 줄이 색으로 한 번 더 말하는 것이었다 (INT-000036 통합 검수). */
 .int30-refresh-line[data-reason="active"] {
   color: var(--cc-blue-ink);
 }
 
-/* 실패는 색으로만 말하지 않는다 — 글자가 이미 `갱신 실패`라고 쓰여 있고, 색은 거들 뿐이다.
-   상태는 문구를 되읽어 판정하지 않고 orchestrator가 준 값을 그대로 속성으로 받는다. */
-.int30-refresh-line[data-state="failure"] {
+/* ── 4. 막힘·실패: 사라지지 않는 안내 ─────────────────────────────────────── */
+/*
+ * 예전에는 이 자리가 2.6초짜리 토스트였다. 사용자가 조치해야 하는 사실에 2.6초짜리 수명을
+ * 주면 그 사실은 전달되지 않는다 — 읽는 사이에 사라지거나, 애초에 그 순간 화면을 보고 있지
+ * 않았거나 한다. 여기 있는 것은 다음 요청이 결말을 낼 때까지 남고, 손잡이를 함께 들고 있다.
+ */
+.int30-refresh-notice {
+  display: flex;
+  width: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px 6px;
+  margin-top: 4px;
+  padding: 5px 7px;
+  border: 1px solid var(--cc-line);
+  border-radius: var(--cc-r-sm);
+  background: var(--cc-solid-soft);
+  color: var(--cc-muted);
+}
+
+.int30-refresh-notice[data-tone="error"] {
+  border-color: var(--cc-danger);
+  background: var(--cc-danger-soft);
   color: var(--cc-danger);
 }
+
+.int30-refresh-notice-icon { flex: 0 0 auto; }
+
+.int30-refresh-notice-text {
+  flex: 0 1 auto;
+  font-size: 12.5px;
+  font-weight: 680;
+  letter-spacing: -0.03em;
+  line-height: 1.25;
+  word-break: keep-all;
+}
+
+/* 손잡이는 하나다. 얇은 chrome이되 스위치·새로고침과 같은 규칙으로 44px까지 눌린다. */
+.int30-refresh-notice-retry {
+  position: relative;
+  height: var(--int30-row-h);
+  flex: 0 0 auto;
+  padding: 0 9px;
+  border: 1px solid currentcolor;
+  border-radius: var(--cc-r-sm);
+  background: transparent;
+  color: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.int30-refresh-notice-retry::after {
+  position: absolute;
+  inset-block: -10px;
+  inset-inline: -3px;
+  content: "";
+}
+
+.int30-refresh-notice-retry:active { background: rgba(var(--cc-accent), 0.1); }
 
 /* 낭독기 전용. `display: none`이면 낭독기도 못 읽으므로 화면에서만 지운다.
    담는 상자를 `.int30-refresh`로 못 박아 1px 조각이 화면 밖으로 새지 않게 한다. */

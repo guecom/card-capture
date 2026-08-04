@@ -9,9 +9,14 @@ import {
   researchPurposes,
   sanitizeResearchRequestId,
 } from './research-envelope';
+import { actionErrorMessage } from './brief-view';
 import {
+  DEFAULT_RESEARCH_DEEP_STATE,
+  RESEARCH_DEEP_CLOSED,
+  type ResearchDeepState,
   type ResearchSubmitGate,
   evaluateResearchSubmit,
+  normalizeResearchDeepState,
   normalizeResearchDepth,
   resolveResearchRoute,
 } from './research-mode';
@@ -79,10 +84,14 @@ export interface ResearchSubmission extends ResearchInstruction {
 
 export interface ResearchSubmissionOptions {
   /**
-   * 서버가 지금 깊은 조사를 열어 뒀는가. **주지 않으면 닫힘이다** — 이 값은 서버 응답에서만
-   * 오고, 못 들은 것과 안 된다는 것을 같게 취급하는 것이 계약의 fail-closed다.
+   * 서버가 깊은 조사에 대해 지금까지 한 말. **주지 않으면 `unknown`이다.**
+   *
+   * 예전 기본값은 "안 물어봤으면 닫힘"이었다. 그 기본값이 부팅 직후·오프라인 구간을 전부
+   * 닫힘으로 만들었고, 화면은 그것을 지연처럼 그렸다 (TSK-000560). 이제 못 들은 것은 판정이
+   * 아니다 — 판정은 서버가 하고, `Code.gs`가 `deep_evidence_graph`를 두 입구에서 다시 검사하므로
+   * `DEEP_RESEARCH_ENABLED` 경계 자체는 그대로 fail-closed다.
    */
-  deepAvailable?: boolean;
+  deepState?: ResearchDeepState;
   /**
    * 이미 정해진 멱등 키. **재시도가 같은 요청임을 서버에 알리는 유일한 수단**이다.
    * 비워 두면 새로 만든다 — 그러므로 이 값은 요청을 **처음 구성하는 자리**에서 정해야 하고,
@@ -100,20 +109,64 @@ export interface ResearchSubmissionOptions {
  * 넘겨 주기만 한다. 두 제출 자리(촬영 탭의 `완료`, 인물 시트의 `조사 요청 접수`)가 같은 판정을
  * 쓰게 하려면 둘 다 이 한 줄만 부르면 되어야 한다.
  *
- * `deepAvailable` 기본값이 `false`인 이유: 못 들었으면 닫힘이다.
+ * `deepState` 기본값이 `unknown`인 이유: 못 들은 것은 판정이 아니다 (`research-mode.ts` 참고).
  */
 export function researchSubmitGate(
   value: string,
   depth: unknown = DEFAULT_RESEARCH_DEPTH,
-  deepAvailable = false,
+  deepState: ResearchDeepState = DEFAULT_RESEARCH_DEEP_STATE,
 ): ResearchSubmitGate {
   const draft = decomposeResearchInstruction(String(value ?? ''));
   return evaluateResearchSubmit({
     depth,
     scopeCount: normalizeResearchScopeKeys(draft.scopeKeys).length,
     hasText: Boolean(draft.text.trim()),
-    deepAvailable,
+    deepState: normalizeResearchDeepState(deepState),
   });
+}
+
+// ── 접수 실패를 사람의 말로 ───────────────────────────────────────────────────
+// 조사 요청이 거절되면 예전에는 `actionErrorMessage`가 그대로 쓰였다. 그 함수는 모르는 코드를
+// `요청 실패: <코드>`로 붙여 돌려주므로, 서버가 `deep_feature_disabled`로 거절하는 순간
+// **내부 코드가 사용자 화면에 그대로 찍혔다.** 그리고 아는 코드였던 `feature_disabled`의 문구는
+// `이 기능이 잠시 꺼져 있어요`였다 — rollback flag로 닫아 둔 상태를 **지연처럼** 말하는 문장이고,
+// 그것이 계약이 금지하는 바로 그 위장이다.
+//
+// 그래서 조사 실패는 자기 문구를 갖는다. 나머지 코드(네트워크·한도·권한)는 기존 문구를 그대로
+// 쓴다 — 그것들은 진짜로 일시적이거나 이미 사람의 말로 되어 있다.
+
+/** 서버가 "깊은 조사를 열어 두지 않았다"고 거절할 때의 코드. */
+export const RESEARCH_DEEP_CLOSED_ERROR = 'deep_feature_disabled';
+
+/** 조사 기능 전체가 닫혀 있을 때의 코드. */
+export const RESEARCH_CLOSED_ERROR = 'feature_disabled';
+
+/** 알려지지 않은 거절. 서버 원문을 사용자에게 보이지 않고 개발자 채널이 갖는다. */
+export const RESEARCH_GENERIC_FAILURE = '요청을 접수하지 못했어요. 다시 시도해 주세요. 적어 둔 내용과 고른 범위는 그대로 있어요.';
+
+const RESEARCH_CLOSED_FAILURE = '조사 요청은 지금 열려 있지 않아요. 적어 둔 내용과 고른 범위는 그대로 있어요.';
+
+/** `actionErrorMessage`가 모르는 코드에 붙이는 머리. 이 모양이면 서버 원문이 딸려 온 것이다. */
+const UNMAPPED_PREFIX = '요청 실패: ';
+
+/** 이 거절이 "서버가 깊은 조사를 닫아 뒀다"인가. 화면이 그 사실을 배우는 유일한 판정이다. */
+export function researchDeepClosedBy(error: unknown): boolean {
+  const raw = error instanceof Error ? error.message : String(error ?? '');
+  return raw === RESEARCH_DEEP_CLOSED_ERROR;
+}
+
+/**
+ * 접수 실패를 사람이 읽는 한 줄로.
+ *
+ * 지키는 것 셋: 서버 코드·설정 이름을 보이지 않고, 닫힘을 지연으로 말하지 않고,
+ * 적어 둔 것이 안전하다고 말한다.
+ */
+export function researchFailureReason(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error ?? '');
+  if (raw === RESEARCH_DEEP_CLOSED_ERROR) return RESEARCH_DEEP_CLOSED.body;
+  if (raw === RESEARCH_CLOSED_ERROR) return RESEARCH_CLOSED_FAILURE;
+  const copy = actionErrorMessage(error);
+  return copy.startsWith(UNMAPPED_PREFIX) ? RESEARCH_GENERIC_FAILURE : copy;
 }
 
 /**
@@ -135,7 +188,7 @@ export function buildResearchSubmission(
   // 마지막 방어선. 화면이 막지 못하고 흘러들어와도 **깊이를 낮추거나 조용히 보내지 않는다** —
   // 여기서 멈추면 호출한 쪽은 "보낼 것이 없다"와 같은 모양(null)을 받으므로, 이 자리에 오기 전에
   // `researchSubmitGate`로 이유를 보여 주는 것이 화면의 책임이다.
-  if (researchSubmitGate(value, depth, options.deepAvailable === true).blocked) return null;
+  if (researchSubmitGate(value, depth, normalizeResearchDeepState(options.deepState)).blocked) return null;
 
   const draft = decomposeResearchInstruction(String(value ?? ''));
   const scopeKeys = normalizeResearchScopeKeys(draft.scopeKeys);

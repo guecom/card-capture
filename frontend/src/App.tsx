@@ -35,7 +35,7 @@ import { focusCaptureProgress, focusResearchNotice, ResearchComposer, type Resea
 // 아래 둘은 `int30-capture.css`를 함께 들여온다. `app.css`의 만남 맥락 규칙을 되받아야 하므로
 // 이 import가 `int29-*` 뒤에 와야 한다 — 순서가 곧 cascade다 (TSK-000220).
 import { CaptureEntry } from './components/CaptureEntry';
-import { DesktopIntake } from './components/DesktopIntake';
+import { CaptureIntake, type CaptureIntakeHandle } from './components/CaptureIntake';
 import { AuthoringField } from './components/AuthoringField';
 import type { CaptureMethodId, CaptureMethodRecovery } from './contracts/int30';
 import { CONTEXT_EXAMPLE_LABEL, contextWeight } from './services/capture-entry';
@@ -44,6 +44,7 @@ import {
   captureRecoveryIntent,
   deviceCaptureMethods,
   type DeviceEnvironment,
+  intakeAssistHint,
   type IntakeAssignment,
   probeDeviceEnvironment,
   readDeviceEnvironment,
@@ -101,7 +102,6 @@ import {
   createRefreshLoop,
   createRefreshOrchestrator,
   refreshCadencePlan,
-  refreshIdleText,
   type RefreshStatus,
 } from './services/refresh-orchestrator';
 import { RefreshControl } from './components/RefreshControl';
@@ -136,11 +136,11 @@ import {
   runRecallSearch,
   serverFallbackTerm,
 } from './services/recall-search';
-import { buildResearchSubmission, researchSubmitGate } from './services/research';
+import { buildResearchSubmission, researchDeepClosedBy, researchFailureReason, researchSubmitGate } from './services/research';
 // 조사 깊이는 lane 사이 공유 이음매에서 온다. 이 화면은 값을 나르기만 하고 뜻은
 // `services/research-mode.ts`가 소유한다 (TSK-000542).
 import { DEFAULT_RESEARCH_DEPTH, type ResearchDepth } from './contracts/int30';
-import { RESEARCH_SUBMIT_READY, researchSubmitLabel } from './services/research-mode';
+import { RESEARCH_SUBMIT_READY, type ResearchDeepState, researchSubmitLabel } from './services/research-mode';
 import { recognizeQuickName } from './services/vision';
 import {
   loadCachedBriefs,
@@ -438,12 +438,14 @@ function App() {
   const [researchInstructionEnabled, setResearchInstructionEnabled] = useState(
     () => researchSurfaceVisible(loadOwnerFlags(), resolveConnectionState(boot.config)),
   );
-  /* 깊은 조사가 지금 열려 있는가 (TSK-000542 / 계약 §Product Behavior).
-     **기기에 저장하지 않고 `false`에서 시작한다.** `researchInstructionEnabled`와 일부러 다르게
-     두는 자리다 — 저 값은 작성 자리를 그릴지의 문제라 못 들었을 때 지난번 답을 쓰는 편이 낫지만,
-     이 값은 "서버가 지금 이 요청을 받는가"라서 못 들었으면 **닫힘**이어야 한다. 캐시한 `true`는
-     서버가 이미 닫은 뒤에도 사용자에게 접수되지 않을 선택지를 계속 내민다. */
-  const [deepResearchEnabled, setDeepResearchEnabled] = useState(false);
+  /* 깊은 조사에 대해 서버가 **지금까지 한 말** (TSK-000560 / 계약 §Product Behavior).
+     **기기에 저장하지 않고 `unknown`에서 시작한다.** 예전에는 `false`에서 시작하는 boolean이었고,
+     그 한 칸이 "아직 못 들었다"와 "서버가 안 연다고 말했다"를 같은 값으로 눌러 담았다. 화면은 그
+     접힌 값을 닫힘으로 그렸다가 목록 응답이 도착하는 순간 열었고, 사용자 눈에는 **닫힌 기능이
+     아니라 요청마다 붙는 지연**으로 보였다 (founder 2026-08-04: "깊은 조사는 왜 버튼 클릭할 수
+     있을 때 까지 시간이 지나야하는지 모르겠네?"). 이제 셋을 구분한다 — 못 들은 동안에는 아무 말도
+     하지 않고, 닫혔다고 들었을 때만 그 사실을 말한다. 어느 값에서도 고르는 것은 막지 않는다. */
+  const [deepResearchState, setDeepResearchState] = useState<ResearchDeepState>('unknown');
   // 화면이 서버에 요청하는 총 건수. `더 보기`를 누를 때마다 커지고 상한이 없다 —
   // 서버 한 페이지(100건) 안에서만 움직이면 101번째부터는 앱에서 존재하지 않는 것이 된다 (FI-100).
   const listWantedRef = useRef(LIST_PAGE_STEP);
@@ -502,9 +504,12 @@ function App() {
   // 직접 입력 시트의 열림은 이제 진입 카드가 소유한다 (TSK-000220). 카드가 `CaptureEntry`로
   // 옮겨 갔기 때문이다 — 두 입구를 서로 다른 파일이 각자 그리던 것이 통일감이 깨진 원인이었다.
   const [manualOpen, setManualOpen] = useState(false);
-  /* 파일 올리기 작업면(`DesktopIntake`)이 진입 카드 자리를 넘겨받았는가 (TSK-000545 통합).
-     겹쳐 띄우지 않는 이유는 같은 이름의 웹캠 입구가 카드와 작업면에 동시에 두 개 생기기 때문이다. */
-  const [intakeOpen, setIntakeOpen] = useState(false);
+  /* 파일 올리기에는 열림 상태가 없다 (INT-000036). 예전에는 카드를 누르면 진입 카드 자리를
+     작업면이 넘겨받았고(`intakeOpen`), 그 화면을 한 번 더 눌러야 파일 선택창이 열렸다 —
+     founder가 "기존에 있던 것이 바뀌어서 혼란스럽다"고 본 것이 그 한 겹이다.
+     지금은 카드를 누른 **그 제스처 안에서** 선택창이 열리므로 화면 상태가 아예 생기지 않는다.
+     여기서는 그 손잡이만 잡는다 (`components/CaptureIntake.tsx`). */
+  const intakeRef = useRef<CaptureIntakeHandle>(null);
   /* 이 기기가 실제로 할 수 있는 일. 처음에는 **즉시 알 수 있는 것만** 담고, 모르는 축은
      `unknown`으로 둔다 — 탐지 전 몇 프레임 동안 멀쩡한 카메라가 "없음"으로 그려지면
      그 첫인상이 사용자가 읽는 유일한 사실이 된다 (`device-capability.ts`). */
@@ -621,9 +626,10 @@ function App() {
         const research = response.researchInstructionEnabled === true;
         setOwnerCanSeeAll(seeAll);
         setResearchInstructionEnabled(seeAll && research);
-        // 깊은 조사는 서버가 **명시적으로 열었다고 말한 응답에서만** 열린다. 누락·빈 값·false는
-        // 전부 닫힘이고, 이 값은 저장하지 않으므로 다음 응답이 매번 다시 판정한다.
-        setDeepResearchEnabled(seeAll && research && response.deepResearchEnabled === true);
+        // 서버가 실제로 **대답한** 순간이다. 여기서만 `unknown`을 벗어난다 — 응답이 실패하거나
+        // 아예 오지 않으면 이 줄에 닿지 않고, 화면은 계속 "아직 모른다"로 남는다.
+        // 명시적으로 열었다고 말한 응답만 `open`이고 누락·빈 값·false는 전부 `closed`다.
+        setDeepResearchState(seeAll && research && response.deepResearchEnabled === true ? 'open' : 'closed');
         saveOwnerFlags({ seeAll, researchInstructionEnabled: research });
         const hasMore = response.hasMore === true;
         setHasMoreBriefs(hasMore);
@@ -688,17 +694,14 @@ function App() {
     setPushBusy(false);
   }, [config, pushBusy, pushState]);
 
-  // 수동 새로고침은 즉시 진행 토스트 → 완료/실패 토스트로 반응한다 (2026-07-26 실폰 피드백 7).
+  /* 수동 새로고침 (INT-000036 / TSK-000559).
+     예전에는 여기서 토스트 세 장(진행·완료·실패)이 나갔다. founder 판정: "눌렀을 때 새로고침
+     중이라고 뭔가 위에서 내려오는데, 이거 굳이 있어야 되나 싶어." 진행과 결말은 이미 누른
+     버튼 옆(`RefreshControl`)이 소유하고 있었고, 토스트는 같은 말을 화면 위에 겹쳐 덮는
+     두 번째 표면이었다. 성공은 신선도 줄이 바뀌는 것으로 닫히고, 실패·막힘은 2.6초가 아니라
+     다음 요청이 결말을 낼 때까지 갱신 덩어리 안에 남는다. */
   const manualRefresh = useCallback(async () => {
-    setMessage('새로고침 중…');
-    const outcome = await refreshOrchestrator.request('priority');
-    // 내가 기다리는 사이 더 새로운 갱신이 화면을 이미 바꿨다면 이 결과로 덮어쓰지 않는다.
-    if (outcome.stale) return;
-    if (outcome.error) {
-      setMessage(`새로고침 실패: ${actionErrorMessage(outcome.error)}`);
-      return;
-    }
-    setMessage((current) => current === '' || current === '새로고침 중…' ? '새로고침 완료 — 최신 상태예요' : current);
+    await refreshOrchestrator.request('priority');
   }, [refreshOrchestrator]);
 
   // `예전 기록 더 보기` (FI-100). 서버가 offset·hasMore로 과거 기록 전체를 줄 수 있으므로
@@ -948,10 +951,14 @@ function App() {
 
   /**
    * 카드를 눌렀을 때 열리는 것. 세 입구가 각자 자기 자리로 간다.
+   *
+   * **이 함수는 끝까지 동기여야 한다.** `upload`는 브라우저의 파일 선택창으로 이어지는데,
+   * 그것은 신뢰된 제스처에서 끊기지 않고 이어진 동기 호출일 때만 열린다. 여기에 `await`이나
+   * `setTimeout`을 끼우면 그 카드만 조용히 아무 일도 하지 않는다 — 오류도 나지 않는다.
    */
   const selectCaptureMethod = useCallback((id: CaptureMethodId) => {
     if (id === 'manual') { setManualOpen(true); return; }
-    if (id === 'upload') { setIntakeOpen(true); return; }
+    if (id === 'upload') { intakeRef.current?.open(); return; }
     setCameraSession({ side: 'front', withChoice: true });
   }, []);
 
@@ -963,7 +970,9 @@ function App() {
     const intent = captureRecoveryIntent(recovery);
     // 권한 재요청은 브라우저가 카메라를 **실제로 열 때만** 일어난다. 조회로는 물어볼 수 없다.
     if (intent === 'retry_camera') { setCameraSession({ side: 'front', withChoice: true }); return; }
-    if (intent === 'open_upload') { setIntakeOpen(true); return; }
+    // 카메라가 없는 기기의 `파일 올리기로 등록하기`도 같은 즉시-선택창 동선이다 (INT-000036).
+    // 회복이 카드보다 한 걸음 멀면 정작 다른 길이 필요한 사람이 더 먼 길을 간다.
+    if (intent === 'open_upload') { intakeRef.current?.open(); return; }
     setManualOpen(true);
   }, []);
 
@@ -983,12 +992,12 @@ function App() {
   // `완료`, 인물 시트의 `조사 요청 접수`)가 같은 함수를 부르므로 한쪽만 고쳐지는 일이 없다.
   // 조사 기능이 꺼져 있으면 규칙 자체가 없다 — 그때 촬영 저장을 막으면 엉뚱한 이유로 사진을 잃는다.
   const researchGate = useMemo(
-    () => (researchInstructionEnabled ? researchSubmitGate(researchText, researchDepth, deepResearchEnabled) : RESEARCH_SUBMIT_READY),
-    [deepResearchEnabled, researchDepth, researchInstructionEnabled, researchText],
+    () => (researchInstructionEnabled ? researchSubmitGate(researchText, researchDepth, deepResearchState) : RESEARCH_SUBMIT_READY),
+    [deepResearchState, researchDepth, researchInstructionEnabled, researchText],
   );
   const personActionGate = useMemo(
-    () => (personActionComposer?.kind === 'research' ? researchSubmitGate(personActionText, personActionDepth, deepResearchEnabled) : RESEARCH_SUBMIT_READY),
-    [deepResearchEnabled, personActionComposer, personActionDepth, personActionText],
+    () => (personActionComposer?.kind === 'research' ? researchSubmitGate(personActionText, personActionDepth, deepResearchState) : RESEARCH_SUBMIT_READY),
+    [deepResearchState, personActionComposer, personActionDepth, personActionText],
   );
 
   // 방금 저장한 촬영 (FI-049). 다음 장을 찍기 시작하면 내려간다 — 되돌리기가 촬영 중인
@@ -1051,19 +1060,18 @@ function App() {
     }));
   }, [feed, hasMoreBriefs, loadMoreBriefs, loading, loadingMore, refreshedAt]);
 
-  /* 갱신 상태 한 줄. 예전에는 `N초 뒤 자동 새로고침` 카운트다운이었는데, 그 숫자는 **지켜지지
-     않는 약속**이었다 — 탭이 가려지면 타이머가 멈추고, 요청이 늦으면 0에서 머문다. 남은 시간을
-     지어내지 않고 지금 아는 사실만 말한다: 자동 갱신이 켜져 있다는 것과 마지막으로 언제 받았는지.
-     요청이 실제로 오가는 중일 때만 `갱신 중`, 끝나면 `방금 업데이트`/`갱신 실패 · 다시 시도`.
-     (ISS-000050 · DEC-000092: 가짜 정밀 ETA 금지) */
+  /* 마지막 성공에서 지난 시간. 상단 갱신 덩어리 하나가 이 값을 받아 신선도를 말한다.
+     남은 시간을 지어내지 않는다 — 예전의 `N초 뒤 자동 새로고침` 카운트다운은 탭이 가려지면
+     멈추고 요청이 늦으면 0에서 머무는, 지켜지지 않는 약속이었다
+     (ISS-000050 · DEC-000092: 가짜 정밀 ETA 금지).
+
+     ── `명함 기록` 옆 두 번째 줄이 사라진 이유 (INT-000036 통합 검수)
+     여기에는 `.refresh-hint` 한 줄을 조립하는 계산이 있었다. 그 줄은 자동 켜짐/꺼짐 · 지금
+     걸린 박자 · 마지막 성공을 말했는데, 상단 갱신 덩어리가 **이미 같은 계획에서 같은 낱말로**
+     그 셋을 말한다. 두 줄이 어긋나던 동안에는 "맞추는" 문제로 보였지만, 맞추고 나니 남은 것은
+     낭독기가 기능 상태와 신선도를 매번 두 번씩 읽는 것뿐이었다. 겹치는 줄을 없애면 어긋날
+     방법도, 두 번 읽힐 방법도 없어진다. */
   const lastRefreshAgoMs = refreshedAt === null ? null : clockTick - refreshedAt;
-  const autoRefreshHint = refreshStatus && refreshStatus.state !== 'idle'
-    ? refreshStatus.text
-    : refreshIdleText({ autoRefreshOn, lastSuccessAgoMs: lastRefreshAgoMs, cadence: refreshPlan });
-  /* 회전과 `aria-busy`가 따르는 단 하나의 값. `loading`은 목록 조회가 실제로 떠 있는 동안만
-     참이므로 "요청 중"과 정확히 같은 뜻이다 — 자동 갱신이 켜졌다는 사실과는 아무 관계가 없다.
-     그 사실은 이제 스위치가 따로 말한다. */
-  const refreshBusy = loading;
 
   // 지금 올리고 있는 촬영의 표시 이름. 없으면 빈 문자열이다.
   const sendingItem = useMemo(
@@ -1398,13 +1406,18 @@ function App() {
   }, [startQuickNameOcr]);
 
   /**
-   * 올린 파일을 앞·뒷면 프레임으로 옮긴다 (TSK-000545 통합).
+   * 올린 파일을 앞·뒷면 프레임으로 옮긴다 (TSK-000545 통합, INT-000036에서 다시 씀).
    *
-   * 어느 자리에 갈지는 이미 `DesktopIntake`가 `triageIntakeFiles`로 정해서 준다. 여기서는
+   * 어느 자리에 갈지는 이미 `CaptureIntake`가 `planIntakeFiles`로 정해서 준다. 여기서는
    * 프레임 변환과 화면 상태만 맡는다 — 판정과 변환을 한 자리에 섞지 않는다. 그 결과 올린 사진은
    * 촬영한 사진과 **같은 자리**로 들어가고, 이름 인식·만남 맥락·완료가 그대로 이어진다.
+   *
+   * 읽지 못한 파일의 **이름을 돌려준다.** 예전에는 여기서 toast를 띄웠는데, 그 문장은 몇 초 뒤
+   * 사라지고 사용자는 방금 무엇이 빠졌는지 다시 볼 방법이 없었다. 안내는 파일을 올린 그 자리에
+   * 남아 있어야 하고, 그 옆에 다시 고를 손잡이가 있어야 한다 — 둘 다 `CaptureIntake`가 갖고 있다.
    */
-  const acceptIntakeFiles = useCallback(async (assignments: IntakeAssignment<File>[]) => {
+  const acceptIntakeFiles = useCallback(async (assignments: IntakeAssignment<File>[]): Promise<string[]> => {
+    const unreadable: string[] = [];
     for (const assignment of assignments) {
       try {
         const frame = await fileToCameraFrame(assignment.file);
@@ -1415,12 +1428,11 @@ function App() {
           setBackFrame(frame);
         }
       } catch {
-        // 읽지 못한 파일은 조용히 사라지지 않는다 — 이름을 붙여 말한다.
-        setMessage(`${assignment.file.name} 사진을 읽지 못했어요. 다른 파일로 다시 올려 주세요.`);
+        // 읽지 못한 파일은 조용히 사라지지 않는다 — 이름을 붙여 올린 자리에 남긴다.
+        unreadable.push(assignment.file.name);
       }
     }
-    // 사진이 들어왔으면 작업면은 할 일을 마쳤다. 완료 뒤에는 세 입구로 돌아온다.
-    setIntakeOpen(false);
+    return unreadable;
   }, [startQuickNameOcr]);
 
   const completeCapture = useCallback(async () => {
@@ -1438,7 +1450,7 @@ function App() {
         // 봉투는 **여기서 한 번** 만들어져 대기열 항목에 저장된다. 전송 재시도는 저장된 그 봉투를
         // 그대로 다시 보내므로 `requestId`가 바뀌지 않고, 앱을 껐다 켜도 같은 요청으로 남는다.
         researchInstruction: researchInstructionEnabled
-          ? buildResearchSubmission(researchText, researchDepth, { deepAvailable: deepResearchEnabled })
+          ? buildResearchSubmission(researchText, researchDepth, { deepState: deepResearchState })
           : null,
         quickName,
       });
@@ -1470,7 +1482,7 @@ function App() {
     } finally {
       setQueueing(false);
     }
-  }, [backFrame, configured, deepResearchEnabled, event, flushPendingQueue, frontFrame, memo, queueing, quickName, relKairen, relSelf, researchDepth, researchGate, researchInstructionEnabled, researchText, resetQuickName]);
+  }, [backFrame, configured, deepResearchState, event, flushPendingQueue, frontFrame, memo, queueing, quickName, relKairen, relSelf, researchDepth, researchGate, researchInstructionEnabled, researchText, resetQuickName]);
 
   /**
    * 방금 찍은 촬영을 대기열에서 빼서 촬영 화면으로 되돌린다 (FI-049).
@@ -1677,7 +1689,7 @@ function App() {
       const requestKey = personActionRequestKey(personActionComposer.target, personActionText, personActionDepth);
       const carried = personActionRequestIdRef.current?.key === requestKey ? personActionRequestIdRef.current.requestId : '';
       const submission = buildResearchSubmission(personActionText, personActionDepth, {
-        deepAvailable: deepResearchEnabled,
+        deepState: deepResearchState,
         requestId: carried,
       });
       if (!submission) {
@@ -1702,7 +1714,13 @@ function App() {
           });
           success = true;
         } catch (error) {
-          setPersonActionOutcome({ ok: false, reason: actionErrorMessage(error) });
+          // 서버가 거절하며 "깊은 조사를 열어 두지 않았다"고 말했다면, 그것이 우리가 그 사실을
+          // 처음 듣는 순간일 수 있다(아직 목록 응답을 못 받은 구간). 들은 것을 그 자리에서 배운다 —
+          // 그래야 다음 화면이 추측이 아니라 사실을 말한다.
+          if (researchDeepClosedBy(error)) setDeepResearchState('closed');
+          // 조사 실패는 자기 문구를 쓴다. `actionErrorMessage`는 모르는 코드를 `요청 실패: <코드>`로
+          // 그대로 붙여 내보내서, 서버 내부 코드가 사용자 화면에 찍혔다.
+          setPersonActionOutcome({ ok: false, reason: researchFailureReason(error) });
         }
       }
     } else {
@@ -1717,7 +1735,7 @@ function App() {
       setPersonActionText('');
       setPersonActionOutcome(null);
     }
-  }, [config, deepResearchEnabled, personActionComposer, personActionDepth, personActionGate, personActionSubmitting, personActionText, refresh, runPersonAction]);
+  }, [config, deepResearchState, personActionComposer, personActionDepth, personActionGate, personActionSubmitting, personActionText, refresh, runPersonAction]);
 
   const retryProcessing = useCallback(async (captureId: string) => {
     if (requeueingId) return;
@@ -1963,7 +1981,9 @@ function App() {
       : carriedResearch.state === 'failed'
         ? {
           state: 'failed',
-          reason: actionErrorMessage(carriedResearch.err),
+          // 조사 접수 실패는 자기 문구를 쓴다 — `actionErrorMessage`는 모르는 서버 코드를
+          // 그대로 붙여 내보내므로 `deep_feature_disabled` 같은 내부 이름이 화면에 찍힌다.
+          reason: researchFailureReason(carriedResearch.err),
           retryLabel: '다시 보내기',
           onRetry: () => void retryQueueItem(carriedResearch),
         }
@@ -1997,40 +2017,38 @@ function App() {
               쓰는 앱"이 되고, 명함을 못 받은 자리(대부분의 자리)가 통째로 빠진다.
               앞면을 이미 찍은 뒤에는 그 촬영을 마치는 것이 지금 할 일이므로 미리보기가 자리를
               그대로 쓴다 — 반쯤 진행된 등록 두 개가 서로 다투지 않게 한다. */}
-          {frontFrame ? (
-            <button className="shot-main filled" type="button" onClick={() => setCameraSession({ side: 'front', withChoice: true })}>
-              <img src={frontFrame.dataUrl} alt="앞면 미리보기" />
-            </button>
-          ) : intakeOpen ? (
-            /* `파일 올리기`를 고르면 카드 자리를 파일 작업면이 넘겨받는다 (TSK-000545 통합).
-               카드 아래에 덧붙이지 않는 이유: 작업면 안에도 웹캠 입구가 있어서, 같은 이름의
-               입구가 화면에 둘이 되고 어느 쪽이 진짜인지 사용자도 게이트도 알 수 없게 된다. */
-            <div className="cc-intake-panel">
-              <button className="cc-intake-back" type="button" onClick={() => setIntakeOpen(false)}>다른 방법 고르기</button>
-              <DesktopIntake
-                /* 앞면이 이미 있으면 위 미리보기가 이 자리를 가져간다 — 그래서 여기서 찰 수
-                   있는 것은 뒷면뿐이다. `triageIntakeFiles`가 이 값으로 빈 자리를 센다. */
-                assigned={{ back: backFrame ? '뒷면 사진' : undefined }}
-                onFiles={(assignments) => void acceptIntakeFiles(assignments)}
-                onClear={(side) => (side === 'front' ? setFrontFrame(null) : setBackFrame(null))}
-                webcam={captureMethods.find((card) => card.id === 'camera') ?? captureMethods[0]}
-                onOpenWebcam={() => setCameraSession({ side: 'front', withChoice: true })}
-                onRecovery={(recovery) => recoverCaptureMethod('camera', recovery)}
+          {/* 파일로 올리는 길은 이 층이 통째로 갖는다 (INT-000036). 진짜 `<input type="file">`이
+              카드 옆에 **이미 붙어 있어야** 카드를 누른 그 제스처가 곧바로 선택창을 연다 —
+              눌린 뒤에 화면을 하나 띄우고 그 안에서 여는 것이 founder가 본 어색함이었다.
+              감싸는 이유는 하나 더 있다: 끌어다 놓기와 붙여넣기는 카드 한 장의 성질이 아니라
+              캡처 영역의 성질이라, 앞면 미리보기로 바뀐 뒤에도 그대로 성립해야 한다. */}
+          <CaptureIntake
+            ref={intakeRef}
+            hasFront={Boolean(frontFrame)}
+            hasBack={Boolean(backFrame)}
+            enabled={deviceEnv.hasFileInput}
+            assistable={deviceEnv.formFactor === 'desktop'}
+            assistHint={intakeAssistHint(deviceEnv)}
+            onFiles={acceptIntakeFiles}
+          >
+            {frontFrame ? (
+              <button className="shot-main filled" type="button" onClick={() => setCameraSession({ side: 'front', withChoice: true })}>
+                <img src={frontFrame.dataUrl} alt="앞면 미리보기" />
+              </button>
+            ) : (
+              /* 세 카드를 이제 한 컴포넌트가 그린다 (TSK-000220). 예전에는 촬영 버튼은 여기서,
+                 직접 입력 버튼은 `ManualPersonSheet`에서 각자 그려졌고 안쪽 구조가 서로 달랐다 —
+                 founder가 본 "하나는 설명이 있고 하나는 없고"가 정확히 그 결과였다.
+                 무엇을 쓸 수 있는지는 `device-capability.ts`가 판정하고(TSK-000545), 여기서는
+                 그 사실을 그대로 넘긴다 — 화면이 가용성을 추측하지 않는다. */
+              <CaptureEntry
+                methods={captureMethods}
+                status={captureMethodStatus}
+                onSelect={selectCaptureMethod}
+                onRecover={recoverCaptureMethod}
               />
-            </div>
-          ) : (
-            /* 세 카드를 이제 한 컴포넌트가 그린다 (TSK-000220). 예전에는 촬영 버튼은 여기서,
-               직접 입력 버튼은 `ManualPersonSheet`에서 각자 그려졌고 안쪽 구조가 서로 달랐다 —
-               founder가 본 "하나는 설명이 있고 하나는 없고"가 정확히 그 결과였다.
-               무엇을 쓸 수 있는지는 `device-capability.ts`가 판정하고(TSK-000545), 여기서는
-               그 사실을 그대로 넘긴다 — 화면이 가용성을 추측하지 않는다. */
-            <CaptureEntry
-              methods={captureMethods}
-              status={captureMethodStatus}
-              onSelect={selectCaptureMethod}
-              onRecover={recoverCaptureMethod}
-            />
-          )}
+            )}
+          </CaptureIntake>
 
           {/* 시트는 진입 카드와 분리됐다. 카드가 열고, 여기서는 시트만 산다. */}
           <ManualPersonEntry
@@ -2175,7 +2193,7 @@ function App() {
               onChange={setResearchText}
               depth={researchDepth}
               onDepthChange={setResearchDepth}
-              deepAvailable={deepResearchEnabled}
+              deepState={deepResearchState}
               receipt={researchReceipt}
               noticeId={CAPTURE_RESEARCH_NOTICE_ID}
             />
@@ -2188,7 +2206,11 @@ function App() {
           <IonButton
             className="primary-action"
             expand="block"
-            data-blocked={researchGate.blocked ? 'research' : undefined}
+            /* **언제나 문자열을 준다.** `undefined`를 주면 `ion-button`(custom element)에서
+               속성이 지워지지 않고 남아, 막힘이 풀린 뒤에도 버튼이 계속 흐리게(opacity 0.62)
+               서 있다 — `researchSubmitLabel`이 `aria-label`에서 이미 겪은 것과 같은 함정이다.
+               지우는 경로를 아예 만들지 않는다 (TSK-000560). */
+            data-blocked={researchGate.blocked ? 'research' : 'no'}
             aria-label={researchSubmitLabel(queueing ? '저장 중…' : '완료', researchGate)}
             disabled={!frontFrame || queueing}
             onClick={() => {
@@ -2228,7 +2250,9 @@ function App() {
           </button>
           {/* 이 구획의 진실만 쓴다. 지금 올리는 촬영이 있을 때만, 그리고 그것이 무엇인지 이름을 붙여서. */}
           {sendingId && <span className="sending-note" role="status">{sendingName || '명함'} 전송 중…</span>}
-          <span className="refresh-hint" role="status">{autoRefreshHint}</span>
+          {/* 갱신 사실(자동 켜짐/꺼짐 · 박자 · 마지막 성공)은 여기 없다. 상단 갱신 덩어리가
+              통째로 소유한다 — 같은 계획에서 같은 낱말로 같은 것을 말하는 두 번째 줄에는
+              자기 일이 없고, 낭독기에는 매번 두 번 읽히는 소음만 남는다 (INT-000036). */}
         </div>
         {/* 연결 안내는 실제로 막힌 것(서버 전송) 옆에 붙는다. 위 촬영 카드는 연결 없이도
             전부 동작하므로 그 위에는 아무것도 얹지 않는다. */}
@@ -2559,10 +2583,11 @@ function App() {
                   autoRefreshOn={autoRefreshOn}
                   onAutoRefreshChange={setAutoRefreshOn}
                   onManualRefresh={() => void manualRefresh()}
+                  /* 온라인 복귀는 사용자가 한 일이 아니다 — 조용히 받아 오고 영수증을 남기지 않는다. */
+                  onResume={() => void silentRefresh(true)}
                   plan={refreshPlan}
                   status={refreshStatus}
                   lastSuccessAgoMs={lastRefreshAgoMs}
-                  busy={refreshBusy}
                 />
               )}
             </div>
@@ -2643,7 +2668,7 @@ function App() {
                       onChange={setPersonActionText}
                       depth={personActionDepth}
                       onDepthChange={setPersonActionDepth}
-                      deepAvailable={deepResearchEnabled}
+                      deepState={deepResearchState}
                       noticeId={PERSON_RESEARCH_NOTICE_ID}
                       receipt={personActionOutcome === null
                         ? { state: 'idle' }
@@ -2665,7 +2690,8 @@ function App() {
                         방법이 사라진다. 이유는 버튼 이름에 실리고, 누르면 시트 안의 설명으로 손이 간다. */}
                     <IonButton
                       expand="block"
-                      data-blocked={personActionGate.blocked ? 'research' : undefined}
+                      /* 지우지 않는다 — 위 `완료` 버튼과 같은 이유(custom element 속성 잔존). */
+                      data-blocked={personActionGate.blocked ? 'research' : 'no'}
                       aria-label={researchSubmitLabel(personActionCopy[personActionComposer.kind].submit, personActionGate)}
                       disabled={!personActionText.trim() || personActionSubmitting}
                       onClick={() => {

@@ -794,29 +794,82 @@ test('a settings group label reads as a label, not as its first item', async ({ 
   }
 });
 
-// ── 015: 두 갱신 표면이 같은 말을 한다 ──
+// ── 015: 갱신 사실을 말하는 표면은 하나이고, 그것은 상단 갱신 덩어리다 ──
 //
-// 미연결 PC에서 위는 `연결되면 확인`인데 아래는 `자동 갱신 켜짐`이라 서로 모순되게 읽혔다.
-// 아래 줄의 뜻(DEC-000092 §2: 켜짐/꺼짐 · 지금 걸려 있는 박자 · 마지막 성공)은 그대로 두고,
-// 박자 조각이 위 줄과 **같은 함수에서 파생**되게 만든다.
+// 이 검사의 원래 주제는 **두 줄이 같은 말을 하는가**였다. 미연결 PC에서 위는 `연결되면 확인`
+// 인데 아래(`.refresh-hint`)는 `자동 갱신 켜짐`이라 서로 모순되게 읽혔고, 박자 조각을 위 줄과
+// 같은 함수의 파생으로 바꿔 맞췄다.
+//
+// 맞추고 나니 남은 것이 드러났다: 같은 계획에서 같은 낱말로 같은 사실을 말하는 두 번째 줄에는
+// **자기 일이 없다**. 낭독기 기준으로는 기능 상태와 신선도가 매번 두 번씩 읽혔다. INT-000036
+// 독립 게이트가 그것을 세어 냈고(자동 켜짐/꺼짐 2개 · 마지막 갱신 시점 2개), 아래 줄을 걷어냈다.
+//
+// 그래서 주제가 "두 줄이 어긋나지 않는가"에서 **"주인이 하나인가"**로 바뀐다. 약해지지 않는다 —
+// 어긋남은 표면이 둘일 때만 생기는 병이고, 아래 검사는 그 둘째 표면이 어떤 이름으로도 다시
+// 서지 못하게 막는다. 원래 결함이 살던 두 조건(연결됨·첫 방문)은 그대로 둔다.
 for (const connected of [true, false] as const) {
-  test(`the two refresh surfaces state the same fact (${connected ? 'connected' : 'first visit'})`, async ({ page }) => {
+  test(`one surface owns the refresh facts (${connected ? 'connected' : 'first visit'})`, async ({ page }) => {
     const harness = await boot(page, 'light', { width: 1280, height: 900, connected });
     try {
       await page.waitForTimeout(500);
-      const said = await page.evaluate(() => ({
-        top: (document.querySelector('.int30-refresh-line')?.textContent ?? '').trim(),
-        reason: document.querySelector('.int30-refresh-line')?.getAttribute('data-reason') ?? '',
-        bottom: (document.querySelector('.refresh-hint')?.textContent ?? '').trim(),
-      }));
+      const said = await page.evaluate(() => {
+        const line = document.querySelector('.int30-refresh-line');
+        /* 갱신 사실(켜짐/꺼짐 · 박자 · 마지막 성공)을 **자기 글자로** 말하는 표면을 전부 센다.
+           자식 텍스트 노드만 본다 — 조상까지 세면 DOM 깊이를 세는 것이지 표면을 세는 것이 아니다. */
+        const stating = Array.from(document.querySelectorAll<HTMLElement>('body *'))
+          .filter((node) => {
+            const own = Array.from(node.childNodes)
+              .filter((child) => child.nodeType === 3)
+              .map((child) => child.textContent ?? '')
+              .join(' ');
+            return /자동 갱신 (켜짐|꺼짐)|\d+초마다|자동 꺼짐|연결되면 확인|돌아오면 확인/.test(own);
+          })
+          .map((node) => ({
+            where: node.className || node.tagName,
+            text: (node.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 60),
+            inCluster: Boolean(node.closest('.int30-refresh')),
+            live: node.getAttribute('role') ?? node.getAttribute('aria-live') ?? '',
+          }));
+        return {
+          top: (line?.textContent ?? '').trim(),
+          reason: line?.getAttribute('data-reason') ?? '',
+          hints: document.querySelectorAll('.refresh-hint').length,
+          stating,
+        };
+      });
+
       expect(said.top, '상단 갱신 줄이 비어 있다').not.toBe('');
-      expect(said.bottom, '`명함 기록` 옆 갱신 줄이 비어 있다').not.toBe('');
-      // 위 줄의 마지막 조각이 지금 걸린 박자(또는 왜 박자가 없는지)다. 아래 줄에도 그대로 있어야 한다.
-      const beat = said.top.split(' · ').pop() ?? '';
+      // 이 줄은 언제나 지금 걸린 박자(또는 왜 박자가 없는지)로 끝난다 — 없는 박자를 지어내지 않는다.
+      expect(said.top, `상단 줄이 지금의 박자를 말하지 않는다 (reason=${said.reason}): "${said.top}"`)
+        .toMatch(/초마다|자동 꺼짐|연결되면 확인|돌아오면 확인/);
+
+      // 두 번째 표면이 어떤 이름으로도 서 있지 않다.
+      expect(said.hints, '`명함 기록` 옆 갱신 줄이 되살아났다').toBe(0);
+      const outside = said.stating.filter((surface) => !surface.inCluster);
       expect(
-        said.bottom.includes(beat),
-        `두 표면이 같은 사실을 다르게 말한다 — 위 "${said.top}" (reason=${said.reason}) / 아래 "${said.bottom}"`,
-      ).toBe(true);
+        outside.map((surface) => `${surface.where}="${surface.text}"`),
+        '갱신 사실을 상단 갱신 덩어리 밖에서도 말한다 — 두 표면은 언젠가 반드시 어긋난다',
+      ).toEqual([]);
+
+      /* 덩어리 안에서도 자리는 정해져 있다: 짧은 신선도 줄과, 그 뜻을 풀어 주는 전문
+         (`aria-describedby`로만 닿는다 — 눈에 보이는 두 번째 줄이 아니다). 그 밖에 하나라도
+         늘면 같은 사실이 또 한 번 읽힌다. 멈춘 계획에서는 전문이 박자 대신 "언제 다시
+         확인하는지"를 말하므로 여기 안 잡힐 수 있다 — 그래서 상한만 못 박는다. */
+      const inside = said.stating.map((surface) => `${surface.where}="${surface.text}"`);
+      expect(inside.length, '갱신 박자를 말하는 자리가 하나도 없다').toBeGreaterThanOrEqual(1);
+      expect(inside.length, `갱신 박자를 말하는 자리가 ${inside.length}개다: ${inside.join(' | ')}`)
+        .toBeLessThanOrEqual(2);
+
+      // 1초마다 `N초 전`이 바뀌는 문구에 live region을 달면 낭독기가 매초 끼어든다.
+      for (const surface of said.stating) {
+        expect(surface.live, `갱신 박자를 말하는 줄이 live region이다: ${surface.where}`).toBe('');
+      }
+
+      // 작업 사실(진행)의 주인은 버튼 하나다. 이 줄들은 그것을 절대 베껴 쓰지 않는다.
+      for (const surface of said.stating) {
+        expect(surface.text, `갱신 줄이 작업 상태까지 겹쳐 말한다: "${surface.text}"`)
+          .not.toMatch(/갱신 중|새로고침 중/);
+      }
     } finally {
       harness.server.close();
     }

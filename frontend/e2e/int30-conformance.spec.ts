@@ -225,13 +225,36 @@ test('막힌 제출 버튼은 키보드로 닿고, 이름 자체로 이유를 �
   }
 });
 
-test('막힌 버튼을 누르면 이유로 손이 간다 — 아무 일도 없는 버튼이 아니다', async ({ page }) => {
+/* 예전에는 이 검사가 안내 **문단**(`.research-block`)이 포커스를 받는지를 봤다. 문단은 읽히지만
+   다음 키 입력으로 할 수 있는 것이 없다 — 막다른 곳이다. 승인된 acceptance는 「실패 시 **목적
+   영역으로 focus**와 inline 안내를 제공한다」이고, INT-000036 독립 게이트가 그 차이를 잡아냈다.
+
+   그래서 검사가 조여진다: 손이 가는 곳은 **이 막힘을 실제로 푸는 조작**이어야 하고, 그러면서도
+   이유는 여전히 보이고 그 자리에서 함께 읽혀야 한다. 문단 하나만 보던 때보다 재는 것이 늘었다. */
+test('막힌 버튼을 누르면 풀 수 있는 자리로 손이 간다 — 아무 일도 없는 버튼이 아니다', async ({ page }) => {
   const harness = await boot(page);
   try {
     await makeBlockedRequest(page);
+    const composer = sheetComposer(page);
+    const block = composer.locator('.research-block');
+    const blockId = await block.getAttribute('id');
+    expect(blockId, '막힘 안내에 고정 id가 없다 — 이유를 이어 줄 방법이 없다').toBeTruthy();
+
     await sheetSubmitNative(page).click();
-    // 눌렀는데 아무 반응이 없으면 사용자는 눌렸는지조차 알 수 없다.
-    await expect(sheetComposer(page).locator('.research-block'), '눌러도 이유로 데려다주지 않는다').toBeFocused();
+
+    // 1. 손은 범위를 켜는 조작 위에 선다. 다음 키 입력(Enter/Space)이 곧 회복이다.
+    const selectAll = composer.locator('.research-scope-all');
+    await expect(selectAll, '눌러도 막힘을 풀 수 있는 자리로 데려다주지 않는다').toBeFocused();
+    // 2. 이유는 사라지지 않고, 그 자리에서 함께 읽힌다.
+    await expect(block, '손만 옮기고 왜 막혔는지는 보이지 않는다').toBeVisible();
+    expect(
+      ((await selectAll.getAttribute('aria-describedby')) ?? '').split(/\s+/),
+      '손이 닿은 자리가 막힘 이유와 이어져 있지 않다',
+    ).toContain(blockId!);
+    // 3. 그 자리에서 정말로 풀린다 — 문구가 아니라 실제 상태로 확인한다.
+    await page.keyboard.press('Enter');
+    await expect(block, '풀 수 있는 자리라고 데려다 놓고 눌러도 안 풀린다').toHaveCount(0);
+    await expect(sheetSubmitNative(page)).toHaveAccessibleName('조사 요청 접수');
   } finally {
     await stopServer(harness.server);
   }
@@ -336,6 +359,72 @@ test('모두 선택은 지금 화면에 있는 범위만 켠다 — 보이지 �
     expect(measured.rendered).toBe(measured.visible);
     expect(measured.pressed).toBe(measured.visible);
     expect(measured.countLabel).toBe(`${measured.visible}개 중 ${measured.pressed}개 선택`);
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+// ── D. 닫힘과 남은 조건은 서로 다른 이유다 (TSK-000560 / INT-000036) ──────────
+//
+// 두 이유가 한 문장으로 뭉개지면 사용자는 풀 수 있는 조건(범위)과 풀 수 없는 조건(닫힘)을
+// 구분하지 못한다. 그리고 풀 수 없는 조건이 뒤에 숨으면, 범위를 다 고른 뒤에야 못 보낸다는 것을
+// 알게 된다 — 헛수고를 시키는 순서다.
+
+test('서버가 닫아 둔 깊은 조사는 범위를 다 골라도 다른 이유로 막힌다', async ({ page }) => {
+  const harness = await boot(page, { deepOpen: false });
+  try {
+    await openPersonSheet(page);
+    const composer = sheetComposer(page);
+    await composer.locator('ion-textarea textarea').fill('공개 경력과 최근 발표를 확인해 주세요');
+
+    // 고르는 것 자체는 막히지 않는다 — 예전에는 이 칸이 꺼져 있어 클릭이 아무 일도 하지 않았다.
+    await depthOption(composer, 'deep').click();
+    await expect(composer.locator('.research-depth-option[data-depth="deep"] input')).toBeChecked();
+
+    const block = composer.locator('.research-block');
+    await expect(block).toBeVisible();
+    // 범위 조건이 아니라 닫힘을 말한다.
+    await expect(block).toContainText('지금 접수하지 않아요');
+    await expect(block, '풀 수 없는 조건 자리에 풀 수 있는 조건을 적었다').not.toContainText('조사 범위를 하나 이상');
+
+    // 범위를 다 골라도 그대로다. 사용자가 이 자리에서 풀 수 있는 조건이 아니기 때문이다.
+    await composer.locator('.research-scope-all').click();
+    await expect(composer.locator('.research-scope-count')).toHaveText(`${SCOPE_COUNT}개 중 ${SCOPE_COUNT}개 선택`);
+    await expect(block, '범위를 다 골랐더니 닫힘이 사라졌다 — 열리지 않은 것을 열린 것처럼 보인다').toBeVisible();
+    await expect(block).toContainText('지금 접수하지 않아요');
+
+    // 막힌 버튼은 여전히 키보드로 닿고, 이름 자체로 이 이유를 말한다.
+    const native = sheetSubmitNative(page);
+    await expect(native).not.toBeDisabled();
+    await expect(native).toHaveAccessibleName(/보낼 수 없어요/);
+    await expect(native).toHaveAccessibleName(/일반 조사/);
+
+    /* 손이 가는 곳이 위의 `범위 0개` 막힘과 **다르다**. 여기서 범위 영역으로 데려가면 그것은
+       거짓말이다 — 범위를 다 골라도(바로 위에서 골랐다) 닫힘은 그대로다. 풀 수 있는 것은
+       깊이를 바꾸는 것 하나뿐이므로 손은 깊이 라디오 위에 선다 (INT-000036 / TSK-000562). */
+    await native.click();
+    await expect(
+      composer.locator('.research-depth-option[data-depth="deep"] input'),
+      '풀 수 없는 조건인데 손이 깊이 자리로 가지 않았다',
+    ).toBeFocused();
+    await expect(block, '손만 옮기고 왜 막혔는지는 보이지 않는다').toBeVisible();
+    await expect(composer.locator('.research-scope-all'), '범위를 골라도 안 풀리는 막힘인데 손이 범위로 갔다')
+      .not.toBeFocused();
+    await page.waitForTimeout(400);
+    expect(harness.submitted, '닫힌 깊은 조사가 서버로 나갔다').toEqual([]);
+
+    // 그 자리에서 화살표 하나로 회복된다 — 데려다 놓은 곳이 정말 푸는 자리라는 증거다.
+    await page.keyboard.press('ArrowLeft');
+    await expect(composer.locator('.research-depth-option[data-depth="standard"] input')).toBeChecked();
+
+    // 회복은 깊이를 낮추는 것 하나다. 그 순간 그대로 보낼 수 있어야 한다.
+    await depthOption(composer, 'standard').click();
+    await expect(block).toHaveCount(0);
+    await expect(native).toHaveAccessibleName('조사 요청 접수');
+    await native.click();
+    await expect.poll(() => harness.submitted.length, { timeout: 10_000 }).toBe(1);
+    // 낮춰 준 것이 아니라 사용자가 바꾼 것이다 — 나가는 값이 그 사실을 증명한다.
+    expect((harness.submitted[0].instruction as Record<string, unknown>)?.mode).toBe('standard');
   } finally {
     await stopServer(harness.server);
   }

@@ -18,8 +18,9 @@ import {
   refreshCadencePlan,
   refreshCadenceSentence,
   refreshCadenceText,
+  refreshFailureTitle,
   refreshHeadlineText,
-  refreshIdleText,
+  refreshNotice,
 } from './refresh-orchestrator';
 
 /** 손으로 돌리는 시계. 실제 타이머를 쓰지 않아 4초/20초 박자를 결정적으로 잰다. */
@@ -285,49 +286,45 @@ describe('상태 기계와 승인 문구', () => {
   });
 });
 
-describe('idle 문구', () => {
-  it('다음 갱신 시각을 지어내지 않고 자동 갱신 여부와 마지막 성공만 말한다', () => {
-    expect(refreshIdleText({ autoRefreshOn: true, lastSuccessAgoMs: 1_000 })).toBe('자동 갱신 켜짐 · 방금');
-    expect(refreshIdleText({ autoRefreshOn: true, lastSuccessAgoMs: 12_000 })).toBe('자동 갱신 켜짐 · 12초 전');
-    expect(refreshIdleText({ autoRefreshOn: true, lastSuccessAgoMs: 5 * 60_000 })).toBe('자동 갱신 켜짐 · 5분 전');
-    expect(refreshIdleText({ autoRefreshOn: true })).toBe('자동 갱신 켜짐');
-    expect(refreshIdleText({ autoRefreshOn: false, lastSuccessAgoMs: 30_000 })).toBe('자동 갱신 꺼짐 · 30초 전');
+/* ── 갱신 사실을 조립하는 자리는 하나뿐이다 (INT-000036 통합 검수) ──
+ *
+ * 여기에는 `idle 문구` 묶음이 있었다. 그것이 재던 `refreshIdleText`는 `명함 기록` 옆 두 번째
+ * 줄(`.refresh-hint`)만 쓰던 조립 함수였고, 그 줄은 상단 갱신 덩어리가 **이미 같은 계획에서
+ * 같은 낱말로** 말하는 셋(자동 켜짐/꺼짐 · 박자 · 마지막 성공)을 한 번 더 말했다. 낭독기
+ * 기준으로는 기능 상태와 신선도가 매번 두 번씩 읽혔다. 줄을 없앴으므로 함수도 없앴다.
+ *
+ * 그 묶음이 지키던 뜻(박자를 지어내지 않는다 · 멈춘 이유를 말한다 · 없는 신선도를 만들지
+ * 않는다)은 사라지지 않았다. 아래 두 검사가 그것을 **남은 한 표면에서** 다시 잰다.
+ */
+describe('갱신 사실을 조립하는 자리', () => {
+  it('두 번째 조립 함수를 다시 만들지 않는다', async () => {
+    const orchestrator = await import('./refresh-orchestrator');
+    // 표면이 없어졌는데 조립 함수가 남아 있으면 다음 사람이 그 줄을 다시 세운다.
+    expect(Object.keys(orchestrator), '갱신 사실을 조립하는 두 번째 함수가 되살아났다')
+      .not.toContain('refreshIdleText');
   });
 
-  it('계획을 주면 지금 걸린 박자를 그대로 넣고, 멈춰 있으면 없는 박자를 말하지 않는다', () => {
-    const active = refreshCadencePlan({ items: [brief('received')] });
-    const idle = refreshCadencePlan({ items: [brief('processed')] });
-    const off = refreshCadencePlan({ items: [brief('received')], autoRefreshOn: false });
-
-    expect(refreshIdleText({ autoRefreshOn: true, lastSuccessAgoMs: 1_000, cadence: active }))
-      .toBe('자동 갱신 켜짐 · 4초마다 · 방금');
-    expect(refreshIdleText({ autoRefreshOn: true, lastSuccessAgoMs: 1_000, cadence: idle }))
-      .toBe('자동 갱신 켜짐 · 20초마다 · 방금');
-    // 꺼진 상태에서 "20초마다"라고 말하면 그것이 곧 지켜지지 않는 약속이다.
-    expect(refreshIdleText({ autoRefreshOn: false, lastSuccessAgoMs: 1_000, cadence: off }))
-      .toBe('자동 갱신 꺼짐 · 방금');
-  });
-
-  /* 통합 검수 2026-08-04: 두 표면이 같은 사실을 다른 말로 하던 자리.
-     미연결 PC에서 상단은 `연결되면 확인`인데 이 줄은 `자동 갱신 켜짐`만 남아 서로 모순되게
-     읽혔다 — 하나는 "지금 안 본다", 다른 하나는 "켜져 있다". 이제 가운데 조각이 상단 바가 쓰는
-     `refreshCadenceText`의 파생이라, 두 곳이 각자 문장을 만드는 일 자체가 없다.
-     DEC-000092 §2의 뜻은 그대로다: 이 자리는 원래도 "지금 걸려 있는 박자"를 말하는 자리이고,
-     박자가 없을 때 왜 없는지를 말하는 것이 그 자리를 비우는 것보다 정직하다. */
-  it('멈춘 이유를 상단 바와 똑같은 말로 말한다', () => {
+  /* 없어진 줄이 말하던 것 중 **남은 표면이 이어받아야 하는 것**: 지금 걸려 있는 박자와,
+     박자가 멈췄을 때 왜 멈췄는지. 기능 상태(자동 켜짐/꺼짐)는 이어받지 않는다 — 그것은
+     스위치가 모양으로 말하고, 글자로 한 번 더 쓰면 다시 두 번 읽힌다. */
+  it('없어진 줄이 말하던 박자와 멈춤 이유를 남은 한 줄이 그대로 말한다', () => {
     const cases: { plan: RefreshCadencePlan; line: string }[] = [
-      { plan: refreshCadencePlan({ items: [brief('processed')], configured: false }), line: '자동 갱신 켜짐 · 연결되면 확인' },
-      { plan: refreshCadencePlan({ items: [brief('processed')], hidden: true }), line: '자동 갱신 켜짐 · 돌아오면 확인' },
+      { plan: refreshCadencePlan({ items: [brief('received')] }), line: '방금 · 4초마다' },
+      { plan: refreshCadencePlan({ items: [brief('processed')] }), line: '방금 · 20초마다' },
+      { plan: refreshCadencePlan({ items: [brief('processed')], configured: false }), line: '방금 · 연결되면 확인' },
+      { plan: refreshCadencePlan({ items: [brief('processed')], hidden: true }), line: '방금 · 돌아오면 확인' },
+      { plan: refreshCadencePlan({ items: [brief('received')], autoRefreshOn: false }), line: '방금 · 자동 꺼짐' },
     ];
     for (const { plan, line } of cases) {
-      expect(refreshIdleText({ autoRefreshOn: true, cadence: plan })).toBe(line);
-      // 상단 바가 쓰는 조각이 이 줄 안에 **글자 그대로** 들어 있다.
-      expect(refreshIdleText({ autoRefreshOn: true, cadence: plan })).toContain(refreshCadenceText(plan));
+      expect(refreshHeadlineText({ plan, lastSuccessAgoMs: 1_000 })).toBe(line);
+      // 박자 조각은 언제나 같은 함수의 파생이다 — 두 곳이 각자 문장을 만들 자리가 없다.
+      expect(refreshHeadlineText({ plan, lastSuccessAgoMs: 1_000 })).toContain(refreshCadenceText(plan));
     }
-    // 사용자가 직접 끈 상태만 예외다 — 머리말이 이미 `자동 갱신 꺼짐`이라 같은 말을 두 번 쓰지 않는다.
-    const off = refreshCadencePlan({ items: [brief('received')], autoRefreshOn: false });
-    expect(refreshIdleText({ autoRefreshOn: false, cadence: off })).toBe('자동 갱신 꺼짐');
-    expect(refreshCadenceText(off)).toBe('자동 꺼짐');
+    // 기능 상태는 이 줄의 일이 아니다. 스위치가 소유한다.
+    for (const { plan } of cases) {
+      expect(refreshHeadlineText({ plan, lastSuccessAgoMs: 1_000 }), '신선도 줄이 기능 상태까지 겹쳐 말한다')
+        .not.toMatch(/자동 갱신 (켜짐|꺼짐)/);
+    }
   });
 });
 
@@ -375,17 +372,25 @@ describe('갱신 박자 문구', () => {
     expect(refreshHeadlineText({ plan: idle, lastSuccessAgoMs: 12_000 })).toBe('12초 전 · 20초마다');
     // 아직 한 번도 못 받았으면 없는 신선도를 지어내지 않는다.
     expect(refreshHeadlineText({ plan: idle, lastSuccessAgoMs: null })).toBe('20초마다');
-    // 요청이 실제로 떠 있는 동안에만 작업 상태가 이 줄을 차지한다.
-    expect(refreshHeadlineText({ plan: idle, lastSuccessAgoMs: 3_000, busy: true })).toBe(REFRESH_BUSY_TEXT);
+    /* 진행은 이 줄의 일이 아니다 (INT-000036). 요청이 실제로 떠 있어도 이 줄은 신선도·박자를
+       그대로 말한다 — 마지막으로 받은 시점은 요청이 떠 있는 동안에도 여전히 참이고, 진행을
+       말하는 자리는 `aria-busy`를 든 버튼 하나뿐이다. 이 줄까지 `갱신 중`으로 바뀌면 낭독기가
+       같은 사실을 두 번 읽는다. */
     expect(refreshHeadlineText({
       plan: idle,
       lastSuccessAgoMs: 3_000,
-      status: { state: 'failure', text: REFRESH_FAILURE_TEXT, label: REFRESH_IDLE_LABEL, busy: false, role: 'alert', generation: 1 },
+      status: { state: 'in-flight', text: REFRESH_BUSY_TEXT, label: REFRESH_BUSY_LABEL, busy: true, role: null, generation: 1, failureStreak: 0 },
+    }), '요청이 떠 있다고 신선도 줄이 진행을 말한다').toBe('방금 · 20초마다');
+    // 결말은 여전히 이 줄이 말한다. 그것은 진행이 아니라 영수증이다.
+    expect(refreshHeadlineText({
+      plan: idle,
+      lastSuccessAgoMs: 3_000,
+      status: { state: 'failure', text: REFRESH_FAILURE_TEXT, label: REFRESH_IDLE_LABEL, busy: false, role: 'alert', generation: 1, failureStreak: 1 },
     })).toBe(REFRESH_FAILURE_SHORT_TEXT);
     expect(refreshHeadlineText({
       plan: idle,
       lastSuccessAgoMs: 0,
-      status: { state: 'success', text: REFRESH_SUCCESS_TEXT, label: REFRESH_IDLE_LABEL, busy: false, role: 'status', generation: 1 },
+      status: { state: 'success', text: REFRESH_SUCCESS_TEXT, label: REFRESH_IDLE_LABEL, busy: false, role: 'status', generation: 1, failureStreak: 0 },
     })).toBe(REFRESH_SUCCESS_TEXT);
   });
 
@@ -563,6 +568,134 @@ describe('스위치를 끄는 순간', () => {
     expect(api.maxInFlight, '꺼진 상태에서 연타하자 요청이 겹쳤다').toBe(1);
     expect(outcomes.map((outcome) => outcome.value)).toEqual([5, 6, 6]);
     expect(loop.timerCount(), '직접 누른 갱신이 자동 폴링을 되살렸다').toBe(0);
+  });
+});
+
+// ── 진행 사실의 주인과 막힘 안내 (TSK-000559 / INT-000036) ──
+//
+// founder 판정: "오른쪽 위에 새로고침 버튼이 돌아가고 있는데, 이제 갱신 중이라고 뜨는 게 이상해."
+// 원인은 `busy`가 App의 `loading`(모든 목록 조회)에서 왔다는 것이다 — 자동 폴링도 참으로
+// 만든다. 이제 진행은 **누른 사람의 영수증**만 소유하고, 실패는 토스트가 아니라 남는 안내다.
+
+describe('연속 실패 세기', () => {
+  it('성공은 0으로 되돌리고, 연속 실패는 하나씩 오른다', async () => {
+    const api = controllable();
+    const orchestrator = createRefreshOrchestrator({ run: api.run });
+
+    const first = orchestrator.request('priority');
+    api.pending[0].reject(new Error('list_failed'));
+    await first;
+    expect(orchestrator.status().failureStreak).toBe(1);
+
+    await until(() => !orchestrator.inFlight());
+    const second = orchestrator.request('priority');
+    // 진행 중에도 지금까지의 횟수를 잃지 않는다 — 잃으면 두 번째 안내가 첫 번째로 되돌아간다.
+    expect(orchestrator.status()).toMatchObject({ state: 'in-flight', failureStreak: 1 });
+    api.pending[1].reject(new Error('list_failed'));
+    await second;
+    expect(orchestrator.status().failureStreak).toBe(2);
+
+    await until(() => !orchestrator.inFlight());
+    const third = orchestrator.request('priority');
+    api.pending[2].resolve(1);
+    await third;
+    expect(orchestrator.status(), '성공했는데도 실패 횟수가 남아 있다').toMatchObject({ state: 'success', failureStreak: 0 });
+  });
+
+  it('실패 상태는 원인을 함께 들고 있다 — 화면이 갈래를 말할 근거다', async () => {
+    const api = controllable();
+    const orchestrator = createRefreshOrchestrator({ run: api.run });
+    const request = orchestrator.request('priority');
+    const cause = new TypeError('Failed to fetch');
+    api.pending[0].reject(cause);
+    await request;
+    expect(orchestrator.status().error).toBe(cause);
+  });
+
+  it('연결·계정이 바뀌면 이전 subject에서 쌓인 실패 횟수는 따라오지 않는다', async () => {
+    const api = controllable();
+    const orchestrator = createRefreshOrchestrator({ run: api.run });
+    const request = orchestrator.request('priority');
+    api.pending[0].reject(new Error('list_failed'));
+    await request;
+    expect(orchestrator.status().failureStreak).toBe(1);
+
+    orchestrator.reset();
+    expect(orchestrator.status()).toMatchObject({ state: 'idle', failureStreak: 0 });
+  });
+});
+
+describe('막힘·실패 안내', () => {
+  const quiet = refreshCadencePlan({ items: [brief('processed')] });
+  const failureStatus = (streak: number, error: unknown): RefreshStatus => ({
+    state: 'failure',
+    text: REFRESH_FAILURE_TEXT,
+    label: REFRESH_IDLE_LABEL,
+    busy: false,
+    role: 'alert',
+    generation: streak,
+    failureStreak: streak,
+    error,
+  });
+
+  it('막을 것이 없으면 아무것도 만들지 않는다', () => {
+    expect(refreshNotice({ plan: quiet, online: true })).toBeNull();
+    expect(refreshNotice({ plan: quiet, online: true, failure: null })).toBeNull();
+    // 진행·성공은 안내가 아니다 — 그것은 누른 버튼 옆 영수증이 말한다.
+    expect(refreshNotice({
+      plan: quiet,
+      online: true,
+      failure: { ...failureStatus(1, 'x'), state: 'success' },
+    })).toBeNull();
+  });
+
+  it('연결이 없으면 물어봤을 때만 답한다 — 본문 연결 카드와 같은 말을 상시로 겹치지 않는다', () => {
+    const off = refreshCadencePlan({ items: [], configured: false });
+    expect(refreshNotice({ plan: off, online: true })).toBeNull();
+    const asked = refreshNotice({ plan: off, online: true, asked: true });
+    expect(asked).toMatchObject({ reason: 'disconnected', tone: 'blocked', retry: false });
+    // 눌러도 소용없는 자리에 `다시 시도`를 내밀지 않는다.
+    expect(asked!.retry).toBe(false);
+    expect(asked!.title).toContain('연결');
+  });
+
+  it('오프라인은 묻지 않아도 말한다 — 자동 갱신이 조용히 죽어 있는 것을 감추지 않는다', () => {
+    const notice = refreshNotice({ plan: quiet, online: false });
+    expect(notice).toMatchObject({ reason: 'offline', tone: 'blocked', streak: 0 });
+    expect(notice!.detail, '언제 다시 확인하는지를 말하지 않는다').toContain('연결되면');
+    // 오프라인이 실패보다 앞선다 — 실패의 진짜 원인이 오프라인일 때 네트워크 오류라고
+    // 다시 말해 봐야 사용자가 할 일이 달라지지 않는다.
+    expect(refreshNotice({ plan: quiet, online: false, failure: failureStatus(1, new TypeError('Failed to fetch')) }))
+      .toMatchObject({ reason: 'offline' });
+  });
+
+  it('실패는 원인 갈래를 이름 붙이고 손잡이를 하나 준다', () => {
+    const notice = refreshNotice({ plan: quiet, online: true, failure: failureStatus(1, new TypeError('Failed to fetch')) });
+    expect(notice).toMatchObject({ reason: 'failure', tone: 'error', retry: true, streak: 1 });
+    expect(notice!.title).toBe('네트워크 오류');
+  });
+
+  it('반복 실패는 같은 문장을 되풀이하지 않고 **보이는 문구**까지 단계를 올린다', () => {
+    const error = new Error('list_failed');
+    const first = refreshNotice({ plan: quiet, online: true, failure: failureStatus(1, error) })!;
+    const second = refreshNotice({ plan: quiet, online: true, failure: failureStatus(2, error) })!;
+    const fourth = refreshNotice({ plan: quiet, online: true, failure: failureStatus(4, error) })!;
+
+    expect(second.title, '두 번째가 첫 번째와 똑같이 보인다 — 단계를 올리지 않은 것과 같다').not.toBe(first.title);
+    expect(fourth.title).not.toBe(second.title);
+    expect(second.title).toContain('연결 확인');
+    expect(fourth.title).toContain('설정');
+    expect(second.detail).not.toBe(first.detail);
+    // 단계를 올려도 손잡이는 계속 하나다. 선택지를 늘리는 것은 도움이 아니다.
+    expect([first.retry, second.retry, fourth.retry]).toEqual([true, true, true]);
+  });
+
+  it('원인 갈래는 오류 코드에서만 나온다 — 화면이 추측하지 않는다', () => {
+    expect(refreshFailureTitle(new TypeError('Failed to fetch'))).toBe('네트워크 오류');
+    expect(refreshFailureTitle('owner_only')).toBe('권한 오류');
+    expect(refreshFailureTitle(new Error('list_failed'))).toBe('서버 오류');
+    expect(refreshFailureTitle('missing_api')).toBe('연결 오류');
+    expect(refreshFailureTitle('weird_code')).toBe('갱신 실패');
   });
 });
 

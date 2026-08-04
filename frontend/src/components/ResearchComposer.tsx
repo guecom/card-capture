@@ -37,10 +37,13 @@ import { AiScopeNote, AiSurface, AiSurfaceHead } from './AiTaskSurface';
 import { RESEARCH_SCOPE_DOES, RESEARCH_SCOPE_LIMITS } from '../services/ai-stages';
 import {
   DEFAULT_RESEARCH_DEPTH,
+  RESEARCH_DEEP_CLOSED,
   RESEARCH_DEPTHS,
   RESEARCH_WAIT_STEPS,
+  type ResearchDeepState,
   type ResearchDepth,
   evaluateResearchSubmit,
+  normalizeResearchDeepState,
   normalizeResearchDepth,
   researchDepthSummary,
   resolveResearchRoute,
@@ -76,13 +79,21 @@ export interface ResearchComposerProps {
   depth?: ResearchDepth;
   onDepthChange?: (next: ResearchDepth) => void;
   /**
-   * 서버가 지금 깊은 조사를 열어 뒀는가 (계약: `DEEP_RESEARCH_ENABLED=true`인 경우에만).
+   * 서버가 깊은 조사에 대해 지금까지 한 말 (`unknown` · `open` · `closed`).
    *
    * **선택 prop이 아니다.** 기본값을 주면 그 기본값이 조용히 답이 되고, 새로 생기는 사용처가
-   * 물어보지도 않은 채 열린 화면을 그리게 된다. 닫혀 있을 때 이 칸은 사라지지 않고
-   * **고를 수 없는 상태로 남아** 왜 지금은 안 되는지 말한다 — 없어진 선택지는 고장으로 읽힌다.
+   * 물어보지도 않은 채 어느 한쪽 화면을 그리게 된다.
+   *
+   * 세 값이 화면에서 다르게 보이는 방식 (TSK-000560 / INT-000036):
+   *   `unknown` 아무 말도 하지 않는다. 세 깊이가 평범하게 서 있고 경고 장식이 하나도 없다.
+   *   `closed`  고를 수는 있되 **지금 접수되지 않는다는 사실**을 durable 문장으로 말한다.
+   *   `open`    아무것도 덧붙이지 않는다.
+   *
+   * 어느 값에서도 **고르는 것 자체는 막지 않는다.** 예전에는 `false` 하나가 위 두 경우를 모두
+   * 뜻해서, 아직 못 들은 동안 칸이 꺼져 있다가 목록 응답이 도착하는 순간 켜졌다 — 닫힌 기능이
+   * 요청마다 붙는 지연처럼 보인 원인이다.
    */
-  deepAvailable: boolean;
+  deepState: ResearchDeepState;
   helper: string;
   placeholder: string;
   /** 지금 보내는 중인가 */
@@ -102,25 +113,43 @@ export interface ResearchComposerProps {
 const IDLE: ResearchReceipt = { state: 'idle' };
 
 /**
- * 깊은 조사를 못 고르는 동안 낭독기가 읽는 말.
+ * 막혔을 때 손을 **막힘을 풀 수 있는 자리**로 데려다 놓는다 — 화면 밖에 있는 제출 버튼을
+ * 눌렀을 때의 유일한 응답이다.
  *
- * 서버 설정 이름·오류 코드·내부 식별자는 한 글자도 넣지 않는다 — 사용자가 알아야 하는 것은
- * "지금 열려 있지 않다"와 "무엇을 하면 되는가" 둘뿐이다.
- */
-const DEPTH_OFF_DETAIL = '지금은 깊은 조사를 열어 두지 않아 고를 수 없어요. 빠른 조사나 일반 조사로 요청할 수 있습니다.';
-
-/**
- * 막힘 안내로 손을 데려다 놓는다 — 화면 밖에 있는 제출 버튼을 눌렀을 때의 유일한 응답이다.
+ * 아무 일도 일어나지 않는 버튼은 고장으로 읽힌다. 그래서 스크롤과 포커스를 함께 옮긴다.
  *
- * 아무 일도 일어나지 않는 버튼은 고장으로 읽힌다. 스크롤과 포커스를 함께 옮겨서, 눈으로 보는
- * 사람에게는 이유가 화면 안으로 들어오고 낭독기를 쓰는 사람에게는 그 문장이 읽힌다.
+ * ── 왜 안내 문단이 아닌가 (INT-000036 / TSK-000562)
+ * 승인된 acceptance는 「실패 시 **목적 영역으로 focus**와 inline 안내를 제공한다」이다.
+ * 예전에는 이 함수가 `.research-block` 문단 자체에 포커스를 줬다. 문단은 읽히기는 하지만
+ * **다음 키 입력으로 할 수 있는 것이 없다** — 낭독기 사용자는 이유를 듣고 나서 다시 손으로
+ * 조작을 찾아 돌아가야 한다. 막다른 곳으로 데려다 놓는 것은 응답이 아니다.
+ *
+ * ── 이유마다 갈 곳이 다르다
+ * 막힌 이유가 무엇이냐에 따라 사용자가 **실제로 풀 수 있는 자리**가 다르다. 한 곳으로 몰아
+ * 보내면 그중 하나는 반드시 거짓말이 된다:
+ *   `deep_requires_scope` → 조사 범위 영역. 범위를 고르면 그 자리에서 풀린다.
+ *   `deep_unavailable`    → 깊이 칸. 범위를 아무리 골라도 풀리지 않는다. 서버가 닫아 둔
+ *                           것이므로 여기서 할 수 있는 일은 다른 깊이를 고르는 것뿐이다.
+ * 어느 쪽이든 안내 문단은 그대로 보이고 `aria-describedby`로 이어져 있어서, 포커스가 닿는
+ * 순간 이유가 함께 읽힌다.
  */
 export function focusResearchNotice(noticeId: string): boolean {
   if (!noticeId || typeof document === 'undefined') return false;
-  const node = document.getElementById(noticeId);
-  if (!node) return false;
-  if (!node.hasAttribute('tabindex')) node.setAttribute('tabindex', '-1');
-  node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  const notice = document.getElementById(noticeId);
+  if (!notice) return false;
+  const surface = notice.closest('.research-request');
+  const block = notice.getAttribute('data-block');
+  /* 닫힘일 때는 **고른 깊이 칸**으로 간다. 진짜 라디오라 그 자리에서 화살표로 다른 깊이를
+     고를 수 있다 — 풀 수 있는 손잡이 위에 서게 된다. */
+  const target = block === 'deep_unavailable'
+    ? surface?.querySelector<HTMLElement>('.research-depth-option input[value="deep"]')
+    : surface?.querySelector<HTMLElement>('.research-scope-all');
+  /* 손잡이를 못 찾으면 안내 문단이라도 읽히게 한다 — 아무 일도 일어나지 않는 것보다 낫다. */
+  const node = target ?? notice;
+  if (!node.hasAttribute('tabindex') && node === notice) node.setAttribute('tabindex', '-1');
+  // 스크롤은 언제나 **이유가 보이는 곳**으로 맞춘다. 손잡이만 보이고 왜 막혔는지가 화면 밖이면
+  // 눈으로 보는 사람에게는 버튼이 그냥 안 눌린 것과 같다.
+  notice.scrollIntoView({ block: 'center', behavior: 'smooth' });
   node.focus({ preventScroll: true });
   return true;
 }
@@ -187,7 +216,7 @@ export function ResearchComposer({
   onChange,
   depth = DEFAULT_RESEARCH_DEPTH,
   onDepthChange,
-  deepAvailable,
+  deepState,
   helper,
   placeholder,
   busy = false,
@@ -201,13 +230,17 @@ export function ResearchComposer({
   const budget = researchTextBudget(draft.scopeKeys);
   const preview = composeResearchInstruction(draft);
   const activeDepth = normalizeResearchDepth(depth);
+  const deep = normalizeResearchDeepState(deepState);
+  // 서버가 **말한** 닫힘. `unknown`은 여기에 들어오지 않는다 — 못 들은 것을 닫힘처럼 그리면
+  // 그 화면이 곧 지연으로 읽힌다 (TSK-000560).
+  const deepClosed = deep === 'closed';
   // 접수 조건은 `research-mode.ts`가 판정한다. 이 파일은 그 결과를 **그리기만** 한다 —
   // 같은 규칙을 JSX에 한 벌 더 쓰면 두 화면 중 하나만 고쳐지는 날이 온다.
   const gate = evaluateResearchSubmit({
     depth: activeDepth,
     scopeCount: draft.scopeKeys.length,
     hasText: Boolean(draft.text.trim()),
-    deepAvailable,
+    deepState: deep,
   });
 
   // 두 화면(촬영 탭·인물 시트)이 동시에 떠 있을 수 있다. 라디오 묶음 이름이 같으면 한쪽을 고를 때
@@ -313,34 +346,54 @@ export function ResearchComposer({
       </section>
 
       {/* 5. 얼마나 깊게. 자리는 `모두 선택` 바로 아래다 — 무엇을 조사할지 정한 손이 그대로
-          "얼마나"로 이어진다. 어떤 모델이 붙는지는 여기 없고, 있을 자리도 아니다. */}
-      <section className="research-depth" aria-labelledby={depthTitleId}>
+          "얼마나"로 이어진다. 어떤 모델이 붙는지는 여기 없고, 있을 자리도 아니다.
+
+          **세 칸은 첫 render부터 전부 고를 수 있다** (TSK-000560 / INT-000036).
+          founder: "빠른조사, 일반조사는 그냥 선택할 수 있는데, 깊은 조사는 왜 버튼 클릭할 수 있을
+          때 까지 시간이 지나야하는지 모르겠네?" / "깊은 조사 활성화는 조건이 아니라 그냥 선택할
+          수 있게 해줘." 그래서 `disabled`에 남은 이유는 `busy`(보내는 중) 하나뿐이고, 그 하나는
+          세 칸에 똑같이 걸린다 — 어느 깊이도 남보다 늦게 열리지 않는다. */}
+      <section className="research-depth" aria-labelledby={depthTitleId} data-deep-state={deep}>
         <span className="research-depth-title" id={depthTitleId}>얼마나 깊게 볼까요?</span>
         <div className="research-depth-grid" role="radiogroup" aria-labelledby={depthTitleId}>
           {RESEARCH_DEPTHS.map((option) => {
             const on = option.depth === activeDepth;
-            /* 지금 못 고르는 칸. **지우지 않는다** — 어제 있던 선택지가 오늘 없으면 사용자는 그것을
-               고장으로 읽는다. 대신 고를 수 없는 상태로 남기고 왜인지 이 칸 안에서 말한다.
-               이미 고른 채로 닫혔다면 선택은 그대로 두고 제출만 막는다(`evaluateResearchSubmit`) —
-               사용자가 고른 것을 대신 다른 것으로 바꾸지 않는다. */
-            const off = option.depth === 'deep' && !deepAvailable;
+            /* 서버가 지금 접수하지 않는다고 **말한** 칸. 지우지도, 끄지도 않는다 —
+               고르는 것은 사람의 손이고 조건이 붙지 않는다. 바뀌는 것은 이 칸이 말하는 사실과,
+               고른 채로 제출할 때의 판정(`evaluateResearchSubmit`)뿐이다. 고른 깊이를 대신
+               낮추지 않는다. */
+            const closed = option.depth === 'deep' && deepClosed;
             return (
               <label
                 key={option.depth}
-                className={`research-depth-option${on ? ' on' : ''}${off ? ' off' : ''}`}
+                className={`research-depth-option${on ? ' on' : ''}${closed ? ' closed' : ''}`}
                 data-depth={option.depth}
-                data-unavailable={off ? 'yes' : undefined}
+                /* 표식이 말하는 것은 **접수**가 닫혔다는 사실이다. 여기 있던 `data-unavailable`은
+                   이 칸이 꺼져 있던 시절의 표식이고, 이 저장소에서 그 이름은 지금도 "이 조작을
+                   쓸 수 없다"는 뜻이다(`CaptureEntry`의 카메라 없는 카드가 그 이름을 그대로
+                   쓴다). 선택이 열린 칸에 그 이름을 남겨 두면 DOM이 화면과 다른 말을 한다 —
+                   사람에게는 "고를 수 있다", 기계에게는 "쓸 수 없다". INT-000036 독립 게이트가
+                   실제로 그 어긋남을 잡았다 (`enabled=true` 인데 `why=data-unavailable`).
+                   막힌 자리가 선택이 아니라 접수라는 것이 이 이름에도 그대로 있어야 한다. */
+                data-intake={closed ? 'closed' : undefined}
+                /* 고르기 **전에** 무엇이 달라지는지 볼 수 있는 자리. 칸마다 설명 줄을 붙이면
+                   founder가 지적한 "너무 큰 블록"으로 돌아가므로 높이를 쓰지 않는 통로로 넘긴다. */
+                title={closed ? RESEARCH_DEEP_CLOSED.detail : option.detail}
               >
                 <input
                   type="radio"
                   name={depthGroupName}
                   value={option.depth}
                   checked={on}
-                  disabled={busy || off}
+                  /* 보내는 중에만 잠긴다. 연결 상태·목적 선택·서버 응답은 선택 조건이 아니다. */
+                  disabled={busy}
                   /* 조건이 붙은 것은 이 칸이다. 고른 순간 낭독기가 이름 다음에 조건을 읽는다. */
                   aria-describedby={gate.notice && option.depth === 'deep' ? blockId : undefined}
                   onChange={() => onDepthChange?.(option.depth)}
                 />
+                {/* 고른 칸을 색으로만 말하지 않는다. 자리를 차지하지 않게 겹쳐 두어 320px에서도
+                    줄바꿈을 만들지 않는다 (`position: absolute`). */}
+                {on && <span className="research-depth-pick" aria-hidden="true">✓</span>}
                 {/* 기다림의 무게는 눈금으로도 보인다. 분·초를 약속하지 않고 **순서만** 말한다. */}
                 <span className="research-depth-meter" aria-hidden="true">
                   {Array.from({ length: RESEARCH_WAIT_STEPS }, (_, step) => (
@@ -348,10 +401,11 @@ export function ResearchComposer({
                   ))}
                 </span>
                 <span className="research-depth-name">{option.label}</span>
-                {/* 못 고르는 동안에는 결과 요약 대신 **지금의 사실**을 말한다. 색으로만 알리지 않는다. */}
-                <span className="research-depth-short">{off ? '지금은 못 골라요' : option.short}</span>
+                {/* 닫혀 있으면 결과 요약 대신 **지금의 사실**을 말한다. "못 골라요"가 아니다 —
+                    고르는 것은 되고, 안 되는 것은 접수다. 색으로만 알리지 않는다. */}
+                <span className="research-depth-short">{closed ? RESEARCH_DEEP_CLOSED.short : option.short}</span>
                 {/* 눈으로는 눈금이, 읽어 주는 말에는 문장이 간다. */}
-                <span className="research-sr-only">{off ? DEPTH_OFF_DETAIL : option.detail}</span>
+                <span className="research-sr-only">{closed ? RESEARCH_DEEP_CLOSED.detail : option.detail}</span>
               </label>
             );
           })}
@@ -361,8 +415,21 @@ export function ResearchComposer({
             고른 깊이가 지금 닫혀 있으면 **하게 될 일을 설명하지 않는다** — 하지 않을 일을 설명하는
             문장은 거짓말이고, 이 줄이 사용자가 고른 것에 대해 읽는 유일한 문장이다. */}
         <p className="research-depth-summary" role="status">
-          {activeDepth === 'deep' && !deepAvailable ? `깊은 조사 — ${DEPTH_OFF_DETAIL}` : researchDepthSummary(activeDepth)}
+          {activeDepth === 'deep' && deepClosed ? `깊은 조사 — ${RESEARCH_DEEP_CLOSED.detail}` : researchDepthSummary(activeDepth)}
         </p>
+        {/* 닫혀 있다는 사실을 **네 번째 블록으로 세우지 않는다.**
+
+            세워 봤고, 그것이 표면을 뷰포트보다 크게 만들었다 (866.7px vs 844px). 이 작성 자리는
+            이미 폰 화면 하나를 거의 다 쓰고 있어서, 여기에 새 문단을 얹으면 표면 위쪽 기준선이
+            화면 밖으로 밀려나고 `e2e/surface-polish.spec.ts`의 표면 측정이 실제로 깨진다
+            (빛 번짐 폭 90% → 84%). 공간은 이 lane 혼자 쓰는 예산이 아니다.
+
+            그래서 닫힘은 **이미 있는 자리 넷**이 나눠 말한다 — 어느 것도 진행이 아니고, 어느
+            것도 새 높이를 쓰지 않는다:
+              1. 깊이 칸 안의 `지금은 접수 안 돼요` — 닫혀 있는 내내 눈에 보이는 사실.
+              2. 그 칸의 `title`(호버)과 `research-sr-only`(낭독기) — 뜻과 회복 방법 한 문장.
+              3. 깊은 조사를 고르는 순간의 접수 조건 안내(`.research-block`) — 이유와 회복 방법.
+              4. 같은 순간의 요약 줄 — 하지 않을 일을 설명하지 않는다. */}
       </section>
 
       {/* 보내기 전에 **보낼 그 문장**을 그대로 보여 준다. 합쳐지는 방식을 설명하지 않고 결과를 보인다. */}
@@ -378,9 +445,20 @@ export function ResearchComposer({
           인물 시트의 `조사 요청 접수`), 눌러서 튕겨 나온 사람이 가장 먼저 보는 곳이 여기다.
           실패가 아니라 **아직 남은 조건**이므로 `role="alert"`가 아니라 `role="status"`다.
           막히기 전(범위 0개로 깊은 조사를 고른 직후)에도 같은 말을 미리 보여 준다 — 긴 글을
-          다 적은 뒤에 처음 알게 되면 늦다. */}
+          다 적은 뒤에 처음 알게 되면 늦다.
+
+          `data-block`은 장식이 아니다. 막혔을 때 손이 어디로 가야 하는지를 이 값이 정한다
+          (`focusResearchNotice`) — 범위를 고르면 풀리는 막힘과, 깊이를 바꿔야 풀리는 막힘은
+          갈 곳이 다르다. 판정은 `evaluateResearchSubmit` 하나가 하고 이 자리는 그것을
+          그대로 싣는다. */}
       {gate.notice && (
-        <p className="research-block" data-blocked={gate.blocked ? 'yes' : 'not-yet'} id={blockId} role="status">
+        <p
+          className="research-block"
+          data-block={gate.notice.block}
+          data-blocked={gate.blocked ? 'yes' : 'not-yet'}
+          id={blockId}
+          role="status"
+        >
           <span className="research-block-mark" aria-hidden="true"><TriangleAlert size={15} /></span>
           <span className="research-block-copy">
             <strong>{gate.notice.title}</strong>

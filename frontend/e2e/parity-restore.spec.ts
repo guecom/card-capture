@@ -211,12 +211,32 @@ test('keeps background refresh silent on network failure and maps errors on manu
   try {
     const api = encodeURIComponent('https://api.example.test/exec');
     await page.goto(`http://127.0.0.1:${address.port}/next/?api=${api}&k=owner-token&view=briefs`, { waitUntil: 'networkidle' });
-    // 초기(배경) 새로고침 실패는 토스트를 띄우지 않는다 — 행사장 오프라인 스팸 방지.
+    /* 배경(자동) 갱신 실패는 아무것도 띄우지 않는다 — 행사장 오프라인 스팸 방지.
+       예전에는 `is-open` **속성**을 읽었는데, Ionic React는 `isOpen`을 DOM property로만
+       넘기므로 그 속성은 토스트가 떠 있어도 없다. 속성만 보는 단언은 토스트가 세 장 떠 있어도
+       통과한다 — 그려진 상자를 직접 본다 (TSK-000559). */
+    const openToasts = () => page.evaluate(() => Array.from(document.querySelectorAll('ion-toast'))
+      .filter((node) => {
+        const rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && !node.classList.contains('overlay-hidden');
+      })
+      .map((node) => String((node as HTMLElement & { message?: string }).message ?? node.textContent ?? '').trim()));
     await page.waitForTimeout(1_200);
-    expect(await page.evaluate(() => document.querySelector('ion-toast')?.getAttribute('is-open'))).not.toBe('true');
-    // 수동 새로고침은 한글로 안내한다.
+    expect(await openToasts(), '배경 갱신 실패가 토스트를 띄웠다').toEqual([]);
+
+    /* 수동 새로고침의 실패도 토스트가 아니다 (INT-000036 / TSK-000559).
+       founder 판정: "눌렀을 때 새로고침 중이라고 뭔가 위에서 내려오는데, 이거 굳이 있어야
+       되나 싶어." 안내는 갱신 조작 바로 옆에 남고, 2.6초 뒤 사라지지 않는다 — 사용자가
+       조치해야 하는 사실에 토스트 수명을 주면 그 사실은 전달되지 않는다. */
     await page.getByRole('button', { name: '최신 상태 확인', exact: true }).click();
-    await expect(page.getByText(/새로고침 실패: 네트워크 오류/)).toBeVisible();
+    const notice = page.locator('.int30-refresh-notice');
+    await expect(notice).toBeVisible({ timeout: 8_000 });
+    await expect(notice, '실패의 원인 갈래를 한글로 말하지 않는다').toContainText('네트워크 오류');
+    await expect(notice.getByRole('button', { name: '다시 시도' })).toBeVisible();
+    // 토스트 수명(2.6초)을 넘겨도 남아 있고, 토스트는 끝까지 한 장도 뜨지 않는다.
+    await page.waitForTimeout(3_200);
+    await expect(notice).toBeVisible();
+    expect(await openToasts(), '수동 갱신 실패가 토스트를 띄웠다').toEqual([]);
   } finally {
     await stopStaticServer(server);
   }
