@@ -313,8 +313,37 @@ test('끈 상태는 기기에 남지 않는다 — 새 session은 다시 켜진 
 // ── 2. 박자를 정직하게 말한다 ──
 
 test('화면이 말한 초가 실제 폴링 간격과 같다 (적응형 박자를 평균으로 뭉개지 않는다)', async ({ page }) => {
+  /* 이 판정은 폴링을 네 번(부팅 정리 한 번 + 재는 세 번) 실제로 지켜봐야 성립한다. 4초 박자로
+     20초 안팎이 걸리므로 30초 기본 예산은 한가한 기계에서만 맞는다. 늘리는 것은 게이트가 아니라
+     집행 예산이고, 판정 기준(문구 ↔ 실제 간격)은 하나도 바뀌지 않는다. */
+  test.slow();
   const harness = await boot(page, { active: true });
   try {
+    /* 이 시험이 재는 것은 이름 그대로 **폴링 간격**이다. 그래서 창을 열기 전에 두 가지를 못 박는다.
+
+       (1) 목록이 화면에 앉았다. `boot()`가 돌아온 시점은 그 시점이 아니다 — `networkidle`은
+           **망**이 조용하다는 뜻이라, 앱이 첫 조회를 시작도 하기 전에 끝날 수 있다(10배 CPU
+           스로틀 실측: `boot done, requests=0`). 그 구간에서 문구를 읽으면 briefs가 비어 있어
+           유휴 값 `20초마다`가 나오고, 곧이어 목록이 앉으면 박자는 활성 값 4초가 된다 —
+           문구와 간격이 **서로 다른 규모**에서 나온다. CI 실패가 정확히 이것이었다
+           (`화면은 20초마다라고 하는데 실제 간격은 313ms다`).
+
+       (2) 부팅 쪽 조회가 다 끝났다. 부팅에는 우선 갱신이 두 번 들어온다(`config`·`configured`가
+           확정되며 mount effect가 다시 도는 자리). single-flight는 그것을 겹쳐 만들지 않고 떠
+           있던 조회 **직후 한 번 더** 읽는데(후속 조회), 그 둘의 간격은 박자가 아니라 응답 한
+           번의 길이다 — 이 기계에서 34ms~529ms, 10배 스로틀 아래에서 2.4초. 창이 그 쌍을 물면
+           `Math.min`이 그것을 집는다. 후속 조회는 제품 계약이고(`연타는 …` 게이트가 그것이
+           **있어야** 한다고 잠근다) 이 시험의 대상이 아니다. 그래서 창을 그 뒤에서 연다.
+
+       둘을 못 박고 나면 창 안에서 요청을 만드는 것은 폴링 타이머뿐이다 — 이 시험은 아무것도
+       누르지 않고, 화면을 숨기지도, 오프라인으로 만들지도 않는다. 나중에 걸러 낸 것이 아니라
+       **애초에 섞이지 않는 창**이다. */
+    await expect(refreshLine(page), '첫 목록이 화면에 앉지 않았다')
+      .toContainText(/방금|\d+초 전|\d+분 전/, { timeout: 15_000 });
+    const applied = harness.listRequests;
+    await expect.poll(() => harness.listRequests, { timeout: 20_000 }).toBeGreaterThan(applied);
+    await expect.poll(() => harness.listInFlight, { timeout: 15_000 }).toBe(0);
+
     // 처리 중인 카드가 있는 동안의 문구. 숫자는 앱 공식을 다시 계산하지 않고 그대로 읽는다.
     await expect(refreshLine(page)).toContainText(/\d+초마다/, { timeout: 8_000 });
     const activeText = (await refreshLine(page).textContent()) ?? '';
@@ -323,10 +352,17 @@ test('화면이 말한 초가 실제 폴링 간격과 같다 (적응형 박자�
 
     // 진실값은 서버에 실제로 도착한 요청 사이의 간격이다.
     const before = harness.listRequests;
-    await expect.poll(() => harness.listRequests, { timeout: 15_000 }).toBeGreaterThanOrEqual(before + 3);
+    await expect.poll(() => harness.listRequests, { timeout: 20_000 }).toBeGreaterThanOrEqual(before + 3);
     const stamps = harness.listStartedAt.slice(before);
     const gaps = stamps.slice(1).map((value, index) => value - stamps[index]);
     const observed = Math.min(...gaps);
+    /* 재는 동안 규모가 바뀌지 않았다. 바뀌었다면 위 문구와 아래 간격은 서로 다른 사실이고,
+       그때는 조용히 통과시키는 것이 아니라 여기서 걸려야 한다. */
+    const afterText = ((await refreshLine(page).textContent()) ?? '').trim();
+    expect(
+      Number(/(\d+)초마다/.exec(afterText)?.[1]),
+      `재는 동안 박자 규모가 바뀌었다: "${activeText.trim()}" → "${afterText}" (간격 ${JSON.stringify(gaps)})`,
+    ).toBe(claimedSeconds);
     expect(observed, `화면은 ${claimedSeconds}초마다라고 하는데 실제 간격은 ${observed}ms다`)
       .toBeGreaterThanOrEqual(claimedSeconds * 1_000 - 1_200);
     expect(observed, `화면은 ${claimedSeconds}초마다라고 하는데 실제로는 ${observed}ms마다 요청한다`)
