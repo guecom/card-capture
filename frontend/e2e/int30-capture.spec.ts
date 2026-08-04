@@ -148,6 +148,8 @@ interface FieldShape {
   radius: number;
   height: number;
   shadow: string;
+  /** 잰 순간 이 칸이 focus를 쥐고 있었는가. "평상시" 비교가 거짓말을 하지 않게 만드는 증거다. */
+  focusWithin: boolean;
 }
 
 /**
@@ -174,8 +176,50 @@ async function authoringBoxes(page: Page): Promise<FieldShape[]> {
         radius: Math.round(parseFloat(style.borderTopLeftRadius) * 100) / 100,
         height: Math.round(node.getBoundingClientRect().height),
         shadow: style.boxShadow,
+        focusWithin: node.matches(':focus-within'),
       };
     }));
+}
+
+/**
+ * 시트가 **다 열렸다**는 사실을 시간이 아니라 상태로 확인한다.
+ *
+ * `ManualPersonSheet`는 `onDidPresent`에서 칸에 focus를 준다(`ManualPersonSheet.tsx`) — 쓰려고 여는
+ * 자리라 그것이 옳은 제품 동작이다. 그런데 시트 진입 애니메이션 + `setFocus()`가 끝나는 데
+ * 400~600ms가 걸려서, 고정 대기로 재면 같은 코드가 기계 속도에 따라 어떤 판은 평상시를,
+ * 어떤 판은 focus 중인 칸을 잰다 — CI가 실제로 그렇게 깨졌다(테두리 색만 하나 `rgba(35,104,216,0.62)`).
+ *
+ * focus가 **도착한 것을 본 뒤** 놓아야 한다. 도착하기 전에 놓으면 그 다음에 시트가 다시 잡는다.
+ */
+async function sheetFocusLanded(page: Page): Promise<void> {
+  const field = page.locator('ion-modal.manual-sheet ion-textarea.manual-input');
+  await expect(field).toBeVisible();
+  await expect
+    .poll(() => field.evaluate((node) => node.matches(':focus-within')), {
+      message: '시트가 칸에 focus를 주지 않았다 — 자동 focus를 바꿨다면 이 게이트도 같이 고쳐야 한다',
+    })
+    .toBe(true);
+}
+
+/**
+ * 모든 작성 box를 **평상시**로 되돌린다 — focus를 놓게 하고, 색·그림자가 정착할 때까지 기다린다.
+ *
+ * 이 게이트가 재는 것은 "가만히 있을 때 여섯 상자가 같은 물건으로 보이는가"다. focus 링은 바로
+ * 아래 게이트가 따로 잰다. 정착은 `waitForTimeout`으로 흉내 내지 않는다 — 140ms transition의
+ * 중간 프레임을 잡을 수 있어서 그것 자체가 같은 종류의 경주다. `getAnimations().finished`로 끝을 본다.
+ */
+async function atRest(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    // shadow DOM 안쪽까지 내려가야 실제 활성 요소가 나온다 (`ion-textarea` > `textarea.native-textarea`).
+    let node: Element | null = document.activeElement;
+    while (node?.shadowRoot?.activeElement) node = node.shadowRoot.activeElement;
+    (node as HTMLElement | null)?.blur();
+  });
+  await page.evaluate(async () => {
+    await Promise.all(Array.from(document.querySelectorAll('ion-input, ion-textarea'))
+      .flatMap((node) => node.getAnimations({ subtree: true }))
+      .map((animation) => animation.finished.catch(() => undefined)));
+  });
 }
 
 /**
@@ -276,9 +320,16 @@ test('화면의 모든 작성 box가 같은 테두리·모서리를 쓴다', asy
     // 직접 입력 시트의 칸까지 같은 자로 잰다 — "다른 곳의 작성하는 박스"가 정확히 이것이다.
     await page.getByRole('button', { name: '직접 입력' }).click();
     await expect(page.getByRole('textbox', { name: '이 사람에 대해 아는 내용' })).toBeVisible();
-    await page.waitForTimeout(400);
+    // 시트는 열리면서 그 칸에 focus를 준다. 도착한 것을 보고 놓아야 여섯을 같은 상태에서 잰다.
+    await sheetFocusLanded(page);
+    await atRest(page);
     const withSheet = await authoringBoxes(page);
     expect(withSheet.length, '시트를 열었는데 잰 칸이 늘지 않았다').toBeGreaterThan(onScreen.length);
+    // 하나라도 focus를 쥔 채로 재면 아래 네 비교는 전부 거짓말이다. 먼저 그 사실부터 못 박는다.
+    expect(
+      withSheet.filter((box) => box.focusWithin).map((box) => box.where),
+      `평상시를 재야 하는데 focus를 쥔 칸이 있다: ${JSON.stringify(withSheet)}`,
+    ).toEqual([]);
 
     const widths = new Set(withSheet.map((box) => box.borderWidth));
     const colors = new Set(withSheet.map((box) => box.borderColor));
