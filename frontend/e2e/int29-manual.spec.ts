@@ -437,7 +437,33 @@ test('키보드와 낭독기만으로 열고 쓰고 닫을 수 있다', async ({
     await expect(trigger).toBeFocused();
     await page.keyboard.press('Enter');
     await expect(page.locator('ion-modal.manual-sheet')).toBeVisible();
-    await page.waitForTimeout(400);
+    // 시트가 `보인다`와 그 안의 칸이 실제로 붙는 것은 다른 순간이다. 여기 있던 고정
+    // `waitForTimeout(400)`은 이 저장소가 이미 한 번 원인으로 확정한 것과 같은 모양이다 —
+    // 시트가 열리고 정착하기까지 400~600ms라 그 경계 위에서는 같은 코드가 기계 속도에 따라
+    // 어떤 판은 붙은 칸을, 어떤 판은 아직 없는 칸을 잰다(RELEASE.md v2.25.0). 실제로 CI에서
+    // `입력 칸에 접근 이름이 없다`로 걸렸고, 같은 판이 이 PC에서는 통과했다.
+    // 시간이 아니라 상태로 기다린다. 칸이 끝내 안 붙으면 여기서 걸린다 — 게이트는 약해지지 않는다.
+    await expect(
+      page.locator('ion-modal.manual-sheet ion-textarea'),
+      '시트는 열렸는데 입력 칸이 붙지 않았다',
+    ).toBeAttached();
+    // 접근 이름은 칸이 붙는 순간에는 아직 없다. 50ms 간격 실측으로 확인한 모양:
+    // t=0~150ms `aria-label`은 null, t=200ms에 `이 사람에 대해 아는 내용`이 붙고 그 뒤로 안 바뀐다.
+    // 여기 있던 고정 `waitForTimeout(400)`은 이 PC에서만 그 200ms를 넘겼다. CI는 같은 스위트를
+    // 도는 데 약 3.3배(2.9분 → 9.7분) 걸려 400ms 안에 못 붙었고 `입력 칸에 접근 이름이 없다`로
+    // 걸렸다 — 제품은 멀쩡한데 게이트가 시간으로 재고 있었다. 이 저장소가 이미 한 번 원인으로
+    // 확정한 것과 같은 모양이다(RELEASE.md v2.25.0의 작성 box 게이트).
+    // 이제 시간이 아니라 상태로 기다린다. 이름이 끝내 안 붙으면 여기서 timeout으로 걸리므로
+    // 게이트는 약해지지 않는다 — 아래 세 단언이 판정을 그대로 소유한다.
+    await expect
+      .poll(
+        () => page.evaluate(() => document
+          .querySelector('ion-modal.manual-sheet')
+          ?.querySelector('ion-textarea')
+          ?.getAttribute('aria-label')?.length ?? 0),
+        { timeout: 10_000 },
+      )
+      .toBeGreaterThan(0);
 
     const named = await page.evaluate(() => {
       const modal = document.querySelector('ion-modal.manual-sheet');
