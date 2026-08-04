@@ -1587,6 +1587,21 @@ test('320 / 390 / 1280px에서 세 표면 어디에도 가로 넘침이 없다',
 test('다크 모드에서 세 표면의 렌더된 글자 대비가 WCAG 기준을 넘는다', async ({ page }) => {
   const harness = await boot(page, { theme: 'dark', active: false });
   try {
+    /* 재기 전에 세 표면이 실제로 그려진 것을 기다린다. `boot()` 직후 바로 재면 셸이 아직
+       없어 `roots`가 0으로 나오고, 그러면 게이트는 (옳게) 실패한다 — 제품이 아니라 시점
+       때문에. CI에서 실제로 그렇게 걸렸다(`roots=0`, 같은 코드가 직전 run에서는 통과).
+       아래 세 기다림은 게이트를 약하게 만들지 않는다. 표면이 끝내 안 그려지면 여기서
+       걸리고, 그때는 `0개밖에 못 찾았다`보다 어느 표면이 없는지를 이름으로 말한다. */
+    await expect(page.locator('ion-header'), '상단 바가 그려지지 않았다').toBeVisible();
+    await expect(
+      page.locator('button', { hasText: '명함 앞면 촬영' }).first(),
+      '진입 카드가 그려지지 않았다',
+    ).toBeVisible();
+    await expect(
+      page.locator('[role="radiogroup"]', { hasText: '깊은 조사' }).first(),
+      '조사 깊이 자리가 그려지지 않았다',
+    ).toBeVisible();
+
     const measured = await page.evaluate(() => {
       const helpers = window.__int36;
       type Rgba = [number, number, number, number];
