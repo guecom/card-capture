@@ -413,8 +413,14 @@ function readDepthFirstPaint(page: Page) {
 test('서버가 아직 대답하지 않은 첫 프레임에서 세 깊이가 모두 고를 수 있다', async ({ page }) => {
   const harness = await boot(page);
   try {
-    // 한 번 다녀왔으니 작성 자리는 첫 프레임부터 그려진다. 이제 목록 응답만 **붙잡아 둔다** —
-    // 사용자가 앱을 다시 열었을 때 실제로 보게 되는 구간이다.
+    /* "한 번 다녀왔다"를 **확인하고** 넘어간다. 이 시험의 전제는 첫 방문이 owner 표식을
+       기기에 남겨서, 다시 열 때 목록 응답 없이도 작성 자리가 그려진다는 것이다. 그런데
+       `boot()`가 돌아온 시점이 곧 그 표식이 남은 시점은 아니다 — 느린 기계에서는 표식이
+       남기 전에 reload가 걸리고, 그러면 목록을 붙잡아 둔 채라 작성 자리가 영영 안 나타나
+       `toBeVisible`이 요소를 못 찾는다(CI 실측). 전제를 먼저 관측한다. */
+    await expect(composer(page), '첫 방문에서 작성 자리가 그려지지 않았다 — 이 시험의 전제가 성립하지 않는다').toBeVisible();
+
+    // 이제 목록 응답만 **붙잡아 둔다** — 사용자가 앱을 다시 열었을 때 실제로 보게 되는 구간이다.
     const held: Array<() => void> = [];
     let listRequests = 0;
     await page.route('https://api.example.test/**', async (route) => {
@@ -923,9 +929,15 @@ test('깊이 자리의 live region은 하나다 — 같은 사실을 두 번 읽
   try {
     const surface = composer(page);
     const live = async () => surface.locator('.research-depth [role="status"], .research-depth [role="alert"], .research-depth [aria-live]').count();
+    /* `count()`는 기다리지 않는다 — 지금 이 순간 몇 개인지만 센다. 그래서 깊이 자리가 아직
+       안 그려진 순간에 물으면 `0`이 나오고, 게이트는 "둘 이상"이라는 자기 메시지와 정반대
+       사실로 빨개진다(전체 판 실측: `Received: 0`). 셀 대상이 화면에 선 뒤에 센다. */
+    await expect(surface.locator('.research-depth'), '깊이 자리가 그려지지 않았다').toBeVisible();
     // 닫힌 채로 고르지 않은 상태: 요약 줄 하나만 말한다. durable 문장은 사실이지 알림이 아니다.
     expect(await live(), '깊이 자리에 스스로 말하는 자리가 둘 이상이다').toBe(1);
     await depthOption(surface, 'deep').click();
+    // 고른 것이 실제로 반영된 뒤에 다시 센다.
+    await expect(depthInput(surface, 'deep')).toBeChecked();
     expect(await live(), '깊이를 고른 뒤 말하는 자리가 늘었다').toBe(1);
   } finally {
     await stopServer(harness.server);

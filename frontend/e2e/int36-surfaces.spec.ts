@@ -106,12 +106,78 @@ declare global {
       text(element: Element): string;
       where(element: Element): string;
       colorsIn(value: string): Array<[number, number, number, number]>;
+      dialogTop(): number | null;
     };
     __int36probe?: Element;
     __int36samples?: { n: number; busy: number; spin: number; ambient: number; ambientSamples: number; seen: string[] };
     __int36timer?: number;
     __int36motion?: Array<{ t: number; top: number }>;
+    __int36motionStop?: boolean;
   }
+}
+
+/**
+ * 지금 걸려 있는 전환이 **실제로 끝날 때까지** 기다린다.
+ *
+ * `waitForTimeout(700)`은 "이쯤이면 끝났겠지"라는 짐작이다. 느린 기계에서는 그 짐작이 전환
+ * 한가운데를 재게 만들고, 그러면 게이트는 제품이 아니라 **시점** 때문에 빨개진다. 여기서
+ * 기다리는 것은 시계가 아니라 상태다.
+ *
+ * 끝나지 않는 것은 세지 않는다: 무한 반복 애니메이션(회전·AI 표면 테두리)과 아직 재생되지
+ * 않은 애니메이션은 `finished`가 영영 안 오므로 제외한다. 8초 상한은 판정 기준이 아니라
+ * **교착 방지**다 — 이 앱의 전환은 모두 0.5초 아래고, 상한은 기다림을 늘리지 줄이지 않는다.
+ */
+async function settleAnimations(page: Page): Promise<void> {
+  await page.evaluate(async () => {
+    const running = () => document.getAnimations().filter((animation) => animation.playState === 'running'
+      && (animation.effect?.getComputedTiming().iterations ?? 1) !== Number.POSITIVE_INFINITY);
+    const drain = async () => {
+      await Promise.race([
+        Promise.all(running().map((animation) => animation.finished.catch(() => undefined))),
+        new Promise((done) => setTimeout(done, 8_000)),
+      ]);
+    };
+    // 아직 시작하지 않은 전환이 있을 수 있다. 한 프레임 흘려 보내고 한 번 더 비운다.
+    await drain();
+    await new Promise((done) => requestAnimationFrame(() => done(undefined)));
+    await drain();
+  });
+}
+
+/**
+ * 시트·모달이 그려지고 **더 이상 움직이지 않을 때**까지 기다린다. class 이름이 아니라 role로 찾는다.
+ *
+ * 애니메이션 목록(`getAnimations`)만 보면 안 된다 — Ionic은 모달을 붙인 **다음** 프레임에
+ * 전환을 시작하므로, 그 사이에 물으면 "도는 것이 없다 = 다 끝났다"로 읽힌다. 실제로 그렇게
+ * 일찍 돌아온 뒤 `force: true` 클릭이 아직 움직이는 시트를 눌러, 고르지도 않은 깊이로
+ * 제출이 나가 게이트가 제품 결함처럼 빨개졌다(부하 걸린 4판 중 2판).
+ *
+ * 그래서 **자리가 연속된 프레임에서 그대로인지**를 본다. 프레임 수로 세므로 기계가 느릴수록
+ * 더 오래 기다린다. 10초 상한은 판정이 아니라 교착 방지다.
+ */
+async function settleDialog(page: Page): Promise<void> {
+  await expect
+    .poll(() => page.evaluate(() => window.__int36.dialogTop()), { timeout: 15_000, message: '시트·모달이 그려지지 않았다' })
+    .not.toBeNull();
+  const settled = await page.evaluate(async () => {
+    let previous: number | null = null;
+    let still = 0;
+    let frames = 0;
+    const deadline = performance.now() + 10_000;
+    while (performance.now() < deadline) {
+      await new Promise((done) => requestAnimationFrame(() => done(undefined)));
+      frames += 1;
+      const now = window.__int36.dialogTop();
+      still = now !== null && previous !== null && Math.abs(now - previous) < 0.5 ? still + 1 : 0;
+      previous = now;
+      if (frames >= 8 && still >= 5) break;
+    }
+    return { frames, still, top: previous };
+  });
+  expect(
+    settled.still,
+    `시트가 10초 동안 자리를 잡지 못했다 (프레임 ${settled.frames}개, 마지막 위치 ${settled.top}px)`,
+  ).toBeGreaterThanOrEqual(5);
 }
 
 function installHelpers(page: Page): Promise<void> {
@@ -184,7 +250,36 @@ function installHelpers(page: Page): Promise<void> {
       return found;
     };
 
-    window.__int36 = { walk, chain, containsDeep, announced, painted, text, where, colorsIn };
+    /**
+     * 열려 있는 시트·모달 안에서 **글자를 가진** 요소의 가장 위 가장자리. 없으면 `null`.
+     *
+     * 시트가 어디까지 올라왔는지를 말하는 값이다. backdrop은 글자가 없어 잡히지 않고(그것은
+     * 전체 화면을 덮고 움직이지 않아 매 프레임 `top = 0`을 준다), 시트 내용은 shadow DOM 안
+     * wrapper와 함께 움직이므로 host의 rect만 보면 아무 움직임도 안 보인다.
+     *
+     * dialog는 **light DOM에서 바로 찾는다.** 예전에는 `walk(document.body)`로 찾았는데, 그
+     * 훑기가 프레임마다 문서 전체를 두 번 도느라 무거워서 바쁜 기계에서는 전환 한 번에 두세
+     * 프레임밖에 못 찍었다 — 재는 도구가 재는 대상을 방해한 것이다.
+     */
+    const dialogTop = (): number | null => {
+      let top: number | null = null;
+      for (const host of Array.from(document.querySelectorAll('ion-modal, dialog, [role="dialog"], [aria-modal="true"]'))) {
+        if (getComputedStyle(host).display === 'none') continue;
+        for (const inner of walk(host)) {
+          const own = Array.from(inner.childNodes).filter((leaf) => leaf.nodeType === 3)
+            .map((leaf) => leaf.textContent ?? '').join('').trim();
+          if (!own) continue;
+          const rect = inner.getBoundingClientRect();
+          if (rect.width < 2 || rect.height < 2) continue;
+          const style = getComputedStyle(inner);
+          if (style.display === 'none' || style.visibility === 'hidden') continue;
+          top = top === null ? rect.top : Math.min(top, rect.top);
+        }
+      }
+      return top;
+    };
+
+    window.__int36 = { walk, chain, containsDeep, announced, painted, text, where, colorsIn, dialogTop };
   });
 }
 
@@ -331,6 +426,15 @@ async function boot(page: Page, options: BootOptions = {}): Promise<Harness> {
     await expect(page.getByRole('radio', { name: '일반 조사' })).toHaveCount(1);
     state.hold = true;
     await page.goto(url, { waitUntil: 'domcontentloaded' });
+  } else {
+    /* `networkidle`은 **망**이 조용해졌다는 뜻이지 화면이 첫 목록을 받아 그렸다는 뜻이 아니다.
+       그 사이에 재면 기록 구획이 아직 `최신 상태 확인 중`이라고 말하고 있어서, 아무도 누르지
+       않았는데 "진행을 말하는 표면이 있다"가 제품과 무관하게 참이 된다 (전체 판 실측:
+       `div.records-feed > div.center-state > span="최신 상태 확인 중"`).
+       첫 목록이 실제로 화면에 앉은 것을 보고 나서 시험을 시작한다. 끝내 안 앉으면 여기서
+       걸리므로 판정이 약해지지 않는다 — 그때는 어느 단언보다 이 사실이 먼저 참이다. */
+    await expect(page.locator('.records-feed .center-state'), '첫 목록을 아직 받지 못했다')
+      .toHaveCount(0, { timeout: 20_000 });
   }
 
   return {
@@ -532,6 +636,10 @@ const describeSurfaces = (surfaces: Surface[]): string =>
 // ══════════════════════════════════════════════════════════════════════════════
 
 test('아무도 누르지 않았는데 새로고침 버튼이 혼자 돌지 않는다', async ({ page }) => {
+  /* 이 판정은 자동 폴링 세 번을 실제로 지켜봐야 성립한다(빠른 박자 4초 × 3 = 12초 이상).
+     30초 기본 예산은 한가한 기계에서만 맞는다 — 늘리는 것은 게이트가 아니라 **집행 예산**이고,
+     판정 기준(표본 수·폴링 수·0건)은 하나도 바뀌지 않는다. */
+  test.slow();
   const harness = await boot(page, { active: true });
   try {
     const button = await refreshButton(page);
@@ -575,7 +683,19 @@ test('아무도 누르지 않았는데 새로고침 버튼이 혼자 돌지 않�
     }, PHRASES);
 
     const before = harness.listRequests;
-    await page.waitForTimeout(13_000);
+    /* 13초라는 **시계**가 아니라 표본이 다 모이기를 기다린다. 25ms 타이머는 바쁜 기계에서
+       띄엄띄엄 돌아 같은 13초에 표본이 절반도 안 쌓이고, 그러면 아래 `표본이 N개뿐이다`가
+       제품과 무관하게 빨개진다. 판정 기준(폴링 수·표본 수)은 그대로 두고 그 기준이 채워질
+       때까지 기다린다 — 오래 볼수록 "혼자 돈다"를 잡을 기회만 늘어난다. */
+    await expect
+      .poll(() => harness.listRequests - before, { timeout: 40_000, message: '관측 창에서 자동 폴링이 일어나지 않는다' })
+      .toBeGreaterThanOrEqual(3);
+    await expect
+      .poll(() => page.evaluate(() => window.__int36samples?.n ?? 0), { timeout: 40_000 })
+      .toBeGreaterThan(200);
+    await expect
+      .poll(() => page.evaluate(() => window.__int36samples?.ambientSamples ?? 0), { timeout: 40_000 })
+      .toBeGreaterThan(30);
     const measured = await page.evaluate(() => {
       if (window.__int36timer) window.clearInterval(window.__int36timer);
       return window.__int36samples!;
@@ -602,22 +722,25 @@ test('눌렀을 때 진행 사실을 말하는 표면은 화면에 정확히 하
     const atRest = await refreshReport(page);
     expect(atRest.busy.length, `아무 요청도 없는데 진행을 말하는 표면이 있다: ${describeSurfaces(atRest.busy)}`).toBe(0);
 
-    harness.delayList(3_000);
+    /* 관측 창을 **시계가 아니라 시험이** 쥔다. 3초 지연은 이 구간(클릭 → 폴링 → 무거운 DOM
+       훑기)을 바쁜 기계에서 다 담지 못했고, 창이 닫힌 뒤에 재고는 "표면이 0개"라고 말했다.
+       응답을 붙잡아 두면 창은 놓을 때까지 닫히지 않는다 — 판정 기준은 그대로 `정확히 1개`다. */
+    harness.holdList(true);
     await button.click();
-    // 요청이 실제로 떠 있는 창에서만 잰다 — 관측 창이 닫힌 뒤 재면 무엇이든 0이 된다.
-    await expect.poll(() => harness.listInFlight, { timeout: 5_000 }).toBeGreaterThan(0);
-    await page.waitForTimeout(400);
-    expect(harness.listInFlight, '읽는 사이에 요청이 이미 끝났다 — 관측 창이 너무 좁다').toBeGreaterThan(0);
+    await expect.poll(() => harness.listInFlight, { timeout: 10_000 }).toBeGreaterThan(0);
+    // 화면이 그 사실을 실제로 그린 뒤에 잰다. 고정 대기가 아니라 **상태**를 기다린다.
+    await expect(button, '눌렀는데 버튼이 진행 중이라고 말하지 않는다').toHaveAttribute('aria-busy', 'true');
 
     const pending = await refreshReport(page);
+    expect(harness.listInFlight, '읽는 사이에 요청이 이미 끝났다 — 관측 창이 너무 좁다').toBeGreaterThan(0);
     expect.soft(
       pending.busy.length,
       `수동 갱신 중 "진행 중"을 말하는 표면이 ${pending.busy.length}개다 (정확히 1개여야 한다): ${describeSurfaces(pending.busy)}`,
     ).toBe(1);
 
-    harness.delayList(0);
-    await expect.poll(() => harness.listInFlight, { timeout: 8_000 }).toBe(0);
-    await page.waitForTimeout(600);
+    harness.releaseList();
+    await expect.poll(() => harness.listInFlight, { timeout: 10_000 }).toBe(0);
+    await expect(button, '요청이 끝났는데 버튼이 아직 진행 중이라고 말한다').toHaveAttribute('aria-busy', 'false');
     const done = await refreshReport(page);
     expect.soft(done.busy.length, `요청이 끝났는데 진행 표면이 남아 있다: ${describeSurfaces(done.busy)}`).toBe(0);
   } finally {
@@ -631,18 +754,22 @@ test('진행·성공을 알리는 toast/banner가 0건이고 성공은 신선도
     const button = await refreshButton(page);
     const beforeFreshness = (await refreshReport(page)).freshness.map((surface) => surface.text);
 
-    harness.delayList(1_500);
+    // 관측 창을 붙잡아 둔다 (1.5초 지연은 무거운 DOM 훑기 하나를 담기에 바쁜 기계에서 빠듯하다).
+    harness.holdList(true);
     await button.click();
-    await expect.poll(() => harness.listInFlight, { timeout: 5_000 }).toBeGreaterThan(0);
+    await expect.poll(() => harness.listInFlight, { timeout: 10_000 }).toBeGreaterThan(0);
+    await expect(button, '눌렀는데 버튼이 진행 중이라고 말하지 않는다').toHaveAttribute('aria-busy', 'true');
     const pending = await refreshReport(page);
+    expect(harness.listInFlight, '읽는 사이에 요청이 이미 끝났다 — 관측 창이 너무 좁다').toBeGreaterThan(0);
     expect.soft(
       pending.overlays.length,
       `진행 중에 뜬 toast/banner가 ${pending.overlays.length}건이다: ${describeSurfaces(pending.overlays)}`,
     ).toBe(0);
 
-    harness.delayList(0);
-    await expect.poll(() => harness.listInFlight, { timeout: 8_000 }).toBe(0);
-    await page.waitForTimeout(500);
+    harness.releaseList();
+    await expect.poll(() => harness.listInFlight, { timeout: 10_000 }).toBe(0);
+    // 끝나자마자 잰다 — 완료 toast는 수명이 짧아 늦게 재면 이미 사라져 있다.
+    await expect(button, '요청이 끝났는데 버튼이 아직 진행 중이라고 말한다').toHaveAttribute('aria-busy', 'false');
     const settled = await refreshReport(page);
     expect.soft(
       settled.overlays.length,
@@ -729,13 +856,17 @@ test('같은 순간 두 표면이 서로 다른 갱신 사실을 말하지 않�
     };
 
     await capture('가만히 있을 때');
-    harness.delayList(2_000);
+    // 두 사진 모두 **그 순간이 실제로 그 순간일 때** 찍는다. 붙잡아 둔 응답이 앞의 창을 열어
+    // 두고, 뒤의 창은 300ms라는 짐작 대신 버튼이 진행을 놓는 것을 보고 연다.
+    harness.holdList(true);
     await button.click();
-    await expect.poll(() => harness.listInFlight, { timeout: 5_000 }).toBeGreaterThan(0);
+    await expect.poll(() => harness.listInFlight, { timeout: 10_000 }).toBeGreaterThan(0);
+    await expect(button, '눌렀는데 버튼이 진행 중이라고 말하지 않는다').toHaveAttribute('aria-busy', 'true');
     await capture('요청이 떠 있는 동안');
-    harness.delayList(0);
-    await expect.poll(() => harness.listInFlight, { timeout: 8_000 }).toBe(0);
-    await page.waitForTimeout(300);
+    expect(harness.listInFlight, '읽는 사이에 요청이 이미 끝났다 — 관측 창이 너무 좁다').toBeGreaterThan(0);
+    harness.releaseList();
+    await expect.poll(() => harness.listInFlight, { timeout: 10_000 }).toBe(0);
+    await expect(button, '요청이 끝났는데 버튼이 아직 진행 중이라고 말한다').toHaveAttribute('aria-busy', 'false');
     await capture('막 끝난 직후');
 
     for (const snapshot of snapshots) {
@@ -767,10 +898,13 @@ test('낭독기 기준으로 기능 상태·작업 상태·신선도가 각각 �
     ).toBe(1);
 
     const button = await refreshButton(page);
-    harness.delayList(2_000);
+    // 관측 창을 붙잡아 둔다 — 2초 지연은 무거운 DOM 훑기를 담기에 바쁜 기계에서 빠듯하다.
+    harness.holdList(true);
     await button.click();
-    await expect.poll(() => harness.listInFlight, { timeout: 5_000 }).toBeGreaterThan(0);
+    await expect.poll(() => harness.listInFlight, { timeout: 10_000 }).toBeGreaterThan(0);
+    await expect(button, '눌렀는데 버튼이 진행 중이라고 말하지 않는다').toHaveAttribute('aria-busy', 'true');
     const pending = await refreshReport(page);
+    expect(harness.listInFlight, '읽는 사이에 요청이 이미 끝났다 — 관측 창이 너무 좁다').toBeGreaterThan(0);
     expect.soft(
       pending.busy.length,
       `작업 상태를 말하는 표면이 ${pending.busy.length}개다: ${describeSurfaces(pending.busy)}`,
@@ -1128,7 +1262,10 @@ test('명함 앞면 촬영은 여전히 전체 화면 촬영 모달로 이어진
   const harness = await boot(page, { active: false });
   try {
     await entryCard(page, 'camera').click();
-    await page.waitForTimeout(900);
+    /* 모달이 **다 열린 뒤에** 잰다. 900ms라는 짐작으로 재면 바쁜 기계에서 전환 한가운데의
+       상자를 재고 "전체 화면이 아니다"라고 말한다 — 제품이 아니라 시점 때문이다.
+       판정 기준(폭 0.9배·높이 0.85배)은 그대로다. */
+    await settleDialog(page);
     const measured = await page.evaluate(() => {
       const viewportWidth = document.documentElement.clientWidth;
       const viewportHeight = document.documentElement.clientHeight;
@@ -1162,41 +1299,28 @@ test('직접 입력은 여전히 아래에서 올라오는 시트로 이어진�
   const harness = await boot(page, { active: false });
   try {
     /* 시트가 **아래에서** 오는지는 class 이름으로 알 수 없다. 여는 동안의 위치를 프레임마다 찍는다.
-       transform은 shadow DOM 안 wrapper에 걸리므로 host의 rect만 보면 아무 움직임도 안 보인다.
-       그렇다고 "칠해진 큰 면"을 쫓으면 **backdrop**이 걸린다 — 그것은 전체 화면을 덮고 움직이지
-       않아서 첫 판이 매 프레임 `top = 0`을 읽었다(움직임 0px). 그래서 **글자를 가진 요소**의
-       가장 위 가장자리를 쫓는다. backdrop에는 글자가 없고, 시트의 내용은 wrapper와 함께 움직인다. */
+       무엇을 쫓는지는 `__int36.dialogTop`이 소유한다 (backdrop이 아니라 글자를 가진 요소).
+
+       찍기를 멈추는 것은 시계가 아니라 시험이다. 1.4초라는 짐작은 바쁜 기계에서 시트가
+       **다 올라오기 전에** 끊겨, 마지막 표본이 전환 도중 값이 되고 "80px밖에 안 움직였다"가
+       된다. 10초 상한은 판정이 아니라 교착 방지다. */
     await page.evaluate(() => {
       const samples: Array<{ t: number; top: number }> = [];
       window.__int36motion = samples;
+      window.__int36motionStop = false;
       const start = performance.now();
       const step = () => {
-        let top: number | null = null;
-        for (const node of window.__int36.walk(document.body)) {
-          const isDialog = node.tagName === 'ION-MODAL' || node.tagName === 'DIALOG'
-            || node.getAttribute('role') === 'dialog' || node.getAttribute('aria-modal') === 'true';
-          if (!isDialog) continue;
-          if (getComputedStyle(node).display === 'none') continue;
-          for (const inner of window.__int36.walk(node)) {
-            const own = Array.from(inner.childNodes).filter((leaf) => leaf.nodeType === 3)
-              .map((leaf) => leaf.textContent ?? '').join('').trim();
-            if (!own) continue;
-            const style = getComputedStyle(inner);
-            if (style.display === 'none' || style.visibility === 'hidden') continue;
-            const rect = inner.getBoundingClientRect();
-            if (rect.width < 2 || rect.height < 2) continue;
-            top = top === null ? rect.top : Math.min(top, rect.top);
-          }
-        }
+        const top = window.__int36.dialogTop();
         if (top !== null) samples.push({ t: Math.round(performance.now() - start), top: Math.round(top) });
-        if (performance.now() - start < 1_400) requestAnimationFrame(step);
+        if (!window.__int36motionStop && performance.now() - start < 10_000) requestAnimationFrame(step);
       };
       requestAnimationFrame(step);
     });
 
     await entryCard(page, 'manual').click();
-    await page.waitForTimeout(1_600);
-    const motion = await page.evaluate(() => window.__int36motion ?? []);
+    // 시트가 다 올라온 것을 보고 나서 찍기를 멈춘다.
+    await settleDialog(page);
+    const motion = await page.evaluate(() => { window.__int36motionStop = true; return window.__int36motion ?? []; });
     const viewportHeight = page.viewportSize()!.height;
 
     expect(motion.length, '시트가 열리는 동안 아무 프레임도 못 찍었다 — 시트가 열리지 않았거나 면을 못 찾았다').toBeGreaterThanOrEqual(3);
@@ -1414,8 +1538,11 @@ async function openPersonResearch(page: Page): Promise<void> {
   await page.locator('.brief-summary').filter({ hasText: '김민서' }).first().click();
   await page.locator('.brief-detail').getByRole('button', { name: 'AI 조사 요청' }).first().click();
   await expect(page.locator('ion-modal').filter({ hasText: 'AI 조사 요청' }).first()).toBeVisible();
-  // 올라오는 시트 위의 요소는 `not stable`이라 클릭을 못 받는다. 전환이 끝난 뒤에 손을 댄다.
-  await page.waitForTimeout(700);
+  /* 올라오는 시트 위의 요소는 아직 움직이는 중이다. 여기서 700ms를 세는 것이 위험한 이유는
+     `chooseDepth`가 `force: true`로 누르기 때문이다 — 강제 클릭은 안정 여부를 확인하지 않으므로
+     시트가 아직 움직이면 **엉뚱한 자리를 누르고**, 그러면 "깊이를 못 바꾼다"가 제품 판정처럼
+     기록된다. 시계 대신 전환이 끝난 것을 보고 손을 댄다. */
+  await settleDialog(page);
 }
 
 test('깊은 조사 + 범위 0개 제출은 막히고, 범위를 하나 고르면 즉시 풀린다', async ({ page }) => {
@@ -1561,7 +1688,9 @@ test('320 / 390 / 1280px에서 세 표면 어디에도 가로 넘침이 없다',
   try {
     for (const width of [320, 390, 1280]) {
       await page.setViewportSize({ width, height: width === 1280 ? 800 : 844 });
-      await page.waitForTimeout(350);
+      // 폭이 바뀐 뒤 **한 프레임을 실제로 그린 다음** 잰다. 350ms는 짐작이고, 재배치 도중을
+      // 재면 아직 제자리를 못 찾은 상자가 넘침으로 잡힌다.
+      await settleAnimations(page);
       const report = await page.evaluate(() => {
         const viewport = document.documentElement.clientWidth;
         const offenders: string[] = [];
@@ -1725,10 +1854,16 @@ test('움직임을 끈 기기에서도 진행·선택 상태를 읽을 수 있�
       return `${style.backgroundColor}|${style.borderTopColor}|${style.color}`;
     });
 
-    harness.delayList(2_500);
+    // 관측 창을 붙잡아 둔다. 아래에서 한 프레임을 기다리는 값을 창 안에서 넉넉히 재기 위해서다.
+    harness.holdList(true);
     await button.click();
-    await expect.poll(() => harness.listInFlight, { timeout: 5_000 }).toBeGreaterThan(0);
-    const busy = await button.evaluate((node) => {
+    await expect.poll(() => harness.listInFlight, { timeout: 10_000 }).toBeGreaterThan(0);
+    await expect(button, '눌렀는데 버튼이 진행 중이라고 말하지 않는다').toHaveAttribute('aria-busy', 'true');
+    const busy = await button.evaluate(async (node) => {
+      /* **그려진 뒤에** 읽는다. 상태가 막 바뀐 그 프레임에 `getComputedStyle`을 부르면 아직
+         바뀌기 전 값이 돌아오는 순간이 있다 — 사용자가 보는 값이 아니다 (실측: 부하 걸린
+         기계에서 16판 중 2판이 `aria-busy=true`인데 평상시 색을 읽었다). 두 프레임을 흘린다. */
+      await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(undefined))));
       const style = getComputedStyle(node);
       return {
         paint: `${style.backgroundColor}|${style.borderTopColor}|${style.color}`,
@@ -1737,11 +1872,12 @@ test('움직임을 끈 기기에서도 진행·선택 상태를 읽을 수 있�
             && (animation.effect?.getComputedTiming().iterations ?? 1) === Number.POSITIVE_INFINITY).length,
       };
     });
+    expect(harness.listInFlight, '읽는 사이에 요청이 이미 끝났다 — 관측 창이 너무 좁다').toBeGreaterThan(0);
     expect.soft(busy.looping, `움직임을 끈 기기에서도 무한 애니메이션이 ${busy.looping}개 돈다`).toBe(0);
     expect.soft(busy.paint, `회전이 꺼지자 "진행 중"을 알 방법이 사라졌다 — 정지 상태로도 구별돼야 한다 (평상시와 같은 값: ${idle})`).not.toBe(idle);
 
-    harness.delayList(0);
-    await expect.poll(() => harness.listInFlight, { timeout: 8_000 }).toBe(0);
+    harness.releaseList();
+    await expect.poll(() => harness.listInFlight, { timeout: 10_000 }).toBe(0);
 
     // 고른 깊이도 움직임 없이 읽혀야 한다 — 고른 칸과 안 고른 칸이 정지 화면에서 달라야 한다.
     const depths = await depthGroup(page).evaluate((root) => {
@@ -1784,7 +1920,8 @@ test('세 표면을 오가는 동안 콘솔 오류가 0건이다', async ({ page
     await chooseDepth(page, '깊은 조사');
     await page.getByRole('button', { name: /모두 선택/ }).first().click();
     await entryCard(page, 'manual').click();
-    await page.waitForTimeout(900);
+    // 시트가 다 열린 뒤에 닫는다 — 900ms 짐작으로는 여닫기가 겹쳐 엉뚱한 오류가 섞인다.
+    await settleDialog(page);
     await page.getByRole('button', { name: /^(닫기|취소)$/ }).first().click();
     await page.waitForTimeout(500);
 

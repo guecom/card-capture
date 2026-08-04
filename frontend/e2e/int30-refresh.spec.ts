@@ -80,6 +80,15 @@ interface Harness {
   setListResponse: (active: boolean) => void;
   delayList: (ms: number) => void;
   failList: (fail: boolean) => void;
+  /**
+   * 목록 응답을 **놓을 때까지** 붙잡아 둔다.
+   *
+   * `delayList(3_000)`은 관측 창의 길이를 시계에 맡기는 것이다. 바쁜 기계에서는 클릭 왕복 ·
+   * 폴링 · 무거운 DOM 읽기가 그 3초를 다 먹고, 창이 닫힌 뒤에 재고는 "진행 표시가 없다"고
+   * 말한다 — 제품이 아니라 시점 때문이다. 붙잡아 두면 창은 시험이 놓을 때까지 닫히지 않는다.
+   * 판정 기준은 하나도 바뀌지 않고, 창 안에서 쟀다는 사실만 확실해진다.
+   */
+  holdList: (hold: boolean) => void;
 }
 
 interface BootOptions {
@@ -100,12 +109,15 @@ async function boot(page: Page, options: BootOptions = {}): Promise<Harness> {
     response: listFixture(options.active !== false),
     delay: 0,
     fail: false,
+    hold: false,
     inFlight: 0,
     maxInFlight: 0,
     requests: 0,
     startedAt: [] as number[],
   };
   const wait = (ms: number) => (ms > 0 ? new Promise((done) => setTimeout(done, ms)) : Promise.resolve());
+  let releaseHeld: () => void = () => undefined;
+  let held: Promise<void> = Promise.resolve();
 
   await page.context().route('**/vendor/**', (route) => route.abort());
   await page.route('https://api.example.test/**', async (route) => {
@@ -116,6 +128,7 @@ async function boot(page: Page, options: BootOptions = {}): Promise<Harness> {
       state.startedAt.push(Date.now());
       state.maxInFlight = Math.max(state.maxInFlight, state.inFlight);
       try {
+        if (state.hold) await held;
         await wait(state.delay);
         if (state.fail) { await route.fulfill({ status: 500, contentType: 'application/json', body: '{"ok":false}' }); return; }
         await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(state.response) });
@@ -147,7 +160,39 @@ async function boot(page: Page, options: BootOptions = {}): Promise<Harness> {
     setListResponse: (active) => { state.response = listFixture(active); },
     delayList: (ms) => { state.delay = ms; },
     failList: (fail) => { state.fail = fail; },
+    holdList: (hold) => {
+      if (hold) {
+        if (state.hold) return;
+        state.hold = true;
+        held = new Promise((done) => { releaseHeld = () => done(); });
+        return;
+      }
+      state.hold = false;
+      releaseHeld();
+    },
   };
+}
+
+/**
+ * 스위치 손잡이의 전환이 **실제로 끝날 때까지** 기다린다.
+ *
+ * 고정 대기(`waitForTimeout(350)`)는 "160ms면 끝났겠지"라는 짐작이고, 바쁜 기계에서 그 짐작이
+ * 틀리면 게이트가 전환 도중 값을 잰다. 아직 시작하지 않은 전환도 있을 수 있어 한 프레임 뒤에
+ * 한 번 더 비운다. 8초 상한은 판정이 아니라 교착 방지다.
+ */
+async function settleKnob(page: Page): Promise<void> {
+  await page.locator('.int30-refresh-track i').evaluate(async (node) => {
+    const drain = async () => {
+      await Promise.race([
+        Promise.all(node.getAnimations().filter((animation) => animation.playState === 'running')
+          .map((animation) => animation.finished.catch(() => undefined))),
+        new Promise((done) => setTimeout(done, 8_000)),
+      ]);
+    };
+    await drain();
+    await new Promise((done) => requestAnimationFrame(() => done(undefined)));
+    await drain();
+  });
 }
 
 const autoSwitch = (page: Page): Locator => page.getByRole('switch', { name: '자동 갱신' });
@@ -344,17 +389,24 @@ test('회전과 aria-busy는 요청이 떠 있는 동안에만 있고, 끝나면
     const spinningAtRest = await page.locator('.int30-refresh-spin').count();
     expect(spinningAtRest, '아무 요청도 없는데 아이콘이 돌고 있다').toBe(0);
 
-    harness.delayList(3_000);
+    /* 관측 창을 **놓을 때까지** 붙잡는다. 3초 지연이었을 때는 그 3초 안에 클릭 왕복과 세 개의
+       폴링 단언이 다 들어가야 했고, CI에서 실제로 다 못 들어가 마지막 줄이 자기 메시지대로
+       "관측 창이 너무 좁다"에 걸렸다. 단언은 그대로고, 창만 시계에서 시험으로 옮긴다. */
+    harness.holdList(true);
     await refreshNow(page).click();
+    await expect
+      .poll(() => harness.listInFlight, { timeout: 10_000 })
+      .toBeGreaterThan(0);
+
     await expect(refreshNow(page)).toHaveAttribute('aria-busy', 'true');
     await expect(page.locator('.int30-refresh-spin')).toHaveCount(1);
     /* 진행은 버튼만 말한다 (INT-000036). 이 줄은 그동안에도 박자를 그대로 말한다 —
        마지막으로 받은 시점은 요청이 떠 있는 동안에도 여전히 참이다. */
     await expect(refreshLine(page)).toContainText('20초마다');
-    // 요청이 떠 있다는 것을 서버 쪽 사실로도 확인한다.
+    // 위 넷을 재는 내내 요청이 떠 있었다는 것을 서버 쪽 사실로 확인한다.
     expect(harness.listInFlight, '읽는 사이에 요청이 이미 끝났다 — 관측 창이 너무 좁다').toBeGreaterThan(0);
 
-    harness.delayList(0);
+    harness.holdList(false);
     await expect(refreshLine(page)).toHaveText('방금 업데이트', { timeout: 8_000 });
     await expect(refreshNow(page)).toHaveAttribute('aria-busy', 'false');
     expect(await page.locator('.int30-refresh-spin').count(), '영수증이 떴는데 아직 돌고 있다').toBe(0);
@@ -362,6 +414,7 @@ test('회전과 aria-busy는 요청이 떠 있는 동안에만 있고, 끝나면
     // 영수증은 잠깐 머물다 신선도로 돌아간다 — 끝난 일을 진행처럼 남겨 두지 않는다.
     await expect(refreshLine(page)).toContainText('20초마다', { timeout: 8_000 });
   } finally {
+    harness.holdList(false);
     await stopServer(harness.server);
   }
 });
@@ -394,17 +447,28 @@ test('연타해도 요청은 하나로 합쳐지고 늦게 온 응답이 화면�
   const harness = await boot(page, { active: false });
   try {
     await expect(refreshLine(page)).toContainText('20초마다');
-    harness.delayList(1_500);
+    /* 세 번의 누름이 **모두 같은 창 안에** 떨어져야 겹침을 잴 수 있다. 1.5초 지연으로는 바쁜
+       기계에서 첫 요청이 셋째 누름보다 먼저 끝나 버려, 겹칠 기회 자체가 사라진 상태를 두고
+       "겹치지 않았다"고 통과할 수 있었다. 붙잡아 두면 셋이 확실히 같은 창에 들어간다. */
+    harness.holdList(true);
     const before = harness.listRequests;
     await refreshNow(page).click();
     await refreshNow(page).click();
     await refreshNow(page).click();
-    await expect.poll(() => harness.listInFlight, { timeout: 3_000 }).toBe(1);
-    await page.waitForTimeout(3_500);
+    await expect.poll(() => harness.listInFlight, { timeout: 8_000 }).toBe(1);
+    expect(harness.maxListInFlight, '연타가 요청을 겹쳐 만들었다').toBe(1);
+
+    /* 놓는다. 연타는 떠 있던 조회 **직후 한 번 더** 읽으므로(single-flight의 후속 조회),
+       그 후속까지 끝난 뒤에 다시 겹침을 판정한다 — 시계로 3.5초를 세는 대신 요청 수와
+       떠 있는 수로 끝났음을 확인한다. */
+    harness.holdList(false);
+    await expect.poll(() => harness.listRequests, { timeout: 10_000 }).toBeGreaterThanOrEqual(before + 2);
+    await expect.poll(() => harness.listInFlight, { timeout: 10_000 }).toBe(0);
     expect(harness.maxListInFlight, '연타가 요청을 겹쳐 만들었다').toBe(1);
     expect(harness.listRequests, '연타가 아무 요청도 만들지 못했다 — 게이트가 아무것도 재지 못했다')
       .toBeGreaterThan(before);
   } finally {
+    harness.holdList(false);
     await stopServer(harness.server);
   }
 });
@@ -531,14 +595,19 @@ test('키보드와 낭독기가 기능 상태·작업 상태·신선도를 따�
 
     // 버튼 이름은 상태와 무관하게 고정이다 — 요청 중이라고 이름이 바뀌면 낭독기 사용자에게는
     // 누르려던 버튼이 사라진 것으로 들린다. 진행은 `aria-busy`가 말한다.
-    harness.delayList(2_000);
+    // 이름이 그대로인지는 **요청이 떠 있는 동안** 봐야 하므로 창을 붙잡아 둔다.
+    harness.holdList(true);
     await refreshNow(page).click();
+    await expect.poll(() => harness.listInFlight, { timeout: 10_000 }).toBeGreaterThan(0);
     await expect(refreshNow(page)).toHaveAttribute('aria-busy', 'true');
     await expect(page.getByRole('button', { name: '최신 상태 확인' })).toHaveCount(1);
+    expect(harness.listInFlight, '읽는 사이에 요청이 이미 끝났다 — 관측 창이 너무 좁다').toBeGreaterThan(0);
 
     // 자동 박자는 낭독기에 끼어들지 않는다: live region은 사용자가 누른 영수증만 담는다.
+    harness.holdList(false);
     await expect(page.locator('.int30-refresh [role="status"]')).toHaveText('방금 업데이트', { timeout: 8_000 });
   } finally {
+    harness.holdList(false);
     await stopServer(harness.server);
   }
 });
@@ -548,11 +617,21 @@ test('움직임을 끈 폰에서도 요청 중임을 알 수 있고, 아이콘�
   try {
     const idle = await refreshNow(page).evaluate((node) => getComputedStyle(node).backgroundColor);
     const idleBorder = await refreshNow(page).evaluate((node) => getComputedStyle(node).borderTopColor);
-    harness.delayList(3_000);
+    // 관측 창을 놓을 때까지 붙잡는다 — 아래에서 한 프레임을 기다릴 여유를 창 안에 둔다.
+    harness.holdList(true);
     await refreshNow(page).click();
+    await expect.poll(() => harness.listInFlight, { timeout: 10_000 }).toBeGreaterThan(0);
     await expect(refreshNow(page)).toHaveAttribute('aria-busy', 'true');
 
-    const busy = await refreshNow(page).evaluate((node) => {
+    const busy = await refreshNow(page).evaluate(async (node) => {
+      /* **그려진 뒤에** 읽는다.
+         `aria-busy`가 막 붙은 그 프레임에 `getComputedStyle`을 부르면 아직 바뀌기 전 값이
+         돌아오는 순간이 있다. 부하를 건 기계에서 16판 중 2판이 그 순간에 걸렸고, 그때
+         읽힌 값은 평상시 색 그대로(`rgba(255,255,255,0.78)` / 테두리 `rgba(42,63,89,0.12)`)에
+         아이콘 회전만 0% (`matrix(1,0,0,1,0,0)`)였다 — 통과한 판은 전부 회전이 이미 끝난
+         뒤(`none`)였다. 즉 화면에 아직 한 프레임도 안 나간 상태를 잰 것이다. 사용자가 보는
+         값은 그려진 값이므로, 두 프레임을 흘려 보내고 잰다. 판정 기준은 그대로다. */
+      await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(undefined))));
       const icon = node.querySelector('svg');
       return {
         background: getComputedStyle(node).backgroundColor,
@@ -564,6 +643,7 @@ test('움직임을 끈 폰에서도 요청 중임을 알 수 있고, 아이콘�
             && (animation.effect?.getComputedTiming().iterations ?? 1) === Infinity).length,
       };
     });
+    expect(harness.listInFlight, '읽는 사이에 요청이 이미 끝났다 — 관측 창이 너무 좁다').toBeGreaterThan(0);
     expect(busy.looping, '움직임을 끈 폰에서도 무한 애니메이션이 돈다').toBe(0);
     expect(busy.background, '회전이 꺼지자 "요청 중"을 알 방법이 사라졌다 — 정지 상태로도 구별돼야 한다')
       .not.toBe(idle);
@@ -581,6 +661,7 @@ test('움직임을 끈 폰에서도 요청 중임을 알 수 있고, 아이콘�
     const line = ((await refreshLine(page).textContent()) ?? '').trim();
     expect(line, `신선도 줄이 진행을 겹쳐 말한다: ${line}`).not.toMatch(/갱신 중|새로고침 중/);
   } finally {
+    harness.holdList(false);
     await stopServer(harness.server);
   }
 });
@@ -616,10 +697,12 @@ test('자동 박자는 회전도 `갱신 중`도 만들지 않는다 — 진행�
   const harness = await boot(page, { active: true });
   try {
     await expect(refreshLine(page)).toContainText('4초마다', { timeout: 8_000 });
-    // 자동 폴링 하나를 일부러 붙잡아 관측 창을 연다. 이 창 동안 사용자는 아무것도 누르지 않았다.
-    harness.delayList(2_500);
+    /* 자동 폴링 하나를 일부러 붙잡아 관측 창을 연다. 이 창 동안 사용자는 아무것도 누르지 않았다.
+       2.5초 지연이었을 때는 창이 닫힌 뒤에 재면 아래 "안 돈다"가 저절로 참이 됐다 —
+       빨개지지는 않지만 아무것도 재지 못하는 상태다. 놓을 때까지 붙잡아 그 구멍을 막는다. */
+    harness.holdList(true);
     const before = harness.listRequests;
-    await expect.poll(() => harness.listInFlight, { timeout: 10_000 }).toBeGreaterThan(0);
+    await expect.poll(() => harness.listInFlight, { timeout: 12_000 }).toBeGreaterThan(0);
     // 양성 증거: 정말로 자동 요청이 떠 있다. 없으면 아래 "안 돈다"는 빈 단언이 된다.
     expect(harness.listRequests, '관측 창에서 자동 폴링이 한 번도 일어나지 않았다').toBeGreaterThan(before);
 
@@ -628,11 +711,12 @@ test('자동 박자는 회전도 `갱신 중`도 만들지 않는다 — 진행�
       spinning: document.querySelectorAll('.int30-refresh-spin').length,
       line: (document.querySelector('.int30-refresh-line')?.textContent ?? '').trim(),
     }));
+    expect(harness.listInFlight, '읽는 사이에 자동 조회가 끝났다 — 관측 창이 너무 좁다').toBeGreaterThan(0);
     expect(seen.busy, '누른 적이 없는데 버튼이 aria-busy가 됐다').toBe('false');
     expect(seen.spinning, '누른 적이 없는데 아이콘이 돌고 있다').toBe(0);
     expect(seen.line, `누른 적이 없는데 상단이 "${seen.line}"이라고 말한다`).not.toContain('갱신 중');
   } finally {
-    harness.delayList(0);
+    harness.holdList(false);
     await stopServer(harness.server);
   }
 });
@@ -641,7 +725,10 @@ test('수동 갱신은 위에서 내려오는 토스트를 만들지 않는다',
   const harness = await boot(page, { active: false });
   try {
     await expect(refreshLine(page)).toContainText('20초마다');
-    harness.delayList(900);
+    /* 900ms 지연으로는 아래 `sweep(8)`(8 × 140ms = 1.12초)이 창보다 길어서, 훑는 도중에 요청이
+       끝나고 나머지 표본이 "진행 중이 아닌 화면"을 헛 훑었다. 놓을 때까지 붙잡아 훑기 전체가
+       진행 구간 안에 들어가게 한다 — 토스트를 잡을 기회가 오히려 늘어난다. */
+    harness.holdList(true);
     await refreshNow(page).click();
 
     // 진행 구간을 훑는다. 예전에는 여기서 `새로고침 중…`이 위에서 내려왔다.
@@ -656,8 +743,10 @@ test('수동 갱신은 위에서 내려오는 토스트를 만들지 않는다',
     // 요청이 떠 있는 창을 붙잡는 신호는 버튼의 `aria-busy`다 — 진행의 유일한 주인이다.
     await expect(refreshNow(page)).toHaveAttribute('aria-busy', 'true');
     await sweep(8);
+    expect(harness.listInFlight, '훑는 사이에 요청이 이미 끝났다 — 진행 구간을 못 봤다').toBeGreaterThan(0);
 
     // 성공은 토스트가 아니라 신선도 줄이 바뀌는 것으로 닫힌다.
+    harness.holdList(false);
     await expect(refreshLine(page)).toHaveText('방금 업데이트', { timeout: 8_000 });
     // 성공 직후 구간도 훑는다 — 완료 토스트가 여기서 떴다.
     await sweep(12);
@@ -665,6 +754,7 @@ test('수동 갱신은 위에서 내려오는 토스트를 만들지 않는다',
     expect(opened, `수동 갱신이 토스트를 띄웠다 — ${opened.join(' | ')}`).toEqual([]);
     expect(await page.getByText(/새로고침 (중|완료|실패)/).count(), '새로고침 진행·완료 문구가 화면 어딘가에 남아 있다').toBe(0);
   } finally {
+    harness.holdList(false);
     await stopServer(harness.server);
   }
 });
@@ -822,7 +912,10 @@ test('요청이 떠 있는 동안 진행을 말하는 것은 버튼뿐이고, �
   const harness = await boot(page, { active: false });
   try {
     await expect(refreshLine(page)).toContainText('20초마다');
-    harness.delayList(2_500);
+    /* 2.5초 창 안에 폴링 두 개와 아래의 무거운 DOM 훑기가 모두 들어가야 했다. 창이 먼저 닫히면
+       신선도 줄이 이미 `방금 업데이트`로 바뀌어, 제품이 아니라 시점 때문에 빨개진다.
+       놓을 때까지 붙잡아 재는 내내 요청이 떠 있게 한다. */
+    harness.holdList(true);
     await refreshNow(page).click();
 
     // 진행의 주인: 누른 버튼 하나. 회전도 여기에만 있다.
@@ -843,8 +936,10 @@ test('요청이 떠 있는 동안 진행을 말하는 것은 버튼뿐이고, �
     expect(during.busyText, `진행 문구를 말하는 표면이 남아 있다: ${during.busyText.join(' / ')}`).toEqual([]);
     expect(during.lineClass, '신선도 줄이 진행 중 강조를 들고 있다 — 그것도 진행을 말하는 두 번째 자리다')
       .not.toContain('is-busy');
+    // 위를 재는 내내 요청이 떠 있었다.
+    expect(harness.listInFlight, '읽는 사이에 요청이 이미 끝났다 — 관측 창이 너무 좁다').toBeGreaterThan(0);
   } finally {
-    harness.delayList(0);
+    harness.holdList(false);
     await stopServer(harness.server);
   }
 });
@@ -912,13 +1007,14 @@ test('다크에서도 켜짐·꺼짐이 색 하나에만 기대지 않는다', a
     });
 
     await expect(autoSwitch(page)).toHaveAttribute('aria-checked', 'true');
-    // 손잡이 이동에는 160ms transition이 걸려 있다. 그 사이에 읽으면 두 상태가 같은 값으로
-    // 보이고, 게이트가 통과·실패를 **엉뚱한 이유로** 판정한다.
-    await page.waitForTimeout(350);
+    /* 손잡이 이동에는 160ms transition이 걸려 있다. 그 사이에 읽으면 두 상태가 같은 값으로
+       보이고, 게이트가 통과·실패를 **엉뚱한 이유로** 판정한다. 350ms를 세는 대신 전환이
+       실제로 끝난 것을 보고 읽는다 — 시계가 아니라 상태다. */
+    await settleKnob(page);
     const on = await read();
     await autoSwitch(page).click();
     await expect(autoSwitch(page)).toHaveAttribute('aria-checked', 'false');
-    await page.waitForTimeout(350);
+    await settleKnob(page);
     const off = await read();
 
     // 색이 아닌 축이 반드시 하나 이상 달라야 한다 — 손잡이 **위치**가 그 축이다.
@@ -933,25 +1029,54 @@ test('연타는 요청을 겹쳐 만들지 않으면서도 무시당한 티를 �
   const harness = await boot(page, { active: false });
   try {
     await expect(refreshLine(page)).toContainText('20초마다');
-    harness.delayList(1_500);
+    harness.holdList(true);
     const before = harness.listRequests;
+
+    /* 누름 표시(`data-press-count`)의 수명은 제품이 정한 600ms다. 그 안에 `toHaveAttribute`
+       왕복과 `getComputedStyle` 왕복이 **둘 다** 들어가야 했고, 바쁜 기계에서는 들어가지
+       않는다. 그래서 표시를 밖에서 찍지 않고, 페이지 안에서 매 프레임 지켜본다 —
+       판정 기준(누름 수 2 · 자국이 `none`이 아님)은 그대로고, 놓치는 일만 없어진다. */
+    await refreshNow(page).evaluate((node) => {
+      const seen: Array<{ count: string; shadow: string }> = [];
+      (window as unknown as { __pressAck: typeof seen }).__pressAck = seen;
+      const stopAt = performance.now() + 15_000;
+      const tick = () => {
+        const count = node.getAttribute('data-press-count') ?? '';
+        if (count) seen.push({ count, shadow: getComputedStyle(node).boxShadow });
+        if (performance.now() < stopAt) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    const pressAck = () => page.evaluate(() => (window as unknown as { __pressAck: Array<{ count: string; shadow: string }> })
+      .__pressAck.filter((sample) => sample.count === '2'));
 
     await refreshNow(page).click();
     await expect(refreshNow(page)).toHaveAttribute('aria-busy', 'true');
     await refreshNow(page).click();
     // 두 번째 누름이 화면에서 사라지지 않는다: 버튼이 누름을 세어 되돌려 주고,
     // 그 표시가 눈에 보이는 값(테두리 발광)으로도 나타난다.
-    await expect(refreshNow(page)).toHaveAttribute('data-press-count', '2');
-    const ack = await refreshNow(page).evaluate((node) => getComputedStyle(node).boxShadow);
-    expect(ack, '두 번째 누름이 아무 자국도 남기지 않는다').not.toBe('none');
+    await expect
+      .poll(pressAck, { timeout: 8_000, message: '두 번째 누름을 버튼이 세지 않았다' })
+      .not.toEqual([]);
+    const acked = await pressAck();
+    const marks = [...new Set(acked.map((sample) => sample.shadow))];
+    expect(
+      marks.some((shadow) => shadow !== 'none'),
+      `두 번째 누름이 아무 자국도 남기지 않는다 (누름 수 2인 ${acked.length}개 프레임에서 본 그림자: ${marks.join(' / ')})`,
+    ).toBe(true);
 
-    await expect.poll(() => harness.listInFlight, { timeout: 4_000 }).toBe(1);
-    await page.waitForTimeout(4_000);
+    await expect.poll(() => harness.listInFlight, { timeout: 8_000 }).toBe(1);
+    expect(harness.maxListInFlight, '연타가 요청을 겹쳐 만들었다').toBe(1);
+
+    // 놓는다. 두 번째 누름의 후속 조회까지 끝난 뒤에 겹침과 효과를 판정한다.
+    harness.holdList(false);
+    await expect.poll(() => harness.listRequests, { timeout: 10_000 }).toBeGreaterThanOrEqual(before + 2);
+    await expect.poll(() => harness.listInFlight, { timeout: 10_000 }).toBe(0);
     expect(harness.maxListInFlight, '연타가 요청을 겹쳐 만들었다').toBe(1);
     // 그러면서도 두 번째 누름은 **실제 효과가 있다** — 떠 있던 조회 직후 한 번 더 읽는다.
     expect(harness.listRequests, '두 번째 누름이 아무 일도 하지 않았다').toBeGreaterThanOrEqual(before + 2);
   } finally {
-    harness.delayList(0);
+    harness.holdList(false);
     await stopServer(harness.server);
   }
 });
