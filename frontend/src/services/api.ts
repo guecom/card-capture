@@ -6,11 +6,15 @@ import type {
   ListResponse,
   ManualPersonPayload,
   PersonTarget,
+  ResearchInstruction,
   RuntimeConfig,
   SearchResponse,
   UploadPayload,
 } from '../contracts/capture';
-import type { ResearchDepth } from '../contracts/int30';
+import { downgradeQuickMode, quickModeRejected } from './research-envelope';
+import { resolveResearchRoute } from './research-mode';
+import { recordResearchRoute } from './research-telemetry';
+import type { ResearchSubmission } from './research';
 
 function normalizedBase(apiUrl: string): string {
   const trimmed = apiUrl.trim();
@@ -104,6 +108,29 @@ export function manualIntakeUnsupported(reason: unknown): boolean {
   return MANUAL_INTAKE_UNSUPPORTED_REASONS.has(String(reason ?? ''));
 }
 
+/**
+ * 옛 서버가 `빠른 조사`를 아직 모르는 구간의 처리 (TSK-000542).
+ *
+ * `Code.gs`는 사람이 따로 재배포해야 반영되므로 **앱은 아는데 서버는 모르는 구간**이 반드시
+ * 생긴다. 그 구간에서 `quick`은 서버 allowlist에 없어 요청 전체가 `bad_research_request`로
+ * 거절된다 — 촬영 업로드 경로에서는 **사진까지 함께** 거절된다.
+ *
+ * 그래서 같은 요청을 표준 깊이로 **딱 한 번** 다시 보낸다. 사용자는 조사를 받고, 내려갔다는
+ * 사실은 개발자 채널에만 남는다 (founder: "사용자는 모르게, 개발자에게는 알려줘야지").
+ *
+ * **진짜 실패를 감추지 않는다는 근거.** 두 시도의 차이는 `mode` 한 칸뿐이고, 서버의 나머지 검사
+ * (빈 요청·target·권한·일일 한도)는 `quick`과 `standard`에서 완전히 같다. 원인이 mode가
+ * 아니었다면 두 번째 시도도 정확히 같은 코드로 거절되고, 그 실패가 그대로 위로 올라간다.
+ */
+function recordQuickModeFallback(envelope: ResearchInstruction, recovered: boolean, reason?: unknown): void {
+  recordResearchRoute(resolveResearchRoute(envelope.depth), {
+    event: recovered ? 'degraded' : 'failed',
+    degraded: true,
+    reason: recovered ? 'quick_mode_unsupported' : reason,
+    ...(envelope.requestId ? { requestId: envelope.requestId } : {}),
+  });
+}
+
 async function getJson<T>(url: string): Promise<T> {
   const response = await fetch(url, { cache: 'no-store' });
   return (await response.json()) as T;
@@ -179,14 +206,14 @@ export class UploadError extends Error {
  * 사진이든 직접 입력이든 **이 함수 하나**를 지난다. 전송로를 둘로 나누면 잠금·대조·재시도·
  * 실패 분류(FI-016)가 두 벌이 되고, 둘 중 한쪽만 고쳐지는 날이 온다.
  */
-export async function uploadCapture(config: RuntimeConfig, item: CaptureQueueItem): Promise<void> {
-  const manual = item.intake === 'manual_person';
+/**
+ * 업로드 본문 한 번의 왕복. 응답을 못 읽는 모든 경우는 `ambiguous`로 던진다 —
+ * 그 상태에서는 **다시 보내지 않는다**(FI-016).
+ */
+async function postCapture(config: RuntimeConfig, payload: UploadPayload | ManualPersonPayload): Promise<{ ok?: boolean; error?: string }> {
   let response: Response;
   try {
-    response = await fetch(normalizedBase(config.apiUrl), {
-      method: 'POST',
-      body: JSON.stringify(manual ? toManualPersonPayload(item, config) : toUploadPayload(item, config)),
-    });
+    response = await fetch(normalizedBase(config.apiUrl), { method: 'POST', body: JSON.stringify(payload) });
   } catch (error) {
     throw new UploadError('ambiguous', error instanceof Error ? error.message : 'network_failed');
   }
@@ -194,11 +221,25 @@ export async function uploadCapture(config: RuntimeConfig, item: CaptureQueueIte
   // 5xx는 쓰기 도중 죽었을 수 있다 — 접수 여부를 단정하지 않는다.
   if (!response.ok) throw new UploadError('ambiguous', `http_${response.status}`);
 
-  let result: { ok?: boolean; error?: string };
   try {
-    result = (await response.json()) as { ok?: boolean; error?: string };
+    return (await response.json()) as { ok?: boolean; error?: string };
   } catch {
     throw new UploadError('ambiguous', 'unreadable_response');
+  }
+}
+
+export async function uploadCapture(config: RuntimeConfig, item: CaptureQueueItem): Promise<void> {
+  const manual = item.intake === 'manual_person';
+  const payload = manual ? toManualPersonPayload(item, config) : toUploadPayload(item, config);
+  let result = await postCapture(config, payload);
+
+  // 옛 서버가 `빠른 조사`를 모를 때만 한 번 더. 거절 코드가 다르거나 `quick`이 아니었으면
+  // 아무 일도 하지 않는다 — 재시도가 실패를 감추는 길이 되면 안 된다.
+  const envelope = item.researchInstruction;
+  if (!result.ok && !manual && envelope && quickModeRejected(envelope, result.error)) {
+    const retry = await postCapture(config, { ...(payload as UploadPayload), researchInstruction: downgradeQuickMode(envelope) });
+    recordQuickModeFallback(envelope, Boolean(retry.ok), retry.error);
+    result = retry;
   }
 
   if (result.ok) return;
@@ -263,13 +304,46 @@ export function addPersonNote(config: RuntimeConfig, target: PersonTarget, text:
 }
 
 /**
- * 조사 요청을 접수한다. `depth`는 사용자가 고른 **결과·기다림의 깊이**이며 요청에 실려 나간다
- * (TSK-000542). 어느 내부 자리로 갈지는 클라이언트가 정하지 않고 보내지도 않는다 —
- * 그 판정은 `services/research-mode.ts`의 버전 붙은 설정이 소유한다.
- * 값이 없으면 서버는 기본 깊이로 읽는다(이 필드가 생기기 전 요청이 그렇다).
+ * 조사 요청 하나가 실제로 실려 나가는 모양 (계약 §Request Contract).
+ *
+ * 서버는 `req.instruction || req.text`를 읽는다. 구조화된 봉투가 있으면 그것이 이기고,
+ * `text`는 봉투를 모르는 서버를 위한 자리다 — 그래서 **자유 입력 원문 그대로**를 담는다.
+ * 고른 항목을 이 문자열에 다시 섞지 않는다: 제 칸이 있는 값을 자유 텍스트에 숨기면
+ * 서버의 allowlist 검사와 요청 지문이 그 값을 보지 못한다.
  */
-export function submitResearchInstruction(config: RuntimeConfig, target: PersonTarget, text: string, depth?: ResearchDepth): Promise<ActionResponse> {
-  return postAction(config, { action: 'researchinstruction', ...target, text: text.trim().slice(0, 2000), ...(depth ? { depth } : {}) });
+function researchInstructionPayload(target: PersonTarget, submission: ResearchSubmission): Record<string, unknown> {
+  return {
+    action: 'researchinstruction',
+    ...target,
+    text: submission.raw,
+    instruction: {
+      raw: submission.raw,
+      mode: submission.mode,
+      purposes: submission.purposes,
+      focusIds: submission.focusIds,
+      requestId: submission.requestId,
+    },
+  };
+}
+
+/**
+ * 조사 요청을 접수한다 (TSK-000542).
+ *
+ * 어느 내부 자리로 갈지는 클라이언트가 정하지 않고 보내지도 않는다 — 그 판정은
+ * `services/research-mode.ts`의 버전 붙은 설정이 소유하고 개발자 telemetry에만 남는다.
+ * 옛 서버가 `quick`을 모르면 같은 요청을 표준 깊이로 한 번만 다시 보낸다(위 주석 참고).
+ */
+export async function submitResearchInstruction(
+  config: RuntimeConfig,
+  target: PersonTarget,
+  submission: ResearchSubmission,
+): Promise<ActionResponse> {
+  const first = await postAction(config, researchInstructionPayload(target, submission));
+  if (first.ok || !quickModeRejected(submission, first.error)) return first;
+
+  const retry = await postAction(config, researchInstructionPayload(target, downgradeQuickMode(submission)));
+  recordQuickModeFallback(submission, retry.ok === true, retry.error);
+  return retry;
 }
 
 export function requestCorrection(config: RuntimeConfig, captureId: string, text: string): Promise<ActionResponse> {

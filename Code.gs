@@ -1255,6 +1255,10 @@ function sanitizeResearchRaw_(value) {
 
 var RESEARCH_PURPOSES_ = ['meeting_preparation', 'expertise_execution', 'authority_interests', 'reputation_risk'];
 var RESEARCH_FOCUS_IDS_ = ['expertise', 'authority', 'reputation', 'outcomes', 'interests', 'career', 'company', 'connection'];
+/* 계약(`63_Research_Instruction_Contract.md` §Request Contract)의 mode allowlist 그대로다.
+   `quick`은 계약에 처음부터 있었는데 이 서버만 빠져 있었다 — 앱이 `빠른 조사`를 보내면 요청
+   전체가 `bad_research_request`로 거절됐다. 누락 시 기본값은 계약대로 `standard`다. */
+var RESEARCH_MODES_ = ['quick', 'standard', 'deep_evidence_graph'];
 
 function allowedStrings_(values, allowlist) {
   var result = [];
@@ -1275,8 +1279,9 @@ function normalizeResearchRequest_(value) {
   if (value === null || value === undefined || value === '') return null;
   var input = value && typeof value === 'object' ? value : { raw: value };
   var raw = sanitizeResearchRaw_(input.raw);
-  var mode = input.mode === 'deep_evidence_graph' ? 'deep_evidence_graph' : 'standard';
-  if (input.mode && input.mode !== 'standard' && input.mode !== 'deep_evidence_graph') return null;
+  var requestedMode = String(input.mode || '');
+  if (input.mode && RESEARCH_MODES_.indexOf(requestedMode) < 0) return null;
+  var mode = RESEARCH_MODES_.indexOf(requestedMode) >= 0 ? requestedMode : 'standard';
   var purposes = allowedStrings_(input.purposes, RESEARCH_PURPOSES_);
   var focusIds = allowedStrings_(input.focusIds, RESEARCH_FOCUS_IDS_);
   if (mode === 'deep_evidence_graph' && !purposes.length) return null;
@@ -1327,6 +1332,11 @@ function sameResearchReceipt_(meta, requestedBy, target, requestFingerprint) {
 function researchEnvelope_(requestValue, requestedBy, target, receiptId) {
   var request = normalizeResearchRequest_(requestValue) || { raw: '', mode: 'standard', purposes: [], focusIds: [], requestId: '' };
   var deep = request.mode === 'deep_evidence_graph';
+  /* 계약 flowchart: `빠른 조사`는 `public-research-v1`의 **quick budget**으로 간다. 정책 자체는
+     standard와 같은 판이고 예산만 좁다 — 사용자가 고른 것은 "기다리는 시간이 가장 짧은 것"이지
+     "권한이 다른 조사"가 아니다. 계약이 숫자를 정하지 않으므로 서버가 정한다: standard의 약 3분의
+     1로 두어 세 깊이의 순서(quick < standard < deep)가 예산에서도 그대로 보이게 한다. */
+  var quick = request.mode === 'quick';
   return {
     raw: request.raw,
     mode: request.mode,
@@ -1343,8 +1353,8 @@ function researchEnvelope_(requestValue, requestedBy, target, receiptId) {
     policy: {
       version: deep ? 'lawful-authority-deep-research-v2' : 'public-research-v1',
       mode: deep ? 'evidence_graph_required' : 'bounded_plan_required',
-      branchCap: deep ? 24 : 10,
-      timeCapMinutes: deep ? 90 : 30,
+      branchCap: deep ? 24 : quick ? 4 : 10,
+      timeCapMinutes: deep ? 90 : quick ? 10 : 30,
       publicLawfulSourcesOnly: true,
       privateOrLoginSources: false,
       credentials: false,

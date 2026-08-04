@@ -75,6 +75,14 @@ export interface ResearchComposerProps {
   /** 지금 고른 조사 깊이. 없으면 `일반 조사`. */
   depth?: ResearchDepth;
   onDepthChange?: (next: ResearchDepth) => void;
+  /**
+   * 서버가 지금 깊은 조사를 열어 뒀는가 (계약: `DEEP_RESEARCH_ENABLED=true`인 경우에만).
+   *
+   * **선택 prop이 아니다.** 기본값을 주면 그 기본값이 조용히 답이 되고, 새로 생기는 사용처가
+   * 물어보지도 않은 채 열린 화면을 그리게 된다. 닫혀 있을 때 이 칸은 사라지지 않고
+   * **고를 수 없는 상태로 남아** 왜 지금은 안 되는지 말한다 — 없어진 선택지는 고장으로 읽힌다.
+   */
+  deepAvailable: boolean;
   helper: string;
   placeholder: string;
   /** 지금 보내는 중인가 */
@@ -92,6 +100,14 @@ export interface ResearchComposerProps {
 }
 
 const IDLE: ResearchReceipt = { state: 'idle' };
+
+/**
+ * 깊은 조사를 못 고르는 동안 낭독기가 읽는 말.
+ *
+ * 서버 설정 이름·오류 코드·내부 식별자는 한 글자도 넣지 않는다 — 사용자가 알아야 하는 것은
+ * "지금 열려 있지 않다"와 "무엇을 하면 되는가" 둘뿐이다.
+ */
+const DEPTH_OFF_DETAIL = '지금은 깊은 조사를 열어 두지 않아 고를 수 없어요. 빠른 조사나 일반 조사로 요청할 수 있습니다.';
 
 /**
  * 막힘 안내로 손을 데려다 놓는다 — 화면 밖에 있는 제출 버튼을 눌렀을 때의 유일한 응답이다.
@@ -171,6 +187,7 @@ export function ResearchComposer({
   onChange,
   depth = DEFAULT_RESEARCH_DEPTH,
   onDepthChange,
+  deepAvailable,
   helper,
   placeholder,
   busy = false,
@@ -190,6 +207,7 @@ export function ResearchComposer({
     depth: activeDepth,
     scopeCount: draft.scopeKeys.length,
     hasText: Boolean(draft.text.trim()),
+    deepAvailable,
   });
 
   // 두 화면(촬영 탭·인물 시트)이 동시에 떠 있을 수 있다. 라디오 묶음 이름이 같으면 한쪽을 고를 때
@@ -301,18 +319,24 @@ export function ResearchComposer({
         <div className="research-depth-grid" role="radiogroup" aria-labelledby={depthTitleId}>
           {RESEARCH_DEPTHS.map((option) => {
             const on = option.depth === activeDepth;
+            /* 지금 못 고르는 칸. **지우지 않는다** — 어제 있던 선택지가 오늘 없으면 사용자는 그것을
+               고장으로 읽는다. 대신 고를 수 없는 상태로 남기고 왜인지 이 칸 안에서 말한다.
+               이미 고른 채로 닫혔다면 선택은 그대로 두고 제출만 막는다(`evaluateResearchSubmit`) —
+               사용자가 고른 것을 대신 다른 것으로 바꾸지 않는다. */
+            const off = option.depth === 'deep' && !deepAvailable;
             return (
               <label
                 key={option.depth}
-                className={on ? 'research-depth-option on' : 'research-depth-option'}
+                className={`research-depth-option${on ? ' on' : ''}${off ? ' off' : ''}`}
                 data-depth={option.depth}
+                data-unavailable={off ? 'yes' : undefined}
               >
                 <input
                   type="radio"
                   name={depthGroupName}
                   value={option.depth}
                   checked={on}
-                  disabled={busy}
+                  disabled={busy || off}
                   /* 조건이 붙은 것은 이 칸이다. 고른 순간 낭독기가 이름 다음에 조건을 읽는다. */
                   aria-describedby={gate.notice && option.depth === 'deep' ? blockId : undefined}
                   onChange={() => onDepthChange?.(option.depth)}
@@ -324,16 +348,21 @@ export function ResearchComposer({
                   ))}
                 </span>
                 <span className="research-depth-name">{option.label}</span>
-                <span className="research-depth-short">{option.short}</span>
+                {/* 못 고르는 동안에는 결과 요약 대신 **지금의 사실**을 말한다. 색으로만 알리지 않는다. */}
+                <span className="research-depth-short">{off ? '지금은 못 골라요' : option.short}</span>
                 {/* 눈으로는 눈금이, 읽어 주는 말에는 문장이 간다. */}
-                <span className="research-sr-only">{option.detail}</span>
+                <span className="research-sr-only">{off ? DEPTH_OFF_DETAIL : option.detail}</span>
               </label>
             );
           })}
         </div>
         {/* 고른 깊이 하나만 길게 설명한다. 칸마다 문장을 붙이지 않아 높이가 세 배로 늘지 않고,
-            바꿀 때마다 이 줄이 읽혀서 "무엇이 달라지는지"가 예측 가능해진다. */}
-        <p className="research-depth-summary" role="status">{researchDepthSummary(activeDepth)}</p>
+            바꿀 때마다 이 줄이 읽혀서 "무엇이 달라지는지"가 예측 가능해진다.
+            고른 깊이가 지금 닫혀 있으면 **하게 될 일을 설명하지 않는다** — 하지 않을 일을 설명하는
+            문장은 거짓말이고, 이 줄이 사용자가 고른 것에 대해 읽는 유일한 문장이다. */}
+        <p className="research-depth-summary" role="status">
+          {activeDepth === 'deep' && !deepAvailable ? `깊은 조사 — ${DEPTH_OFF_DETAIL}` : researchDepthSummary(activeDepth)}
+        </p>
       </section>
 
       {/* 보내기 전에 **보낼 그 문장**을 그대로 보여 준다. 합쳐지는 방식을 설명하지 않고 결과를 보인다. */}

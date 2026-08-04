@@ -114,8 +114,15 @@ export function researchDepthSummary(depth: unknown): string {
 /** 지금 접수할 수 있는가. `empty`는 아직 보낼 것이 없다는 뜻이지 거절이 아니다. */
 export type ResearchSubmitState = 'ready' | 'empty' | 'blocked';
 
-/** 막는 규칙의 닫힌 목록. 지금은 하나다. */
-export type ResearchSubmitBlock = 'deep_requires_scope';
+/**
+ * 막는 규칙의 닫힌 목록.
+ *
+ * - `deep_requires_scope` — 계약의 "깊은 조사는 목적 1개 이상". 사용자가 범위를 고르면 풀린다.
+ * - `deep_unavailable` — 서버가 지금 깊은 조사를 열어 두지 않았다. 사용자가 이 자리에서 풀 수
+ *   있는 조건이 아니므로 **먼저** 판정한다. 고를 수 없는 것을 고르게 두고 나중에 다른 이유로
+ *   막는 화면은 거짓말이다.
+ */
+export type ResearchSubmitBlock = 'deep_requires_scope' | 'deep_unavailable';
 
 /** 깊은 조사가 접수되기 위해 필요한 최소 범위 수. 계약의 `하나 이상`이 이 숫자다. */
 export const RESEARCH_DEEP_MIN_SCOPES = 1;
@@ -149,6 +156,14 @@ export interface ResearchSubmitInput {
   scopeCount: number;
   /** 자유 입력에 실제 글자가 있는가(공백 제외). */
   hasText: boolean;
+  /**
+   * 서버가 지금 깊은 조사를 열어 뒀는가 (계약: `DEEP_RESEARCH_ENABLED=true`인 경우에만 열린다).
+   *
+   * **선택 필드로 두지 않는다.** 기본값을 주면 그 기본값이 조용히 답이 되고, fail-closed는
+   * "안 물어보면 닫힘"이어야 하는데 부르는 쪽은 물어봤는지조차 모르게 된다. 필수로 두면
+   * 새 호출 자리가 생길 때 타입이 먼저 묻는다.
+   */
+  deepAvailable: boolean;
 }
 
 const DEEP_SCOPE_NOTICE: ResearchSubmitNotice = Object.freeze({
@@ -159,9 +174,25 @@ const DEEP_SCOPE_NOTICE: ResearchSubmitNotice = Object.freeze({
 });
 
 /**
+ * 지금은 깊은 조사를 받지 않는다는 말.
+ *
+ * 지키는 것 셋 — 사용자에게 (1) 지금 열려 있지 않다는 **사실**을 말하고, (2) 적어 둔 것이
+ * 안전하다고 말하고, (3) 무엇을 하면 되는지 말한다. 서버 코드·설정 이름·내부 식별자는 한 글자도
+ * 넣지 않는다. 그리고 고른 깊이를 **대신 낮추지 않는다** — 고른 것은 고른 채로 두고 막는다.
+ */
+const DEEP_UNAVAILABLE_NOTICE: ResearchSubmitNotice = Object.freeze({
+  block: 'deep_unavailable',
+  title: '깊은 조사는 지금 받을 수 없어요',
+  reason: '지금은 깊은 조사를 열어 두지 않았어요. 이대로는 요청이 접수되지 않습니다.',
+  fix: '빠른 조사나 일반 조사로 바꾸면 바로 보낼 수 있어요. 적어 둔 내용과 고른 범위는 그대로 있어요.',
+});
+
+/**
  * 접수 가능 여부 한 번의 판정.
  *
- * 세 갈래다:
+ * 네 갈래다:
+ *  - `깊은 조사` + 서버가 안 열어 뒀음 → **막는다**. 사용자가 이 자리에서 풀 수 있는 조건이
+ *    아니므로 범위 규칙보다 먼저 판정한다.
  *  - `깊은 조사` + 범위 0개 + 보낼 내용 있음 → **막는다**. 사용자가 보낼 것을 갖고 있는데
  *    계약이 받지 않는 상태이므로, 이유를 보이고 제출을 거절한다.
  *  - `깊은 조사` + 범위 0개 + 보낼 내용 없음 → 막지 않되 **같은 설명을 미리 보인다**.
@@ -172,11 +203,15 @@ export function evaluateResearchSubmit(input: ResearchSubmitInput): ResearchSubm
   const scopeCount = Number.isFinite(input.scopeCount) ? Math.max(0, Math.trunc(input.scopeCount)) : 0;
   const hasText = Boolean(input.hasText);
   const filled = scopeCount > 0 || hasText;
+  const notice = normalizeResearchDepth(input.depth) !== 'deep' ? null
+    : input.deepAvailable !== true ? DEEP_UNAVAILABLE_NOTICE
+      : scopeCount < RESEARCH_DEEP_MIN_SCOPES ? DEEP_SCOPE_NOTICE
+        : null;
 
-  if (normalizeResearchDepth(input.depth) === 'deep' && scopeCount < RESEARCH_DEEP_MIN_SCOPES) {
+  if (notice) {
     return filled
-      ? { state: 'blocked', blocked: true, notice: DEEP_SCOPE_NOTICE }
-      : { state: 'empty', blocked: false, notice: DEEP_SCOPE_NOTICE };
+      ? { state: 'blocked', blocked: true, notice }
+      : { state: 'empty', blocked: false, notice };
   }
   return { state: filled ? 'ready' : 'empty', blocked: false, notice: null };
 }

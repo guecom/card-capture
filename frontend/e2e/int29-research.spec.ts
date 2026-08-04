@@ -20,6 +20,11 @@ const DAY_MINUTES = 24 * 60;
 /** 서버가 조사 요청을 받으면 자기 captureId로 기록을 만든다 — 그 기록이 진행을 소유한다. */
 const RESEARCH_RECEIPT_ID = 'research-e2e-0001';
 const SCOPE_COUNT = 9;
+/** 화면에 서는 아홉 칸의 이름. 이 중 여덟은 서버 `focusIds`로, 하나는 자유 입력으로 나간다. */
+const SCOPE_LABELS = [
+  '실력·역량 근거', '전문 분야', '의사결정 권한·직급', '평판·레퍼런스', '최근 활동·발표',
+  '소속 조직·사업 맥락', '이해관계·경쟁 구도', '함께 아는 사람·접점', '대화 시작점',
+];
 
 const contentTypes: Record<string, string> = {
   '.css': 'text/css; charset=utf-8',
@@ -287,9 +292,25 @@ test('고른 항목과 적은 글이 보내기 전에 그대로 보이고, 그 �
 
     await sheet.getByRole('button', { name: '조사 요청 접수' }).click();
     await expect.poll(() => harness.submitted.length).toBe(1);
-    // 화면에 보여 준 문장과 실제로 보낸 문장이 같아야 한다 — 미리보기가 장식이면 안 된다.
-    expect(String(harness.submitted[0].text).trim()).toBe(shown);
-    expect(String(harness.submitted[0].text)).toContain('의사결정 권한·직급');
+
+    /* 화면에 보여 준 것이 하나도 빠짐없이 나가야 한다 — 미리보기가 장식이면 안 된다.
+       다만 **나가는 모양**은 계약(§Request Contract)이 정한다 (TSK-000542): 고른 항목은
+       `focusIds`로, 적은 글은 `raw`로 따로 나간다. 예전에는 둘을 한 문자열로 합쳐 보냈고,
+       그래서 서버 allowlist 검사가 고른 항목을 아예 보지 못했다. */
+    const envelope = harness.submitted[0].instruction as Record<string, unknown>;
+    expect(envelope, '요청에 구조화된 봉투가 없다').toBeTruthy();
+    // 적은 글은 그대로. 항목 이름을 앞에 붙이지 않는다.
+    expect(String(envelope.raw)).toContain('특히 국내 레퍼런스 위주로');
+    expect(String(envelope.raw).startsWith('조사 항목: '), '예전 합쳐 보내던 형식이 남아 있다').toBe(false);
+    expect(String(envelope.raw)).not.toContain('의사결정 권한·직급');
+    // 아홉 칸을 다 골랐으면 서버 여덟 자리가 모두 채워진다 (`의사결정 권한·직급` → `authority`).
+    expect(envelope.focusIds).toEqual(['expertise', 'authority', 'reputation', 'outcomes', 'interests', 'career', 'company', 'connection']);
+    // 서버 자리가 없는 항목(`대화 시작점`)만 자유 입력으로 넘어간다 — 조용히 사라지지 않는다.
+    expect(String(envelope.raw)).toContain('대화 시작점');
+    // 보여 준 문장의 어떤 조각도 잃지 않았는지 되짚는다: 자유 입력에 있거나, 고른 항목이거나.
+    const shownPieces = shown.replace('조사 항목: ', '').split(/[,\n]/).map((value) => value.trim()).filter(Boolean);
+    const lost = shownPieces.filter((piece) => !String(envelope.raw).includes(piece) && !SCOPE_LABELS.includes(piece));
+    expect(lost, `보여 준 조각이 어디로도 가지 않았다: ${lost.join(', ')}`).toEqual([]);
   } finally {
     await stopServer(harness.server);
   }
@@ -307,7 +328,10 @@ test('항목만 고르고 아무것도 적지 않아도 보낼 수 있다', asyn
     await expect(submit).toBeEnabled();
     await submit.click();
     await expect.poll(() => harness.submitted.length).toBe(1);
-    expect(String(harness.submitted[0].text)).toContain('조사 항목: 실력·역량 근거');
+    // 적은 글이 없어도 고른 항목이 요청을 이룬다 — 서버는 `focusIds`로 그것을 받는다.
+    const envelope = harness.submitted[0].instruction as Record<string, unknown>;
+    expect(envelope.focusIds, '고른 항목이 서버가 읽는 자리로 가지 않았다').toContain('outcomes');
+    expect((envelope.focusIds as string[]).length).toBe(8);
   } finally {
     await stopServer(harness.server);
   }

@@ -86,12 +86,15 @@ interface Harness {
   submitted: Array<Record<string, unknown>>;
 }
 
-async function boot(page: Page, options: { width?: number; height?: number } = {}): Promise<Harness> {
+async function boot(page: Page, options: { width?: number; height?: number; deepOpen?: boolean } = {}): Promise<Harness> {
   const server = await startStaticServer();
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
 
   const submitted: Array<Record<string, unknown>> = [];
+  /* 계약: 깊은 조사는 서버가 열어 뒀다고 말한 경우에만 열린다. 이 파일의 검사는 대부분 열린
+     서버를 전제로 하므로 기본값이 열림이다 — 닫힌 서버는 그 경우를 보는 검사가 직접 끈다. */
+  const deepOpen = options.deepOpen !== false;
 
   await page.context().route('**/vendor/**', (route) => route.abort());
   await page.route('https://api.example.test/**', async (route) => {
@@ -99,7 +102,7 @@ async function boot(page: Page, options: { width?: number; height?: number } = {
     const action = new URL(request.url()).searchParams.get('action');
     if (action === 'list') {
       const items = [person(1, '김민서', '한화시스템'), person(2, '이서연', '넥스트로보')];
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, seeAll: true, researchInstructionEnabled: true, hasMore: false, items }) });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, seeAll: true, researchInstructionEnabled: true, deepResearchEnabled: deepOpen, hasMore: false, items }) });
       return;
     }
     if (request.method() === 'POST') {
@@ -247,8 +250,9 @@ test('범위를 하나 고르면 즉시 풀리고 깊은 조사가 그대로 접
 
     await sheetSubmitNative(page).click();
     await expect.poll(() => harness.submitted.length, { timeout: 10_000 }).toBe(1);
-    // 낮춰서 보내지 않는다. 사용자가 고른 깊이 그대로 나간다.
-    expect(harness.submitted[0].depth, '풀린 뒤에도 깊이가 그대로 실려 나가지 않는다').toBe('deep');
+    // 낮춰서 보내지 않는다. 사용자가 고른 깊이 그대로 나간다 — 서버가 읽는 칸에서 확인한다.
+    expect((harness.submitted[0].instruction as Record<string, unknown>)?.mode, '풀린 뒤에도 깊이가 그대로 실려 나가지 않는다')
+      .toBe('deep_evidence_graph');
   } finally {
     await stopServer(harness.server);
   }
@@ -306,7 +310,7 @@ test('빠른·일반은 범위 0개여도 그대로 접수된다', async ({ page
 
     await sheetSubmitNative(page).click();
     await expect.poll(() => harness.submitted.length, { timeout: 10_000 }).toBe(1);
-    expect(harness.submitted[0].depth).toBe('quick');
+    expect((harness.submitted[0].instruction as Record<string, unknown>)?.mode).toBe('quick');
   } finally {
     await stopServer(harness.server);
   }

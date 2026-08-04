@@ -33,12 +33,15 @@ const FORBIDDEN_KOREAN = ['모델', '엔진', '공급자'];
 
 /** 사용자가 실제로 읽는 문자열만 모은다 — 키 이름(`depth`)은 화면에 나가지 않으므로 뺀다. */
 function userFacingCopy(): string[] {
-  const blocked = evaluateResearchSubmit({ depth: 'deep', scopeCount: 0, hasText: true });
+  const blocked = evaluateResearchSubmit({ depth: 'deep', scopeCount: 0, hasText: true, deepAvailable: true });
+  // 깊은 조사가 닫혔을 때의 안내도 사용자가 읽는 말이다. 서버 설정 이름·오류 코드가 새기 가장 쉬운 자리다.
+  const closed = evaluateResearchSubmit({ depth: 'deep', scopeCount: 1, hasText: true, deepAvailable: false });
   return RESEARCH_DEPTHS.flatMap((option) => [option.label, option.short, option.detail])
     .concat(RESEARCH_DEPTHS.map((option) => researchDepthSummary(option.depth)))
     // 막힘 안내도 사용자가 읽는 말이다. 새로 생긴 문장이 이름 유출 검사 밖에 있으면 안 된다.
     .concat([blocked.notice!.title, blocked.notice!.reason, blocked.notice!.fix])
-    .concat([researchSubmitLabel('완료', blocked)]);
+    .concat([closed.notice!.title, closed.notice!.reason, closed.notice!.fix])
+    .concat([researchSubmitLabel('완료', blocked), researchSubmitLabel('완료', closed)]);
 }
 
 describe('research depth — 사용자가 고르는 것', () => {
@@ -109,7 +112,8 @@ describe('research depth — 무엇이 연결되는지는 사용자에게 없다
 //   "깊은 조사는 목적을 하나 이상 골라야 접수된다."
 // 이 규칙이 화면이 아니라 여기 있어야 두 제출 자리가 같은 판정을 쓴다.
 describe('research submit — 깊은 조사의 접수 조건', () => {
-  const gate = (depth: unknown, scopeCount: number, hasText: boolean) => evaluateResearchSubmit({ depth, scopeCount, hasText });
+  const gate = (depth: unknown, scopeCount: number, hasText: boolean, deepAvailable = true) =>
+    evaluateResearchSubmit({ depth, scopeCount, hasText, deepAvailable });
 
   it('계약의 `하나 이상`이 실제로 1이다', () => {
     expect(RESEARCH_DEEP_MIN_SCOPES).toBe(1);
@@ -165,6 +169,57 @@ describe('research submit — 깊은 조사의 접수 조건', () => {
     expect(researchSubmitLabel('완료', gate('deep', 2, true))).toBe('완료');
     expect(researchSubmitLabel('완료', gate('standard', 0, true))).toBe('완료');
     expect(researchSubmitLabel('완료', gate('deep', 0, false))).toBe('완료');
+  });
+});
+
+// 계약 (§Product Behavior): "Deep mode는 `DEEP_RESEARCH_ENABLED=true`가 명시된 경우에만 열린다.
+// 누락·빈 값·`false`는 모두 fail-closed이며 `RESEARCH_INSTRUCTION_ENABLED=false`와 독립이다."
+//
+// 서버는 이 사실을 오래전부터 응답에 실어 보냈고 앱만 읽지 않았다. 규칙이 여기 있어야 두 제출
+// 자리와 작성 자리가 같은 판정을 쓴다.
+describe('research submit — 깊은 조사가 닫혀 있을 때', () => {
+  const gate = (scopeCount: number, hasText: boolean, deepAvailable: unknown) =>
+    evaluateResearchSubmit({ depth: 'deep', scopeCount, hasText, deepAvailable: deepAvailable as boolean });
+
+  it('`true`가 아닌 모든 값이 닫힘이다', () => {
+    // 참 같은 값(`'true'`·`1`)도 닫힘이다. 서버가 `true`라고 말한 경우에만 연다.
+    for (const value of [true, false, undefined, null, '', 'true', 0, 1]) {
+      expect(gate(3, true, value).blocked, `${String(value)}를 잘못 읽었다`).toBe(value !== true);
+    }
+  });
+
+  it('범위를 다 골라도 열리지 않는다 — 사용자가 이 자리에서 풀 수 있는 조건이 아니다', () => {
+    const result = gate(9, true, false);
+    expect(result.state).toBe('blocked');
+    expect(result.notice?.block).toBe('deep_unavailable');
+  });
+
+  it('범위 조건보다 먼저 판정한다 — 풀 수 없는 조건을 뒤에 두면 사용자가 헛수고한다', () => {
+    expect(gate(0, true, false).notice?.block).toBe('deep_unavailable');
+  });
+
+  it('아직 아무것도 없으면 막지 않되 같은 설명을 미리 보인다', () => {
+    const result = gate(0, false, false);
+    expect(result.blocked).toBe(false);
+    expect(result.notice?.block).toBe('deep_unavailable');
+  });
+
+  it('깊이를 대신 낮추지 않는다 — 판정 결과에 고쳐 놓은 값이 없다', () => {
+    expect(Object.keys(gate(3, true, false)).sort()).toEqual(['blocked', 'notice', 'state']);
+  });
+
+  it('빠른·일반은 이 스위치와 독립이다 — 하나가 닫혔다고 전부 닫히지 않는다', () => {
+    for (const depth of ['quick', 'standard']) {
+      expect(evaluateResearchSubmit({ depth, scopeCount: 0, hasText: true, deepAvailable: false }))
+        .toEqual({ state: 'ready', blocked: false, notice: null });
+    }
+  });
+
+  it('막힌 제출 버튼 이름이 이유와 회복 방법을 함께 말한다', () => {
+    const label = researchSubmitLabel('조사 요청 접수', gate(3, true, false));
+    expect(label).toContain('조사 요청 접수');
+    expect(label).toContain('보낼 수 없어요');
+    expect(label).toContain('일반 조사');
   });
 });
 

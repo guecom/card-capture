@@ -42,17 +42,42 @@ export interface QuickName {
   recognizedAt: string;
 }
 
+/**
+ * 서버(`Code.gs`)가 판정하는 조사 처리 계약. **사용자 깊이가 아니다.**
+ * 값의 등록소와 깊이→mode 변환은 `services/research-envelope.ts`가 소유한다.
+ */
+export type ResearchMode = 'quick' | 'standard' | 'deep_evidence_graph';
+
+/** 깊은 조사의 목적 (계약 §Deep Research Purpose). 서버 allowlist와 같은 네 값이다. */
+export type ResearchPurpose = 'meeting_preparation' | 'expertise_execution' | 'authority_interests' | 'reputation_risk';
+
+/**
+ * 서버로 나가는 조사 요청 한 건 (계약 `63_Research_Instruction_Contract.md` §Request Contract).
+ *
+ * 필드가 전부 optional인 이유는 **기기에 이미 저장된 대기열 항목** 때문이다. 구조화된 봉투가
+ * 생기기 전에 저장된 요청은 `raw`만 갖고 있고, 그 항목도 그대로 전송될 수 있어야 한다.
+ * 값이 없으면 서버가 `standard`·빈 목록으로 읽는다.
+ */
 export interface ResearchInstruction {
+  /** owner가 직접 적은 글. **고른 항목은 여기 들어가지 않는다** — 계약이 별도 저장을 요구한다. */
   raw: string;
   channel?: 'owner_ui';
   policyVersion?: string;
   riskFlags?: string[];
   /**
-   * 조사 깊이 (TSK-000542). 값이 없으면 `standard`다 — 이 필드가 생기기 전에 저장된 요청이 그렇다.
+   * 조사 깊이 (TSK-000542). **클라이언트 축이며 서버는 읽지 않는다.**
    * 사용자가 고르는 것은 결과와 기다림이고, 이 값이 **어디로 보낼지**를 뜻하지는 않는다.
    * 라우팅 설정은 `services/research-mode.ts`가 소유하며 화면으로 돌아오지 않는다.
    */
   depth?: ResearchDepth;
+  /** 서버 allowlist가 판정하는 처리 계약. `services/research-envelope.ts`가 깊이에서 옮긴다. */
+  mode?: ResearchMode;
+  /** 깊은 조사의 목적. 계약상 깊은 조사는 1개 이상이어야 접수된다. */
+  purposes?: ResearchPurpose[];
+  /** 고른 조사 범위를 서버 allowlist ID로 옮긴 값. */
+  focusIds?: string[];
+  /** 재시도 idempotency key. 같은 요청의 재전송은 **같은 값**이어야 서버가 중복을 알아본다. */
+  requestId?: string;
 }
 
 export interface CaptureQueueItem {
@@ -173,6 +198,14 @@ export interface ListResponse {
   items?: BriefItem[];
   seeAll?: boolean;
   researchInstructionEnabled?: boolean;
+  /**
+   * 서버가 깊은 조사를 열어 뒀는가 (계약: Script Property `DEEP_RESEARCH_ENABLED=true`인 경우에만).
+   *
+   * **누락·빈 값·false는 모두 닫힘이다.** 서버는 이 값을 오래전부터 보내 왔는데 앱이 읽지 않아,
+   * 화면은 서버가 받지도 않을 선택지를 계속 내밀고 있었다. `=== true`가 아닌 모든 것은 닫힘으로
+   * 읽는다 — 옛 서버가 이 칸을 아예 안 보내는 경우까지 같은 규칙 하나로 덮인다.
+   */
+  deepResearchEnabled?: boolean;
   hasMore?: boolean;
 }
 

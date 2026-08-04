@@ -223,6 +223,28 @@
   background: rgba(var(--cc-accent), 0.13);
 }
 
+/* 지금 고를 수 없는 칸 (TSK-000542). **사라지지 않는다** — 어제 있던 선택지가 오늘 없으면
+   사용자는 그것을 고장으로 읽는다. 대신 눌러도 안 된다는 것이 손과 눈에 모두 보여야 한다.
+   상태를 색으로만 말하지 않는다: 칸 안의 글자가 `지금은 못 골라요`로 바뀌고 낭독기에는 이유가
+   문장으로 간다. 여기서는 흐리기와 커서만 맡는다. */
+.research-depth-option.off {
+  border-style: dashed;
+  background: var(--cc-solid-faint);
+  cursor: not-allowed;
+}
+
+/* 이름은 흐려도 읽을 수 있어야 한다. 대비 하한(4.5:1)을 지키려고 본문 색을 그대로 쓰고
+   투명도만 낮춘다 — 회색을 새로 만들면 다크 모드에서 대비가 무너진다. */
+.research-depth-option.off .research-depth-name,
+.research-depth-option.off .research-depth-short {
+  opacity: 0.72;
+}
+
+.research-depth-option.off .research-depth-meter i,
+.research-depth-option.off .research-depth-meter i.on {
+  background: var(--cc-line);
+}
+
 /* 진짜 라디오를 쓴다 — 좌우 화살표 이동과 묶음 읽기를 브라우저가 해 준다.
    눈에서만 치우고 포커스는 살려 둔다. */
 .research-depth-option input {
