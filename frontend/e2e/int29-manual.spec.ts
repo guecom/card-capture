@@ -76,6 +76,17 @@ test.beforeEach(async ({ page }) => {
   // 카메라·OCR 자산은 이 게이트와 무관하다. 받으면 느려지기만 한다.
   await page.context().route('**/vendor/**', (route) => route.abort());
   await page.addInitScript(() => localStorage.setItem('cc_name', 'E2E Owner'));
+  /* 카메라가 **있는** 기기라고 못 박는다 (TSK-000220 / INT-000030).
+     이 파일의 주제는 `직접 입력`이지 기기 가용성이 아니다. 그런데 웹캠 없는 기계에서는 촬영 카드가
+     회복 문구 `파일 올리기로 등록하기`를 달고 나오고, 그 문구가 시트 제출 버튼의 이름 `등록하기`를
+     부분 문자열로 품는다 — `getByRole('button', { name: '등록하기' })`가 두 요소로 갈려 strict mode에서
+     깨진다(웹캠 없는 기계로 시늉해 실측: 이 파일 4건 FAIL). 기기 축을 선언해 그 우연을 없앤다.
+     못 쓰는 입구의 모양과 문구는 `int30-integration.spec.ts`가 자기 축으로 따로 잰다. */
+  await page.addInitScript(() => {
+    const media = navigator.mediaDevices;
+    if (!media) return;
+    media.enumerateDevices = async () => [{ kind: 'videoinput', deviceId: '', label: '', groupId: '', toJSON: () => ({}) } as MediaDeviceInfo];
+  });
 });
 
 async function openApp(page: Page, origin: string): Promise<Request[]> {

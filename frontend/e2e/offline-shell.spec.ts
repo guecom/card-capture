@@ -11,6 +11,16 @@ test.beforeEach(async ({ page }) => {
   // 카메라 외 검증에서는 엔진 자산 프리페치를 차단해 테스트를 가볍게 유지한다.
   // service worker fetch까지 잡으려면 context 레벨이어야 한다 (page.route는 SW 요청을 못 잡는다).
   await page.context().route('**/vendor/**', (route) => route.abort());
+  /* 카메라가 **있는** 기기라고 못 박는다 (TSK-000220 / INT-000030).
+     오프라인 껍데기 판정은 "캐시된 화면이 그대로 뜬다"는 사실을 촬영 입구로 확인한다. 그 입구의
+     모양은 이제 기기 능력이 정하므로(`services/device-capability.ts`) 축을 선언하지 않으면
+     같은 코드가 기계에 따라 다른 화면을 보게 된다. 아래 카메라 시나리오는 `navigator.mediaDevices`
+     자체를 갈아 끼워 자기 세계를 다시 선언한다. */
+  await page.addInitScript(() => {
+    const media = navigator.mediaDevices;
+    if (!media) return;
+    media.enumerateDevices = async () => [{ kind: 'videoinput', deviceId: '', label: '', groupId: '', toJSON: () => ({}) } as MediaDeviceInfo];
+  });
 });
 
 const contentTypes: Record<string, string> = {
@@ -302,6 +312,9 @@ test('captures front and back with context into the local queue without uploadin
       configurable: true,
       value: {
         getUserMedia: async () => new MediaStream(),
+        // 기기 목록도 함께 선언한다. 예전에는 `getUserMedia`만 얹어 두고 카메라 카드가 살아 있는 것을
+        // "센 적이 없으니 0이 아니다"(`videoInputs: 'unknown'`)에 기대고 있었다 — 우연히 맞는 상태다.
+        enumerateDevices: async () => [{ kind: 'videoinput', deviceId: '', label: '', groupId: '', toJSON: () => ({}) } as MediaDeviceInfo],
       },
     });
     Object.defineProperty(HTMLVideoElement.prototype, 'videoWidth', { configurable: true, get: () => 1600 });

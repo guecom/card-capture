@@ -58,6 +58,15 @@ test.beforeEach(async ({ page }) => {
   // 실제 자산 컴파일이 메인 스레드를 점유해 클릭 안정성 판정이 흔들린다.
   // service worker fetch까지 잡으려면 context 레벨이어야 한다 (page.route는 SW 요청을 못 잡는다).
   await page.context().route('**/vendor/**', (route) => route.abort());
+  /* 카메라가 **있는** 기기라고 못 박는다 (TSK-000220 / INT-000030).
+     legacy 파리티는 "한 화면에 촬영·맥락·완료가 같이 있다"는 사실을 잰다. 촬영 입구의 모양은 이제
+     기기 능력이 정하므로(`services/device-capability.ts`), 선언하지 않으면 웹캠 없는 기계에서
+     파리티 판정이 조용히 다른 화면을 보게 된다. */
+  await page.addInitScript(() => {
+    const media = navigator.mediaDevices;
+    if (!media) return;
+    media.enumerateDevices = async () => [{ kind: 'videoinput', deviceId: '', label: '', groupId: '', toJSON: () => ({}) } as MediaDeviceInfo];
+  });
 });
 
 const processedBrief = [

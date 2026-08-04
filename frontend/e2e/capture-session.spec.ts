@@ -118,6 +118,17 @@ test.beforeEach(async ({ page }) => {
     // 기본 카메라 경로(파일 입력)를 쓸 수 있게 둔다.
     localStorage.setItem('cc_galleryFree', 'off');
   });
+  /* 카메라가 **있는** 기기라고 못 박는다 (TSK-000220 / INT-000030).
+     이 게이트가 재는 것은 촬영 세션의 계약이지 기기 가용성이 아니다. 그런데 입구를 쓸 수 있는지는
+     이제 기기가 정하므로(`services/device-capability.ts`), 웹캠 없는 기계 — GitHub Actions
+     `windows-latest` runner가 그렇다 — 에서는 촬영 카드가 이유·회복 줄을 달고 나오고 누르면
+     파일 올리기가 열린다. 선언하지 않으면 이 파일은 코드가 아니라 **실행한 기계**를 재게 된다.
+     못 쓰는 입구 쪽 계약은 `int30-integration.spec.ts`가 따로 잰다. */
+  await page.addInitScript(() => {
+    const media = navigator.mediaDevices;
+    if (!media) return;
+    media.enumerateDevices = async () => [{ kind: 'videoinput', deviceId: '', label: '', groupId: '', toJSON: () => ({}) } as MediaDeviceInfo];
+  });
 });
 
 // ── FI-046 ──────────────────────────────────────────────────────────────────
