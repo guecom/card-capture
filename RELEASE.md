@@ -75,7 +75,7 @@ Web Push를 되돌릴 때는 code rollback 전에도 `PUSH_NOTIFICATIONS_ENABLED
 - **`DEEP_RESEARCH_ENABLED` Script Property: 값을 여전히 확인하지 못했다.** 이 값은 유효 owner token 뒤에 있고 agent는 credential을 다루지 않는다. **설정돼 있지 않으면 `깊은 조사` 칸은 이제 고를 수는 있되 제출이 `지금은 접수 안 돼요`로 막힌다** — v2.25.0에서는 아예 고를 수 없었다. 그건 결함이 아니라 계약의 fail-closed 동작이고, 이번 변경은 그 사실을 지연이 아니라 지속 상태로 말하게 만든 것이다. 값을 켤지 말지는 사람이 정한다.
 - 실기기 판정: **미완료.** 실제 폰에서 카메라·파일 선택창·붙여넣기·체감 성능을 하나도 실행하지 않았다. founder의 exact live build 판정도 없다. 이 release의 네 표면은 전부 사람이 보고 만지는 결과이고 PR lane도 그래서 `HUMAN TEST REQUIRED`였다. 저장소 게이트는 **구현 증거**이며 actual-phone PASS·MVP gate PASS·customer proof가 아니다. MVP build/testability gate comes before customer proof.
 - **남은 사람 단계**:
-  1. **founder actual-phone 판정** — 네 표면(자동 폴링 중 버튼이 도는지, 파일 올리기 한 번 누르기, 조사 깊이 세 칸, 자동 갱신 스위치의 두께·누르기). 이 판정 전까지 `TSK-000220`·`559`·`560`·`562`는 Done이 아니다.
+  1. **founder actual-phone 판정** — 네 표면(자동 폴링 중 버튼이 도는지, 파일 올리기 한 번 누르기, 조사 깊이 세 칸, 자동 갱신 스위치의 두께·누르기). 이 판정을 done_criteria에 명시적으로 담고 있는 것은 `TSK-000220`이고(`TST-000018`의 founder exact-build 판정), 그래서 그것만 열려 있다. `TSK-000559`·`560`·`562`는 각자의 done_criteria가 기계 검증과 Result 연결까지이므로 닫혔다 — **그 셋이 닫혔다는 것이 실기기에서 좋았다는 뜻은 아니다.** 이 항목이 그 판정을 소유한다.
   2. **Script Property `DEEP_RESEARCH_ENABLED` 확인·결정.** `true`가 아니면 `깊은 조사`는 고를 수는 있어도 접수되지 않는다.
   3. **(`v2.24.1`에서 넘어온) 운영 watcher 재기동.** 이 release의 산출물이 아니지만 열려 있다.
 - rollback: **PR revert 하나로 끝난다.** PR #86 merge commit `e490b194a891828e12a672601b95ebbc50db5042`를 revert하고 같은 Pages 절차로 재배포한다. 기존 tag를 움직이거나 재사용하지 않는다. `Code.gs`·Script Property·credential·production data·watcher를 바꾸지 않았으므로 **서버 rollback이 없다** — v2.25.0과 달리 되돌릴 서버 상태가 존재하지 않는다.
