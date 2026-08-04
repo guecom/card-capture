@@ -2228,7 +2228,10 @@ function App() {
   function renderSettings() {
     /* ISS-000217 · DEC-000093 (Kairen-Ref: TSK-000532) — 설정 화면 전체는 `SettingsPanel`이 소유한다.
        여기 남기는 것은 **앱 상태와의 연결**뿐이다. 화면 문구·구조·시각 규칙이 이 파일에 섞여 있으면
-       설정 한 줄을 고칠 때마다 앱 전체가 열리고, 화면을 재는 게이트가 무엇을 잡는지도 흐려진다. */
+       설정 한 줄을 고칠 때마다 앱 전체가 열리고, 화면을 재는 게이트가 무엇을 잡는지도 흐려진다.
+
+       DEC-000105 (Kairen-Ref: TSK-000544) — 전송 대기 건수와 조사 권한은 앱이 이미 아는 사실이다.
+       설정 화면이 그것을 다시 추측하면 두 번째 진실이 생기므로 값으로 넘긴다. */
     return (
       <SettingsPanel
         config={config}
@@ -2247,6 +2250,8 @@ function App() {
         onPushToggle={() => void handlePushToggle()}
         onPushRefresh={() => void refreshPushState()}
         onSignOut={() => setSignOutOpen(true)}
+        unsentCount={unsentCount}
+        researchAvailable={researchInstructionEnabled}
         currentScreen={screenTitles[tab]}
         appVersion={APP_VERSION}
         buildId={__CARD_CAPTURE_BUILD_ID__}
