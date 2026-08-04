@@ -688,17 +688,14 @@ function App() {
     setPushBusy(false);
   }, [config, pushBusy, pushState]);
 
-  // 수동 새로고침은 즉시 진행 토스트 → 완료/실패 토스트로 반응한다 (2026-07-26 실폰 피드백 7).
+  /* 수동 새로고침 (INT-000036 / TSK-000559).
+     예전에는 여기서 토스트 세 장(진행·완료·실패)이 나갔다. founder 판정: "눌렀을 때 새로고침
+     중이라고 뭔가 위에서 내려오는데, 이거 굳이 있어야 되나 싶어." 진행과 결말은 이미 누른
+     버튼 옆(`RefreshControl`)이 소유하고 있었고, 토스트는 같은 말을 화면 위에 겹쳐 덮는
+     두 번째 표면이었다. 성공은 신선도 줄이 바뀌는 것으로 닫히고, 실패·막힘은 2.6초가 아니라
+     다음 요청이 결말을 낼 때까지 갱신 덩어리 안에 남는다. */
   const manualRefresh = useCallback(async () => {
-    setMessage('새로고침 중…');
-    const outcome = await refreshOrchestrator.request('priority');
-    // 내가 기다리는 사이 더 새로운 갱신이 화면을 이미 바꿨다면 이 결과로 덮어쓰지 않는다.
-    if (outcome.stale) return;
-    if (outcome.error) {
-      setMessage(`새로고침 실패: ${actionErrorMessage(outcome.error)}`);
-      return;
-    }
-    setMessage((current) => current === '' || current === '새로고침 중…' ? '새로고침 완료 — 최신 상태예요' : current);
+    await refreshOrchestrator.request('priority');
   }, [refreshOrchestrator]);
 
   // `예전 기록 더 보기` (FI-100). 서버가 offset·hasMore로 과거 기록 전체를 줄 수 있으므로
@@ -1057,13 +1054,16 @@ function App() {
      요청이 실제로 오가는 중일 때만 `갱신 중`, 끝나면 `방금 업데이트`/`갱신 실패 · 다시 시도`.
      (ISS-000050 · DEC-000092: 가짜 정밀 ETA 금지) */
   const lastRefreshAgoMs = refreshedAt === null ? null : clockTick - refreshedAt;
-  const autoRefreshHint = refreshStatus && refreshStatus.state !== 'idle'
-    ? refreshStatus.text
-    : refreshIdleText({ autoRefreshOn, lastSuccessAgoMs: lastRefreshAgoMs, cadence: refreshPlan });
-  /* 회전과 `aria-busy`가 따르는 단 하나의 값. `loading`은 목록 조회가 실제로 떠 있는 동안만
-     참이므로 "요청 중"과 정확히 같은 뜻이다 — 자동 갱신이 켜졌다는 사실과는 아무 관계가 없다.
-     그 사실은 이제 스위치가 따로 말한다. */
-  const refreshBusy = loading;
+  /* 이 줄은 **주변 사실만** 말한다: 자동 켜짐/꺼짐 · 지금 걸린 박자 · 마지막 성공.
+     진행·성공·실패는 누른 버튼 옆 한 곳(`RefreshControl`)이 소유한다 (TSK-000559).
+     예전에는 여기서도 `refreshStatus.text`를 그대로 썼는데, 그러면 같은 사실을 두 자리가
+     말하게 되고 실제로 어긋났다 — 자동 폴링 동안 위는 `갱신 중`, 아래는 `자동 갱신 켜짐 ·
+     20초마다`였다. 겹쳐 말할 곳을 없애면 어긋날 방법도 없어진다. */
+  const autoRefreshHint = refreshIdleText({
+    autoRefreshOn,
+    lastSuccessAgoMs: lastRefreshAgoMs,
+    cadence: refreshPlan,
+  });
 
   // 지금 올리고 있는 촬영의 표시 이름. 없으면 빈 문자열이다.
   const sendingItem = useMemo(
@@ -2228,7 +2228,10 @@ function App() {
           </button>
           {/* 이 구획의 진실만 쓴다. 지금 올리는 촬영이 있을 때만, 그리고 그것이 무엇인지 이름을 붙여서. */}
           {sendingId && <span className="sending-note" role="status">{sendingName || '명함'} 전송 중…</span>}
-          <span className="refresh-hint" role="status">{autoRefreshHint}</span>
+          {/* live region이 아니다. 이 문구는 1초 tick으로 `N초 전`이 계속 바뀌므로 `role="status"`를
+              달면 낭독기가 매초 끼어들어 다른 것을 아무것도 읽을 수 없다 (TSK-000559).
+              갱신을 낭독하는 지점은 상단 갱신 덩어리 안의 하나뿐이다. */}
+          <span className="refresh-hint">{autoRefreshHint}</span>
         </div>
         {/* 연결 안내는 실제로 막힌 것(서버 전송) 옆에 붙는다. 위 촬영 카드는 연결 없이도
             전부 동작하므로 그 위에는 아무것도 얹지 않는다. */}
@@ -2559,10 +2562,11 @@ function App() {
                   autoRefreshOn={autoRefreshOn}
                   onAutoRefreshChange={setAutoRefreshOn}
                   onManualRefresh={() => void manualRefresh()}
+                  /* 온라인 복귀는 사용자가 한 일이 아니다 — 조용히 받아 오고 영수증을 남기지 않는다. */
+                  onResume={() => void silentRefresh(true)}
                   plan={refreshPlan}
                   status={refreshStatus}
                   lastSuccessAgoMs={lastRefreshAgoMs}
-                  busy={refreshBusy}
                 />
               )}
             </div>

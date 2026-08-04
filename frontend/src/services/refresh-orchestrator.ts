@@ -12,6 +12,7 @@
 //   4. 상태 기계 — `idle → in-flight → success | failure`, 승인된 문구 그대로.
 
 import type { BriefItem } from '../contracts/capture';
+import { actionErrorMessage } from './brief-view';
 import { ACTIVE_REFRESH_MS, IDLE_REFRESH_MS, cadenceSeconds, hasActiveBriefs } from './refresh-cadence';
 
 // ── 승인 문구 (INT-000025 / ISS-000050) ─────────────────────────────────────
@@ -53,6 +54,16 @@ export interface RefreshStatus {
   role: 'status' | 'alert' | null;
   /** 이 상태를 만든 요청 세대 */
   generation: number;
+  /**
+   * 연달아 실패한 횟수. 성공하면 0으로 돌아간다.
+   *
+   * 이것이 상태에 들어 있는 이유: 같은 실패를 세 번째로 겪는 사람에게 **같은 문장**을 세 번
+   * 보여 주는 것은 안내가 아니라 소음이다. 몇 번째인지 알아야 단계를 올릴 수 있고, 그 판정은
+   * 화면이 아니라 요청을 세는 이 자리가 해야 어긋나지 않는다 (TSK-000559).
+   */
+  failureStreak: number;
+  /** 실패의 원인. `failure`가 아닌 상태에서는 없다. 화면이 원인 갈래를 말할 근거다. */
+  error?: unknown;
 }
 
 export interface RefreshOutcome<T> {
@@ -84,6 +95,7 @@ const IDLE_STATUS: RefreshStatus = {
   busy: false,
   role: null,
   generation: 0,
+  failureStreak: 0,
 };
 
 export interface RefreshOrchestrator<T> {
@@ -114,6 +126,8 @@ export function createRefreshOrchestrator<T>(options: RefreshOrchestratorOptions
   /** 이 세대 이하의 응답은 세션이 바뀌었으므로 전부 버린다. */
   let barrier = 0;
   let status: RefreshStatus = IDLE_STATUS;
+  /** 연달아 실패한 횟수. 성공·세션 교체가 0으로 되돌린다. */
+  let failureStreak = 0;
   let successAt: number | null = null;
   let active: { promise: Promise<RefreshOutcome<T>>; controller: AbortController } | null = null;
   let trailing: Promise<RefreshOutcome<T>> | null = null;
@@ -132,7 +146,15 @@ export function createRefreshOrchestrator<T>(options: RefreshOrchestratorOptions
     latest = generation;
     const controller = new AbortController();
     successAt = null;
-    emit({ state: 'in-flight', text: REFRESH_BUSY_TEXT, label: REFRESH_BUSY_LABEL, busy: true, role: null, generation });
+    emit({
+      state: 'in-flight',
+      text: REFRESH_BUSY_TEXT,
+      label: REFRESH_BUSY_LABEL,
+      busy: true,
+      role: null,
+      generation,
+      failureStreak,
+    });
 
     const promise = (async (): Promise<RefreshOutcome<T>> => {
       try {
@@ -140,11 +162,22 @@ export function createRefreshOrchestrator<T>(options: RefreshOrchestratorOptions
         // 늦게 도착한 응답은 최신 상태를 덮어쓰지 않는다.
         if (generation !== latest || generation <= barrier) return staleOutcome(generation, value);
         successAt = clock();
-        emit({ state: 'success', text: REFRESH_SUCCESS_TEXT, label: REFRESH_IDLE_LABEL, busy: false, role: 'status', generation });
+        failureStreak = 0;
+        emit({ state: 'success', text: REFRESH_SUCCESS_TEXT, label: REFRESH_IDLE_LABEL, busy: false, role: 'status', generation, failureStreak });
         return { generation, applied: true, stale: false, value };
       } catch (error) {
         if (generation !== latest || generation <= barrier) return staleOutcome(generation, undefined, error);
-        emit({ state: 'failure', text: REFRESH_FAILURE_TEXT, label: REFRESH_IDLE_LABEL, busy: false, role: 'alert', generation });
+        failureStreak += 1;
+        emit({
+          state: 'failure',
+          text: REFRESH_FAILURE_TEXT,
+          label: REFRESH_IDLE_LABEL,
+          busy: false,
+          role: 'alert',
+          generation,
+          failureStreak,
+          error,
+        });
         return { generation, applied: false, stale: false, error };
       }
     })();
@@ -191,6 +224,8 @@ export function createRefreshOrchestrator<T>(options: RefreshOrchestratorOptions
       active?.controller.abort();
       active = null;
       successAt = null;
+      // 연결·계정이 바뀌면 이전 subject에서 쌓인 실패 횟수는 이 화면의 사실이 아니다.
+      failureStreak = 0;
       emit({ ...IDLE_STATUS, generation: sequence });
     },
     inFlight: () => active !== null,
@@ -324,6 +359,126 @@ export function refreshHeadlineText(input: {
   const beat = refreshCadenceText(input.plan);
   const since = refreshAgoText(input.lastSuccessAgoMs);
   return since ? `${since} · ${beat}` : beat;
+}
+
+// ── 막힘·실패 안내 (INT-000036 / TSK-000559) ──────────────────────────────────
+//
+// 여기까지 오기 전, 실패는 2.6초짜리 토스트였다. 그것이 왜 틀렸는지가 이 코드의 이유다:
+// **사용자가 조치해야 하는 사실에 2.6초짜리 수명을 주면 그 사실은 전달되지 않는다.**
+// 화면을 안 보고 있었거나, 읽는 사이에 사라지거나, 무엇을 하라는 것인지 알기 전에 닫힌다.
+// 그래서 안내는 다음 요청이 결말을 낼 때까지 **남아 있고**, 갱신 조작 바로 옆에 붙는다 —
+// 무엇이 막혔는지와 그것을 푸는 손잡이가 같은 자리에 있어야 한다.
+
+export type RefreshNoticeReason = 'disconnected' | 'offline' | 'failure';
+
+export interface RefreshNotice {
+  reason: RefreshNoticeReason;
+  /**
+   * 화면에 보이는 짧은 말. 원인 갈래이자 **다음에 확인할 대상**이다.
+   * 반복 실패에서 단계가 오르면 이 문구가 함께 바뀐다 — 눈에 보이지 않는 단계 상승은
+   * 단계를 올리지 않은 것과 같기 때문이다.
+   */
+  title: string;
+  /** 지금 무슨 일이 일어나고 무엇을 할 수 있는가. 낭독기와 도움말이 읽는 전문. */
+  detail: string;
+  /** `다시 시도`가 실제로 무언가를 할 수 있는 상황인가. */
+  retry: boolean;
+  /** 화면 색조. 막힘은 경고, 실패는 오류다. */
+  tone: 'blocked' | 'error';
+  /** 몇 번째 연속 실패인가. 막힘 안내에서는 0이다. */
+  streak: number;
+}
+
+/**
+ * 실패의 **원인 갈래**. 전문(`actionErrorMessage`)은 길어서 상단 바에 못 들어가고,
+ * 좁은 자리에 `갱신 실패`만 쓰면 무엇을 확인해야 하는지 알 수 없다. 그래서 갈래를 짧게 이름
+ * 붙이고 전문은 그대로 옆에 둔다 — 줄이는 것이지 감추는 것이 아니다.
+ */
+export function refreshFailureTitle(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error ?? '');
+  if (/failed to fetch|networkerror|load failed|network request failed|timeout|abort/i.test(raw)) return '네트워크 오류';
+  if (/owner_only|bad_token|unauthorized|forbidden|invalid_token/i.test(raw)) return '권한 오류';
+  if (/server_error|list_failed|^5\d\d$/i.test(raw)) return '서버 오류';
+  if (/missing_api|not_configured|no_token/i.test(raw)) return '연결 오류';
+  return '갱신 실패';
+}
+
+/**
+ * 반복되는 실패에서 **다음에 할 일**을 한 단계 올린다.
+ *
+ * 1회 — 대개 일시적이다. 원인 전문을 그대로 주고 다시 눌러 보게 한다.
+ * 2회 — 우연이 아니다. 확인할 대상(연결)을 지목한다.
+ * 4회 — 눌러서 풀리는 문제가 아니다. 설정을 열어 보라고 말한다.
+ *
+ * 같은 문장을 N번 반복하지 않는 이유는 예의가 아니라 정보량이다. 두 번째에 같은 말을 하면
+ * 그 문장은 "다시 눌러라" 외에 아무것도 알려 주지 않는다.
+ */
+function failureDetail(error: unknown, streak: number): string {
+  if (streak >= 4) return `${actionErrorMessage(error)} 계속 실패하고 있어요 — 설정에서 연결을 다시 확인해 주세요.`;
+  if (streak >= 2) return `${actionErrorMessage(error)} 연결(Wi-Fi·데이터)이 살아 있는지 확인하고 다시 눌러 주세요.`;
+  return actionErrorMessage(error);
+}
+
+/** 단계가 오른 것을 **눈으로도** 알 수 있게 하는 조각. 보이지 않는 단계 상승은 상승이 아니다. */
+function failureStep(streak: number): string {
+  if (streak >= 4) return ' · 설정에서 연결 확인';
+  if (streak >= 2) return ' · 연결 확인';
+  return '';
+}
+
+/**
+ * 지금 갱신을 막고 있는 것이 있는가. 없으면 `null`이고 화면에는 아무것도 나타나지 않는다.
+ *
+ * 순서에 뜻이 있다.
+ *   1. 연결이 없다 — 어떤 요청도 성립하지 않는다. 다른 원인을 말해 봐야 거짓이다.
+ *   2. 오프라인 — 요청은 성립하지만 지금은 나가지 못한다. 사용자가 할 일이 아니라 **기다림**이다.
+ *   3. 실패 — 위 둘이 아닌데도 실패했다. 그제서야 원인 갈래를 말할 자격이 있다.
+ *
+ * `asked`가 연결 없음에만 붙는 이유: 미연결 안내는 본문에 이미 상시로 붙어 있다(연결 카드).
+ * 상단에까지 늘 띄우면 같은 말을 두 자리에서 하게 된다. 다만 **새로고침을 눌렀는데 아무 일도
+ * 일어나지 않는 것**은 답을 줘야 하는 질문이므로, 그때만 이 자리에서 답한다.
+ */
+export function refreshNotice(input: {
+  plan: RefreshCadencePlan;
+  /** 직접 누른 갱신의 실패 영수증. 자동 박자의 실패는 여기에 오지 않는다. */
+  failure?: RefreshStatus | null;
+  /** 이 기기가 네트워크에 붙어 있는가. 모르면 붙어 있다고 본다. */
+  online?: boolean;
+  /** 연결이 없는 상태에서 사용자가 갱신을 시도했는가. */
+  asked?: boolean;
+}): RefreshNotice | null {
+  if (input.plan.reason === 'disconnected') {
+    if (input.asked !== true) return null;
+    return {
+      reason: 'disconnected',
+      title: '연결 필요',
+      detail: '개인 링크로 열면 목록을 받아올 수 있어요. 이 기기에 저장된 것은 그대로예요.',
+      retry: false,
+      tone: 'blocked',
+      streak: 0,
+    };
+  }
+  if (input.online === false) {
+    return {
+      reason: 'offline',
+      title: '오프라인',
+      detail: '연결되면 자동으로 다시 확인해요. 이 기기에 있는 기록은 그대로 볼 수 있어요.',
+      retry: false,
+      tone: 'blocked',
+      streak: 0,
+    };
+  }
+  const failure = input.failure;
+  if (!failure || failure.state !== 'failure') return null;
+  const streak = Math.max(failure.failureStreak, 1);
+  return {
+    reason: 'failure',
+    title: `${refreshFailureTitle(failure.error)}${failureStep(streak)}`,
+    detail: failureDetail(failure.error, streak),
+    retry: true,
+    tone: 'error',
+    streak,
+  };
 }
 
 export interface RefreshLoopTimers {

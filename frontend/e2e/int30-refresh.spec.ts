@@ -82,7 +82,15 @@ interface Harness {
   failList: (fail: boolean) => void;
 }
 
-async function boot(page: Page, options: { active?: boolean; reducedMotion?: boolean } = {}): Promise<Harness> {
+interface BootOptions {
+  active?: boolean;
+  reducedMotion?: boolean;
+  /** `false`면 개인 링크 코드 없이 연다 — 서버에 물어볼 수 없는 상태를 그대로 재현한다. */
+  connected?: boolean;
+  theme?: 'light' | 'dark';
+}
+
+async function boot(page: Page, options: BootOptions = {}): Promise<Harness> {
   const server = await startStaticServer();
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
@@ -119,11 +127,15 @@ async function boot(page: Page, options: { active?: boolean; reducedMotion?: boo
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
   });
 
-  await page.addInitScript(() => localStorage.setItem('cc_name', '이강규'));
+  await page.addInitScript((theme) => {
+    localStorage.setItem('cc_name', '이강규');
+    if (theme) localStorage.setItem('cc_theme', theme);
+  }, options.theme ?? '');
   if (options.reducedMotion) await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 390, height: 844 });
   const api = encodeURIComponent('https://api.example.test/exec');
-  await page.goto(`${origin}next/?api=${api}&k=owner-token`, { waitUntil: 'networkidle' });
+  const token = options.connected === false ? '' : '&k=owner-token';
+  await page.goto(`${origin}next/?api=${api}${token}`, { waitUntil: 'networkidle' });
 
   return {
     server,
@@ -141,6 +153,72 @@ async function boot(page: Page, options: { active?: boolean; reducedMotion?: boo
 const autoSwitch = (page: Page): Locator => page.getByRole('switch', { name: '자동 갱신' });
 const refreshNow = (page: Page): Locator => page.getByRole('button', { name: '최신 상태 확인' });
 const refreshLine = (page: Page): Locator => page.locator('.int30-refresh-line');
+const refreshNotice = (page: Page): Locator => page.locator('.int30-refresh-notice');
+const refreshHint = (page: Page): Locator => page.locator('.refresh-hint');
+const retryButton = (page: Page): Locator => refreshNotice(page).getByRole('button', { name: '다시 시도' });
+
+/**
+ * 지금 화면에 떠 있는 토스트.
+ *
+ * `is-open` 속성을 읽으면 안 된다 — Ionic React는 `isOpen`을 **DOM property**로만 넘기므로
+ * 그 속성은 열려 있어도 없다. 속성만 보는 검사는 토스트가 세 장 떠 있어도 통과하는 빈
+ * 게이트가 된다(실제로 이 저장소에 그런 단언이 있었다). 그려진 상자와 문구를 직접 본다.
+ */
+function openToasts(): string[] {
+  return Array.from(document.querySelectorAll('ion-toast'))
+    .filter((node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && !node.classList.contains('overlay-hidden');
+    })
+    .map((node) => String((node as HTMLElement & { message?: string }).message ?? node.textContent ?? '').trim());
+}
+
+/**
+ * 페이지 안에서 도는 실측기. **보이는 상자가 아니라 손가락이 닿는 자리**를 잰다.
+ *
+ * 상단 바의 조작은 chrome을 얇게 두고 hit area만 넓히므로 `getBoundingClientRect().height`는
+ * 눌리는 크기와 다르다. 그래서 조작의 중심에서 위·아래로 1px씩 나가며 `elementFromPoint`가
+ * 여전히 그 조작을 돌려주는 마지막 지점을 찾는다 — 가상 요소로 넓힌 자리도 그대로 잡힌다.
+ */
+function measureRefreshReach(): {
+  auto: { height: number; center: number; band: number } | null;
+  now: { height: number; center: number; band: number } | null;
+  row: { height: number; center: number } | null;
+  brand: { height: number; center: number } | null;
+  copy: { height: number; center: number } | null;
+} {
+  const round = (value: number) => Math.round(value * 10) / 10;
+  const owns = (node: Element, hit: Element | null) => Boolean(hit && (hit === node || node.contains(hit)));
+  const band = (selector: string) => {
+    const node = document.querySelector(selector);
+    if (!node) return null;
+    const rect = node.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const grow = (direction: number) => {
+      let last = 0;
+      for (let step = 1; step <= 40; step += 1) {
+        if (!owns(node, document.elementFromPoint(cx, cy + direction * step))) break;
+        last = step;
+      }
+      return last;
+    };
+    return { height: round(rect.height), center: round(cy), band: grow(-1) + grow(1) + 1 };
+  };
+  const box = (selector: string) => {
+    const node = document.querySelector(selector);
+    if (!node) return null;
+    const rect = node.getBoundingClientRect();
+    return { height: round(rect.height), center: round(rect.top + rect.height / 2) };
+  };
+  return {
+    auto: band('.int30-refresh-switch'),
+    now: band('.int30-refresh-now'),
+    row: box('.int30-refresh-row'),
+    brand: box('.brand-mark'),
+    copy: box('.app-header-copy'),
+  };
+}
 
 // ── 1. 기능 상태: 스위치가 명시적으로 말한다 ──
 
@@ -293,9 +371,16 @@ test('실패한 갱신은 그 사실을 남기고, 스위치 상태를 건드리
     await expect(refreshLine(page)).toContainText('20초마다');
     harness.failList(true);
     await refreshNow(page).click();
-    await expect(refreshLine(page)).toHaveText('갱신 실패', { timeout: 8_000 });
-    // 실패를 색으로만 말하지 않는다 — 글자가 이미 실패라고 쓰여 있다.
+
+    /* 실패는 이제 **남는 안내**가 소유한다 (TSK-000559). 예전에는 이 줄이 `갱신 실패`로 바뀌고
+       동시에 토스트가 떴다 — 같은 사실을 두 자리가 말했고, 그중 하나는 2.6초 뒤 사라졌다. */
+    await expect(refreshNotice(page)).toBeVisible({ timeout: 8_000 });
+    await expect(refreshNotice(page)).toHaveAttribute('data-tone', 'error');
+    // 실패를 색으로만 말하지 않는다 — 안내에 원인 갈래가 글자로 쓰여 있다.
+    await expect(refreshNotice(page)).toContainText(/오류|실패/);
     await expect(refreshLine(page)).toHaveAttribute('data-state', 'failure');
+    // 신선도 줄은 실패를 겹쳐 말하지 않고 자기 일(마지막 성공·박자)을 계속한다.
+    await expect(refreshLine(page)).toContainText(/초마다/);
     // 갱신이 실패했다고 자동 갱신이 꺼지지는 않는다. 두 사실은 서로 다른 축이다.
     await expect(autoSwitch(page)).toHaveAttribute('aria-checked', 'true');
     await expect(refreshNow(page)).toHaveAttribute('aria-busy', 'false');
@@ -356,11 +441,75 @@ test('320px 상단 바에서 스위치·버튼·문구가 화면 밖으로 밀�
     expect(report.lineFontPx, `갱신 문구가 너무 작다 (${report.lineFontPx}px)`).toBeGreaterThanOrEqual(12.5);
 
     // 손가락 크기. 320px에서도 두 조작이 모두 충분히 크다.
+    // **보이는 상자 높이를 재지 않는다.** 눌리는 것은 그림이 아니라 hit area이고, 이 앱은
+    // 상단 바에서 chrome을 얇게 두면서 hit area만 넓히기 때문이다 (TSK-000559). 실제로
+    // 손가락이 닿는 세로 폭을 `elementFromPoint`로 바깥으로 훑어 잰다.
+    const reach = await page.evaluate(measureRefreshReach);
+    for (const control of ['자동 갱신 스위치', '새로고침 버튼'] as const) {
+      const measured = control === '자동 갱신 스위치' ? reach.auto : reach.now;
+      expect(measured, `${control}을 찾지 못했다`).not.toBeNull();
+      expect(measured!.band, `${control}이 누르기에 충분히 크지 않다 (실측 ${measured!.band}px, 보이는 높이 ${measured!.height}px)`)
+        .toBeGreaterThanOrEqual(44);
+    }
     for (const control of [autoSwitch(page), refreshNow(page)]) {
       const box = await control.boundingBox();
-      expect(box!.height, '조작이 누르기에 충분히 크지 않다').toBeGreaterThanOrEqual(36);
       expect(box!.x + box!.width, '조작이 오른쪽으로 잘렸다').toBeLessThanOrEqual(320 + 1);
     }
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+test('320px에서 실패 안내가 떠도 화면 이름이 살아 있고 가로로 넘치지 않는다', async ({ page }) => {
+  const harness = await boot(page, { active: false });
+  try {
+    await page.setViewportSize({ width: 320, height: 568 });
+    harness.failList(true);
+    await refreshNow(page).click();
+    await expect(refreshNotice(page)).toBeVisible({ timeout: 8_000 });
+
+    const report = await page.evaluate(() => {
+      const viewport = document.documentElement.clientWidth;
+      const offenders: string[] = [];
+      document.querySelectorAll<HTMLElement>('ion-header .int30-refresh, ion-header .int30-refresh *').forEach((node) => {
+        const rect = node.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) return;
+        if (rect.right <= viewport + 1 && rect.left >= -1) return;
+        offenders.push(`${node.className || node.tagName} → right ${Math.round(rect.right)}`);
+      });
+      return {
+        viewport,
+        offenders,
+        scrollWidth: document.documentElement.scrollWidth,
+        titleWidth: Math.round(document.querySelector('.app-header-copy b')?.getBoundingClientRect().width ?? 0),
+        noticeWidth: Math.round(document.querySelector('.int30-refresh-notice')?.getBoundingClientRect().width ?? 0),
+      };
+    });
+    expect(report.offenders, `실패 안내가 화면 밖으로 나간다: ${report.offenders.join(' / ')}`).toEqual([]);
+    expect(report.scrollWidth, '실패 안내 때문에 화면이 가로로 스크롤된다').toBeLessThanOrEqual(report.viewport + 1);
+    // 무엇이 막혔는지 말하려고 **지금 어느 화면인지**를 지우지 않는다.
+    expect(report.titleWidth, `실패 안내가 화면 이름을 밀어냈다 (${report.titleWidth}px)`).toBeGreaterThan(40);
+    expect(report.noticeWidth, '실패 안내가 그려지지 않았다').toBeGreaterThan(60);
+
+    // 손잡이도 얇은 chrome과 무관하게 눌린다.
+    const retryBand = await page.evaluate(() => {
+      const node = document.querySelector('.int30-refresh-notice-retry');
+      if (!node) return null;
+      const rect = node.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const owns = (hit: Element | null) => Boolean(hit && (hit === node || node.contains(hit)));
+      const grow = (direction: number) => {
+        let last = 0;
+        for (let step = 1; step <= 40; step += 1) {
+          if (!owns(document.elementFromPoint(cx, cy + direction * step))) break;
+          last = step;
+        }
+        return last;
+      };
+      return grow(-1) + grow(1) + 1;
+    });
+    expect(retryBand, `\`다시 시도\`의 누를 수 있는 높이가 ${retryBand}px다`).toBeGreaterThanOrEqual(44);
   } finally {
     await stopServer(harness.server);
   }
@@ -436,6 +585,348 @@ test('상단 상태 줄은 갱신 사실을 겹쳐 말하지 않고 건수를 �
     expect(text, `상단 상태가 갱신 사실을 겹쳐 말한다: ${text}`).not.toMatch(/자동 갱신|초마다|방금 업데이트/);
     // 같은 사실은 갱신 덩어리 한 곳에만 있다.
     await expect(refreshLine(page)).toContainText(/초마다|자동 꺼짐/);
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// INT-000036 / TSK-000559 · ISS-000050 — 갱신 피드백의 주인을 **누른 버튼 하나**로
+//
+// founder 판정: "오른쪽 위에 새로고침 버튼이 돌아가고 있는데, 이제 갱신 중이라고 뜨는 게 이상해.
+// 그러고 눌렀을 때 새로고침 중이라고 뭔가 위에서 내려오는데, 이거 굳이 있어야 되나 싶어."
+//
+// 결함은 문구가 아니라 **소유권**이었다. 회전과 `갱신 중`이 `loading`(모든 목록 조회)을 따랐고,
+// `loading`은 자동 폴링에서도 참이 된다. 그래서 아무도 누르지 않은 화면이 스스로 돌았다.
+// 여기서부터 진행 사실은 **사용자가 누른 요청의 영수증**만 소유한다.
+// ══════════════════════════════════════════════════════════════════════════════
+
+test('자동 박자는 회전도 `갱신 중`도 만들지 않는다 — 진행은 누른 사람만 본다', async ({ page }) => {
+  const harness = await boot(page, { active: true });
+  try {
+    await expect(refreshLine(page)).toContainText('4초마다', { timeout: 8_000 });
+    // 자동 폴링 하나를 일부러 붙잡아 관측 창을 연다. 이 창 동안 사용자는 아무것도 누르지 않았다.
+    harness.delayList(2_500);
+    const before = harness.listRequests;
+    await expect.poll(() => harness.listInFlight, { timeout: 10_000 }).toBeGreaterThan(0);
+    // 양성 증거: 정말로 자동 요청이 떠 있다. 없으면 아래 "안 돈다"는 빈 단언이 된다.
+    expect(harness.listRequests, '관측 창에서 자동 폴링이 한 번도 일어나지 않았다').toBeGreaterThan(before);
+
+    const seen = await page.evaluate(() => ({
+      busy: document.querySelector('.int30-refresh-now')?.getAttribute('aria-busy') ?? '',
+      spinning: document.querySelectorAll('.int30-refresh-spin').length,
+      line: (document.querySelector('.int30-refresh-line')?.textContent ?? '').trim(),
+    }));
+    expect(seen.busy, '누른 적이 없는데 버튼이 aria-busy가 됐다').toBe('false');
+    expect(seen.spinning, '누른 적이 없는데 아이콘이 돌고 있다').toBe(0);
+    expect(seen.line, `누른 적이 없는데 상단이 "${seen.line}"이라고 말한다`).not.toContain('갱신 중');
+  } finally {
+    harness.delayList(0);
+    await stopServer(harness.server);
+  }
+});
+
+test('수동 갱신은 위에서 내려오는 토스트를 만들지 않는다', async ({ page }) => {
+  const harness = await boot(page, { active: false });
+  try {
+    await expect(refreshLine(page)).toContainText('20초마다');
+    harness.delayList(900);
+    await refreshNow(page).click();
+
+    // 진행 구간을 훑는다. 예전에는 여기서 `새로고침 중…`이 위에서 내려왔다.
+    const opened: string[] = [];
+    const sweep = async (samples: number) => {
+      for (let sample = 0; sample < samples; sample += 1) {
+        const shown = await page.evaluate(openToasts);
+        if (shown.length > 0) opened.push(`${sample}: ${shown.join(' / ')}`);
+        await page.waitForTimeout(140);
+      }
+    };
+    await expect(refreshLine(page)).toHaveText('갱신 중');
+    await sweep(8);
+
+    // 성공은 토스트가 아니라 신선도 줄이 바뀌는 것으로 닫힌다.
+    await expect(refreshLine(page)).toHaveText('방금 업데이트', { timeout: 8_000 });
+    // 성공 직후 구간도 훑는다 — 완료 토스트가 여기서 떴다.
+    await sweep(12);
+
+    expect(opened, `수동 갱신이 토스트를 띄웠다 — ${opened.join(' | ')}`).toEqual([]);
+    expect(await page.getByText(/새로고침 (중|완료|실패)/).count(), '새로고침 진행·완료 문구가 화면 어딘가에 남아 있다').toBe(0);
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+test('실패는 토스트가 아니라 갱신 덩어리 안에 남고, 다음 요청이 풀어 준다', async ({ page }) => {
+  const harness = await boot(page, { active: false });
+  try {
+    await expect(refreshLine(page)).toContainText('20초마다');
+    harness.failList(true);
+    await refreshNow(page).click();
+
+    await expect(refreshNotice(page)).toBeVisible({ timeout: 8_000 });
+    await expect(retryButton(page)).toBeVisible();
+    const said = (await refreshNotice(page).innerText()).trim();
+    expect(said, `실패의 원인 갈래를 말하지 않는다: ${said}`).toMatch(/네트워크|서버|연결|불러오/);
+
+    // 토스트 수명(2.6초)과 성공 유지(2초)를 모두 넘겨도 사라지지 않는다.
+    // 사용자가 조치해야 하는 사실에 2.6초짜리 수명을 주는 것이 애초의 결함이었다.
+    await page.waitForTimeout(4_200);
+    await expect(refreshNotice(page)).toBeVisible();
+    expect(await page.evaluate(openToasts), '실패가 토스트로도 떴다').toEqual([]);
+
+    // 다음 요청이 성공하면 스스로 사라진다 — 사용자가 치우는 일이 아니다.
+    harness.failList(false);
+    await retryButton(page).click();
+    await expect(refreshNotice(page)).toHaveCount(0, { timeout: 8_000 });
+    await expect(refreshLine(page)).toContainText(/방금|초마다/, { timeout: 8_000 });
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+test('같은 실패가 반복되면 같은 문장을 되풀이하지 않고 단계를 올린다', async ({ page }) => {
+  const harness = await boot(page, { active: false });
+  try {
+    await expect(refreshLine(page)).toContainText('20초마다');
+    harness.failList(true);
+
+    await refreshNow(page).click();
+    await expect(refreshNotice(page)).toBeVisible({ timeout: 8_000 });
+    const first = (await refreshNotice(page).innerText()).replace(/\s+/g, ' ').trim();
+
+    await retryButton(page).click();
+    await expect
+      .poll(async () => (await refreshNotice(page).innerText()).replace(/\s+/g, ' ').trim(), { timeout: 8_000 })
+      .not.toBe(first);
+    const second = (await refreshNotice(page).innerText()).replace(/\s+/g, ' ').trim();
+    expect(second, `두 번째 실패가 첫 번째와 똑같은 말을 한다: ${second}`).not.toBe(first);
+    expect(second, `단계를 올렸는데 사용자가 할 수 있는 일을 말하지 않는다: ${second}`).toMatch(/연결|Wi-Fi|데이터|설정/);
+    // 단계를 올려도 손잡이는 그대로 하나다.
+    await expect(retryButton(page)).toBeVisible();
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+test('오프라인이면 자동 갱신이 멈춘 이유를 말하고, 돌아오면 스스로 재개한다', async ({ page }) => {
+  const harness = await boot(page, { active: true });
+  try {
+    await expect(refreshLine(page)).toContainText('4초마다', { timeout: 8_000 });
+    harness.failList(true);
+    await page.context().setOffline(true);
+
+    await expect(refreshNotice(page)).toContainText('오프라인', { timeout: 8_000 });
+    // 오프라인은 사용자가 누른 실패가 아니다 — 회전도 aria-busy도 만들지 않는다.
+    await expect(refreshNow(page)).toHaveAttribute('aria-busy', 'false');
+    expect(await page.locator('.int30-refresh-spin').count(), '오프라인 안내가 아이콘을 돌렸다').toBe(0);
+
+    harness.failList(false);
+    const before = harness.listRequests;
+    await page.context().setOffline(false);
+    await expect(refreshNotice(page)).toHaveCount(0, { timeout: 8_000 });
+    // 안내만 지우고 마는 것이 아니라 **실제로 다시 받아 온다**.
+    await expect.poll(() => harness.listRequests, { timeout: 8_000 }).toBeGreaterThan(before);
+  } finally {
+    await page.context().setOffline(false);
+    await stopServer(harness.server);
+  }
+});
+
+test('연결이 없으면 새로고침이 헛돌지 않고 왜 못 하는지 말한다', async ({ page }) => {
+  const harness = await boot(page, { active: false, connected: false });
+  try {
+    await expect(refreshLine(page)).toContainText('연결되면 확인', { timeout: 8_000 });
+    const before = harness.listRequests;
+    await refreshNow(page).click();
+
+    await expect(refreshNotice(page)).toBeVisible({ timeout: 5_000 });
+    await expect(refreshNotice(page)).toContainText(/연결/);
+    await page.waitForTimeout(1_500);
+    expect(harness.listRequests, '연결이 없는데 서버로 요청을 보냈다').toBe(before);
+    const line = ((await refreshLine(page).textContent()) ?? '').trim();
+    expect(line, `받아온 것이 하나도 없는데 "${line}"이라고 말한다`).not.toContain('방금 업데이트');
+    await expect(refreshNow(page)).toHaveAttribute('aria-busy', 'false');
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+test('갱신 사실을 낭독하는 live region은 하나뿐이다', async ({ page }) => {
+  const harness = await boot(page, { active: false });
+  try {
+    await expect(refreshHint(page)).toBeVisible();
+    const report = await page.evaluate(() => {
+      const hint = document.querySelector('.refresh-hint');
+      const liveSelector = '[role="status"], [role="alert"], [aria-live]:not([aria-live="off"])';
+      const speaking = Array.from(document.querySelectorAll(liveSelector))
+        .filter((node) => /갱신|새로고침|초마다|자동 갱신|업데이트/.test(node.textContent ?? ''))
+        .map((node) => `${node.className || node.tagName}: ${(node.textContent ?? '').trim().slice(0, 30)}`);
+      return {
+        cluster: document.querySelectorAll(`.int30-refresh ${liveSelector.split(', ').join(', .int30-refresh ')}`).length,
+        hintRole: hint?.getAttribute('role') ?? '',
+        hintLive: hint?.getAttribute('aria-live') ?? '',
+        speaking,
+      };
+    });
+    expect(report.cluster, '갱신 덩어리 안에 낭독 지점이 둘 이상이다').toBe(1);
+    expect(report.hintRole, '`명함 기록` 옆 줄이 live region이라 1초마다 낭독기가 끼어든다').toBe('');
+    expect(report.hintLive, '`명함 기록` 옆 줄이 aria-live를 들고 있다').toBe('');
+    expect(report.speaking.length, `갱신 사실을 말하는 live region이 여럿이다: ${report.speaking.join(' / ')}`)
+      .toBeLessThanOrEqual(1);
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+test('진행 사실은 누른 버튼 옆 한 곳만 말하고, 나머지 줄은 박자를 그대로 유지한다', async ({ page }) => {
+  const harness = await boot(page, { active: false });
+  try {
+    await expect(refreshHint(page)).toContainText('20초마다');
+    harness.delayList(2_500);
+    await refreshNow(page).click();
+    await expect(refreshLine(page)).toHaveText('갱신 중');
+
+    const hint = ((await refreshHint(page).textContent()) ?? '').trim();
+    expect(hint, `아래 줄까지 진행을 겹쳐 말한다: ${hint}`).not.toMatch(/갱신 중|방금 업데이트|갱신 실패/);
+    // 겹쳐 말하지 않으면서도 **같은 박자**를 말한다 — 서로 다른 사실을 말하는 순간
+    // 어느 쪽이 참인지 알 방법이 없어진다 (통합 검수 2026-08-04에 실제로 있던 결함).
+    expect(hint, `두 줄이 다른 박자를 말한다: ${hint}`).toContain('20초마다');
+  } finally {
+    harness.delayList(0);
+    await stopServer(harness.server);
+  }
+});
+
+test('상단 조작은 K 표식과 같은 광학 중심에 서고, 보이는 크기와 무관하게 44px로 눌린다', async ({ page }) => {
+  const harness = await boot(page, { active: false });
+  try {
+    await expect(autoSwitch(page)).toBeVisible();
+    const geometry = await page.evaluate(measureRefreshReach);
+    const { auto, now, row, brand, copy } = geometry;
+    expect(auto && now && row && brand && copy, '상단 바 요소를 다 찾지 못했다').toBeTruthy();
+    console.log(`[상단 균형] row=${row!.height}px(center ${row!.center}) brand=${brand!.height}px(center ${brand!.center}) copy=${copy!.height}px / hit auto=${auto!.band}px now=${now!.band}px`);
+
+    // 1. 광학 중심. 갱신 조작 줄과 K 표식이 같은 높이에 선다.
+    expect(Math.abs(row!.center - brand!.center), `갱신 조작 줄이 K 표식보다 ${Math.round(Math.abs(row!.center - brand!.center))}px 어긋난 높이에 있다`)
+      .toBeLessThanOrEqual(1.5);
+
+    // 2. 두께. 상단 바에서 **가장 두꺼운 것이 갱신 조작이면 안 된다** — 그러면 보조 조작이
+    //    아니라 독립된 카드로 읽힌다 (founder: "명함 캡처 요 블록 두께랑 잘 안 맞는 것 같아").
+    expect(row!.height, `갱신 조작(${row!.height}px)이 K 표식(${brand!.height}px)보다 두껍다`)
+      .toBeLessThanOrEqual(brand!.height);
+    expect(row!.height, `갱신 조작(${row!.height}px)이 화면 이름 블록(${copy!.height}px)보다 두껍다`)
+      .toBeLessThanOrEqual(copy!.height + 0.5);
+
+    // 3. 얇아진 chrome이 손가락을 잃지 않는다. 재는 것은 그림이 아니라 hit area다.
+    expect(auto!.band, `자동 갱신 스위치의 누를 수 있는 높이가 ${auto!.band}px다 (보이는 높이 ${auto!.height}px)`)
+      .toBeGreaterThanOrEqual(44);
+    expect(now!.band, `새로고침 버튼의 누를 수 있는 높이가 ${now!.band}px다 (보이는 높이 ${now!.height}px)`)
+      .toBeGreaterThanOrEqual(44);
+
+    // 4. 두 조작이 같은 토큰 체계를 쓴다. 모서리는 선언된 계단 위의 값이어야 한다.
+    const chrome = await page.evaluate(() => {
+      const read = (selector: string) => {
+        const style = getComputedStyle(document.querySelector(selector)!);
+        return { radius: style.borderTopLeftRadius, border: style.borderTopWidth, height: style.height };
+      };
+      const root = getComputedStyle(document.documentElement);
+      return {
+        auto: read('.int30-refresh-switch'),
+        now: read('.int30-refresh-now'),
+        scale: ['--cc-r-xl', '--cc-r-lg', '--cc-r-md', '--cc-r-sm'].map((name) => root.getPropertyValue(name).trim()),
+      };
+    });
+    expect(chrome.auto.height, '스위치와 새로고침 버튼의 높이가 다르다').toBe(chrome.now.height);
+    expect(chrome.auto.radius, '스위치와 새로고침 버튼의 모서리가 다르다').toBe(chrome.now.radius);
+    expect(chrome.auto.border, '스위치와 새로고침 버튼의 테두리 두께가 다르다').toBe(chrome.now.border);
+    expect(chrome.scale, `모서리 계단이 비어 있다: ${chrome.scale.join(', ')}`).toContain(chrome.auto.radius);
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+test('다크에서도 켜짐·꺼짐이 색 하나에만 기대지 않는다', async ({ page }) => {
+  const harness = await boot(page, { active: false, theme: 'dark' });
+  try {
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    const read = () => page.evaluate(() => {
+      const knob = document.querySelector('.int30-refresh-track i');
+      const track = document.querySelector('.int30-refresh-track');
+      return {
+        knob: knob ? getComputedStyle(knob).transform : '',
+        knobColor: knob ? getComputedStyle(knob).backgroundColor : '',
+        trackColor: track ? getComputedStyle(track).backgroundColor : '',
+      };
+    });
+
+    await expect(autoSwitch(page)).toHaveAttribute('aria-checked', 'true');
+    // 손잡이 이동에는 160ms transition이 걸려 있다. 그 사이에 읽으면 두 상태가 같은 값으로
+    // 보이고, 게이트가 통과·실패를 **엉뚱한 이유로** 판정한다.
+    await page.waitForTimeout(350);
+    const on = await read();
+    await autoSwitch(page).click();
+    await expect(autoSwitch(page)).toHaveAttribute('aria-checked', 'false');
+    await page.waitForTimeout(350);
+    const off = await read();
+
+    // 색이 아닌 축이 반드시 하나 이상 달라야 한다 — 손잡이 **위치**가 그 축이다.
+    expect(on.knob, `켜짐·꺼짐이 손잡이 위치로 구별되지 않는다 (${on.knob} / ${off.knob})`).not.toBe(off.knob);
+    expect(on.knob, '손잡이가 아예 움직이지 않는다').not.toBe('none');
+  } finally {
+    await stopServer(harness.server);
+  }
+});
+
+test('연타는 요청을 겹쳐 만들지 않으면서도 무시당한 티를 내지 않는다', async ({ page }) => {
+  const harness = await boot(page, { active: false });
+  try {
+    await expect(refreshLine(page)).toContainText('20초마다');
+    harness.delayList(1_500);
+    const before = harness.listRequests;
+
+    await refreshNow(page).click();
+    await expect(refreshNow(page)).toHaveAttribute('aria-busy', 'true');
+    await refreshNow(page).click();
+    // 두 번째 누름이 화면에서 사라지지 않는다: 버튼이 누름을 세어 되돌려 주고,
+    // 그 표시가 눈에 보이는 값(테두리 발광)으로도 나타난다.
+    await expect(refreshNow(page)).toHaveAttribute('data-press-count', '2');
+    const ack = await refreshNow(page).evaluate((node) => getComputedStyle(node).boxShadow);
+    expect(ack, '두 번째 누름이 아무 자국도 남기지 않는다').not.toBe('none');
+
+    await expect.poll(() => harness.listInFlight, { timeout: 4_000 }).toBe(1);
+    await page.waitForTimeout(4_000);
+    expect(harness.maxListInFlight, '연타가 요청을 겹쳐 만들었다').toBe(1);
+    // 그러면서도 두 번째 누름은 **실제 효과가 있다** — 떠 있던 조회 직후 한 번 더 읽는다.
+    expect(harness.listRequests, '두 번째 누름이 아무 일도 하지 않았다').toBeGreaterThanOrEqual(before + 2);
+  } finally {
+    harness.delayList(0);
+    await stopServer(harness.server);
+  }
+});
+
+test('화면이 가려진 동안에는 가져오지 않고, 돌아오면 한 줄이 그동안의 신선도를 말한다', async ({ page }) => {
+  const harness = await boot(page, { active: true });
+  try {
+    await expect(refreshLine(page)).toContainText('4초마다', { timeout: 8_000 });
+    const setHidden = (hidden: boolean) => page.evaluate((value) => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => value });
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (value ? 'hidden' : 'visible') });
+      document.dispatchEvent(new Event('visibilitychange'));
+    }, hidden);
+
+    await setHidden(true);
+    const hiddenAt = harness.listRequests;
+    // 빠른 박자(4초)의 세 배를 기다린다. 가려진 화면을 위해 한 건도 가져오면 안 된다.
+    await page.waitForTimeout(12_500);
+    expect(harness.listRequests, '가려진 화면을 위해 계속 가져오고 있다').toBe(hiddenAt);
+    // 그 사실을 화면이 감추지 않는다 — 신선도가 실제로 낡았다고 말한다.
+    const stale = ((await refreshLine(page).textContent()) ?? '').trim();
+    expect(stale, `가려진 동안 신선도가 멈춰 있다: ${stale}`).toMatch(/\d+초 전|\d+분 전/);
+
+    await setHidden(false);
+    await expect.poll(() => harness.listRequests, { timeout: 8_000 }).toBeGreaterThan(hiddenAt);
+    await expect(refreshLine(page)).toContainText(/방금/, { timeout: 8_000 });
   } finally {
     await stopServer(harness.server);
   }

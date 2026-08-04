@@ -794,11 +794,16 @@ test('a settings group label reads as a label, not as its first item', async ({ 
   }
 });
 
-// ── 015: 두 갱신 표면이 같은 말을 한다 ──
+// ── 015: 두 갱신 표면이 같은 말을 하고, 작업 사실은 한 곳만 소유한다 ──
 //
 // 미연결 PC에서 위는 `연결되면 확인`인데 아래는 `자동 갱신 켜짐`이라 서로 모순되게 읽혔다.
 // 아래 줄의 뜻(DEC-000092 §2: 켜짐/꺼짐 · 지금 걸려 있는 박자 · 마지막 성공)은 그대로 두고,
 // 박자 조각이 위 줄과 **같은 함수에서 파생**되게 만든다.
+//
+// TSK-000559에서 한 겹 더 잠근다. 아래 줄은 `refreshStatus.text`를 그대로 베껴 쓰고 있었고,
+// 그래서 자동 폴링 동안 위는 `갱신 중`, 아래는 `자동 갱신 켜짐 · 20초마다`로 갈렸다. 이제
+// 주변 사실(켜짐·박자·마지막 성공)만 두 줄이 함께 말하고, 진행·성공·실패는 누른 버튼 옆
+// 한 줄이 혼자 소유한다 — 겹쳐 말할 곳이 없으면 어긋날 방법도 없다.
 for (const connected of [true, false] as const) {
   test(`the two refresh surfaces state the same fact (${connected ? 'connected' : 'first visit'})`, async ({ page }) => {
     const harness = await boot(page, 'light', { width: 1280, height: 900, connected });
@@ -817,6 +822,18 @@ for (const connected of [true, false] as const) {
         said.bottom.includes(beat),
         `두 표면이 같은 사실을 다르게 말한다 — 위 "${said.top}" (reason=${said.reason}) / 아래 "${said.bottom}"`,
       ).toBe(true);
+
+      // 작업 사실의 주인은 하나다. 아래 줄은 진행·성공·실패를 절대 베껴 쓰지 않는다.
+      expect(said.bottom, `아래 줄이 작업 상태까지 겹쳐 말한다: "${said.bottom}"`)
+        .not.toMatch(/갱신 중|방금 업데이트|갱신 실패/);
+      // 낭독 지점도 하나다 — 1초마다 `N초 전`이 바뀌는 문구에 live region을 달면
+      // 낭독기가 매초 끼어들어 다른 것을 아무것도 읽을 수 없다.
+      const hintLive = await page.evaluate(() => {
+        const hint = document.querySelector('.refresh-hint');
+        return { role: hint?.getAttribute('role') ?? '', live: hint?.getAttribute('aria-live') ?? '' };
+      });
+      expect(hintLive.role, '`명함 기록` 옆 줄이 live region이라 매초 낭독기를 가로챈다').toBe('');
+      expect(hintLive.live, '`명함 기록` 옆 줄이 aria-live를 들고 있다').toBe('');
     } finally {
       harness.server.close();
     }
