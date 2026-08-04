@@ -18,8 +18,10 @@ import {
   refreshCadencePlan,
   refreshCadenceSentence,
   refreshCadenceText,
+  refreshFailureTitle,
   refreshHeadlineText,
   refreshIdleText,
+  refreshNotice,
 } from './refresh-orchestrator';
 
 /** 손으로 돌리는 시계. 실제 타이머를 쓰지 않아 4초/20초 박자를 결정적으로 잰다. */
@@ -380,12 +382,12 @@ describe('갱신 박자 문구', () => {
     expect(refreshHeadlineText({
       plan: idle,
       lastSuccessAgoMs: 3_000,
-      status: { state: 'failure', text: REFRESH_FAILURE_TEXT, label: REFRESH_IDLE_LABEL, busy: false, role: 'alert', generation: 1 },
+      status: { state: 'failure', text: REFRESH_FAILURE_TEXT, label: REFRESH_IDLE_LABEL, busy: false, role: 'alert', generation: 1, failureStreak: 1 },
     })).toBe(REFRESH_FAILURE_SHORT_TEXT);
     expect(refreshHeadlineText({
       plan: idle,
       lastSuccessAgoMs: 0,
-      status: { state: 'success', text: REFRESH_SUCCESS_TEXT, label: REFRESH_IDLE_LABEL, busy: false, role: 'status', generation: 1 },
+      status: { state: 'success', text: REFRESH_SUCCESS_TEXT, label: REFRESH_IDLE_LABEL, busy: false, role: 'status', generation: 1, failureStreak: 0 },
     })).toBe(REFRESH_SUCCESS_TEXT);
   });
 
@@ -563,6 +565,134 @@ describe('스위치를 끄는 순간', () => {
     expect(api.maxInFlight, '꺼진 상태에서 연타하자 요청이 겹쳤다').toBe(1);
     expect(outcomes.map((outcome) => outcome.value)).toEqual([5, 6, 6]);
     expect(loop.timerCount(), '직접 누른 갱신이 자동 폴링을 되살렸다').toBe(0);
+  });
+});
+
+// ── 진행 사실의 주인과 막힘 안내 (TSK-000559 / INT-000036) ──
+//
+// founder 판정: "오른쪽 위에 새로고침 버튼이 돌아가고 있는데, 이제 갱신 중이라고 뜨는 게 이상해."
+// 원인은 `busy`가 App의 `loading`(모든 목록 조회)에서 왔다는 것이다 — 자동 폴링도 참으로
+// 만든다. 이제 진행은 **누른 사람의 영수증**만 소유하고, 실패는 토스트가 아니라 남는 안내다.
+
+describe('연속 실패 세기', () => {
+  it('성공은 0으로 되돌리고, 연속 실패는 하나씩 오른다', async () => {
+    const api = controllable();
+    const orchestrator = createRefreshOrchestrator({ run: api.run });
+
+    const first = orchestrator.request('priority');
+    api.pending[0].reject(new Error('list_failed'));
+    await first;
+    expect(orchestrator.status().failureStreak).toBe(1);
+
+    await until(() => !orchestrator.inFlight());
+    const second = orchestrator.request('priority');
+    // 진행 중에도 지금까지의 횟수를 잃지 않는다 — 잃으면 두 번째 안내가 첫 번째로 되돌아간다.
+    expect(orchestrator.status()).toMatchObject({ state: 'in-flight', failureStreak: 1 });
+    api.pending[1].reject(new Error('list_failed'));
+    await second;
+    expect(orchestrator.status().failureStreak).toBe(2);
+
+    await until(() => !orchestrator.inFlight());
+    const third = orchestrator.request('priority');
+    api.pending[2].resolve(1);
+    await third;
+    expect(orchestrator.status(), '성공했는데도 실패 횟수가 남아 있다').toMatchObject({ state: 'success', failureStreak: 0 });
+  });
+
+  it('실패 상태는 원인을 함께 들고 있다 — 화면이 갈래를 말할 근거다', async () => {
+    const api = controllable();
+    const orchestrator = createRefreshOrchestrator({ run: api.run });
+    const request = orchestrator.request('priority');
+    const cause = new TypeError('Failed to fetch');
+    api.pending[0].reject(cause);
+    await request;
+    expect(orchestrator.status().error).toBe(cause);
+  });
+
+  it('연결·계정이 바뀌면 이전 subject에서 쌓인 실패 횟수는 따라오지 않는다', async () => {
+    const api = controllable();
+    const orchestrator = createRefreshOrchestrator({ run: api.run });
+    const request = orchestrator.request('priority');
+    api.pending[0].reject(new Error('list_failed'));
+    await request;
+    expect(orchestrator.status().failureStreak).toBe(1);
+
+    orchestrator.reset();
+    expect(orchestrator.status()).toMatchObject({ state: 'idle', failureStreak: 0 });
+  });
+});
+
+describe('막힘·실패 안내', () => {
+  const quiet = refreshCadencePlan({ items: [brief('processed')] });
+  const failureStatus = (streak: number, error: unknown): RefreshStatus => ({
+    state: 'failure',
+    text: REFRESH_FAILURE_TEXT,
+    label: REFRESH_IDLE_LABEL,
+    busy: false,
+    role: 'alert',
+    generation: streak,
+    failureStreak: streak,
+    error,
+  });
+
+  it('막을 것이 없으면 아무것도 만들지 않는다', () => {
+    expect(refreshNotice({ plan: quiet, online: true })).toBeNull();
+    expect(refreshNotice({ plan: quiet, online: true, failure: null })).toBeNull();
+    // 진행·성공은 안내가 아니다 — 그것은 누른 버튼 옆 영수증이 말한다.
+    expect(refreshNotice({
+      plan: quiet,
+      online: true,
+      failure: { ...failureStatus(1, 'x'), state: 'success' },
+    })).toBeNull();
+  });
+
+  it('연결이 없으면 물어봤을 때만 답한다 — 본문 연결 카드와 같은 말을 상시로 겹치지 않는다', () => {
+    const off = refreshCadencePlan({ items: [], configured: false });
+    expect(refreshNotice({ plan: off, online: true })).toBeNull();
+    const asked = refreshNotice({ plan: off, online: true, asked: true });
+    expect(asked).toMatchObject({ reason: 'disconnected', tone: 'blocked', retry: false });
+    // 눌러도 소용없는 자리에 `다시 시도`를 내밀지 않는다.
+    expect(asked!.retry).toBe(false);
+    expect(asked!.title).toContain('연결');
+  });
+
+  it('오프라인은 묻지 않아도 말한다 — 자동 갱신이 조용히 죽어 있는 것을 감추지 않는다', () => {
+    const notice = refreshNotice({ plan: quiet, online: false });
+    expect(notice).toMatchObject({ reason: 'offline', tone: 'blocked', streak: 0 });
+    expect(notice!.detail, '언제 다시 확인하는지를 말하지 않는다').toContain('연결되면');
+    // 오프라인이 실패보다 앞선다 — 실패의 진짜 원인이 오프라인일 때 네트워크 오류라고
+    // 다시 말해 봐야 사용자가 할 일이 달라지지 않는다.
+    expect(refreshNotice({ plan: quiet, online: false, failure: failureStatus(1, new TypeError('Failed to fetch')) }))
+      .toMatchObject({ reason: 'offline' });
+  });
+
+  it('실패는 원인 갈래를 이름 붙이고 손잡이를 하나 준다', () => {
+    const notice = refreshNotice({ plan: quiet, online: true, failure: failureStatus(1, new TypeError('Failed to fetch')) });
+    expect(notice).toMatchObject({ reason: 'failure', tone: 'error', retry: true, streak: 1 });
+    expect(notice!.title).toBe('네트워크 오류');
+  });
+
+  it('반복 실패는 같은 문장을 되풀이하지 않고 **보이는 문구**까지 단계를 올린다', () => {
+    const error = new Error('list_failed');
+    const first = refreshNotice({ plan: quiet, online: true, failure: failureStatus(1, error) })!;
+    const second = refreshNotice({ plan: quiet, online: true, failure: failureStatus(2, error) })!;
+    const fourth = refreshNotice({ plan: quiet, online: true, failure: failureStatus(4, error) })!;
+
+    expect(second.title, '두 번째가 첫 번째와 똑같이 보인다 — 단계를 올리지 않은 것과 같다').not.toBe(first.title);
+    expect(fourth.title).not.toBe(second.title);
+    expect(second.title).toContain('연결 확인');
+    expect(fourth.title).toContain('설정');
+    expect(second.detail).not.toBe(first.detail);
+    // 단계를 올려도 손잡이는 계속 하나다. 선택지를 늘리는 것은 도움이 아니다.
+    expect([first.retry, second.retry, fourth.retry]).toEqual([true, true, true]);
+  });
+
+  it('원인 갈래는 오류 코드에서만 나온다 — 화면이 추측하지 않는다', () => {
+    expect(refreshFailureTitle(new TypeError('Failed to fetch'))).toBe('네트워크 오류');
+    expect(refreshFailureTitle('owner_only')).toBe('권한 오류');
+    expect(refreshFailureTitle(new Error('list_failed'))).toBe('서버 오류');
+    expect(refreshFailureTitle('missing_api')).toBe('연결 오류');
+    expect(refreshFailureTitle('weird_code')).toBe('갱신 실패');
   });
 });
 
