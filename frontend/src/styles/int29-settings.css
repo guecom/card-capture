@@ -423,14 +423,35 @@
   word-break: keep-all;
 }
 
+/* 묶음의 이름표 (통합 검수 2026-08-04).
+   예전에는 13.5px·720·본문색이라 바로 아래 첫 항목(14px·760·본문색)보다 **작고 얇았고**,
+   둘 사이 간격이 0px였다. 제목이 자기 항목보다 약하면 그것은 제목으로 읽히지 않는다 —
+   `알림이 오는 경우`와 `최종 결과`가 그냥 같은 것 둘로 보였다.
+
+   그래서 위계를 크기 경쟁이 아니라 **역할 차이**로 만든다: 이름표는 조용한 caption(muted·자간
+   있음)이고 항목은 또렷한 본문이다. 위 묶음 제목(`.int29-group-label` 15px)과 다투지 않으면서
+   무엇이 이름이고 무엇이 내용인지 한눈에 갈린다. 크기는 설정 화면의 가독성 바닥(13px)을 지킨다. */
 .int29-scope-label {
-  margin: 0;
-  color: var(--cc-ink);
-  font-size: 13.5px;
+  margin: 0 0 9px;
+  color: var(--cc-muted);
+  font-size: 13px;
   font-weight: 720;
+  letter-spacing: 0.03em;
 }
 
-/* ── 화면 테마 ── */
+/* ── 화면 테마 ──
+   3칸 선택 위젯의 **정본 해부**를 쓴다 (통합 검수 2026-08-04 / `int30-research.css`의 조사 깊이와 한 벌).
+   같은 종류의 선택(셋 중 하나)이 화면마다 다른 모양이면, 사용자는 매번 이것이 같은 종류의
+   조작인지 다시 판단해야 한다.
+
+   왼쪽 정렬을 정본으로 고른 이유는 둘이다.
+     1. 이 앱의 나머지 전부가 왼쪽에서 시작한다 — 설정 페이지 안의 `.int29-option`·`.int29-scope`
+        ·`.int30-fact`도, 캡처 진입 카드도. 가운데 정렬 세 칸만 다른 문법을 쓰고 있었다.
+     2. 한국어 라벨은 좁은 폭에서 줄바꿈된다(실측 390px: 이 칸이 66px → 77.09px로 늘어난다).
+        가운데 정렬은 그 순간 둘째 줄이 어긋나 보이고, 왼쪽 정렬은 시작선이 유지된다.
+
+   눈금(`.research-depth-meter`)은 **선언된 예외**다. 조사 깊이는 얕은 것부터 깊은 것까지 순서가
+   있는 선택이고 테마는 그렇지 않다 — 없는 순서를 눈금으로 그리면 그것이 거짓말이다. */
 .int29-theme {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -441,15 +462,16 @@
   display: grid;
   gap: 4px;
   align-content: center;
+  justify-items: start;
   min-width: 0;
   min-height: 66px;
-  padding: 10px 6px;
+  padding: 10px;
   border: 1px solid var(--cc-line);
   border-radius: var(--cc-r-md);
   background: var(--cc-solid-soft);
   color: var(--cc-muted);
   font: inherit;
-  text-align: center;
+  text-align: start;
   cursor: pointer;
 }
 

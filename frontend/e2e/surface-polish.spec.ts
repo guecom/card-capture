@@ -6,8 +6,21 @@
 //   005 모서리 반경이 정해진 계단 안에 있는가 (둥글둥글 → 또렷한 위계)
 //   006 강조색이 토큰화돼 다크에 라이트 파랑이 새지 않는가
 //
+// founder 판정 2026-08-04 (INT-000030 v2.25.0 통합 검수) 회귀 게이트 — Kairen-Ref: TSK-000220.
+// 다섯 lane이 서로를 못 보고 만든 표면들의 이음매다. 전부 "조용히 되돌아가는" 종류라 게이트를 남긴다.
+//   009 나란한 진입 카드의 제목·설명·행동이 **같은 선**에서 시작하는가 (통일감의 실체)
+//   010 카드 설명 상자에 늘어난 죽은 공백이 없고, 두 칸을 가로지르는 카드가 세로로 부풀지 않는가
+//   011 `예시` 이름표 밑으로 둘째 줄 chip이 파고들지 않는가
+//   012 어떤 폭·연결 상태에서도 진입 카드 설명이 `…`로 잘리지 않는가
+//   013 3칸 선택 위젯 두 벌(`조사 깊이`·`화면 테마`)이 한 벌의 해부를 쓰는가
+//   014 설정의 그룹 이름표와 첫 항목이 서로 구별되는가
+//   015 미연결에서 위·아래 두 갱신 표면이 같은 말을 하는가
+//   016 경고 색조가 손으로 베낀 값이 아니라 테마 토큰을 따르는가
+//
 // 진실값은 렌더된 픽셀이다. 002·004는 앱의 CSS 값을 다시 읽어 확인하지 않는다 —
 // 애니메이션을 프레임 단위로 고정해 실제로 찍은 두 장의 차이를 잰다.
+// 012도 같은 규율을 따른다: `scrollWidth - clientWidth`는 이 프로젝트에서 거짓 통과를 낸 적이
+// 있어 쓰지 않고, **클램프를 푼 복제본의 높이**와 실제 렌더 높이를 견준다.
 import { expect, test, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
@@ -91,7 +104,14 @@ const SHADOW_WALKER = `window.ccWalk = function* ccWalk(root) {
   }
 };`;
 
-async function boot(page: Page, theme: 'light' | 'dark'): Promise<Harness> {
+interface BootOptions {
+  width?: number;
+  height?: number;
+  /** 개인 링크로 열렸는가. `false`면 미연결 첫 방문 상태 그대로 뜬다. */
+  connected?: boolean;
+}
+
+async function boot(page: Page, theme: 'light' | 'dark', options: BootOptions = {}): Promise<Harness> {
   const server = await startStaticServer();
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Static server did not expose a TCP port.');
@@ -107,9 +127,10 @@ async function boot(page: Page, theme: 'light' | 'dark'): Promise<Harness> {
     localStorage.setItem('cc_name', '이강규');
     localStorage.setItem('cc_theme', value);
   }, theme);
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: options.width ?? 390, height: options.height ?? 844 });
   const api = encodeURIComponent('https://api.example.test/exec');
-  await page.goto(`http://127.0.0.1:${address.port}/next/?api=${api}&k=owner-token`, { waitUntil: 'networkidle' });
+  const query = options.connected === false ? '' : `?api=${api}&k=owner-token`;
+  await page.goto(`http://127.0.0.1:${address.port}/next/${query}`, { waitUntil: 'networkidle' });
   await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
   await page.evaluate(SHADOW_WALKER);
   return { server };
@@ -408,3 +429,416 @@ test('the weights the stylesheet asks for are actually different on screen', asy
     harness.server.close();
   }
 });
+
+// ══════════════════════════════════════════════════════════════════════════════
+// INT-000030 v2.25.0 통합 검수 (2026-08-04) — Kairen-Ref: TSK-000220
+// ══════════════════════════════════════════════════════════════════════════════
+
+interface EntryProbe {
+  title: string;
+  cardTop: number;
+  cardHeight: number;
+  cardWidth: number;
+  titleTop: number | null;
+  outcomeTop: number | null;
+  actionTop: number | null;
+  outcomeText: string;
+  /** 설명 상자가 실제로 차지한 높이 */
+  boxHeight: number;
+  /** 클램프 안에서 글자가 실제로 쓰는 줄 수 */
+  shownLines: number;
+  /** 클램프를 풀었을 때 필요한 줄 수 */
+  neededLines: number;
+  clampLines: number;
+  lineHeight: number;
+}
+
+/** 진입 카드의 해부를 값으로 읽는다.
+ *
+ *  잘림은 **클램프를 푼 복제본의 높이**로 판정한다. `scrollWidth - clientWidth`는
+ *  `-webkit-box` 클램프에서 0이 나와 거짓 통과를 낸다 — 이 저장소가 이미 한 번 당한 방식이다. */
+function readEntryProbes(): EntryProbe[] {
+  return [...document.querySelectorAll<HTMLElement>('.cc-entry-card')].map((card) => {
+    const rect = card.getBoundingClientRect();
+    const pick = (selector: string) => card.querySelector<HTMLElement>(selector);
+    const topOf = (node: HTMLElement | null) => (node ? Math.round(node.getBoundingClientRect().top * 100) / 100 : null);
+    const outcome = pick('.cc-entry-outcome');
+    const action = pick('.cc-entry-action') ?? pick('.cc-entry-recovery');
+
+    let boxHeight = 0; let shownLines = 0; let neededLines = 0; let clampLines = 0; let lineHeight = 0; let outcomeText = '';
+    if (outcome) {
+      const style = getComputedStyle(outcome);
+      const box = outcome.getBoundingClientRect();
+      boxHeight = Math.round(box.height * 100) / 100;
+      outcomeText = (outcome.textContent ?? '').trim();
+      lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2;
+      const rawClamp = style.getPropertyValue('-webkit-line-clamp').trim();
+      clampLines = rawClamp && rawClamp !== 'none' ? parseInt(rawClamp, 10) : Number.POSITIVE_INFINITY;
+
+      const clone = outcome.cloneNode(true) as HTMLElement;
+      clone.style.cssText = '';
+      clone.style.position = 'absolute';
+      clone.style.visibility = 'hidden';
+      clone.style.left = '-9999px';
+      clone.style.top = '0';
+      clone.style.width = box.width + 'px';
+      clone.style.display = 'block';
+      clone.style.webkitLineClamp = 'unset';
+      clone.style.overflow = 'visible';
+      clone.style.font = style.font;
+      clone.style.fontFamily = style.fontFamily;
+      clone.style.fontSize = style.fontSize;
+      clone.style.fontWeight = style.fontWeight;
+      clone.style.lineHeight = style.lineHeight;
+      clone.style.letterSpacing = style.letterSpacing;
+      clone.style.wordBreak = style.wordBreak;
+      clone.style.overflowWrap = style.overflowWrap;
+      document.body.appendChild(clone);
+      const fullHeight = clone.getBoundingClientRect().height;
+      clone.remove();
+
+      neededLines = Math.round(fullHeight / lineHeight);
+      shownLines = Math.min(neededLines, clampLines);
+    }
+
+    return {
+      title: pick('.cc-entry-title')?.textContent ?? '',
+      cardTop: Math.round(rect.top * 100) / 100,
+      cardHeight: Math.round(rect.height * 100) / 100,
+      cardWidth: Math.round(rect.width * 100) / 100,
+      titleTop: topOf(pick('.cc-entry-title')),
+      outcomeTop: topOf(outcome),
+      actionTop: topOf(action),
+      outcomeText,
+      boxHeight,
+      shownLines,
+      neededLines,
+      clampLines,
+      lineHeight: Math.round(lineHeight * 100) / 100,
+    };
+  });
+}
+
+// ── 009: 나란한 카드는 같은 선에서 시작한다 ──
+//
+// founder: "하나는 설명이 있고 하나는 없고 그래서 시각적으로 뭔가 통일감이 떨어져."
+// 통일감의 실체는 **줄의 시작선**이다. 제목과 행동은 이미 맞아 있었고 설명만 짧은 쪽이
+// 세로 가운데로 내려와 있었다 — 같은 해부라면 세 줄 모두 같은 y에서 시작해야 한다.
+for (const width of [390, 1280] as const) {
+  test(`entry cards in the same row start their title, outcome and action on the same line at ${width}px`, async ({ page }) => {
+    const harness = await boot(page, 'light', { width, height: 900 });
+    try {
+      const probes = await page.evaluate(readEntryProbes);
+      expect(probes.length, '진입 카드를 하나도 찾지 못했다 — 재지 못한 곳은 통과한 곳이 아니다').toBeGreaterThanOrEqual(3);
+
+      const rows = new Map<number, EntryProbe[]>();
+      for (const probe of probes) {
+        const key = Math.round(probe.cardTop);
+        rows.set(key, [...(rows.get(key) ?? []), probe]);
+      }
+      let compared = 0;
+      for (const [, row] of rows) {
+        if (row.length < 2) continue;
+        compared += 1;
+        for (const axis of ['titleTop', 'outcomeTop', 'actionTop'] as const) {
+          const values = row.map((probe) => probe[axis] ?? Number.NaN);
+          const spread = Math.max(...values) - Math.min(...values);
+          expect(
+            spread,
+            `같은 줄의 카드들이 ${axis}에서 어긋난다 (${spread}px): ${JSON.stringify(row.map((probe) => ({ [probe.title]: probe[axis] })))}`,
+          ).toBeLessThanOrEqual(0.5);
+        }
+      }
+      expect(compared, '나란히 선 카드 쌍을 한 번도 비교하지 못했다').toBeGreaterThan(0);
+    } finally {
+      harness.server.close();
+    }
+  });
+}
+
+// ── 010: 늘어난 죽은 공백이 없다 ──
+//
+// 설명 상자가 남은 자리를 채우려고 늘어나면 그 안에서 글자가 세로 가운데로 밀리고(009의 원인),
+// 두 칸을 가로지르는 카드는 위 행과 같은 높이가 되면서 설명과 행동 사이가 통째로 비었다.
+// 넓은 카드는 **넓이를 쓰는 것**으로 갚아야지 세로로 부풀어 갚으면 안 된다.
+for (const width of [390, 1280] as const) {
+  test(`no entry card inflates itself with dead space at ${width}px`, async ({ page }) => {
+    const harness = await boot(page, 'light', { width, height: 900 });
+    try {
+      const probes = await page.evaluate(readEntryProbes);
+      for (const probe of probes) {
+        const dead = Math.round((probe.boxHeight - probe.shownLines * probe.lineHeight) * 100) / 100;
+        expect(
+          dead,
+          `\`${probe.title}\` 설명 상자가 글자보다 ${dead}px 크다 (상자 ${probe.boxHeight}px / 글자 ${probe.shownLines}줄 × ${probe.lineHeight}px)`,
+        ).toBeLessThanOrEqual(1);
+      }
+
+      // 두 칸을 가로지르는 카드는 첫 줄 카드보다 낮아야 한다. 같은 높이라면 늘어난 것이다.
+      const widest = Math.max(...probes.map((probe) => probe.cardWidth));
+      const narrow = probes.filter((probe) => probe.cardWidth < widest * 0.75);
+      const wide = probes.find((probe) => probe.cardWidth >= widest * 0.99);
+      expect(narrow.length, '두 칸을 가로지르는 카드와 견줄 좁은 카드가 없다').toBeGreaterThan(0);
+      expect(wide, '두 칸을 가로지르는 카드를 찾지 못했다').toBeTruthy();
+      const rowHeight = Math.max(...narrow.map((probe) => probe.cardHeight));
+      expect(
+        wide!.cardHeight,
+        `\`${wide!.title}\` 카드가 위 행과 같은 높이로 늘어났다 (넓은 카드 ${wide!.cardHeight}px / 위 행 ${rowHeight}px)`,
+      ).toBeLessThan(rowHeight);
+    } finally {
+      harness.server.close();
+    }
+  });
+}
+
+// ── 012: 어떤 폭·연결 상태에서도 설명이 잘리지 않는다 ──
+//
+// 실폰에서는 짧은 모바일 문구가 나가 안 보이지만, **폭을 좁힌 데스크톱 창**에서는 데스크톱
+// 문구가 그대로 들어와 3줄에서 `…`로 끊겼다. 폭과 연결 상태를 곱해 전수로 판정한다.
+for (const connected of [true, false] as const) {
+  test(`entry card outcomes never ellipsize at any supported width (${connected ? 'connected' : 'first visit'})`, async ({ page }) => {
+    const harness = await boot(page, 'light', { width: 1280, height: 900, connected });
+    try {
+      const failures: string[] = [];
+      for (const width of [320, 360, 390, 420, 768, 1280]) {
+        await page.setViewportSize({ width, height: 900 });
+        await page.waitForTimeout(150);
+        const probes = await page.evaluate(readEntryProbes);
+        expect(probes.length, `${width}px에서 진입 카드를 찾지 못했다`).toBeGreaterThanOrEqual(3);
+        for (const probe of probes) {
+          if (probe.neededLines > probe.clampLines) {
+            failures.push(`${width}px · ${probe.title}: ${probe.neededLines}줄 필요 / ${probe.clampLines}줄만 보임 — "${probe.outcomeText}"`);
+          }
+        }
+      }
+      expect(failures, `진입 카드 설명이 잘린다:\n${failures.join('\n')}`).toEqual([]);
+    } finally {
+      harness.server.close();
+    }
+  });
+}
+
+// ── 011: `예시` 이름표 밑으로 chip이 파고들지 않는다 ──
+//
+// 첫 줄은 이름표 오른쪽에서 시작하는데 둘째 줄은 맨 왼쪽에서 시작해 이름표 밑으로 들어갔다.
+// 이름표는 chip 줄 **바깥**의 열이어야 한다.
+test('example chips never wrap underneath their label', async ({ page }) => {
+  const harness = await boot(page, 'light', { width: 390, height: 900 });
+  try {
+    const rows = await page.evaluate(() => {
+      return [...document.querySelectorAll<HTMLElement>('.context-chips')].map((row) => {
+        const label = row.querySelector<HTMLElement>('.context-chips-label');
+        if (!label) return null;
+        const labelRect = label.getBoundingClientRect();
+        const buttons = [...row.querySelectorAll<HTMLElement>('button')].map((button) => {
+          const rect = button.getBoundingClientRect();
+          return { text: button.textContent ?? '', left: Math.round(rect.left * 100) / 100, top: Math.round(rect.top * 100) / 100 };
+        });
+        if (!buttons.length) return null;
+        const firstRowTop = Math.min(...buttons.map((button) => button.top));
+        const wrapped = buttons.filter((button) => button.top > firstRowTop + 2);
+        return {
+          aria: row.getAttribute('aria-label') ?? '',
+          wrappedCount: wrapped.length,
+          tucked: wrapped
+            .filter((button) => button.left < labelRect.right - 0.5)
+            .map((button) => `${button.text}(left=${button.left} < 이름표 right=${Math.round(labelRect.right * 100) / 100})`),
+        };
+      }).filter((row): row is NonNullable<typeof row> => row !== null);
+    });
+
+    expect(rows.length, '예시 chip 줄을 하나도 찾지 못했다').toBeGreaterThanOrEqual(3);
+    // 줄바꿈이 한 번도 일어나지 않았다면 이 게이트는 아무것도 재지 않은 것이다.
+    expect(rows.some((row) => row.wrappedCount > 0), '390px에서 chip이 한 줄도 넘어가지 않았다 — 재지 못한 곳은 통과한 곳이 아니다').toBe(true);
+    const tucked = rows.flatMap((row) => row.tucked.map((entry) => `${row.aria}: ${entry}`));
+    expect(tucked, `둘째 줄 chip이 \`예시\` 이름표 밑으로 파고든다:\n${tucked.join('\n')}`).toEqual([]);
+  } finally {
+    harness.server.close();
+  }
+});
+
+// ── 013: 3칸 선택 위젯은 한 벌의 해부를 쓴다 ──
+//
+// `조사 깊이`(새 표면)와 `화면 테마`(기존 표면)가 같은 종류의 선택을 서로 다른 모양으로 했다.
+// 정본은 왼쪽 정렬이다: 이 앱의 나머지 전부가 왼쪽에서 시작하고, 가운데 정렬은 한국어 라벨이
+// 줄바꿈되는 순간 둘째 줄이 어긋나 보인다. 눈금(ordinal)은 깊이만 갖는 선언된 예외다.
+test('both three-up choice widgets share one anatomy', async ({ page }) => {
+  const harness = await boot(page, 'light', { width: 390, height: 900 });
+  try {
+    const readWidget = (optionSelector: string, gridSelector: string) => page.evaluate(([option, grid]) => {
+      const node = document.querySelector<HTMLElement>(option);
+      const parent = document.querySelector<HTMLElement>(grid);
+      if (!node || !parent) return null;
+      const style = getComputedStyle(node);
+      const parentStyle = getComputedStyle(parent);
+      const normalize = (value: string) => (value === 'left' ? 'start' : value === 'normal' ? 'stretch' : value);
+      return {
+        textAlign: normalize(style.textAlign),
+        justifyItems: normalize(style.justifyItems),
+        alignContent: style.alignContent,
+        borderRadius: style.borderTopLeftRadius,
+        columns: parentStyle.gridTemplateColumns.split(' ').length,
+        options: parent.querySelectorAll(':scope > *').length,
+      };
+    }, [optionSelector, gridSelector]);
+
+    const depth = await readWidget('.research-depth-option', '.research-depth-grid');
+    await page.getByRole('button', { name: '설정', exact: true }).click();
+    await page.waitForTimeout(250);
+    const theme = await readWidget('.int29-theme button', '.int29-theme');
+
+    expect(depth, '`조사 깊이` 위젯을 찾지 못했다').toBeTruthy();
+    expect(theme, '`화면 테마` 위젯을 찾지 못했다').toBeTruthy();
+    expect(theme!.textAlign, `두 위젯의 글자 정렬이 다르다 (깊이 ${depth!.textAlign} / 테마 ${theme!.textAlign})`).toBe(depth!.textAlign);
+    expect(theme!.justifyItems, `두 위젯의 칸 안 정렬이 다르다 (깊이 ${depth!.justifyItems} / 테마 ${theme!.justifyItems})`).toBe(depth!.justifyItems);
+    expect(theme!.alignContent, `두 위젯의 세로 정렬이 다르다 (깊이 ${depth!.alignContent} / 테마 ${theme!.alignContent})`).toBe(depth!.alignContent);
+    expect(theme!.borderRadius, `두 위젯의 모서리가 다르다 (깊이 ${depth!.borderRadius} / 테마 ${theme!.borderRadius})`).toBe(depth!.borderRadius);
+    expect(theme!.columns, '두 위젯의 칸 수가 다르다').toBe(depth!.columns);
+    expect(depth!.options, '`조사 깊이`가 3칸이 아니다').toBe(3);
+    expect(theme!.options, '`화면 테마`가 3칸이 아니다').toBe(3);
+  } finally {
+    harness.server.close();
+  }
+});
+
+// ── 014: 그룹 이름표와 첫 항목이 구별된다 ──
+//
+// `알림이 오는 경우`와 그 아래 `최종 결과`가 같은 색·거의 같은 크기·거의 같은 굵기로 붙어 있어
+// 무엇이 제목인지 읽히지 않았다. lane D가 세운 "위계로 세련됨을 만든다"의 정면 반례다.
+test('a settings group label reads as a label, not as its first item', async ({ page }) => {
+  const harness = await boot(page, 'light', { width: 390, height: 900 });
+  try {
+    await page.getByRole('button', { name: '설정', exact: true }).click();
+    await page.waitForTimeout(250);
+    // 진단·제보는 접혀 있고 접힌 글은 rect가 0이다 — **재지 못한 곳은 통과한 곳이 아니므로** 연다.
+    await page.getByRole('button', { name: /문제가 생겼을 때/ }).click();
+    await page.waitForTimeout(250);
+    const pairs = await page.evaluate(() => {
+      return [...document.querySelectorAll<HTMLElement>('.int29-scope-label')].map((label) => {
+        const list = label.parentElement?.querySelector<HTMLElement>('.int29-scope, .int30-facts');
+        const first = list?.querySelector<HTMLElement>('strong, dt') ?? null;
+        if (!first) return null;
+        const labelStyle = getComputedStyle(label);
+        const itemStyle = getComputedStyle(first);
+        return {
+          text: label.textContent ?? '',
+          labelSize: parseFloat(labelStyle.fontSize),
+          labelWeight: parseInt(labelStyle.fontWeight, 10),
+          labelColor: labelStyle.color,
+          itemSize: parseFloat(itemStyle.fontSize),
+          itemWeight: parseInt(itemStyle.fontWeight, 10),
+          itemColor: itemStyle.color,
+          gap: Math.round((first.getBoundingClientRect().top - label.getBoundingClientRect().bottom) * 100) / 100,
+        };
+      }).filter((pair): pair is NonNullable<typeof pair> => pair !== null);
+    });
+
+    expect(pairs.length, '그룹 이름표와 항목 쌍을 하나도 찾지 못했다').toBeGreaterThan(0);
+    for (const pair of pairs) {
+      // 색이 같고 크기 차이가 1px 이하이며 굵기 차이가 60 이하면, 사람 눈에는 같은 것 둘이다.
+      const distinct = pair.labelColor !== pair.itemColor
+        || Math.abs(pair.labelSize - pair.itemSize) > 1
+        || Math.abs(pair.labelWeight - pair.itemWeight) > 60;
+      expect(distinct, `\`${pair.text}\`가 첫 항목과 구별되지 않는다: ${JSON.stringify(pair)}`).toBe(true);
+      expect(pair.gap, `\`${pair.text}\`와 첫 항목이 붙어 있다 (${pair.gap}px)`).toBeGreaterThanOrEqual(6);
+    }
+  } finally {
+    harness.server.close();
+  }
+});
+
+// ── 015: 두 갱신 표면이 같은 말을 한다 ──
+//
+// 미연결 PC에서 위는 `연결되면 확인`인데 아래는 `자동 갱신 켜짐`이라 서로 모순되게 읽혔다.
+// 아래 줄의 뜻(DEC-000092 §2: 켜짐/꺼짐 · 지금 걸려 있는 박자 · 마지막 성공)은 그대로 두고,
+// 박자 조각이 위 줄과 **같은 함수에서 파생**되게 만든다.
+for (const connected of [true, false] as const) {
+  test(`the two refresh surfaces state the same fact (${connected ? 'connected' : 'first visit'})`, async ({ page }) => {
+    const harness = await boot(page, 'light', { width: 1280, height: 900, connected });
+    try {
+      await page.waitForTimeout(500);
+      const said = await page.evaluate(() => ({
+        top: (document.querySelector('.int30-refresh-line')?.textContent ?? '').trim(),
+        reason: document.querySelector('.int30-refresh-line')?.getAttribute('data-reason') ?? '',
+        bottom: (document.querySelector('.refresh-hint')?.textContent ?? '').trim(),
+      }));
+      expect(said.top, '상단 갱신 줄이 비어 있다').not.toBe('');
+      expect(said.bottom, '`명함 기록` 옆 갱신 줄이 비어 있다').not.toBe('');
+      // 위 줄의 마지막 조각이 지금 걸린 박자(또는 왜 박자가 없는지)다. 아래 줄에도 그대로 있어야 한다.
+      const beat = said.top.split(' · ').pop() ?? '';
+      expect(
+        said.bottom.includes(beat),
+        `두 표면이 같은 사실을 다르게 말한다 — 위 "${said.top}" (reason=${said.reason}) / 아래 "${said.bottom}"`,
+      ).toBe(true);
+    } finally {
+      harness.server.close();
+    }
+  });
+}
+
+// ── 016: 경고 색조가 테마 토큰을 따른다 ──
+//
+// 다크 경고 색조가 `rgba(224,183,109,…)`로 손으로 베껴져 있었고 실제 `--cc-warn`은
+// `#e2b76d` = `(226,183,109)`였다. 손으로 베낀 값은 팔레트가 바뀌는 순간 조용히 어긋난다.
+for (const theme of ['light', 'dark'] as const) {
+  test(`warning tints derive from the theme token in ${theme} mode`, async ({ page }) => {
+    const harness = await boot(page, theme, { width: 390, height: 900 });
+    try {
+      const measured = await page.evaluate(() => {
+        // 이 상태(만료·실패 토큰)는 boot으로 만들기 어렵다. 실제 클래스를 그대로 입힌 요소를
+        // 문서에 넣어 **스타일시트가 그리는 값**을 잰다 — 기대값은 앱 공식이 아니라 토큰이다.
+        const card = document.createElement('section');
+        card.className = 'cc-setup-card';
+        card.setAttribute('data-tone', 'warn');
+        card.innerHTML = '<span class="cc-setup-icon"></span><div class="cc-setup-copy"><strong>x</strong></div>';
+        const rejects = document.createElement('ul');
+        rejects.className = 'cc-intake-rejects';
+        rejects.innerHTML = '<li>x</li>';
+        document.body.append(card, rejects);
+        const read = (node: Element) => {
+          const style = getComputedStyle(node);
+          return { background: style.backgroundColor, border: style.borderTopColor };
+        };
+        const out = {
+          token: getComputedStyle(document.documentElement).getPropertyValue('--cc-warn').trim(),
+          card: read(card),
+          icon: getComputedStyle(card.querySelector('.cc-setup-icon')!).backgroundColor,
+          rejects: read(rejects),
+        };
+        card.remove();
+        rejects.remove();
+        return out;
+      });
+
+      const hex = measured.token.replace('#', '');
+      const expected = [0, 2, 4].map((offset) => parseInt(hex.slice(offset, offset + 2), 16));
+      /* `color-mix`의 계산값은 `color(srgb 0.54 0.41 0.15 / 0.07)`처럼 0~1 실수로 나온다.
+         `rgba(138, 106, 39, 0.07)`와 같은 색인데 표기만 다르다 — 표기를 0~255로 맞춘 뒤 견준다. */
+      const channelsOf = (value: string) => {
+        const isSrgb = value.startsWith('color(');
+        return (value.match(/\d+(\.\d+)?/g) ?? [])
+          .slice(0, 3)
+          .map((channel) => (isSrgb ? Math.round(Number(channel) * 255) : Number(channel)));
+      };
+      const surfaces: [string, string][] = [
+        ['연결 안내 카드 배경', measured.card.background],
+        ['연결 안내 카드 테두리', measured.card.border],
+        ['연결 안내 아이콘', measured.icon],
+        ['거절 목록 배경', measured.rejects.background],
+        ['거절 목록 테두리', measured.rejects.border],
+      ];
+      for (const [where, value] of surfaces) {
+        const channels = channelsOf(value);
+        expect(channels.length, `${where}의 색을 읽지 못했다 (${value})`).toBe(3);
+        for (let index = 0; index < 3; index += 1) {
+          expect(
+            Math.abs(channels[index] - expected[index]),
+            `${where}가 \`--cc-warn\`(${measured.token} = ${expected.join(',')})을 따르지 않는다: ${value}`,
+          ).toBeLessThanOrEqual(1);
+        }
+      }
+    } finally {
+      harness.server.close();
+    }
+  });
+}

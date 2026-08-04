@@ -398,8 +398,17 @@ for (const viewport of [{ name: 'compact phone', width: 390, height: 844 }, { na
       expect(cards.length).toBe(3);
       for (const card of cards) {
         expect(card.rows.length, `${viewport.name}: ${card.label}의 줄이 사라졌다`).toBe(3);
-        expect(card.rect.height, `${viewport.name}: 카드가 너무 낮다`).toBeGreaterThanOrEqual(140);
       }
+      /* 높이 하한은 **해부별로** 다르다 (통합 검수 2026-08-04).
+         첫 줄의 두 카드는 네 조각을 세로로 쌓으므로 140px 아래로 내려가면 조각이 뭉개진다.
+         셋째 카드는 두 칸을 가로지르며 아이콘을 왼쪽 기둥으로 눕히는 **가로 해부**다. 예전에는
+         이 카드도 같은 하한(실제로는 `min-height: 190px`)에 묶여 위 행과 똑같은 높이로 부풀었고,
+         그 결과 설명 한 줄(16.68px)이 54.81px짜리 상자 안에 떠서 `사진 고르기`와의 사이가
+         통째로 비었다. 넓은 카드는 넓이로 갚고 높이는 자기 내용만 쓴다. */
+      expect(cards[0].rect.height, `${viewport.name}: 촬영 카드가 너무 낮다`).toBeGreaterThanOrEqual(140);
+      expect(cards[1].rect.height, `${viewport.name}: 직접 입력 카드가 너무 낮다`).toBeGreaterThanOrEqual(140);
+      expect(cards[2].rect.height, `${viewport.name}: 넓은 카드가 아이콘도 못 담을 만큼 낮다`).toBeGreaterThanOrEqual(70);
+      expect(cards[2].rect.height, `${viewport.name}: 넓은 카드가 위 행 높이로 다시 부풀었다`).toBeLessThan(cards[0].rect.height);
       expect(Math.abs(cards[0].rect.height - cards[1].rect.height), '높이가 어긋났다').toBeLessThanOrEqual(2);
 
       // 아주 긴 값을 넣어도 카드·칸이 가로로 새지 않는다.

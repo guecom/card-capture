@@ -211,6 +211,19 @@ export function refreshAgoText(ago?: number | null): string {
  * 목록 구획에 쓰는 한 줄 (DEC-000092 §2).
  * 다음 갱신 **시각**은 지어내지 않는다 — 켜짐/꺼짐, 지금 걸려 있는 박자, 마지막 성공만 말한다.
  * `cadence`를 주면 그 계획의 실제 간격을 그대로 읽어 넣는다.
+ *
+ * ── 박자 조각이 `refreshCadenceText`에서 오는 이유 (통합 검수 2026-08-04)
+ * 예전에는 이 함수가 박자 문구를 **직접 조립**했고, 멈춰 있는 계획에서는 그 조각을 통째로
+ * 지웠다. 그래서 미연결 PC에서 상단은 `연결되면 확인`인데 이 줄은 `자동 갱신 켜짐`만 남아,
+ * 두 표면이 같은 사실을 서로 모순되게 말했다 — 하나는 "지금 안 본다", 다른 하나는 "켜져 있다".
+ *
+ * 두 곳이 각자 문장을 만드는 한 이런 어긋남은 다시 생긴다. 그래서 이 줄의 가운데 조각은
+ * 상단 바가 쓰는 것과 **같은 함수의 파생**이다. 뜻은 그대로다: 이 자리는 원래도
+ * "지금 걸려 있는 박자"를 말하는 자리였고, 박자가 없을 때 왜 없는지를 말하는 것이
+ * 그 자리를 비우는 것보다 정직하다.
+ *
+ * `off`만 빼는 이유: 그때 `refreshCadenceText`는 `자동 꺼짐`을 돌려주는데 머리말이 이미
+ * `자동 갱신 꺼짐`이다. 같은 사실을 한 줄에 두 번 쓰지 않는다.
  */
 export function refreshIdleText(input: {
   autoRefreshOn: boolean;
@@ -219,9 +232,8 @@ export function refreshIdleText(input: {
 }): string {
   const since = refreshAgoText(input.lastSuccessAgoMs);
   const head = input.autoRefreshOn ? '자동 갱신 켜짐' : '자동 갱신 꺼짐';
-  // 멈춰 있는 계획에는 박자가 없다. 없는 박자를 말하면 그것이 곧 거짓 약속이다.
-  const beat = input.cadence && input.autoRefreshOn && !input.cadence.paused
-    ? `${cadenceSeconds(input.cadence.intervalMs)}초마다`
+  const beat = input.cadence && input.autoRefreshOn && input.cadence.reason !== 'off'
+    ? refreshCadenceText(input.cadence)
     : '';
   return [head, beat, since].filter(Boolean).join(' · ');
 }

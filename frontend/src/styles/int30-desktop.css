@@ -22,9 +22,16 @@
   box-shadow: var(--cc-elev-1);
 }
 
+/* 경고 색조는 **토큰에서 파생**한다 (통합 검수 2026-08-04).
+   예전에는 라이트 `rgba(138,106,39,…)`와 다크 `rgba(224,183,109,…)`를 손으로 베껴 뒀는데,
+   다크 `--cc-warn`은 `#e2b76d` = `(226,183,109)`였다. 두 채널이 조용히 어긋나 있었고
+   빌드도 게이트도 그것을 몰랐다 — 손으로 베낀 값은 팔레트가 바뀌는 순간 언제나 이렇게 된다.
+   `color-mix`로 토큰에서 뽑으면 다크 override 자체가 필요 없어진다(테마가 `--cc-warn`을 바꾸면
+   색조도 같이 간다). 엔진이 `color-mix`를 모르면 이 선언만 무효가 되고 바로 위의 중립 카드
+   모양(`--cc-soft` / `--cc-line`)이 남는다 — 아무것도 안 그려지는 상태가 되지 않는다. */
 .cc-setup-card[data-tone="warn"] {
-  border-color: rgba(138, 106, 39, 0.35);
-  background: rgba(138, 106, 39, 0.07);
+  border-color: color-mix(in srgb, var(--cc-warn) 35%, transparent);
+  background: color-mix(in srgb, var(--cc-warn) 7%, transparent);
 }
 
 .cc-setup-icon {
@@ -38,7 +45,7 @@
 }
 
 .cc-setup-card[data-tone="warn"] .cc-setup-icon {
-  background: rgba(138, 106, 39, 0.14);
+  background: color-mix(in srgb, var(--cc-warn) 14%, transparent);
   color: var(--cc-warn);
 }
 
@@ -213,9 +220,9 @@
   gap: 5px;
   margin: 0;
   padding: 10px 12px;
-  border: 1px solid rgba(138, 106, 39, 0.3);
+  border: 1px solid color-mix(in srgb, var(--cc-warn) 30%, transparent);
   border-radius: var(--cc-r-md);
-  background: rgba(138, 106, 39, 0.07);
+  background: color-mix(in srgb, var(--cc-warn) 7%, transparent);
   color: var(--cc-warn);
   font-size: 12.5px;
   line-height: 1.5;
@@ -319,9 +326,8 @@
   .cc-webcam-entry { grid-column: 2; grid-row: 1 / span 2; }
 }
 
-:root[data-theme="dark"] .cc-setup-card[data-tone="warn"] { background: rgba(224, 183, 109, 0.11); border-color: rgba(224, 183, 109, 0.3); }
-:root[data-theme="dark"] .cc-setup-card[data-tone="warn"] .cc-setup-icon { background: rgba(224, 183, 109, 0.16); }
-:root[data-theme="dark"] .cc-intake-rejects { background: rgba(224, 183, 109, 0.11); border-color: rgba(224, 183, 109, 0.3); }
+/* 다크 경고 색조 override는 없다 — 위 규칙이 `--cc-warn`에서 파생하므로 테마가 바뀌면 함께 간다.
+   여기 있던 세 줄이 정확히 `224` vs `226` 어긋남의 출처였다. */
 :root[data-theme="dark"] .cc-slot-clear,
 :root[data-theme="dark"] .cc-webcam-recovery { background: rgba(255, 255, 255, 0.06); }
 

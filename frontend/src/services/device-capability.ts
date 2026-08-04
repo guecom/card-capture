@@ -159,7 +159,25 @@ export function captureMethodOrder(): CaptureMethodId[] {
   return [...CAPTURE_METHOD_ORDER];
 }
 
-const DEFERRED_CLAUSE = ' 연결 전에도 이 기기에 저장돼요.';
+/**
+ * 연결 전에도 저장된다는 사실 (통합 검수 2026-08-04).
+ *
+ * 예전에는 이 문장이 **세 카드의 설명 뒤에 각각** 붙었다. 두 가지가 동시에 잘못이었다.
+ *
+ *  1. 이것은 카드의 사실이 아니라 **구획의 사실**이다. 연결 상태는 입구마다 다르지 않으므로
+ *     같은 문장이 한 화면에 세 번 나왔다.
+ *  2. 그 길이가 설명 줄을 클램프 밖으로 밀어 `…`를 만들었다. 실측: 320px 미연결에서
+ *     `명함 앞면 촬영`은 8줄이 필요한데 3줄만 보였고, 잘린 꼬리를 읽을 방법이 없었다.
+ *
+ * 그래서 문장은 남기되 자리를 옮긴다 — 카드 위 구획 머리(`빠른 등록` 줄)가 한 번만 말한다.
+ * 설명 줄은 다시 **한 가지 결과만** 말하는 자리로 돌아온다.
+ */
+export const CAPTURE_DEFERRED_NOTE = '연결 전에도 이 기기에 저장돼요';
+
+/** 지금 이 연결 상태에서 구획 머리가 덧붙일 한 마디. 연결돼 있으면 빈 문자열이다. */
+export function captureDeferredNote(connection: ConnectionState): string {
+  return connection === 'configured' ? '' : CAPTURE_DEFERRED_NOTE;
+}
 
 /**
  * 카메라 카드의 제목 — 기기와 무관하게 하나다 (통합 판정).
@@ -178,16 +196,35 @@ const DEFERRED_CLAUSE = ' 연결 전에도 이 기기에 저장돼요.';
  */
 const CAMERA_TITLE = '명함 앞면 촬영';
 
+/**
+ * 카메라 카드의 설명 — 폰과 PC가 같은 **모양의 한 문장**을 쓴다 (통합 검수 2026-08-04).
+ *
+ * 예전 PC 문구는 두 절이 이어진 37자짜리였다(`… 테두리를 잡고, 흔들림이 멎으면 …`).
+ * 실폰에서는 짧은 폰 문구가 나가 안 보였지만, **폭을 좁힌 데스크톱 창**에서는 이 문구가 그대로
+ * 들어와 3줄에서 끊겼다 — 잘린 꼬리가 ` 처음 한 번만 권한을 물어봐요.`였다.
+ * 형식(desktop/mobile)은 pointer로 판정하므로 창 폭과 무관하다. 즉 문장이 길다는 것이 원인이고,
+ * 폭은 그것이 드러나는 조건일 뿐이다.
+ *
+ * PC의 사정(웹캠·자동 촬영)은 그대로 나르되 절을 하나로 줄인다.
+ */
 function cameraCopy(env: DeviceEnvironment): { title: string; description: string } {
   if (env.formFactor === 'desktop') {
     return {
       title: CAMERA_TITLE,
-      // 데스크톱 웹캠은 화각이 넓고 두 손이 자판에 묶여 있다 — 들고 흔들리는 시간을 짧게 만든다.
-      description: '명함을 웹캠 가까이 들면 테두리를 잡고, 흔들림이 멎으면 알아서 찍어요.',
+      // 데스크톱 웹캠은 화각이 넓고 두 손이 자판에 묶여 있다 — 들고 있는 시간을 짧게 만든다.
+      description: '웹캠에 비추면 테두리를 잡아 알아서 찍어요.',
     };
   }
   return { title: CAMERA_TITLE, description: '명함을 비추면 테두리를 잡아 반듯하게 잘라요.' };
 }
+
+/**
+ * 아직 권한을 물어본 적이 없을 때 덧붙는 한 마디.
+ *
+ * 짧아야 하는 이유가 있다: 이 절은 **설명 줄 안에** 들어가고, 좁은 칸에서 그 줄이 몇 줄을 쓰는지를
+ * 혼자 두 배로 만든다. 뜻은 그대로다 — 물어보는 횟수가 한 번뿐이라는 것.
+ */
+const PERMISSION_PROMPT_CLAUSE = ' 권한은 한 번만 물어요.';
 
 function uploadCopy(env: DeviceEnvironment): { title: string; description: string } {
   if (env.formFactor === 'desktop') {
@@ -279,14 +316,17 @@ export function cameraBlockOf(env: DeviceEnvironment): Blocked | null {
 /**
  * 지금 이 기기의 캡처 입구 세 장.
  *
- * `connection`은 **설명 문구 한 조각**에만 쓴다. `available`에는 닿지 않는다 — 그 계약이
- * 이 파일의 존재 이유이고, 단위 테스트가 네 상태 전수로 확인한다.
+ * `connection`은 여기서 **아무것도 바꾸지 않는다.** 그래도 계속 받는 이유는 그것이 이 파일의
+ * 계약 그 자체이기 때문이다 — "연결 상태는 `available`을 절대 뒤집지 못한다"를 단위 테스트가
+ * 네 상태 전수로 이 파라미터를 통해 지킨다. 파라미터를 지우면 그 보증도 함께 사라진다.
+ *
+ * 연결 전 저장 안내는 카드가 아니라 구획이 말한다 — `captureDeferredNote()` 참고.
  */
 export function deviceCaptureMethods(
   env: DeviceEnvironment,
   connection: ConnectionState = 'configured',
 ): CaptureMethodCard[] {
-  const deferred = connection !== 'configured' ? DEFERRED_CLAUSE : '';
+  void connection;
   const cameraBlock = cameraBlockOf(env);
   const camera = cameraCopy(env);
   const upload = uploadCopy(env);
@@ -297,12 +337,12 @@ export function deviceCaptureMethods(
       title: camera.title,
       description: cameraBlock
         ? camera.description
-        : `${camera.description}${env.cameraPermission === 'prompt' ? ' 처음 한 번만 권한을 물어봐요.' : ''}${deferred}`,
+        : `${camera.description}${env.cameraPermission === 'prompt' ? PERMISSION_PROMPT_CLAUSE : ''}`,
       available: !cameraBlock,
       ...(cameraBlock ? { unavailableReason: cameraBlock.reason, recovery: cameraBlock.recovery } : {}),
     },
     upload: env.hasFileInput
-      ? { id: 'upload', title: upload.title, description: `${upload.description}${deferred}`, available: true }
+      ? { id: 'upload', title: upload.title, description: upload.description, available: true }
       : {
         id: 'upload',
         title: upload.title,
@@ -315,7 +355,7 @@ export function deviceCaptureMethods(
     manual: {
       id: 'manual',
       title: '직접 입력',
-      description: `명함이 없어도 기억나는 대로 적어 두면 정리해 드려요.${deferred}`,
+      description: '명함이 없어도 기억나는 대로 적어 두면 정리해 드려요.',
       available: true,
     },
   };

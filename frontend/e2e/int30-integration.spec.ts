@@ -322,9 +322,15 @@ test.describe('미연결 + 데스크톱 첫 진입', () => {
       const setupBox = await setup.boundingBox();
       expect(captureBox && setupBox && setupBox.y > captureBox.y).toBe(true);
 
-      /* 연결 상태는 설명 문구 한 조각만 바꾸고 **가용성에는 닿지 않는다.** 연결이 없다는 이유로
-         카메라가 사라지던 것이 PC 첫 진입의 원래 결함이었다. */
-      await expect(page.getByRole('button', { name: '명함 앞면 촬영' })).toContainText('이 기기에 저장돼요');
+      /* 연결 전에도 저장된다는 사실은 **한 번만** 나온다 (통합 검수 2026-08-04에 정정).
+         예전에는 이 문장이 세 카드 설명 꼬리에 각각 붙어 한 화면에 세 번 나왔고, 그 길이가
+         설명 줄을 클램프 밖으로 밀어 잘린 꼬리를 만들었다. 이제 구획 머리가 말하고
+         카드 설명은 자기 결과만 말한다. */
+      await expect(page.locator('.capture-head .capture-deferred')).toHaveText('연결 전에도 이 기기에 저장돼요');
+      await expect(page.locator('.cc-entry-card', { hasText: '이 기기에 저장돼요' })).toHaveCount(0);
+      /* 그리고 연결 상태는 **가용성에는 닿지 않는다.** 연결이 없다는 이유로 카메라가 사라지던 것이
+         PC 첫 진입의 원래 결함이었다. */
+      await expect(page.getByRole('button', { name: '명함 앞면 촬영' })).toBeEnabled();
     } finally {
       await stopServer(harness.server);
     }
@@ -362,7 +368,7 @@ test.describe('좁은 폭 320px', () => {
 });
 
 test.describe('카드 해부 통일', () => {
-  test('세 카드가 모두 제목·한 줄 설명·행동을 갖고 같은 높이로 선다', async ({ page }) => {
+  test('세 카드가 모두 제목·한 줄 설명·행동을 갖고, 같은 줄의 두 카드가 같은 높이로 선다', async ({ page }) => {
     await useCameraWorld(page, 'working');
     const harness = await boot(page, { size: { width: 1280, height: 800 } });
     try {
@@ -378,9 +384,13 @@ test.describe('카드 해부 통일', () => {
         expect(card.role, `${card.title}: 누를 수 있는 자리가 아니다`).toBe('button');
       }
 
-      // 높이가 같다. 카드마다 높이가 다르면 그것이 곧 "조립식"으로 읽히는 자리다.
-      const heights = cards.map((card) => card.height);
-      expect(Math.max(...heights) - Math.min(...heights), `카드 높이가 어긋났다: ${JSON.stringify(heights)}`).toBeLessThanOrEqual(2);
+      /* **같은 줄에 선 카드끼리** 높이가 같다 (통합 검수 2026-08-04에 정정).
+         예전에는 세 카드 전부의 높이를 같게 요구했는데, 그것이 오히려 결함의 원인이었다:
+         둘째 줄의 넓은 카드가 위 행 높이(190px)에 맞춰 부풀면서 설명 한 줄과 `사진 고르기`
+         사이가 통째로 비었다. 통일감은 **같은 줄에서 같은 선**이지 서로 다른 해부의 같은 높이가
+         아니다 — 넓은 카드는 넓이로 갚는다(`surface-polish.spec.ts` 009·010이 그것을 잰다). */
+      expect(Math.abs(cards[0].height - cards[1].height), `첫 줄 두 카드의 높이가 어긋났다: ${JSON.stringify(cards.map((card) => card.height))}`).toBeLessThanOrEqual(2);
+      expect(cards[2].height, `넓은 카드가 위 행 높이로 부풀었다: ${JSON.stringify(cards.map((card) => card.height))}`).toBeLessThan(cards[0].height);
 
       // 첫 줄의 두 카드는 같은 줄·같은 폭이다 (DEC-000103: 촬영과 직접 입력의 동등 위계).
       expect(Math.abs(cards[0].top - cards[1].top), '촬영과 직접 입력이 같은 줄에 있지 않다').toBeLessThanOrEqual(2);

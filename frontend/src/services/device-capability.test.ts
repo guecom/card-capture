@@ -6,9 +6,11 @@ import {
   type CameraPermission,
   type DeviceEnvironment,
   type FormFactor,
+  CAPTURE_DEFERRED_NOTE,
   MAX_INTAKE_BYTES,
   UNKNOWN_DEVICE_ENVIRONMENT,
   cameraBlockOf,
+  captureDeferredNote,
   captureMethodOrder,
   captureRecoveryIntent,
   deviceCaptureMethods,
@@ -117,11 +119,22 @@ describe('capture method cards — 전수 매트릭스', () => {
     }
   });
 
-  it('says it saves locally only while a connection is missing', () => {
-    const cards = deviceCaptureMethods(env({ formFactor: 'desktop' }), 'unconfigured');
-    expect(cards.every((card) => card.description.includes('이 기기에 저장돼요'))).toBe(true);
-    const connected = deviceCaptureMethods(env({ formFactor: 'desktop' }), 'configured');
-    expect(connected.some((card) => card.description.includes('이 기기에 저장돼요'))).toBe(false);
+  /* 통합 검수 2026-08-04: 연결 전 저장은 **구획의 사실**이라 카드가 말하지 않는다.
+     예전에는 이 문장이 세 카드 설명 꼬리에 각각 붙어 한 화면에 세 번 나왔고, 그 길이가 설명 줄을
+     클램프 밖으로 밀어 320px 미연결에서 8줄이 필요한데 3줄만 보이는 상태를 만들었다. */
+  it('says it saves locally once, from the section — never from the cards', () => {
+    for (const connection of CONNECTIONS) {
+      const cards = deviceCaptureMethods(env({ formFactor: 'desktop' }), connection);
+      expect(
+        cards.some((card) => card.description.includes('이 기기에 저장돼요')),
+        `${connection}: 연결 전 저장 안내가 카드 설명에 다시 들어왔다`,
+      ).toBe(false);
+    }
+    expect(captureDeferredNote('configured')).toBe('');
+    for (const connection of CONNECTIONS.filter((state) => state !== 'configured')) {
+      expect(captureDeferredNote(connection)).toBe(CAPTURE_DEFERRED_NOTE);
+    }
+    expect(CAPTURE_DEFERRED_NOTE).toContain('이 기기에 저장돼요');
   });
 });
 
@@ -152,7 +165,7 @@ describe('camera availability', () => {
   it('treats "not asked yet" as usable and says so', () => {
     const card = cameraOf({ cameraPermission: 'prompt', videoInputs: 1 });
     expect(card.available).toBe(true);
-    expect(card.description).toContain('처음 한 번만 권한을 물어봐요');
+    expect(card.description).toContain('권한은 한 번만 물어요');
   });
 
   it('treats "denied" as blocked and points at the browser control, not at us', () => {
@@ -201,8 +214,22 @@ describe('camera availability', () => {
   it('describes the desktop webcam for hands that are not free', () => {
     const card = cameraOf({ formFactor: 'desktop', videoInputs: 1, cameraPermission: 'granted' });
     // PC의 사정은 **설명 줄**이 나른다. 제목은 결과를 말하는 자리다.
-    expect(card.description).toContain('흔들림이 멎으면');
+    expect(card.description).toContain('웹캠');
     expect(card.description).not.toBe(cameraOf({ formFactor: 'mobile', videoInputs: 1, cameraPermission: 'granted' }).description);
+  });
+
+  /* 통합 검수 2026-08-04: 이 줄은 카드 안에서 **한 문장**이다.
+     예전 PC 문구는 두 절이 이어져 37자였고, 여기에 권한 절과 연결 절이 더 붙어 최대 71자가 됐다.
+     좁은 칸(320px에서 안쪽 95px)에서 그 길이는 클램프를 넘어 `…`가 되고, 잘린 꼬리는 사용자가
+     있는 줄조차 알 수 없다. 그래서 길이 자체에 상한을 둔다 — 실제 잘림은 렌더된 픽셀로
+     `surface-polish.spec.ts` 012가 다시 판정하고, 여기서는 그 게이트에 닿기 전에 막는다. */
+  it('keeps every entry outcome inside one sentence-sized budget', () => {
+    const worst = Math.max(
+      ...FORM_FACTORS.flatMap((formFactor) => PERMISSIONS.flatMap((cameraPermission) => CONNECTIONS.map((connection) =>
+        Math.max(...deviceCaptureMethods(env({ formFactor, cameraPermission, videoInputs: 1 }), connection)
+          .map((card) => card.description.length))))),
+    );
+    expect(worst, `가장 긴 진입 카드 설명이 ${worst}자다 — 좁은 칸에서 잘린다`).toBeLessThanOrEqual(40);
   });
 
   /* 통합 판정 (TSK-000220 + TSK-000545): 제목은 기기와 무관하게 하나다.

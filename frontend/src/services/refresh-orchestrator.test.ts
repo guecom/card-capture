@@ -307,6 +307,28 @@ describe('idle 문구', () => {
     expect(refreshIdleText({ autoRefreshOn: false, lastSuccessAgoMs: 1_000, cadence: off }))
       .toBe('자동 갱신 꺼짐 · 방금');
   });
+
+  /* 통합 검수 2026-08-04: 두 표면이 같은 사실을 다른 말로 하던 자리.
+     미연결 PC에서 상단은 `연결되면 확인`인데 이 줄은 `자동 갱신 켜짐`만 남아 서로 모순되게
+     읽혔다 — 하나는 "지금 안 본다", 다른 하나는 "켜져 있다". 이제 가운데 조각이 상단 바가 쓰는
+     `refreshCadenceText`의 파생이라, 두 곳이 각자 문장을 만드는 일 자체가 없다.
+     DEC-000092 §2의 뜻은 그대로다: 이 자리는 원래도 "지금 걸려 있는 박자"를 말하는 자리이고,
+     박자가 없을 때 왜 없는지를 말하는 것이 그 자리를 비우는 것보다 정직하다. */
+  it('멈춘 이유를 상단 바와 똑같은 말로 말한다', () => {
+    const cases: { plan: RefreshCadencePlan; line: string }[] = [
+      { plan: refreshCadencePlan({ items: [brief('processed')], configured: false }), line: '자동 갱신 켜짐 · 연결되면 확인' },
+      { plan: refreshCadencePlan({ items: [brief('processed')], hidden: true }), line: '자동 갱신 켜짐 · 돌아오면 확인' },
+    ];
+    for (const { plan, line } of cases) {
+      expect(refreshIdleText({ autoRefreshOn: true, cadence: plan })).toBe(line);
+      // 상단 바가 쓰는 조각이 이 줄 안에 **글자 그대로** 들어 있다.
+      expect(refreshIdleText({ autoRefreshOn: true, cadence: plan })).toContain(refreshCadenceText(plan));
+    }
+    // 사용자가 직접 끈 상태만 예외다 — 머리말이 이미 `자동 갱신 꺼짐`이라 같은 말을 두 번 쓰지 않는다.
+    const off = refreshCadencePlan({ items: [brief('received')], autoRefreshOn: false });
+    expect(refreshIdleText({ autoRefreshOn: false, cadence: off })).toBe('자동 갱신 꺼짐');
+    expect(refreshCadenceText(off)).toBe('자동 꺼짐');
+  });
 });
 
 // ── 적응형 박자를 정직하게 말한다 (TSK-000543) ──

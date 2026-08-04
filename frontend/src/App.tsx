@@ -40,6 +40,7 @@ import { AuthoringField } from './components/AuthoringField';
 import type { CaptureMethodId, CaptureMethodRecovery } from './contracts/int30';
 import { CONTEXT_EXAMPLE_LABEL, contextWeight } from './services/capture-entry';
 import {
+  captureDeferredNote,
   captureRecoveryIntent,
   deviceCaptureMethods,
   type DeviceEnvironment,
@@ -931,8 +932,9 @@ function App() {
    * 자리에 있던 임시 배열은 두 입구를 **언제나 available: true**로 못 박고 있어서, 능력 판정
    * 전체가 화면에 닿지 않는 죽은 코드였다.
    *
-   * `connectionState`는 설명 문구 한 조각만 바꾸고 가용성에는 닿지 않는다 — 그 계약은
-   * 생산자가 소유하고 단위 시험이 네 연결 상태 전수로 지킨다.
+   * `connectionState`는 카드 안의 어떤 글자도 바꾸지 않고 가용성에도 닿지 않는다 — 그 계약은
+   * 생산자가 소유하고 단위 시험이 네 연결 상태 전수로 지킨다. 연결 전 저장 안내는
+   * 카드가 아니라 구획 머리가 한 번만 말한다(`captureDeferredNote`).
    */
   const captureMethods = useMemo(
     () => deviceCaptureMethods(deviceEnv, connectionState),
@@ -1981,6 +1983,13 @@ function App() {
           <div className="capture-head">
             <span className="capture-kicker">빠른 등록</span>
             <span className="capture-sub">사진 한 장이면 끝 — 정리·브리핑은 시스템이 해요</span>
+            {/* 연결 전에도 저장된다는 사실은 입구마다 다르지 않다 — 구획의 사실이므로 구획이
+                한 번만 말한다. 예전에는 이 문장이 세 카드의 설명 꼬리에 각각 붙어 한 화면에
+                세 번 나왔고, 그 길이가 설명 줄을 클램프 밖으로 밀어 `…`를 만들었다
+                (`device-capability.ts`의 `CAPTURE_DEFERRED_NOTE` 참고). */}
+            {captureDeferredNote(connectionState) && (
+              <span className="capture-deferred">{captureDeferredNote(connectionState)}</span>
+            )}
           </div>
 
           {/* 사람을 등록하는 입구는 둘이고 **위계가 같다** (INT-000029 / DEC-000103):
@@ -2100,11 +2109,15 @@ function App() {
                   label="어디서 만났나요?"
                   filled={Boolean(event.trim())}
                   footer={(
+                    /* chip들은 이름표와 **다른 열**에 있다. 한 줄에 같이 두면 둘째 줄부터
+                       이름표 밑으로 파고든다 (`int30-capture.css`의 `.context-chips` 참고). */
                     <div className="context-chips" role="group" aria-label="만난 상황 예시">
                       <span className="context-chips-label">{CONTEXT_EXAMPLE_LABEL}</span>
-                      {eventChips.map((chip) => (
-                        <button key={chip} type="button" className={event === chip ? 'on' : ''} onClick={() => setEvent(toggleChipValue(event, chip))}>{chip}</button>
-                      ))}
+                      <span className="context-chips-row">
+                        {eventChips.map((chip) => (
+                          <button key={chip} type="button" className={event === chip ? 'on' : ''} onClick={() => setEvent(toggleChipValue(event, chip))}>{chip}</button>
+                        ))}
+                      </span>
                     </div>
                   )}
                 >
@@ -2116,9 +2129,11 @@ function App() {
                   footer={(
                     <div className="context-chips" role="group" aria-label="Kairen과의 관계 예시">
                       <span className="context-chips-label">{CONTEXT_EXAMPLE_LABEL}</span>
-                      {KAIREN_RELATION_CHIPS.map((chip) => (
-                        <button key={chip} type="button" className={relKairen === chip ? 'on' : ''} onClick={() => setRelKairen(toggleChipValue(relKairen, chip))}>{chip}</button>
-                      ))}
+                      <span className="context-chips-row">
+                        {KAIREN_RELATION_CHIPS.map((chip) => (
+                          <button key={chip} type="button" className={relKairen === chip ? 'on' : ''} onClick={() => setRelKairen(toggleChipValue(relKairen, chip))}>{chip}</button>
+                        ))}
+                      </span>
                     </div>
                   )}
                 >
@@ -2130,9 +2145,11 @@ function App() {
                   footer={(
                     <div className="context-chips" role="group" aria-label="나와의 관계 예시">
                       <span className="context-chips-label">{CONTEXT_EXAMPLE_LABEL}</span>
-                      {SELF_RELATION_CHIPS.map((chip) => (
-                        <button key={chip} type="button" className={relSelf === chip ? 'on' : ''} onClick={() => setRelSelf(toggleChipValue(relSelf, chip))}>{chip}</button>
-                      ))}
+                      <span className="context-chips-row">
+                        {SELF_RELATION_CHIPS.map((chip) => (
+                          <button key={chip} type="button" className={relSelf === chip ? 'on' : ''} onClick={() => setRelSelf(toggleChipValue(relSelf, chip))}>{chip}</button>
+                        ))}
+                      </span>
                     </div>
                   )}
                 >
