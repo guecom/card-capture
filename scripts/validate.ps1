@@ -209,16 +209,18 @@ if ($badOcrHash.Count -gt 0) { $badOcrHash | ForEach-Object { Fail "on-device-as
 # ---------- 9. watcher 스위트 ----------
 # 반드시 -File 로 호출한다 — identity·다중 orphan 게이트가 실행 프로세스 자신의 command line을 읽는다.
 #
-# 통과하면 조용하지만 **실패하면 어느 게이트가 깨졌는지 반드시 보여 준다.** 예전에는 다섯 스위트가
+# 통과하면 조용하지만 **실패하면 어느 게이트가 왜 깨졌는지 반드시 보여 준다.** 예전에는 다섯 스위트가
 # 전부 `| Out-Null`이라, CI에서 `watcher claim/lease/quarantine protocol tests failed` 한 줄만 남고
 # 92개 게이트 중 무엇이 왜 깨졌는지 로그에서 알 방법이 없었다 (2026-08-04 실제로 겪음).
+#
+# 처음에는 `fail`·`summary`·`RESULT` 줄만 골랐는데, 그 필터가 정작 실패한 게이트가 찍은 실측값
+# (`  stdin probe: bytes=57 expected=72 …`)을 걸러 버려 같은 날 두 번째로 같은 벽에 부딪혔다.
+# 실패는 드물고 이 출력은 짧다 — **고르지 말고 다 보여 준다.**
 function Invoke-WatcherSuite {
   param([string]$File, [string]$FailMessage, [string]$PassMessage)
   $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root $File) 2>&1
   if ($LASTEXITCODE -ne 0) {
-    $detail = @($out | Where-Object { $_ -match '^(fail|FAIL|\s*fail)|^summary:|^RESULT:' })
-    if ($detail.Count -eq 0) { $detail = @($out | Select-Object -Last 20) }
-    $detail | ForEach-Object { Write-Host ("    " + $_) }
+    @($out | Where-Object { [string]$_ -ne '' } | Select-Object -Last 80) | ForEach-Object { Write-Host ("    " + $_) }
     Fail $FailMessage
   } else {
     Pass $PassMessage

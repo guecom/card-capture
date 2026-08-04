@@ -1983,12 +1983,35 @@ function Invoke-BoundedDeepProcessor($targeted, $procLog, $timeoutSeconds = $Dee
         $startInfo.RedirectStandardInput = $true
         $startInfo.RedirectStandardOutput = $true
         $startInfo.RedirectStandardError = $true
+        # `StandardInputEncoding`은 .NET Core 2.1에서 생긴 속성이라 **Windows PowerShell 5.1(.NET
+        # Framework 4.x)에는 존재하지 않는다.** 예전 코드는 세 인코딩을 한 try 블록에서 대입하고
+        # `catch {}`로 삼켰는데, 없는 속성인 첫 줄이 던지는 바람에 출력·오류 인코딩까지 통째로
+        # 건너뛰었다. stdin은 콘솔/ANSI 기본값(한글 Windows에서 CP949)으로 열렸고, 조사 프롬프트
+        # 첫 글자가 한글이라 처리기가 매번 `input is not valid UTF-8 (invalid byte at offset 0)`으로
+        # 즉시 죽었다. 세 번의 시도가 전부 같은 이유로 실패했고 requeue도 같은 결과였다 (ISS-000232).
+        #
+        # stdin은 속성에 기대지 않고 `BaseStream`에 UTF-8 바이트를 직접 쓴다(아래 참조) — StreamWriter의
+        # 인코딩을 아예 우회하므로 .NET Framework와 .NET Core 양쪽에서 같게 동작한다. 출력·오류는
+        # 각각 따로 설정해 한쪽 실패가 다른 쪽을 끌고 내려가지 않게 하고, 실패하면 조용히 넘기지 않고 남긴다.
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        try { $startInfo.StandardOutputEncoding = $utf8NoBom } catch { Write-Log ('processor stdout encoding not set: ' + $_.Exception.Message) }
+        try { $startInfo.StandardErrorEncoding = $utf8NoBom } catch { Write-Log ('processor stderr encoding not set: ' + $_.Exception.Message) }
+        # stdin 쪽은 속성이 없으니 `Console.InputEncoding`으로 정한다 — .NET Framework는 이 값으로
+        # `StandardInput` StreamWriter를 만들고 곧바로 `AutoFlush = true`를 켠다. AutoFlush setter가
+        # 그 자리에서 flush하므로, 인코딩에 preamble이 있으면 **우리가 한 글자 쓰기도 전에** BOM이
+        # 파이프로 먼저 나간다. GitHub Actions windows runner가 정확히 그 상태였다 (72바이트가
+        # 75바이트로 도착). preamble 없는 UTF-8로 바꿔 두면 그 flush가 아무것도 쓰지 않는다.
+        # 콘솔이 없는 daemon에서는 setter가 던질 수 있는데, 그 경우 기본값은 ANSI라 preamble이 없다 —
+        # 아래의 raw byte 쓰기가 그대로 성립하므로 실패해도 안전하다.
+        $savedConsoleInputEncoding = $null
         try {
-            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-            $startInfo.StandardInputEncoding = $utf8NoBom
-            $startInfo.StandardOutputEncoding = $utf8NoBom
-            $startInfo.StandardErrorEncoding = $utf8NoBom
-        } catch {}
+            $savedConsoleInputEncoding = [Console]::InputEncoding
+            if ($savedConsoleInputEncoding.GetPreamble().Length -gt 0) { [Console]::InputEncoding = $utf8NoBom }
+            else { $savedConsoleInputEncoding = $null }
+        } catch {
+            $savedConsoleInputEncoding = $null
+            Write-Log ('processor stdin console encoding not adjusted: ' + $_.Exception.Message)
+        }
         $processor = New-Object System.Diagnostics.Process
         $processor.StartInfo = $startInfo
         if (-not $processor.Start()) { throw 'processor did not start' }
@@ -1998,8 +2021,19 @@ function Invoke-BoundedDeepProcessor($targeted, $procLog, $timeoutSeconds = $Dee
         $processJob.Assign($processor)
         $stdoutTask = $processor.StandardOutput.ReadToEndAsync()
         $stderrTask = $processor.StandardError.ReadToEndAsync()
-        $processor.StandardInput.Write([string]$targeted)
-        $processor.StandardInput.Close()
+        # 프롬프트는 UTF-8 바이트로 직접 쓴다. `StandardInput.Write`는 StreamWriter의 인코딩을 타고,
+        # 그 인코딩은 이 런타임에서 우리가 정할 수 없다 (위 주석).
+        #
+        # **닫는 것도 BaseStream이어야 한다.** `StandardInput.Close()`는 StreamWriter를 dispose하는데,
+        # 그 StreamWriter는 자기가 아직 아무것도 쓰지 않았다고 보고 인코딩의 preamble을 뱉는다.
+        # 그 인코딩이 BOM 있는 UTF-8인 환경(GitHub Actions windows runner)에서는 프롬프트 앞에
+        # `EF BB BF`가 붙어, 우리가 쓴 72바이트가 75바이트로 도착했다. BaseStream을 직접 닫으면
+        # 파이프가 그대로 EOF가 되고 StreamWriter는 개입하지 않는다.
+        $promptBytes = [System.Text.Encoding]::UTF8.GetBytes([string]$targeted)
+        $stdinStream = $processor.StandardInput.BaseStream
+        $stdinStream.Write($promptBytes, 0, $promptBytes.Length)
+        $stdinStream.Flush()
+        $stdinStream.Close()
         if (-not $processor.WaitForExit([math]::Max(1, [int]($timeoutSeconds * 1000)))) {
             $timedOut = $true
             try { $processJob.Terminate(124) } catch { Write-Log ('process-tree terminate failed: ' + $_.Exception.Message) }
@@ -2027,6 +2061,10 @@ function Invoke-BoundedDeepProcessor($targeted, $procLog, $timeoutSeconds = $Dee
             } catch {}
         }
         if ($null -ne $processor) { $processor.Dispose() }
+        # 전역 상태를 빌렸으면 돌려놓는다.
+        if ($null -ne $savedConsoleInputEncoding) {
+            try { [Console]::InputEncoding = $savedConsoleInputEncoding } catch {}
+        }
         $timer.Stop()
     }
     return [PSCustomObject]@{ exit = [int]$exit; timedOut = [bool]$timedOut; elapsedMinutes = $timer.Elapsed.TotalMinutes }

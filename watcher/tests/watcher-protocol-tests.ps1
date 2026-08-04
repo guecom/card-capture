@@ -762,6 +762,90 @@ TB 'APP-AC-239 runtime: Deep slice process tree와 stream drain을 wall-clock �
     }
 }
 
+# ISS-000232의 실제 원인. 2026-08-04에 처리기 raw 로그가 아직 살아 있는 상태로 재현돼 확정됐다:
+# 세 번의 시도가 전부 `Failed to read prompt from stdin: input is not valid UTF-8
+# (invalid byte at offset 0)`이었다. 프롬프트를 stdin으로 넘길 때 인코딩이 UTF-8이 아니었고,
+# 조사 프롬프트 첫 글자가 한글이라 offset 0에서 바로 깨졌다. 원인은 `StandardInputEncoding`이
+# .NET Framework(=Windows PowerShell 5.1)에 없는 속성이라는 것 — 대입이 던지고 `catch {}`가
+# 삼켜서 아무도 몰랐다. 이 게이트는 "무엇을 설정했는가"가 아니라 **처리기가 실제로 받은 바이트**를
+# 본다. 설정 방식을 바꿔도 계약이 지켜지는지 그것만이 판정 기준이다.
+#
+# 게이트는 **주변 환경을 믿지 않고 스스로 적대적인 조건을 만든다.** 첫 판은 개발 PC에서 통과하고
+# CI에서만 실패했다 — runner의 `Console.InputEncoding`이 BOM 있는 UTF-8이라 .NET이 StandardInput을
+# 만들며 켜는 `AutoFlush`가 우리가 쓰기도 전에 `EF BB BF`를 파이프로 흘렸기 때문이다(72→75바이트).
+# 그래서 여기서 그 상태를 직접 만들어 놓고 잰다. 환경이 우연히 친절할 때 초록으로 보이는 게이트는
+# 게이트가 아니다.
+TB 'ISS-000232 stdin: 처리기가 받는 프롬프트 바이트가 한글에서도 정확히 UTF-8이다' {
+    $oldMode = $CardCaptureWatcherTestMode
+    $oldCodex = $Codex
+    $oldTimeout = $DeepSliceTimeoutSeconds
+    $oldVault = $Vault
+    $oldArguments = $BoundedProcessorTestArguments
+    $probeOut = Join-Path $sandbox 'stdin-prompt-bytes.bin'
+    if (Test-Path $probeOut) { Remove-Item $probeOut -Force }
+    $savedInputEncoding = $null
+    # 실제로 관측된 두 가지 적대 조건을 모두 건다.
+    #   949            — 한글 Windows 기본 ANSI. 운영 워처가 이 상태였고 `invalid byte at offset 0`이 났다.
+    #   UTF-8 with BOM — GitHub Actions windows runner. 프롬프트 앞에 `EF BB BF`가 붙어 나갔다.
+    $hostiles = @(
+        @{ name = 'cp949'; enc = { [System.Text.Encoding]::GetEncoding(949) } },
+        @{ name = 'utf8-bom'; enc = { New-Object System.Text.UTF8Encoding($true) } }
+    )
+    $prompt = "한글 조사 프롬프트 · PER 실력·전문성 추정 · ASCII tail"
+    $expected = [System.Text.Encoding]::UTF8.GetBytes($prompt)
+    $hasProp = ((New-Object System.Diagnostics.ProcessStartInfo).PSObject.Properties.Name -contains 'StandardInputEncoding')
+    Write-Host ('  stdin probe: hasStdinEncodingProp=' + $hasProp + ' promptChars=' + ([string]$prompt).Length + ' psv=' + $PSVersionTable.PSVersion)
+    $allOk = $true
+    $anyHostileApplied = $false
+    try {
+        $CardCaptureWatcherTestMode = $false
+        $Codex = 'powershell.exe'
+        # 자식은 stdin을 **바이트 그대로** 받아 적는다. 문자열로 읽으면 자식 쪽 디코딩이 끼어들어
+        # 정작 재려는 것이 가려진다.
+        $BoundedProcessorTestArguments = '-NoProfile -Command "$in=[Console]::OpenStandardInput(); $mem=New-Object System.IO.MemoryStream; $in.CopyTo($mem); [System.IO.File]::WriteAllBytes(''' + $probeOut + ''', $mem.ToArray())"'
+        $DeepSliceTimeoutSeconds = 20
+        $Vault = $sandbox
+        foreach ($hostile in $hostiles) {
+            if (Test-Path $probeOut) { Remove-Item $probeOut -Force }
+            $applied = $false
+            try {
+                if ($null -eq $savedInputEncoding) { $savedInputEncoding = [Console]::InputEncoding }
+                [Console]::InputEncoding = (& $hostile.enc)
+                $applied = ([Console]::InputEncoding.CodePage -eq (& $hostile.enc).CodePage)
+            } catch { $applied = $false }
+            if ($applied) { $anyHostileApplied = $true }
+            # 첫 글자가 한글이어야 한다 — 운영 실패가 정확히 offset 0에서 났다.
+            $null = Invoke-BoundedDeepProcessor $prompt (Join-Path $sbLog ('stdin-' + $hostile.name + '.log'))
+            if (-not (Test-Path $probeOut)) {
+                Write-Host ('  stdin probe[' + $hostile.name + ']: 자식이 아무것도 받지 못했다')
+                $allOk = $false
+                continue
+            }
+            $actual = [System.IO.File]::ReadAllBytes($probeOut)
+            $same = ($actual.Length -eq $expected.Length)
+            if ($same) {
+                for ($i = 0; $i -lt $expected.Length; $i++) {
+                    if ($actual[$i] -ne $expected[$i]) { $same = $false; break }
+                }
+            }
+            # 실패했을 때 "왜"를 로그만 보고 가릴 수 있도록 실측값을 남긴다.
+            Write-Host ('  stdin probe[' + $hostile.name + ']: applied=' + $applied + ' bytes=' + $actual.Length + '/' + $expected.Length +
+                ' head=[' + (@($actual | Select-Object -First 8) -join ',') + '] want=[' + (@($expected | Select-Object -First 8) -join ',') + ']')
+            if (-not ($same -and $applied)) { $allOk = $false }
+        }
+        # 적대 조건을 하나도 걸지 못했으면 통과로 세지 않는다 — 아무것도 검사하지 않은 초록이 이
+        # 게이트가 막으려는 바로 그 실패 양식이다.
+        return ($allOk -and $anyHostileApplied)
+    } finally {
+        $CardCaptureWatcherTestMode = $oldMode
+        $Codex = $oldCodex
+        $DeepSliceTimeoutSeconds = $oldTimeout
+        $Vault = $oldVault
+        $BoundedProcessorTestArguments = $oldArguments
+        if ($null -ne $savedInputEncoding) { try { [Console]::InputEncoding = $savedInputEncoding } catch {} }
+    }
+}
+
 # =====================================================================
 # TSK-000531 — 정직한 실패 저널 / stale marker 조정 / 결정적 requeue 차단
 #   실측 출발점(2026-08-04): PER-000418 조사 receipt가 requeue 2회 x processor exit 1 3회 =
