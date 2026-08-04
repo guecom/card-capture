@@ -762,6 +762,53 @@ TB 'APP-AC-239 runtime: Deep slice process tree와 stream drain을 wall-clock �
     }
 }
 
+# ISS-000232의 실제 원인. 2026-08-04에 처리기 raw 로그가 아직 살아 있는 상태로 재현돼 확정됐다:
+# 세 번의 시도가 전부 `Failed to read prompt from stdin: input is not valid UTF-8
+# (invalid byte at offset 0)`이었다. 프롬프트를 stdin으로 넘길 때 인코딩이 UTF-8이 아니었고,
+# 조사 프롬프트 첫 글자가 한글이라 offset 0에서 바로 깨졌다. 원인은 `StandardInputEncoding`이
+# .NET Framework(=Windows PowerShell 5.1)에 없는 속성이라는 것 — 대입이 던지고 `catch {}`가
+# 삼켜서 아무도 몰랐다. 이 게이트는 "무엇을 설정했는가"가 아니라 **처리기가 실제로 받은 바이트**를
+# 본다. 설정 방식을 바꿔도 계약이 지켜지는지 그것만이 판정 기준이다.
+TB 'ISS-000232 stdin: 처리기가 받는 프롬프트 바이트가 한글에서도 정확히 UTF-8이다' {
+    $oldMode = $CardCaptureWatcherTestMode
+    $oldCodex = $Codex
+    $oldTimeout = $DeepSliceTimeoutSeconds
+    $oldVault = $Vault
+    $oldArguments = $BoundedProcessorTestArguments
+    $probeOut = Join-Path $sandbox 'stdin-prompt-bytes.bin'
+    if (Test-Path $probeOut) { Remove-Item $probeOut -Force }
+    try {
+        $CardCaptureWatcherTestMode = $false
+        $Codex = 'powershell.exe'
+        # 자식은 stdin을 **바이트 그대로** 받아 적는다. 문자열로 읽으면 자식 쪽 디코딩이 끼어들어
+        # 정작 재려는 것이 가려진다.
+        $BoundedProcessorTestArguments = '-NoProfile -Command "$in=[Console]::OpenStandardInput(); $mem=New-Object System.IO.MemoryStream; $in.CopyTo($mem); [System.IO.File]::WriteAllBytes(''' + $probeOut + ''', $mem.ToArray())"'
+        $DeepSliceTimeoutSeconds = 20
+        $Vault = $sandbox
+        # 첫 글자가 한글이어야 한다 — 운영 실패가 정확히 offset 0에서 났다.
+        $prompt = "한글 조사 프롬프트 · PER 실력·전문성 추정 · ASCII tail"
+        $null = Invoke-BoundedDeepProcessor $prompt (Join-Path $sbLog 'stdin-utf8.log')
+        if (-not (Test-Path $probeOut)) { Write-Host '  stdin probe: 자식이 아무것도 받지 못했다'; return $false }
+        $actual = [System.IO.File]::ReadAllBytes($probeOut)
+        $expected = [System.Text.Encoding]::UTF8.GetBytes($prompt)
+        $sameBytes = ($actual.Length -eq $expected.Length)
+        if ($sameBytes) {
+            for ($i = 0; $i -lt $expected.Length; $i++) {
+                if ($actual[$i] -ne $expected[$i]) { $sameBytes = $false; break }
+            }
+        }
+        $firstActual = if ($actual.Length -gt 0) { $actual[0] } else { -1 }
+        Write-Host ('  stdin probe: bytes=' + $actual.Length + ' expected=' + $expected.Length + ' first=' + $firstActual + ' expectedFirst=' + $expected[0])
+        return $sameBytes
+    } finally {
+        $CardCaptureWatcherTestMode = $oldMode
+        $Codex = $oldCodex
+        $DeepSliceTimeoutSeconds = $oldTimeout
+        $Vault = $oldVault
+        $BoundedProcessorTestArguments = $oldArguments
+    }
+}
+
 # =====================================================================
 # TSK-000531 — 정직한 실패 저널 / stale marker 조정 / 결정적 requeue 차단
 #   실측 출발점(2026-08-04): PER-000418 조사 receipt가 requeue 2회 x processor exit 1 3회 =

@@ -1983,12 +1983,19 @@ function Invoke-BoundedDeepProcessor($targeted, $procLog, $timeoutSeconds = $Dee
         $startInfo.RedirectStandardInput = $true
         $startInfo.RedirectStandardOutput = $true
         $startInfo.RedirectStandardError = $true
-        try {
-            $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-            $startInfo.StandardInputEncoding = $utf8NoBom
-            $startInfo.StandardOutputEncoding = $utf8NoBom
-            $startInfo.StandardErrorEncoding = $utf8NoBom
-        } catch {}
+        # `StandardInputEncoding`은 .NET Core 2.1에서 생긴 속성이라 **Windows PowerShell 5.1(.NET
+        # Framework 4.x)에는 존재하지 않는다.** 예전 코드는 세 인코딩을 한 try 블록에서 대입하고
+        # `catch {}`로 삼켰는데, 없는 속성인 첫 줄이 던지는 바람에 출력·오류 인코딩까지 통째로
+        # 건너뛰었다. stdin은 콘솔/ANSI 기본값(한글 Windows에서 CP949)으로 열렸고, 조사 프롬프트
+        # 첫 글자가 한글이라 처리기가 매번 `input is not valid UTF-8 (invalid byte at offset 0)`으로
+        # 즉시 죽었다. 세 번의 시도가 전부 같은 이유로 실패했고 requeue도 같은 결과였다 (ISS-000232).
+        #
+        # stdin은 속성에 기대지 않고 `BaseStream`에 UTF-8 바이트를 직접 쓴다(아래 참조) — StreamWriter의
+        # 인코딩을 아예 우회하므로 .NET Framework와 .NET Core 양쪽에서 같게 동작한다. 출력·오류는
+        # 각각 따로 설정해 한쪽 실패가 다른 쪽을 끌고 내려가지 않게 하고, 실패하면 조용히 넘기지 않고 남긴다.
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        try { $startInfo.StandardOutputEncoding = $utf8NoBom } catch { Write-Log ('processor stdout encoding not set: ' + $_.Exception.Message) }
+        try { $startInfo.StandardErrorEncoding = $utf8NoBom } catch { Write-Log ('processor stderr encoding not set: ' + $_.Exception.Message) }
         $processor = New-Object System.Diagnostics.Process
         $processor.StartInfo = $startInfo
         if (-not $processor.Start()) { throw 'processor did not start' }
@@ -1998,7 +2005,11 @@ function Invoke-BoundedDeepProcessor($targeted, $procLog, $timeoutSeconds = $Dee
         $processJob.Assign($processor)
         $stdoutTask = $processor.StandardOutput.ReadToEndAsync()
         $stderrTask = $processor.StandardError.ReadToEndAsync()
-        $processor.StandardInput.Write([string]$targeted)
+        # 프롬프트는 UTF-8 바이트로 직접 쓴다. `StandardInput.Write`는 StreamWriter의 인코딩을 타고,
+        # 그 인코딩은 이 런타임에서 우리가 정할 수 없다 (위 주석).
+        $promptBytes = [System.Text.Encoding]::UTF8.GetBytes([string]$targeted)
+        $processor.StandardInput.BaseStream.Write($promptBytes, 0, $promptBytes.Length)
+        $processor.StandardInput.BaseStream.Flush()
         $processor.StandardInput.Close()
         if (-not $processor.WaitForExit([math]::Max(1, [int]($timeoutSeconds * 1000)))) {
             $timedOut = $true
