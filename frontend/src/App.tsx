@@ -138,6 +138,10 @@ import { applyTheme, resolveTheme, systemPrefersDark, THEME_CHOICES, watchSystem
 import { holdSafeAreaInset } from './services/viewport-shell';
 import { apiRejectionMessage, canEditApiEndpoint } from './services/api-origin';
 import { scrubCredentialParams } from './services/url-credentials';
+/* PC 진입에서 껍데기가 통째로 잠기던 결함을 고친 자리 (TSK-000545 / INT-000030 / DEC-000105).
+   판정은 `bootstrap-gate.ts`가 갖고, 여기서는 그 결론을 그리기만 한다. */
+import { evaluateBootstrap, researchSurfaceVisible, resolveConnectionState } from './services/bootstrap-gate';
+import { ConnectionSetupCard } from './components/ConnectionSetupCard';
 
 setupIonicReact({ mode: 'ios' });
 
@@ -377,10 +381,16 @@ function App() {
   const [sendingId, setSendingId] = useState<string | null>(null);
   // owner 게이트는 legacy처럼 localStorage 캐시로 시작해 서버 응답으로 갱신한다 — 오프라인에도 유지.
   const [ownerCanSeeAll, setOwnerCanSeeAll] = useState(() => loadOwnerFlags().seeAll);
-  const [researchInstructionEnabled, setResearchInstructionEnabled] = useState(() => {
-    const flags = loadOwnerFlags();
-    return flags.seeAll && flags.researchInstructionEnabled;
-  });
+  /* `AI 조사 요청` 작성 자리를 그릴 것인가 (TSK-000545).
+     예전 초기값은 `flags.seeAll && flags.researchInstructionEnabled` 하나였는데, 그 두 값은
+     서버 목록 응답에서만 채워지고 목록 조회는 연결이 없으면 시작조차 하지 않는다. 그래서
+     개인 링크 없이 PC로 들어온 첫 화면에서는 **영원히 false**였고, 화면은 서버가 한 번도
+     하지 않은 대답을 `아니오`로 읽어 작성 자리를 DOM에서 통째로 지웠다 (founder 보고
+     2026-08-04: "AI 조사 요청이라든가 그런 게 캡처 화면에 보이지 않아").
+     이제 그 판정은 `researchSurfaceVisible`가 소유한다 — 연결된 뒤의 규칙은 예전 그대로다. */
+  const [researchInstructionEnabled, setResearchInstructionEnabled] = useState(
+    () => researchSurfaceVisible(loadOwnerFlags(), resolveConnectionState(boot.config)),
+  );
   // 화면이 서버에 요청하는 총 건수. `더 보기`를 누를 때마다 커지고 상한이 없다 —
   // 서버 한 페이지(100건) 안에서만 움직이면 101번째부터는 앱에서 존재하지 않는 것이 된다 (FI-100).
   const listWantedRef = useRef(LIST_PAGE_STEP);
@@ -468,6 +478,18 @@ function App() {
   const refreshCallbackSession = refreshSessionRef.current;
 
   const configured = Boolean(config.apiUrl && config.token);
+  /* 연결 상태를 boolean 하나가 아니라 **이름 있는 상태**로 읽는다 (TSK-000545).
+     `configured`는 "서버에 물어볼 수 있는가"만 뜻하게 두고, "화면이 무엇을 그릴 것인가"는
+     아래 `bootstrap`이 기능별로 판정한다. 두 질문을 한 boolean에 합쳐 두었던 것이
+     PC 첫 진입에서 멀쩡한 기능까지 잠근 원인이다. */
+  const connectionState = useMemo(() => resolveConnectionState(config), [config]);
+  // 설정을 열었다가 연결하지 않고 나온 경우. 취소해도 제한은 그대로이고 안내 문구만 부드러워진다.
+  const setupVisitedRef = useRef(false);
+  const [setupCancelled, setSetupCancelled] = useState(false);
+  const bootstrap = useMemo(
+    () => evaluateBootstrap({ connection: connectionState, setupCancelled }),
+    [connectionState, setupCancelled],
+  );
   const refreshIntervalMs = useMemo(() => refreshCadenceMs(briefs), [briefs]);
 
   // 자동 trigger끼리는 같은 요청을 공유한다. 반면 사용자의 확인이나 새 작업 직후 trigger가 이미
@@ -725,6 +747,29 @@ function App() {
     if (!config.capturer) setNameOnboardOpen(true);
   }, [config.capturer]);
 
+  /* 연결 상태가 바뀌면 조사 작성 자리의 판정을 다시 만든다 (TSK-000545).
+     연결을 새로 맺으면 그 subject에 대해 **이미 증명된 값**으로 곧바로 돌아가고(서버 응답이
+     오면 `refresh`가 다시 덮는다), 연결을 해제하면 대답 없는 상태로 돌아간다.
+     초기값과 같은 규칙 하나만 쓰므로 두 자리가 갈라질 수 없다. */
+  useEffect(() => {
+    setResearchInstructionEnabled(researchSurfaceVisible(loadOwnerFlags(), connectionState));
+  }, [connectionState]);
+
+  /* 연결 설정을 열었다가 그냥 나왔는가. 취소를 벌하지 않는다 — 제한은 그대로이고
+     안내 문구만 "다시 열 수 있어요"로 바뀐다. 연결이 완성되면 이 기억은 사라진다. */
+  useEffect(() => {
+    if (tab === 'settings') {
+      setupVisitedRef.current = true;
+      return;
+    }
+    if (connectionState === 'configured') {
+      setupVisitedRef.current = false;
+      setSetupCancelled(false);
+      return;
+    }
+    if (setupVisitedRef.current) setSetupCancelled(true);
+  }, [connectionState, tab]);
+
   // 고른 테마를 문서에 적용하고, `시스템`을 고른 사람은 폰 설정 변경을 그대로 따라간다.
   useEffect(() => {
     applyTheme(resolveTheme(theme, osPrefersDark));
@@ -866,11 +911,17 @@ function App() {
           : feed.length > 0 ? `기록 ${feed.length}건 · ${autoRefreshHint}`
             : '첫 명함을 기다리고 있어요';
 
-  const setupBannerMessage = !config.apiUrl
-    ? '연결할 서버 주소가 없어요 — 받으신 개인 링크로 접속하거나 설정의 고급 항목에서 주소를 넣어주세요.'
-    : !config.token
-      ? '받으신 개인 링크(?k=토큰 포함)로 접속해 주세요. 토큰이 없으면 업로드가 거부됩니다.'
-      : '';
+  /* 연결 안내 (TSK-000545 / DEC-000105).
+     예전에는 화면 맨 위에 `role="alert"` 전면 경고(`링크 설정이 필요해요`)가 떴다. 그 경고는
+     낭독기를 가로채고, 무엇이 막혔는지 말하지 않았고, 누를 것이 하나도 없었으며, 무엇보다
+     **멀쩡히 되는 일 위에** 떠서 앱 전체가 고장 난 것처럼 보이게 했다(founder 2026-08-04:
+     "일단 들어가면은 링크 설정이 필요해요라고 위에 경고문이 뜨고"). 이제 안내는 실제로 막힌
+     기능(서버 전송) 옆에 inline card 한 장으로 붙고, 손잡이는 앱 안의 연결 설정 하나다 —
+     URL로 코드를 받아 오는 지름길은 만들지 않는다. */
+  const connectionSetup = bootstrap.setup;
+  const renderConnectionSetup = (anchorLabel: string) => connectionSetup && (
+    <ConnectionSetupCard prompt={connectionSetup} anchorLabel={anchorLabel} onAction={() => setTab('settings')} />
+  );
 
   /**
    * 본문 일치의 근거를 뒤늦게 채운다 (FI-104). 결과는 이미 화면에 있고, 근거만 뒤따라온다.
@@ -1686,13 +1737,6 @@ function App() {
         };
     return (
       <div className="cc-stack">
-        {setupBannerMessage && (
-          <section className="setup-banner" role="alert">
-            <strong>링크 설정이 필요해요</strong>
-            <p>{setupBannerMessage}</p>
-          </section>
-        )}
-
         <section className="surface-card capture-card">
           <div className="capture-head">
             <span className="capture-kicker">빠른 등록</span>
@@ -1857,6 +1901,9 @@ function App() {
           {sendingId && <span className="sending-note" role="status">{sendingName || '명함'} 전송 중…</span>}
           <span className="refresh-hint" role="status">{autoRefreshHint}</span>
         </div>
+        {/* 연결 안내는 실제로 막힌 것(서버 전송) 옆에 붙는다. 위 촬영 카드는 연결 없이도
+            전부 동작하므로 그 위에는 아무것도 얹지 않는다. */}
+        {renderConnectionSetup('명함 기록')}
         {!recordsCollapsed && <div className="records-feed">{renderFeedBody()}</div>}
       </div>
     );
@@ -1865,7 +1912,10 @@ function App() {
   function renderActivity() {
     return (
       <div className="cc-stack">
-        {!configured && <EmptyState title="연결 설정이 필요해요" body="받으신 개인 링크(?k=토큰 포함)로 접속하면 같은 진행 상태를 읽습니다." action="설정 열기" onAction={() => setTab('settings')} />}
+        {/* 예전에는 `연결 설정이 필요해요` 빈 상태가 진행 화면 맨 위를 차지했다. 그런데 이 화면의
+            아래 절반(이 기기의 대기열·캐시된 기록)은 연결 없이도 그대로 산다 — 그래서 안내는
+            `EmptyState`가 아니라 막힌 것 옆의 inline card다 (TSK-000545). */}
+        {renderConnectionSetup('진행')}
         {/* `복구 필요` 알림을 눌러 들어온 자리. 무엇이 멈췄는지가 아니라 **무엇이 안전한지**를 먼저
             말한다 — 사용자가 알림을 받고 가장 먼저 걱정하는 것은 사진이 날아갔는가다.
             watcher 내부 어휘(`quarantine` 등)는 화면에 절대 나오지 않는다 (ISS-000045). */}
