@@ -24,6 +24,7 @@ import { version as APP_VERSION } from '../package.json';
 import type { BriefItem, CaptureQueueItem, PersonTarget, QuickName, RuntimeConfig, SearchItem } from './contracts/capture';
 import { CameraCaptureModal, type CapturedSideMeta, type CardSide } from './components/CameraPreviewModal';
 import { ManualPersonEntry } from './components/ManualPersonSheet';
+import { loadManualDraft } from './services/manual-person';
 import { RecoveryNotice } from './components/RecoveryNotice';
 import { StatusBadge } from './components/StatusBadge';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -31,6 +32,12 @@ import { MarkdownLite } from './components/MarkdownLite';
 import { ActionSection, ContactActions, PersonDocument } from './components/PersonDocument';
 import { AiScopeNote, AiStageRail, AiSurface, AiSurfaceHead } from './components/AiTaskSurface';
 import { focusCaptureProgress, ResearchComposer, type ResearchReceipt } from './components/ResearchComposer';
+// 아래 둘은 `int30-capture.css`를 함께 들여온다. `app.css`의 만남 맥락 규칙을 되받아야 하므로
+// 이 import가 `int29-*` 뒤에 와야 한다 — 순서가 곧 cascade다 (TSK-000220).
+import { CaptureEntry } from './components/CaptureEntry';
+import { AuthoringField } from './components/AuthoringField';
+import type { CaptureMethodCard } from './contracts/int30';
+import { CONTEXT_EXAMPLE_LABEL, contextWeight } from './services/capture-entry';
 import { addPersonNote, fetchServerCaptureIds, listBriefsUpTo, loadPersonDocument, requeueCapture, requestCorrection, searchPeople, submitResearchInstruction, uploadCapture } from './services/api';
 import {
   contentEvidence,
@@ -453,6 +460,11 @@ function App() {
   const [researchDepth, setResearchDepth] = useState<ResearchDepth>(DEFAULT_RESEARCH_DEPTH);
   const [contextCollapsed, setContextCollapsed] = useState(() => loadSectionCollapsed('context', false));
   const [queueing, setQueueing] = useState(false);
+  // 직접 입력 시트의 열림은 이제 진입 카드가 소유한다 (TSK-000220). 카드가 `CaptureEntry`로
+  // 옮겨 갔기 때문이다 — 두 입구를 서로 다른 파일이 각자 그리던 것이 통일감이 깨진 원인이었다.
+  const [manualOpen, setManualOpen] = useState(false);
+  // 쓰다 만 초안이 있는가. 시트를 닫는 순간 다시 읽는다(시트 안에서만 바뀌는 값이다).
+  const [manualDraftText, setManualDraftText] = useState(() => loadManualDraft()?.text.trim() ?? '');
   // 자동 새로고침 안내용: 마지막 갱신 시각과 현재 시각(1초 tick).
   const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
   const [clockTick, setClockTick] = useState(() => Date.now());
@@ -841,7 +853,25 @@ function App() {
   const contextValue = useMemo(() => ({ event, relKairen, relSelf, memo }), [event, memo, relKairen, relSelf]);
   const contextSummary = useMemo(() => captureContextSummary(contextValue), [contextValue]);
   const contextFilled = useMemo(() => captureContextFilled(contextValue), [contextValue]);
+  const contextRail = useMemo(() => contextWeight(contextFilled), [contextFilled]);
   const eventChips = useMemo(() => buildEventChips(event), [event]);
+
+  /**
+   * 사람을 등록하는 입구들 (TSK-000220 / 이음매: `contracts/int30.ts`).
+   *
+   * **임시 자리다.** 기기가 무엇을 할 수 있는지는 `services/device-capability.ts`(TSK-000545)가
+   * 판정하고, 통합 시 이 배열이 그 생산자로 교체된다. 지금은 예전과 똑같이 두 입구가 늘 열려
+   * 있도록 두어 동작이 달라지지 않게 한다 — 이 lane이 바꾸는 것은 **모양**이지 가용성이 아니다.
+   */
+  const captureMethods = useMemo<CaptureMethodCard[]>(() => [
+    { id: 'camera', title: '명함 앞면 촬영', description: '찍으면 정리·브리핑까지 이어져요', available: true },
+    { id: 'manual', title: '직접 입력', description: '명함이 없어도 기억으로 등록해요', available: true },
+  ], []);
+
+  const captureMethodStatus = useMemo(
+    () => (manualDraftText ? { manual: '이어서 쓰기' } : {}),
+    [manualDraftText],
+  );
 
   // 방금 저장한 촬영 (FI-049). 다음 장을 찍기 시작하면 내려간다 — 되돌리기가 촬영 중인
   // 초안과 다투면 안 되고, 카메라가 열려 있는 동안 화면을 바꿔치기해서도 안 된다.
@@ -1798,26 +1828,40 @@ function App() {
               <img src={frontFrame.dataUrl} alt="앞면 미리보기" />
             </button>
           ) : (
-            <div className="primary-entries">
-              <button className="shot-main" type="button" onClick={() => setCameraSession({ side: 'front', withChoice: true })}>
-                <span className="shot-icon" aria-hidden="true"><Camera size={24} /></span>
-                <span>명함 앞면 촬영</span>
-              </button>
-              <ManualPersonEntry
-                configured={configured}
-                context={{ event, relKairen, relSelf }}
-                queue={queue}
-                onQueued={(item) => {
-                  setQueue((current) => [item, ...current].sort((a, b) => b.captureId.localeCompare(a.captureId)));
-                  // 기기 저장이 확인된 시점의 사실만 말한다. 서버 접수는 아직 일어나지 않았다 (FI-031).
-                  setMessage(configured
-                    ? '직접 입력을 이 폰에 저장했어요 — 전송은 알아서 이어갑니다.'
-                    : '직접 입력을 이 폰에 저장했어요 — 연결되면 자동으로 전송합니다.');
-                  if (configured) void flushPendingQueue();
-                }}
-              />
-            </div>
+            /* 두 카드를 이제 한 컴포넌트가 그린다 (TSK-000220). 예전에는 촬영 버튼은 여기서,
+               직접 입력 버튼은 `ManualPersonSheet`에서 각자 그려졌고 안쪽 구조가 서로 달랐다 —
+               founder가 본 "하나는 설명이 있고 하나는 없고"가 정확히 그 결과였다. */
+            <CaptureEntry
+              methods={captureMethods}
+              status={captureMethodStatus}
+              onSelect={(id) => {
+                if (id === 'manual') { setManualOpen(true); return; }
+                setCameraSession({ side: 'front', withChoice: true });
+              }}
+            />
           )}
+
+          {/* 시트는 진입 카드와 분리됐다. 카드가 열고, 여기서는 시트만 산다. */}
+          <ManualPersonEntry
+            configured={configured}
+            context={{ event, relKairen, relSelf }}
+            queue={queue}
+            open={manualOpen}
+            onOpenChange={(next) => {
+              setManualOpen(next);
+              // 닫히는 순간 초안을 다시 읽는다 — 초안은 시트 안에서만 바뀐다.
+              if (!next) setManualDraftText(loadManualDraft()?.text.trim() ?? '');
+            }}
+            onQueued={(item) => {
+              setQueue((current) => [item, ...current].sort((a, b) => b.captureId.localeCompare(a.captureId)));
+              setManualDraftText('');
+              // 기기 저장이 확인된 시점의 사실만 말한다. 서버 접수는 아직 일어나지 않았다 (FI-031).
+              setMessage(configured
+                ? '직접 입력을 이 폰에 저장했어요 — 전송은 알아서 이어갑니다.'
+                : '직접 입력을 이 폰에 저장했어요 — 연결되면 자동으로 전송합니다.');
+              if (configured) void flushPendingQueue();
+            }}
+          />
 
           {frontFrame && (
             <section className="quick-name-panel inline" aria-live="polite">
@@ -1852,6 +1896,12 @@ function App() {
                   <span className="context-mic"><Mic aria-hidden="true" size={11} />키보드 마이크로 말해도 돼요</span>
                 </span>
                 <small>{contextSummary || '나중에 이 사람을 떠올릴 단서예요'}</small>
+                {/* 채워질수록 켜지는 네 칸. 필수 표식도 오류색도 쓰지 않고 **진행**만 보여 준다
+                    (founder 요구: "설명보다 직관적으로"). 낭독기에는 옆의 `n개`가 같은 사실을
+                    이미 말하므로 여기서 한 번 더 읽지 않는다. */}
+                <span className="context-rail" aria-hidden="true">
+                  {contextRail.segments.map((on, index) => <i key={index} className={on ? 'on' : ''} />)}
+                </span>
               </span>
               {contextFilled > 0 && <span className="context-count">{contextFilled}개</span>}
               <ChevronRight className={contextCollapsed ? '' : 'expanded'} aria-hidden="true" size={16} />
@@ -1859,40 +1909,57 @@ function App() {
             {!contextCollapsed && (
               <div className="capture-context-fields plain">
                 <p className="context-note">만난 곳·관계·AI 조사 요청은 2시간 동안 그대로 남아요. 메모는 명함마다 새로 씁니다.</p>
-                {/* Ionic의 stacked label은 입력 박스와 같은 회색조라 "여기가 쓰는 칸"이 안 읽혔다.
-                    라벨을 밖으로 꺼내고 입력 박스에 흰 배경·테두리를 줘 글쓰기 칸임을 분명히 한다
-                    (founder 판정 2026-07-27: "글쓰기 박스인지 구별이 안돼는 등 총체적 난국"). */}
-                <div className="context-field">
-                  <span className="context-label">어디서 만났나요?</span>
+                {/* 네 칸 모두 같은 primitive(`AuthoringField`)를 쓴다 (TSK-000220). 라벨은 박스 밖,
+                    테두리·모서리·focus는 앱 전체가 공유하는 `--cc-field-*` token 한 벌이 정한다 —
+                    예전에는 이 화면과 직접 입력 시트와 AI 조사 요청이 각자 다른 테두리를 갖고 있었고
+                    대기열 편집은 아예 없었다 (founder 판정: "다른 곳의 작성하는 박스 테두리와
+                    통일성도 없고"). 예시 chip은 그대로 두되 이름표를 붙여 한눈에 예시로 읽히게 한다. */}
+                <AuthoringField
+                  label="어디서 만났나요?"
+                  filled={Boolean(event.trim())}
+                  footer={(
+                    <div className="context-chips" role="group" aria-label="만난 상황 예시">
+                      <span className="context-chips-label">{CONTEXT_EXAMPLE_LABEL}</span>
+                      {eventChips.map((chip) => (
+                        <button key={chip} type="button" className={event === chip ? 'on' : ''} onClick={() => setEvent(toggleChipValue(event, chip))}>{chip}</button>
+                      ))}
+                    </div>
+                  )}
+                >
                   <IonInput aria-label="어디서 만났나요?" placeholder="예: 2026 스마트팩토리전 부스" value={event} onIonInput={(inputEvent) => setEvent(String(inputEvent.detail.value ?? ''))} />
-                  <div className="context-chips" role="group" aria-label="만난 상황 예시">
-                    {eventChips.map((chip) => (
-                      <button key={chip} type="button" className={event === chip ? 'on' : ''} onClick={() => setEvent(toggleChipValue(event, chip))}>{chip}</button>
-                    ))}
-                  </div>
-                </div>
-                <div className="context-field">
-                  <span className="context-label">Kairen과의 관계</span>
+                </AuthoringField>
+                <AuthoringField
+                  label="Kairen과의 관계"
+                  filled={Boolean(relKairen.trim())}
+                  footer={(
+                    <div className="context-chips" role="group" aria-label="Kairen과의 관계 예시">
+                      <span className="context-chips-label">{CONTEXT_EXAMPLE_LABEL}</span>
+                      {KAIREN_RELATION_CHIPS.map((chip) => (
+                        <button key={chip} type="button" className={relKairen === chip ? 'on' : ''} onClick={() => setRelKairen(toggleChipValue(relKairen, chip))}>{chip}</button>
+                      ))}
+                    </div>
+                  )}
+                >
                   <IonInput aria-label="Kairen과의 관계" placeholder="예: 부품 공급사 담당자" value={relKairen} onIonInput={(inputEvent) => setRelKairen(String(inputEvent.detail.value ?? ''))} />
-                  <div className="context-chips" role="group" aria-label="Kairen과의 관계 예시">
-                    {KAIREN_RELATION_CHIPS.map((chip) => (
-                      <button key={chip} type="button" className={relKairen === chip ? 'on' : ''} onClick={() => setRelKairen(toggleChipValue(relKairen, chip))}>{chip}</button>
-                    ))}
-                  </div>
-                </div>
-                <div className="context-field">
-                  <span className="context-label">나와의 관계</span>
+                </AuthoringField>
+                <AuthoringField
+                  label="나와의 관계"
+                  filled={Boolean(relSelf.trim())}
+                  footer={(
+                    <div className="context-chips" role="group" aria-label="나와의 관계 예시">
+                      <span className="context-chips-label">{CONTEXT_EXAMPLE_LABEL}</span>
+                      {SELF_RELATION_CHIPS.map((chip) => (
+                        <button key={chip} type="button" className={relSelf === chip ? 'on' : ''} onClick={() => setRelSelf(toggleChipValue(relSelf, chip))}>{chip}</button>
+                      ))}
+                    </div>
+                  )}
+                >
                   <IonInput aria-label="나와의 관계" placeholder="예: 대학 선배" value={relSelf} onIonInput={(inputEvent) => setRelSelf(String(inputEvent.detail.value ?? ''))} />
-                  <div className="context-chips" role="group" aria-label="나와의 관계 예시">
-                    {SELF_RELATION_CHIPS.map((chip) => (
-                      <button key={chip} type="button" className={relSelf === chip ? 'on' : ''} onClick={() => setRelSelf(toggleChipValue(relSelf, chip))}>{chip}</button>
-                    ))}
-                  </div>
-                </div>
-                <div className="context-field">
-                  <span className="context-label">메모</span>
+                </AuthoringField>
+                {/* 메모만 넓은 칸이다. 높이가 곧 "여기에 얼마나 적어도 되는가"라는 초대다. */}
+                <AuthoringField className="cc-field--block" label="메모" filled={Boolean(memo.trim())}>
                   <IonTextarea aria-label="메모" placeholder="예: 공장장님, 우리 부품에 관심 많으심" autoGrow value={memo} onIonInput={(inputEvent) => setMemo(String(inputEvent.detail.value ?? ''))} />
-                </div>
+                </AuthoringField>
               </div>
             )}
           </section>
