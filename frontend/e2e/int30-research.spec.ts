@@ -442,7 +442,13 @@ test('서버가 아직 대답하지 않은 첫 프레임에서 세 깊이가 모
     ]);
 
     // 2. 그동안 목록 응답은 **아직 도착하지 않았다**. 이 사실이 없으면 위 판정은 아무것도 증명하지 못한다.
-    expect(listRequests, '목록 요청이 시작조차 안 됐다 — 검사가 다른 구간을 보고 있다').toBeGreaterThan(0);
+    //    요청이 떴는지를 한 번만 읽으면 안 된다 — 앱이 composer를 먼저 그리고 요청을 나중에
+    //    보내는 순서라, 느린 기계에서는 이 줄에 닿는 순간 아직 0이다(CI에서 실제로 걸렸다).
+    //    응답은 route handler가 붙잡고 있으니 기다려도 도착하지 않는다. 끝내 안 뜨면 이
+    //    기다림이 timeout으로 걸리므로 판정은 약해지지 않는다.
+    await expect
+      .poll(() => listRequests, { timeout: 10_000 })
+      .toBeGreaterThan(0);
     expect(held.length, '목록 응답이 이미 도착했다 — 결함이 살던 구간을 못 봤다').toBeGreaterThan(0);
 
     // 3. 실제로 고를 수 있고, 고른 것이 남는다.
