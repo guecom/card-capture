@@ -10,6 +10,7 @@ import type {
   SearchResponse,
   UploadPayload,
 } from '../contracts/capture';
+import type { ResearchDepth } from '../contracts/int30';
 
 function normalizedBase(apiUrl: string): string {
   const trimmed = apiUrl.trim();
@@ -261,8 +262,14 @@ export function addPersonNote(config: RuntimeConfig, target: PersonTarget, text:
   return postAction(config, { action: 'addnote', ...target, text: text.trim().slice(0, 2000) });
 }
 
-export function submitResearchInstruction(config: RuntimeConfig, target: PersonTarget, text: string): Promise<ActionResponse> {
-  return postAction(config, { action: 'researchinstruction', ...target, text: text.trim().slice(0, 2000) });
+/**
+ * 조사 요청을 접수한다. `depth`는 사용자가 고른 **결과·기다림의 깊이**이며 요청에 실려 나간다
+ * (TSK-000542). 어느 내부 자리로 갈지는 클라이언트가 정하지 않고 보내지도 않는다 —
+ * 그 판정은 `services/research-mode.ts`의 버전 붙은 설정이 소유한다.
+ * 값이 없으면 서버는 기본 깊이로 읽는다(이 필드가 생기기 전 요청이 그렇다).
+ */
+export function submitResearchInstruction(config: RuntimeConfig, target: PersonTarget, text: string, depth?: ResearchDepth): Promise<ActionResponse> {
+  return postAction(config, { action: 'researchinstruction', ...target, text: text.trim().slice(0, 2000), ...(depth ? { depth } : {}) });
 }
 
 export function requestCorrection(config: RuntimeConfig, captureId: string, text: string): Promise<ActionResponse> {
