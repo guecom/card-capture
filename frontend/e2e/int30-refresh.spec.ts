@@ -738,9 +738,14 @@ test('자동 박자는 회전도 `갱신 중`도 만들지 않는다 — 진행�
        빨개지지는 않지만 아무것도 재지 못하는 상태다. 놓을 때까지 붙잡아 그 구멍을 막는다. */
     harness.holdList(true);
     const before = harness.listRequests;
+    /* 양성 증거: 창을 연 **뒤에** 새 자동 요청이 하나 떠야 한다. 없으면 아래 "안 돈다"는 빈 단언이다.
+       기다리는 대상이 `listInFlight > 0`이면 안 된다 — 창을 열기 **전부터** 떠 있던 요청이 그
+       조건을 그대로 채우고, 그때 `listRequests`는 `before`와 같아 다음 줄이 "자동 폴링이 한 번도
+       일어나지 않았다"로 빨개진다. 느린 기계일수록 창을 여는 순간 이미 요청이 떠 있을 확률이
+       높아 CI에서만 걸렸다 (2026-08-05 CI 실측). 같은 파일의 다른 시험들은 이미 이 형태다. */
+    await expect.poll(() => harness.listRequests, { timeout: 12_000 }).toBeGreaterThan(before);
+    // 붙잡고 있으므로 그 새 요청은 지금도 떠 있다.
     await expect.poll(() => harness.listInFlight, { timeout: 12_000 }).toBeGreaterThan(0);
-    // 양성 증거: 정말로 자동 요청이 떠 있다. 없으면 아래 "안 돈다"는 빈 단언이 된다.
-    expect(harness.listRequests, '관측 창에서 자동 폴링이 한 번도 일어나지 않았다').toBeGreaterThan(before);
 
     const seen = await page.evaluate(() => ({
       busy: document.querySelector('.int30-refresh-now')?.getAttribute('aria-busy') ?? '',
