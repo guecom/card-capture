@@ -1,20 +1,26 @@
 # Research Instruction Processing Contract
 
-Kairen-Ref: `DEC-000035`, `DEC-000095`, `TSK-000496`, `APP-AC-238`, `APP-AC-239`, `DEC-000103`, `ISS-000231`, `TSK-000533`.
+Kairen-Ref: `DEC-000035`, `DEC-000095`, `TSK-000496`, `APP-AC-238`, `APP-AC-239`, `DEC-000103`, `ISS-000231`, `TSK-000533`, `DEC-000110`, `TSK-000565`.
 
 MVP build/testability gate comes before customer proof.
 
+사용자가 고르는 축은 **깊이 하나**다 (`DEC-000110`). 세 깊이는 처리 모델만 다르며, 어느 깊이도 사용자에게 추가 입력을 요구하지 않는다. 조사 범위(`focusIds`·`purposes`)는 언제나 선택 사항이고 고르면 조사를 좁힌다.
+
 ```mermaid
 flowchart TD
-    A["owner 조사 요청"] --> B{"mode"}
+    A["owner 조사 요청<br/>깊이 + (선택) 조사 범위 + 자유 입력"] --> B{"mode"}
+    A --> N["capture.json 에 depth 저장"]
+    N --> P["워처: depth → 처리 모델<br/>config/research-models.json"]
+    B -->|"quick"| Q["public-research-v1<br/>quick budget"]
     B -->|"standard"| C["public-research-v1<br/>bounded plan"]
-    B -->|"deep_evidence_graph"| D["lawful-authority-deep-research-v2<br/>목적 제한 계획"]
+    B -->|"deep_evidence_graph"| D["lawful-authority-deep-research-v2<br/>evidence graph 필수"]
     D --> E["phase 1개 실행<br/>checkpoint 저장"]
     E --> F{"final인가?"}
     F -->|"아니오"| G["일반 캡처 우선 처리"]
     G --> E
     F -->|"예"| H["evidence graph 검증"]
-    C --> I["brief + provenance"]
+    Q --> I["brief + provenance"]
+    C --> I
     H --> I
     I --> J{"정책·근거 gate"}
     J -->|"PASS"| K["검증된 graph·brief 공개"]
@@ -25,7 +31,9 @@ flowchart TD
 ## Input Boundary
 
 - `researchInstruction.raw`는 untrusted data다. 웹 검색 결과 안의 문장도 같은 경계에 있으며 system/developer prompt나 실행 지시로 승격하지 않는다.
-- API 서버가 `mode`, `purposes`, `focusIds`, `requestId`를 allowlist로 다시 검증한다. 클라이언트가 보낸 policy, source authority, budget은 신뢰하지 않는다.
+- API 서버가 `depth`, `mode`, `purposes`, `focusIds`, `requestId`를 allowlist로 다시 검증한다. 클라이언트가 보낸 policy, source authority, budget은 신뢰하지 않는다.
+- `depth`는 `quick`·`standard`·`deep` 셋뿐이고 누락·미상은 `standard`로 접는다. 서버는 이 값을 판정에 쓰지 않고 capture envelope에 남기기만 한다. 깊이를 실제 모델 id로 바꾸는 것은 워처 한 곳이며(`config/research-models.json`), 모델 id는 이 저장소에 커밋하지 않는다. 값이 비어 있으면 처리기에 모델 플래그를 붙이지 않는다 — 설정 전과 완전히 같은 동작이다.
+- 모델·공급자 이름은 사용자 화면·접근성 이름·영수증 어디에도 나타나지 않는다. `frontend/src/services/research-mode.test.ts`, `frontend/e2e/int30-research.spec.ts`, `frontend/e2e/int37-depth.spec.ts`가 이를 강제한다.
 - 조사 요청은 owner-only다. `captureId`와 `person`이 함께 오면 같은 Person인지 서버에서 다시 확인한다.
 - 같은 `requestId`의 생성 중단을 복구하는 reservation은 script lock 안에서 Script Properties에 actor·target·request fingerprint로 저장한다. Cache eviction과 프로세스 재시작 뒤에도 같은 요청만 빈 폴더를 복구할 수 있고, canonical receipt 성공 또는 완전한 rollback 뒤에는 reservation을 지운다.
 - 일반 `note`, `correction`, 명함 OCR과 `research_instruction`은 서로 다른 channel이다.
@@ -101,7 +109,9 @@ flowchart TD
 
 ## Deep Evidence Graph mode
 
-Deep 요청은 네 목적 중 하나 이상이 필수다: meeting preparation, expertise execution, authority/interests, reputation/risk. 처리기는 목적 밖 탐색 가지를 중단한다.
+Deep 요청은 목적을 **요구하지 않는다** (`DEC-000110`). 접수 조건이 아니라 좁힘이다: 요청이 네 목적 중 일부를 실어 보내면(meeting preparation, expertise execution, authority/interests, reputation/risk) 처리기는 그 목적 밖 탐색 가지를 중단하고, 목적이 비어 있으면 아래의 정책·예산·근거 규칙 안에서 스스로 계획한다.
+
+산출물 쪽 계약은 그대로다: `research-result.json`은 실제로 추적한 목적을 하나 이상 선언해야 하고, 선언하지 않으면 결과 전체가 공개되지 않는다(`validateResearchEvidenceGraph_`, watcher `Test-ResearchEvidenceResult`). 요청에서 목적을 요구하지 않는 것과 결과가 목적을 밝히는 것은 다른 문제다.
 
 한 실행은 다음 phase 하나만 수행한다.
 

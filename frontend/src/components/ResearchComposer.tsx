@@ -124,26 +124,23 @@ const IDLE: ResearchReceipt = { state: 'idle' };
  * **다음 키 입력으로 할 수 있는 것이 없다** — 낭독기 사용자는 이유를 듣고 나서 다시 손으로
  * 조작을 찾아 돌아가야 한다. 막다른 곳으로 데려다 놓는 것은 응답이 아니다.
  *
- * ── 이유마다 갈 곳이 다르다
- * 막힌 이유가 무엇이냐에 따라 사용자가 **실제로 풀 수 있는 자리**가 다르다. 한 곳으로 몰아
- * 보내면 그중 하나는 반드시 거짓말이 된다:
- *   `deep_requires_scope` → 조사 범위 영역. 범위를 고르면 그 자리에서 풀린다.
- *   `deep_unavailable`    → 깊이 칸. 범위를 아무리 골라도 풀리지 않는다. 서버가 닫아 둔
- *                           것이므로 여기서 할 수 있는 일은 다른 깊이를 고르는 것뿐이다.
- * 어느 쪽이든 안내 문단은 그대로 보이고 `aria-describedby`로 이어져 있어서, 포커스가 닿는
- * 순간 이유가 함께 읽힌다.
+ * ── 갈 곳은 **막힘을 실제로 푸는 손잡이**다
+ * 지금 남은 막힘은 하나뿐이다 (DEC-000110):
+ *   `deep_unavailable` → 깊이 칸. 서버가 깊은 조사를 닫아 둔 상태이므로, 범위를 아무리 골라도
+ *                        풀리지 않는다. 여기서 할 수 있는 일은 다른 깊이를 고르는 것뿐이다.
+ * (예전에는 `deep_requires_scope`가 하나 더 있었고 그때는 조사 범위 영역으로 보냈다. 그 조건은
+ *  사라졌다 — 깊이를 고르는 것만으로 사용자에게 숙제를 만들지 않는다.)
+ * 안내 문단은 그대로 보이고 `aria-describedby`로 이어져 있어서, 포커스가 닿는 순간 이유가
+ * 함께 읽힌다.
  */
 export function focusResearchNotice(noticeId: string): boolean {
   if (!noticeId || typeof document === 'undefined') return false;
   const notice = document.getElementById(noticeId);
   if (!notice) return false;
   const surface = notice.closest('.research-request');
-  const block = notice.getAttribute('data-block');
-  /* 닫힘일 때는 **고른 깊이 칸**으로 간다. 진짜 라디오라 그 자리에서 화살표로 다른 깊이를
+  /* **고른 깊이 칸**으로 간다. 진짜 라디오라 그 자리에서 화살표로 다른 깊이를
      고를 수 있다 — 풀 수 있는 손잡이 위에 서게 된다. */
-  const target = block === 'deep_unavailable'
-    ? surface?.querySelector<HTMLElement>('.research-depth-option input[value="deep"]')
-    : surface?.querySelector<HTMLElement>('.research-scope-all');
+  const target = surface?.querySelector<HTMLElement>('.research-depth-option input[value="deep"]');
   /* 손잡이를 못 찾으면 안내 문단이라도 읽히게 한다 — 아무 일도 일어나지 않는 것보다 낫다. */
   const node = target ?? notice;
   if (!node.hasAttribute('tabindex') && node === notice) node.setAttribute('tabindex', '-1');
@@ -293,9 +290,11 @@ export function ResearchComposer({
           className="research-scope-all"
           type="button"
           aria-pressed={researchSelectAllPressed(draft.scopeKeys)}
-          /* 막혀 있을 때는 이 버튼이 그 상태를 푸는 가장 큰 길이다 — 개수뿐 아니라 **왜 필요한지**도
-             함께 읽히게 잇는다. 여기는 진짜 `<button>`이라 `aria-describedby`가 그대로 닿는다. */
-          aria-describedby={gate.notice ? `${countId} ${blockId}` : countId}
+          /* 지금 개수만 잇는다. 예전에는 막힘 안내도 함께 이어 줬는데, 그때는 이 버튼이 막힘을
+             푸는 길이었기 때문이다(`deep_requires_scope`). 남은 막힘 하나(`deep_unavailable`)는
+             범위와 아무 상관이 없다 — 그것을 여기 이어 두면 "모두 선택"이 자기와 무관한 이유로
+             막힌 것처럼 읽힌다. */
+          aria-describedby={countId}
           disabled={busy}
           onClick={() => applyScopes(nextResearchScopeSelection(draft.scopeKeys))}
         >
@@ -440,16 +439,17 @@ export function ResearchComposer({
           : <p className="research-preview-empty">아직 고른 항목도, 적은 내용도 없어요. 위에서 항목을 고르거나 직접 적으면 보낼 문장이 여기 그대로 보입니다.</p>}
       </div>
 
-      {/* 접수 조건 안내 (계약: "깊은 조사는 목적을 하나 이상 골라야 접수된다").
+      {/* 접수 조건 안내. **지금 여기 뜨는 이유는 하나뿐이다** — 서버가 깊은 조사를 열어 두지
+          않았다고 말한 경우(`deep_unavailable`). 사용자가 고른 것 때문에 뜨는 조건은 없다
+          (DEC-000110: 깊이는 모델만 바꾼다).
           자리는 **제출 버튼 바로 위**다 — 제출은 이 컴포넌트 밖에 있고(촬영 탭의 `완료`,
           인물 시트의 `조사 요청 접수`), 눌러서 튕겨 나온 사람이 가장 먼저 보는 곳이 여기다.
-          실패가 아니라 **아직 남은 조건**이므로 `role="alert"`가 아니라 `role="status"`다.
-          막히기 전(범위 0개로 깊은 조사를 고른 직후)에도 같은 말을 미리 보여 준다 — 긴 글을
-          다 적은 뒤에 처음 알게 되면 늦다.
+          실패가 아니라 **지금의 사실**이므로 `role="alert"`가 아니라 `role="status"`다.
+          아직 아무것도 적지 않았을 때에도 같은 말을 미리 보여 준다 — 긴 글을 다 적은 뒤에
+          처음 알게 되면 늦다.
 
           `data-block`은 장식이 아니다. 막혔을 때 손이 어디로 가야 하는지를 이 값이 정한다
-          (`focusResearchNotice`) — 범위를 고르면 풀리는 막힘과, 깊이를 바꿔야 풀리는 막힘은
-          갈 곳이 다르다. 판정은 `evaluateResearchSubmit` 하나가 하고 이 자리는 그것을
+          (`focusResearchNotice`). 판정은 `evaluateResearchSubmit` 하나가 하고 이 자리는 그것을
           그대로 싣는다. */}
       {gate.notice && (
         <p

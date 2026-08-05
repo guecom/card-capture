@@ -174,6 +174,92 @@ T (@(Get-Content $LogFile | Where-Object { $_ -match 'processing loop done' }).C
 $h3 = Get-Content $HealthFile -Raw -Encoding UTF8 | ConvertFrom-Json
 T ($h3.backlogCount -eq 0) 'per-card: health backlog 0 after drain'
 
+# ---- 조사 깊이 → 처리 모델 (DEC-000110 / TSK-000565) ----
+#
+# founder: "빠른 조사, 일반 조사, 깊은 조사는 … 오직 모델만 차이가 있는 거야."
+# 그 말이 코드에서 참이 되는 마지막 한 칸이 여기다. 지금까지는 세 선택이 처리기에 도착할 때
+# 완전히 같은 값이었다 — 깊이가 무엇을 바꾸는 자리가 아예 없었다.
+#
+# 이 묶음이 잠그는 것 넷:
+#   1. 값이 비어 있으면 **아무것도 달라지지 않는다** (저장소에 커밋되는 상태가 정확히 그것이다).
+#   2. 값이 차 있으면 깊이마다 다른 자리로 간다. 모르는 깊이는 기본 자리를 쓴다.
+#   3. 설정 파일 한 줄이 처리기 명령줄에 임의의 플래그를 끼워 넣지 못한다.
+#   4. 깊이를 capture.json에서 실제로 읽는다 — 못 읽으면 위의 셋이 전부 헛돈다.
+Write-Host ''
+Write-Host '=== depth -> processing model ==='
+
+$modelConfig = Join-Path $sandbox 'research-models.json'
+$ResearchModelConfig = $modelConfig
+$script:ResearchModelWarned = @{}
+
+function Set-ModelConfig($quick, $standard, $deep, $version) {
+    if (-not $version) { $version = 'card-capture-research-models-v1' }
+    $json = @{ version = $version; models = @{ quick = $quick; standard = $standard; deep = $deep } } | ConvertTo-Json -Depth 4
+    [IO.File]::WriteAllText($modelConfig, $json, (New-Object Text.UTF8Encoding($false)))
+    $script:ResearchModelWarned = @{}
+}
+
+Remove-Item $modelConfig -ErrorAction SilentlyContinue
+T ((Resolve-ResearchModel 'deep') -eq '') 'model: 설정 파일이 없으면 아무 값도 고르지 않는다'
+
+Set-ModelConfig '' '' ''
+$resolvedEmpty = @('quick', 'standard', 'deep') | ForEach-Object { Resolve-ResearchModel $_ }
+T ((@($resolvedEmpty | Where-Object { $_ -ne '' })).Count -eq 0) 'model: 빈 값이면 세 깊이 모두 플래그가 없다'
+
+Set-ModelConfig 'model-q' 'model-s' 'model-d'
+T ((Resolve-ResearchModel 'quick') -eq 'model-q') 'model: 빠른 조사는 자기 자리로 간다'
+T ((Resolve-ResearchModel 'standard') -eq 'model-s') 'model: 일반 조사는 자기 자리로 간다'
+T ((Resolve-ResearchModel 'deep') -eq 'model-d') 'model: 깊은 조사는 자기 자리로 간다'
+T ((Resolve-ResearchModel 'turbo') -eq 'model-s') 'model: 모르는 깊이는 기본 자리를 쓴다'
+T ((Resolve-ResearchModel '') -eq 'model-s') 'model: 깊이가 없는 캡처는 기본 자리를 쓴다'
+T ((Resolve-ResearchModel $null) -eq 'model-s') 'model: 깊이가 null이어도 기본 자리를 쓴다'
+
+# 값 하나가 곧 자식 프로세스의 argv가 된다. 모양이 어긋나면 쓰지 않고, 나머지 자리는 그대로 산다.
+Set-ModelConfig '-rf --dangerous' 'ok-model' 'has space'
+T ((Resolve-ResearchModel 'quick') -eq '') 'model: 플래그처럼 생긴 값은 쓰지 않는다'
+T ((Resolve-ResearchModel 'deep') -eq '') 'model: 공백이 든 값은 쓰지 않는다'
+T ((Resolve-ResearchModel 'standard') -eq 'ok-model') 'model: 모양이 어긋난 값 하나가 나머지를 죽이지 않는다'
+
+Set-ModelConfig 'model-q' 'model-s' 'model-d' 'card-capture-research-models-v0'
+T ((Resolve-ResearchModel 'deep') -eq '') 'model: 모르는 설정 판은 쓰지 않는다'
+
+# 저장소에 커밋된 설정은 비어 있어야 한다 — 모델 id를 이 저장소에 넣지 않는다.
+$repoModelConfig = Join-Path (Split-Path -Parent $here) 'config\research-models.json'
+T (Test-Path $repoModelConfig) 'model: 저장소에 설정 파일이 있다'
+$repoModels = Get-Content $repoModelConfig -Raw -Encoding UTF8 | ConvertFrom-Json
+T ((@(@('quick', 'standard', 'deep') | Where-Object { ([string]$repoModels.models.$_).Trim() -ne '' })).Count -eq 0) `
+    'model: 커밋된 설정은 세 자리 모두 비어 있다 (모델 id를 커밋하지 않는다)'
+
+# 그리고 그 값이 실제로 처리기 명령줄에 붙는지 — 해석이 아니라 argv를 직접 본다.
+$argLog = Join-Path $sandbox 'model-args.txt'
+$argStub = Join-Path $sandbox 'codex-args.ps1'
+@"
+Add-Content -Path '$argLog' -Value ((`$args) -join '|')
+exit 0
+"@ | Out-File -Encoding utf8 $argStub
+$savedCodex = $Codex
+$Codex = $argStub
+Remove-Item $argLog -ErrorAction SilentlyContinue
+$null = Invoke-StandardProcessor 'TARGET-CAPTURE-ID: A0001' (Join-Path $sbLog 'model-none.log') ''
+$null = Invoke-StandardProcessor 'TARGET-CAPTURE-ID: A0001' (Join-Path $sbLog 'model-set.log') 'model-d'
+$argLines = @(Get-Content $argLog -ErrorAction SilentlyContinue)
+T ($argLines.Count -eq 2) 'model: 처리기 호출 두 번이 기록됐다'
+T ($argLines.Count -eq 2 -and $argLines[0] -notmatch '(^|\|)-m(\||$)') 'model: 값이 없으면 -m 이 아예 붙지 않는다'
+T ($argLines.Count -eq 2 -and $argLines[1] -match '(^|\|)-m\|model-d(\||$)') 'model: 값이 있으면 -m 과 값이 함께 붙는다'
+$Codex = $savedCodex
+
+# 깊이는 capture.json에서 읽힌다.
+$depthDir = New-Capture 'D0001-depth' 'received' $null $null
+$depthMeta = @{
+    captureId = 'D0001-depth'; status = 'received'; capturer = 'test'; type = 'research_instruction'
+    researchInstruction = @{ depth = 'deep'; mode = 'deep_evidence_graph'; raw = '합성 요청' }
+}
+($depthMeta | ConvertTo-Json -Depth 5) | Out-File -Encoding utf8 (Join-Path $depthDir 'capture.json')
+T ((Get-CaptureEligibility (Get-Item $depthDir)).depth -eq 'deep') 'model: capture.json의 깊이를 읽는다'
+$plainDir = New-Capture 'D0002-plain' 'received' $null $null
+T ((Get-CaptureEligibility (Get-Item $plainDir)).depth -eq '') 'model: 조사 요청이 아닌 캡처에는 깊이가 없다'
+Remove-Item $depthDir, $plainDir -Recurse -Force -ErrorAction SilentlyContinue
+
 # ---- summary + cleanup ----
 Write-Host ''
 Write-Host ("summary: pass=" + $pass + " fail=" + $fail)
