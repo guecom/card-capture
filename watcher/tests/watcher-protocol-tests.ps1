@@ -744,21 +744,83 @@ TB 'APP-AC-239 runtime: Deep slice process tree와 stream drain을 wall-clock �
     try {
         $CardCaptureWatcherTestMode = $false
         $Codex = 'powershell.exe'
+        $Vault = $sandbox
+
+        # 이 기계에서 프로세스 하나를 띄우고 거두는 데 드는 시간을 **같은 판에서** 먼저 잰다.
+        # 그것은 계약이 약속하는 것이 아니라 기계의 값이다. 빼지 않으면 이 게이트는 종료 지연이
+        # 아니라 프로세스 시작 시간을 재게 된다 — 2026-08-05 CI에서 `elapsed=9.25s`로 걸렸는데
+        # `exit=124 timedOut=True`였다. 종료는 제대로 됐고 기계가 느렸을 뿐이다.
+        $BoundedProcessorTestArguments = '-NoProfile -Command "exit 0"'
+        $DeepSliceTimeoutSeconds = 30
+        $spawnTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        [void](Invoke-BoundedDeepProcessor '합성 spawn 기준선' (Join-Path $sbLog 'spawn.log'))
+        $spawnTimer.Stop()
+        $spawnMs = $spawnTimer.Elapsed.TotalMilliseconds
+
         $BoundedProcessorTestArguments = '-NoProfile -Command "$child=Start-Process powershell.exe -ArgumentList ''-NoProfile'',''-Command'',''Start-Sleep -Seconds 8'' -PassThru -WindowStyle Hidden; Start-Sleep -Seconds 8"'
         $DeepSliceTimeoutSeconds = 1
-        $Vault = $sandbox
         $timer = [System.Diagnostics.Stopwatch]::StartNew()
         $bounded = Invoke-BoundedDeepProcessor '합성 timeout prompt' (Join-Path $sbLog 'timeout.log')
         $timer.Stop()
-        Write-Host ('  bounded timeout probe: exit=' + $bounded.exit + ' timedOut=' + $bounded.timedOut + ' elapsed=' + [math]::Round($timer.Elapsed.TotalSeconds, 2) + 's')
+
+        # 계약이 소유하는 상한 = 구현이 실제로 거는 bounded wait 들의 합이다. 발명한 숫자가 아니다:
+        #   cap `WaitForExit(timeout)` + kill ack `WaitForExit(2000)` + drain 2개 x `Wait(2000)`.
+        # 어느 하나라도 상한을 잃으면 이 합을 넘어 빨개진다 — 이 게이트가 지키는 것이 정확히 그것이다.
+        $ownedMs = ($DeepSliceTimeoutSeconds * 1000) + 2000 + 4000 + 500
+        $observedMs = $timer.Elapsed.TotalMilliseconds - $spawnMs
+        Write-Host ('  bounded timeout probe: exit=' + $bounded.exit + ' timedOut=' + $bounded.timedOut +
+            ' elapsed=' + [math]::Round($timer.Elapsed.TotalSeconds, 2) + 's spawnBaseline=' +
+            [math]::Round($spawnMs / 1000, 2) + 's owned=' + [math]::Round($observedMs / 1000, 2) + 's / 상한 ' +
+            [math]::Round($ownedMs / 1000, 2) + 's')
         Get-Content $LogFile -Tail 2 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('  log: ' + $_) }
-        return ($bounded.timedOut -and [int]$bounded.exit -eq 124 -and $timer.Elapsed.TotalSeconds -lt 5)
+        return ($bounded.timedOut -and [int]$bounded.exit -eq 124 -and $observedMs -lt $ownedMs)
     } finally {
         $CardCaptureWatcherTestMode = $oldMode
         $Codex = $oldCodex
         $DeepSliceTimeoutSeconds = $oldTimeout
         $Vault = $oldVault
         $BoundedProcessorTestArguments = $oldArguments
+    }
+}
+
+# 2026-08-05 CI에서 위 게이트가 한 판만 이렇게 실패했다 (같은 commit 재실행은 통과):
+#   bounded processor launch error: Exception calling "Assign" with "1" argument(s): "Access is denied"
+#   exit=-1 timedOut=False elapsed=14.44s
+# `AssignProcessToJobObject`는 **이미 죽은 프로세스**에 대해 ERROR_ACCESS_DENIED를 준다. 원인은
+# `New-DeepProcessTreeJob`이 첫 호출에서 `Add-Type`으로 C#을 컴파일하는데 그 호출이 `Start()`
+# **뒤에** 있었던 것 — 느린 기계에서 그 수 초 동안 8초짜리 자식이 먼저 죽었다.
+#
+# 컴파일은 창 밖으로 뺐지만 창 자체는 남는다. 그래서 남은 창에서 프로세스가 죽는 경우를
+# 여기서 못 박는다: **담을 프로세스가 없는 것은 봉쇄 실패가 아니다.** 이 게이트가 없으면 그
+# 구분은 다음에 또 launch error로 둔갑하고, 사람이 재실행으로 판정하게 된다.
+TB 'APP-AC-239 containment: 처리기가 담기기도 전에 끝나면 봉쇄 실패가 아니라 정상 종료다' {
+    $oldMode = $CardCaptureWatcherTestMode
+    $oldCodex = $Codex
+    $oldTimeout = $DeepSliceTimeoutSeconds
+    $oldVault = $Vault
+    $oldArguments = $BoundedProcessorTestArguments
+    $oldDelay = $BoundedProcessorContainmentDelayMs
+    try {
+        $CardCaptureWatcherTestMode = $false
+        $Codex = 'powershell.exe'
+        # 즉시 끝나는 처리기 + 벌어진 창. 둘을 합치면 `Assign` 시점에 프로세스는 **반드시** 죽어 있다.
+        # 우연을 기다리지 않고 그 조건을 직접 만든다 — 환경이 친절할 때만 초록인 게이트는 게이트가 아니다.
+        $BoundedProcessorTestArguments = '-NoProfile -Command "exit 7"'
+        $BoundedProcessorContainmentDelayMs = 1500
+        $DeepSliceTimeoutSeconds = 30
+        $Vault = $sandbox
+        $bounded = Invoke-BoundedDeepProcessor '합성 즉시 종료 prompt' (Join-Path $sbLog 'instant.log')
+        Write-Host ('  instant-exit probe: exit=' + $bounded.exit + ' timedOut=' + $bounded.timedOut)
+        # 처리기가 스스로 준 종료 코드가 그대로 올라와야 한다. `-1`(launch error)이면 봉쇄 계층이
+        # 정상 경로를 삼킨 것이다 — catch를 지우면 정확히 그렇게 실패한다(확인함).
+        return ((-not $bounded.timedOut) -and [int]$bounded.exit -eq 7)
+    } finally {
+        $CardCaptureWatcherTestMode = $oldMode
+        $Codex = $oldCodex
+        $DeepSliceTimeoutSeconds = $oldTimeout
+        $Vault = $oldVault
+        $BoundedProcessorTestArguments = $oldArguments
+        $BoundedProcessorContainmentDelayMs = $oldDelay
     }
 }
 

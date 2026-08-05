@@ -56,6 +56,8 @@ $DeepSliceTimeoutSeconds = ($DeepSliceTimeCapMinutes * 60)
 # Protocol tests may replace only the child-process arguments. Production leaves
 # this unset and always launches `codex exec ... -` with the prompt on stdin.
 $BoundedProcessorTestArguments = $null
+# 시험 전용. `Start()`와 봉쇄 `Assign()` 사이의 창을 결정적으로 벌린다. 운영은 0이다.
+$BoundedProcessorContainmentDelayMs = 0
 
 # 조사 깊이 → 처리 모델 (DEC-000110 / TSK-000565).
 #
@@ -1935,12 +1937,17 @@ function Get-ResearchModelMap {
 
 # 깊이 하나를 모델 id로 옮긴다. 세 갈래뿐이다:
 #   1. 아는 깊이 + 값이 채워져 있다 → 그 값.
-#   2. 모르는 깊이(또는 깊이 없음) → standard 자리를 본다. 조사 요청이 아닌 일반 명함 캡처가
-#      여기로 온다 — 깊이라는 축 자체가 없는 처리이므로 기본 자리를 쓴다.
-#   3. 값이 비어 있다 → 빈 문자열. 호출한 쪽이 플래그를 아예 붙이지 않는다.
+#   2. **깊이가 없거나 모르는 값이다** → 빈 문자열. 조사 요청이 아닌 일반 명함 캡처가 여기로 온다.
+#   3. 아는 깊이인데 값이 비어 있다 → 빈 문자열. 호출한 쪽이 플래그를 아예 붙이지 않는다.
+#
+# 2번이 이 함수에서 가장 중요한 줄이다 (TSK-000571). 첫 판은 깊이가 없으면 `standard` 자리를 썼다.
+# 값이 전부 비어 있는 동안에는 아무 차이가 없었지만, **값을 채우는 순간 명함 처리 전체의 모델이
+# 조용히 바뀐다.** founder가 정한 것은 `조사 깊이 세 갈래가 모델만 다르다`이지 명함 처리 모델을
+# 바꾸라는 것이 아니었다. 깊이라는 축이 없는 처리는 축이 없는 채로 둔다 — 플래그를 붙이지 않고
+# 배포 환경의 기본값으로 간다. 모르는 깊이 문자열도 같다: 모르는 값을 아는 자리에 끼워 맞추지 않는다.
 function Resolve-ResearchModel($depth) {
     $key = [string]$depth
-    if ($ResearchDepths -notcontains $key) { $key = $ResearchDefaultDepth }
+    if ($ResearchDepths -notcontains $key) { return '' }
     $map = Get-ResearchModelMap
     if ($map.ContainsKey($key)) { return [string]$map[$key] }
     return ''
@@ -2083,13 +2090,42 @@ function Invoke-BoundedDeepProcessor($targeted, $procLog, $timeoutSeconds = $Dee
             $savedConsoleInputEncoding = $null
             Write-Log ('processor stdin console encoding not adjusted: ' + $_.Exception.Message)
         }
+        # Job Object를 **프로세스보다 먼저** 만든다 (TSK-000571).
+        #
+        # `New-DeepProcessTreeJob`은 첫 호출에서 `Add-Type`으로 C#을 컴파일한다 — 차갑거나 부하가
+        # 걸린 기계에서 수 초가 걸린다. 예전에는 그 컴파일이 `Start()`와 `Assign()` **사이**에 있었고,
+        # 그 창이 두 가지를 만들었다:
+        #   · 그동안 처리기가 띄운 browser/helper 자식은 job 밖에서 태어나 kill-on-close를 벗어난다.
+        #     상한에 걸려 job을 종료해도 그 자식들은 살아남는다 — 이 게이트가 막으려던 바로 그 상태다.
+        #   · 짧게 사는 프로세스는 assign 전에 죽고, 죽은 프로세스에 대한 `AssignProcessToJobObject`는
+        #     ERROR_ACCESS_DENIED로 실패한다. 2026-08-05 CI에서 실제로 그렇게 관측됐다
+        #     (`bounded processor launch error: ... "Assign" ... "Access is denied"`, elapsed 14.44s).
+        #     같은 판이 이 기계에서는 통과했다 — 즉 컴파일 시간이 판정을 정하고 있었다.
+        #
+        # 컴파일을 창 밖으로 빼면 `Start()`와 `Assign()` 사이에 남는 것은 API 호출 하나뿐이다.
+        # `Assign`은 여전히 프롬프트를 주기 전이라, 처리기가 실제로 일을 시작하기 전에 job에 든다.
+        $processJob = New-DeepProcessTreeJob
         $processor = New-Object System.Diagnostics.Process
         $processor.StartInfo = $startInfo
         if (-not $processor.Start()) { throw 'processor did not start' }
-        # Assign before providing the prompt, so every subsequently spawned
-        # browser/helper child inherits the kill-on-close Job Object.
-        $processJob = New-DeepProcessTreeJob
-        $processJob.Assign($processor)
+        # 시험 전용 seam. 기본 0이라 운영에서는 존재하지 않는 것과 같다 ($BoundedProcessorTestArguments와
+        # 같은 방식). `Start()`와 `Assign()` 사이의 창을 결정적으로 벌려, 그 창에서 프로세스가 죽는
+        # 경우를 게이트가 우연이 아니라 매번 재현할 수 있게 한다.
+        if ($BoundedProcessorContainmentDelayMs -gt 0) { Start-Sleep -Milliseconds $BoundedProcessorContainmentDelayMs }
+        try {
+            $processJob.Assign($processor)
+        } catch {
+            # 컴파일을 창 밖으로 뺐어도 창 자체는 남는다 — `Start()`와 `Assign()` 사이에서 프로세스가
+            # 죽을 수 있고, 죽은 프로세스에 대한 `AssignProcessToJobObject`는 ERROR_ACCESS_DENIED다.
+            # 그것은 **봉쇄 실패가 아니라 봉쇄 대상이 없는 상태**다. 담을 프로세스가 없는데 slice를
+            # 죽이면, 처리기가 스스로 즉시 끝난 정상 경로가 launch error로 둔갑한다.
+            #
+            # 반대로 **살아 있는데 실패했다면 그것은 진짜 봉쇄 실패다.** 그때 계속 진행하면 처리기가
+            # 띄우는 자식이 job 밖에서 태어나 상한에 걸려도 살아남는다 — 이 함수가 존재하는 이유가
+            # 정확히 그것을 막는 것이므로 그대로 던진다.
+            if (-not $processor.HasExited) { throw }
+            Write-Log ('processor exited before containment assign (exit=' + $processor.ExitCode + ') — 담을 프로세스가 없다')
+        }
         $stdoutTask = $processor.StandardOutput.ReadToEndAsync()
         $stderrTask = $processor.StandardError.ReadToEndAsync()
         # 프롬프트는 UTF-8 바이트로 직접 쓴다. `StandardInput.Write`는 StreamWriter의 인코딩을 타고,

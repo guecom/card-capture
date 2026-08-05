@@ -38,6 +38,7 @@ import { CaptureEntry } from './components/CaptureEntry';
 import { CaptureIntake, type CaptureIntakeHandle } from './components/CaptureIntake';
 import { AuthoringField } from './components/AuthoringField';
 import { SheetClose } from './components/SheetClose';
+import { DisclosureToggle } from './components/DisclosureToggle';
 import type { CaptureMethodId, CaptureMethodRecovery } from './contracts/int30';
 import { CONTEXT_EXAMPLE_LABEL, contextWeight } from './services/capture-entry';
 import {
@@ -1876,7 +1877,12 @@ function App() {
     const localContext = local ? queueContextLine(local) : '';
     return (
       <article className={`brief-card ${attention ? 'needs-attention' : ''}`} key={item.captureId} id={`capture-${item.captureId}`}>
-        <button className="brief-summary" type="button" onClick={() => toggleBrief(item.captureId)} aria-expanded={expanded}>
+        <DisclosureToggle
+          className="brief-summary"
+          open={expanded}
+          onToggle={() => toggleBrief(item.captureId)}
+          controls={`brief-detail-${item.captureId}`}
+        >
           <div className="avatar" aria-hidden="true">{listTitle.slice(0, 1)}</div>
           <div className="row-copy">
             <strong>{listTitle}</strong>
@@ -1887,8 +1893,7 @@ function App() {
             : flow.state === 'recovery_required'
               ? <span className="status-badge status-recovery"><LifeBuoy aria-hidden="true" size={13} strokeWidth={2.2} />복구 필요</span>
               : <StatusBadge status={item.status} />}
-          <ChevronRight className={expanded ? 'expanded' : ''} aria-hidden="true" size={17} />
-        </button>
+        </DisclosureToggle>
         {/* 사람이 손대야 넘어가는 항목. 단계 막대와 같은 문장을 두 번 찍지 않는다 — 여기는
             `무엇을 해야 하는지`만, 아래 막대는 `서버가 어디까지 갔는지`만 말한다. */}
         {attention && (
@@ -1948,8 +1953,11 @@ function App() {
         {recovery && flow.state === 'recovery_required' && (
           <RecoveryNotice captureId={item.captureId} recovery={recovery} contactEmail="guecom90@gmail.com" />
         )}
-        {expanded && (
-          <div className="brief-detail">
+        {/* 접혀 있을 때도 영역은 문서에 남는다 — `aria-controls`가 가리킬 자리가 있어야 낭독기가
+            "무엇이 펼쳐졌는지"를 말한다. 무거운 내용만 조건부로 둔다. */}
+        <div className="brief-detail k-disclosure-region" id={`brief-detail-${item.captureId}`} hidden={!expanded}>
+          {expanded && (
+          <>
             {localContext && <p className="local-context">내 기록: {localContext}</p>}
             {briefBody ? <MarkdownLite text={briefBody} /> : <p>아직 브리핑 본문이 도착하지 않았습니다.</p>}
             {actionable && <ContactActions contact={contact} />}
@@ -1966,8 +1974,9 @@ function App() {
                 {local && <button type="button" onClick={() => setQueueEdit(normalizedQueueItem(structuredClone(local)))}><PenLine aria-hidden="true" size={16} />캡처 수정</button>}
               </ActionSection>
             )}
-          </div>
-        )}
+          </>
+          )}
+        </div>
       </article>
     );
   }
@@ -2134,7 +2143,7 @@ function App() {
           {/* 만남 맥락: 안내는 영역 위에 한 번만, 자주 쓰는 답은 chip으로, 입력이 생기면 한 줄로 접는다
               (INT-000015 Feedback item 001 — "시인성이 많이 떨어져서 아쉽다"). */}
           <section className="context-block">
-            <button className="context-toggle" type="button" aria-expanded={!contextCollapsed} onClick={toggleContext}>
+            <DisclosureToggle className="context-toggle" open={!contextCollapsed} onToggle={toggleContext} controls="capture-context-fields">
               <span className="context-toggle-copy">
                 <span className="context-title-row">
                   <strong>만남 맥락</strong>
@@ -2151,10 +2160,12 @@ function App() {
                 </span>
               </span>
               {contextFilled > 0 && <span className="context-count">{contextFilled}개</span>}
-              <ChevronRight className={contextCollapsed ? '' : 'expanded'} aria-hidden="true" size={16} />
-            </button>
-            {!contextCollapsed && (
-              <div className="capture-context-fields plain">
+            </DisclosureToggle>
+            {/* 접혀 있을 때도 영역은 문서에 남는다 (`aria-controls`가 가리킬 자리). 입력 칸은
+                안쪽에서 조건부로 두므로 접힌 동안 마운트되지 않는 것은 예전과 같다. */}
+            <div className="capture-context-fields plain k-disclosure-region" id="capture-context-fields" hidden={contextCollapsed}>
+              {!contextCollapsed && (
+              <>
                 <p className="context-note">만난 곳·관계·AI 조사 요청은 2시간 동안 그대로 남아요. 메모는 명함마다 새로 씁니다.</p>
                 {/* 네 칸 모두 같은 primitive(`AuthoringField`)를 쓴다 (TSK-000220). 라벨은 박스 밖,
                     테두리·모서리·focus는 앱 전체가 공유하는 `--cc-field-*` token 한 벌이 정한다 —
@@ -2215,8 +2226,9 @@ function App() {
                 <AuthoringField className="cc-field--block" label="메모" filled={Boolean(memo.trim())}>
                   <IonTextarea aria-label="메모" placeholder="예: 공장장님, 우리 부품에 관심 많으심" autoGrow value={memo} onIonInput={(inputEvent) => setMemo(String(inputEvent.detail.value ?? ''))} />
                 </AuthoringField>
-              </div>
-            )}
+              </>
+              )}
+            </div>
           </section>
 
           {/* 조사 지시는 메모가 아니라 AI에게 맡기는 일이다 — 표면·표식·경계를 그렇게 보이게 한다
@@ -2283,9 +2295,11 @@ function App() {
         </section>
 
         <div className="section-toggle-row">
-          <button className="section-toggle" type="button" aria-expanded={!recordsCollapsed} onClick={toggleRecords}>
-            <span className="caret" aria-hidden="true">{recordsCollapsed ? '▸' : '▾'}</span> 명함 기록
-          </button>
+          {/* 예전에는 이 자리만 표시가 lucide 아이콘이 아니라 `▸`/`▾` **글자**였다. 글꼴에 따라
+              크기·굵기·세로 정렬이 달라 다른 접기 조작과 같은 표시로 보이게 만들 방법이 없었다. */}
+          <DisclosureToggle className="section-toggle" open={!recordsCollapsed} onToggle={toggleRecords} controls="records-feed">
+            명함 기록
+          </DisclosureToggle>
           {/* 이 구획의 진실만 쓴다. 지금 올리는 촬영이 있을 때만, 그리고 그것이 무엇인지 이름을 붙여서. */}
           {sendingId && <span className="sending-note" role="status">{sendingName || '명함'} 전송 중…</span>}
           {/* 갱신 사실(자동 켜짐/꺼짐 · 박자 · 마지막 성공)은 여기 없다. 상단 갱신 덩어리가
@@ -2295,7 +2309,11 @@ function App() {
         {/* 연결 안내는 실제로 막힌 것(서버 전송) 옆에 붙는다. 위 촬영 카드는 연결 없이도
             전부 동작하므로 그 위에는 아무것도 얹지 않는다. */}
         {renderConnectionSetup('명함 기록')}
-        {!recordsCollapsed && <div className="records-feed">{renderFeedBody()}</div>}
+        {/* 접혀 있을 때도 영역은 문서에 남는다 (`aria-controls`가 가리킬 자리). 목록 자체는
+            안쪽에서 조건부로 두므로 접힌 동안 카드가 마운트되지 않는 것은 예전과 같다. */}
+        <div className="records-feed k-disclosure-region" id="records-feed" hidden={recordsCollapsed}>
+          {!recordsCollapsed && renderFeedBody()}
+        </div>
       </div>
     );
   }

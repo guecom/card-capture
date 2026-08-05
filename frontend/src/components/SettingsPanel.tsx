@@ -1,7 +1,8 @@
 import '../styles/int29-settings.css';
 import '../styles/int30-settings.css';
-import { Bell, Camera, ChevronDown, Info, LifeBuoy, Link2, Mail, RefreshCw, ShieldCheck, Sparkles, SunMoon, TriangleAlert, Unplug } from 'lucide-react';
+import { Bell, Camera, Info, LifeBuoy, Link2, Mail, RefreshCw, ShieldCheck, Sparkles, SunMoon, TriangleAlert, Unplug } from 'lucide-react';
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { DisclosureToggle } from './DisclosureToggle';
 import type { RuntimeConfig } from '../contracts/capture';
 import type { PushState } from '../services/push';
 import type { ThemePreference } from '../services/storage';
@@ -714,22 +715,20 @@ export function SettingsPanel(props: SettingsPanelProps) {
         </section>
 
         <section className="int30-support" data-settings-item="support-entry">
-          <button
+          <DisclosureToggle
             className="int30-support-toggle"
-            type="button"
-            aria-expanded={supportOpen}
-            aria-controls="settings-support-body"
-            onClick={() => setSupportOpen((open) => !open)}
+            open={supportOpen}
+            onToggle={() => setSupportOpen((open) => !open)}
+            controls="settings-support-body"
           >
             <LifeBuoy aria-hidden="true" size={18} />
             <span className="int30-support-toggle-copy">
               <strong>문제가 생겼을 때</strong>
               <span>진단 정보 보기 · 버그 리포트 메일 초안 열기</span>
             </span>
-            <ChevronDown className={`int30-support-chevron ${supportOpen ? 'is-open' : ''}`} aria-hidden="true" size={18} />
-          </button>
+          </DisclosureToggle>
 
-          <div className="int30-support-body" id="settings-support-body" hidden={!supportOpen}>
+          <div className="int30-support-body k-disclosure-region" id="settings-support-body" hidden={!supportOpen}>
             <div data-settings-item="diagnostics">
               <p className="int29-scope-label" id="settings-diagnostics-label">진단 정보</p>
               {/* 화면에 보이는 값과 메일 본문에 실리는 값이 같은 출처다. 여기 없는 것은 메일에도 없다. */}
