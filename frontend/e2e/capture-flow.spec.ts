@@ -7,6 +7,7 @@
 //
 // 두 번째 판정: 촬영 결과 썸네일이 cover로 잘려 "잘못 찍힌 것처럼" 보였다 — 잘림 금지도 함께 고정한다.
 import { expect, test } from '@playwright/test';
+import { PACE_CAP, measurePace, paceBudget, paceReport } from './pace';
 import { readFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { extname, resolve, sep } from 'node:path';
@@ -15,6 +16,12 @@ import { fileURLToPath } from 'node:url';
 const buildRoot = resolve(fileURLToPath(new URL('../../docs/', import.meta.url)));
 const FRAME = { width: 720, height: 1280 };
 const CARD = { x: 90, y: 470, width: 540, height: 324 };
+/**
+ * shake가 끝난 뒤 안정 촬영이 끝나야 하는 기준 예산. **이 숫자는 올리지 않는다** —
+ * 사용자가 체감하는 응답성을 재는 값이라 느슨하게 만들면 재는 뜻이 사라진다. 기계가 느린 판은
+ * 숫자를 키우는 대신 `pace.ts`의 control로 그 판의 기계 속도를 함께 재서 보정한다.
+ */
+const STABLE_RETRY_BASE_MS = 2_000;
 
 const contentTypes: Record<string, string> = {
   '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
@@ -59,6 +66,7 @@ function sceneScript({
     __shakeFramesRemaining?: number;
     __shakeStep?: number;
     __shakeEndedAt?: number;
+    __frontSavedAt?: number;
     __sawMotionHold?: boolean;
     __cancelOnBurst?: 'auto-off' | 'close';
     __burstCancellationTriggered?: boolean;
@@ -157,6 +165,13 @@ function sceneScript({
     const observer = new MutationObserver(() => {
       const hint = document.querySelector('.camera-hint-pill span')?.textContent ?? '';
       if (hint.includes('카메라가 움직였어요')) runtime.__sawMotionHold = true;
+      // 저장 완료가 **화면에 실제로 나타난 순간**을 페이지 안에서 붙잡는다. 이것과
+      // Playwright가 `toBeVisible` polling으로 알아채는 시각의 차이가 harness lag이고,
+      // 그건 앱의 응답성이 아니라 runner 속도다 — 예산 로그에서 분리해 보여 준다.
+      if (runtime.__frontSavedAt === undefined
+        && (document.querySelector('.camera-choice p')?.textContent ?? '').includes('앞면 저장됨')) {
+        runtime.__frontSavedAt = performance.now();
+      }
     });
     observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
   }, { once: true });
@@ -274,6 +289,9 @@ test('auto capture cancels a shake that starts after ready and retries on a stab
       (window as typeof window & { __shakeOnReady?: boolean }).__shakeOnReady = true;
     });
 
+    // 기계 속도 control(1/2). 측정 구간 **밖에서만** 잰다 — 안에서 재면 재는 대상을 바꾼다.
+    const pacePre = await measurePace(page);
+
     await page.getByRole('button', { name: '명함 앞면 촬영' }).click();
     await expect(page.locator('.camera-preview-stage')).toHaveAttribute('data-state', 'streaming', { timeout: 20_000 });
     await page.waitForFunction(() => (window as typeof window & { __sawMotionHold?: boolean }).__sawMotionHold === true, null, { timeout: 40_000 });
@@ -283,11 +301,29 @@ test('auto capture cancels a shake that starts after ready and retries on a stab
     // 주입한 shake가 끝나면 gate가 처음부터 다시 안정성을 모으고 한 번만 촬영한다.
     await expect(page.getByText('앞면 저장됨 — 뒷면도 찍을까요? (선택)')).toBeVisible({ timeout: 40_000 });
     const retry = await page.evaluate(() => {
-      const runtime = window as typeof window & { __shakeInjected?: boolean; __shakeEndedAt?: number };
-      return { injected: runtime.__shakeInjected, stableRetryMs: performance.now() - (runtime.__shakeEndedAt ?? performance.now()) };
+      const runtime = window as typeof window & { __shakeInjected?: boolean; __shakeEndedAt?: number; __frontSavedAt?: number };
+      const now = performance.now();
+      const shakeEndedAt = runtime.__shakeEndedAt ?? now;
+      return {
+        injected: runtime.__shakeInjected,
+        stableRetryMs: now - shakeEndedAt,
+        inPageRetryMs: (runtime.__frontSavedAt ?? now) - shakeEndedAt,
+      };
     });
+    // 기계 속도 control(2/2) — 측정 구간 바로 뒤, 같은 페이지·같은 부하에서.
+    const pacePost = await measurePace(page);
+    const budget = paceBudget(STABLE_RETRY_BASE_MS, [pacePre, pacePost]);
+    // PASS든 FAIL이든 항상 남긴다: 이 한 줄로 "앱이 느려졌다"와 "기계가 느렸다"가 구분돼야 한다.
+    console.log(paceReport('stableRetryMs', retry.stableRetryMs, STABLE_RETRY_BASE_MS, budget, [pacePre, pacePost], {
+      inPageRetryMs: Math.round(retry.inPageRetryMs),
+      harnessLagMs: Math.round(retry.stableRetryMs - retry.inPageRetryMs),
+    }));
     expect(retry.injected).toBe(true);
-    expect(retry.stableRetryMs, 'shake가 끝난 뒤 안정 촬영이 2초 안에 끝나야 한다').toBeLessThan(2_000);
+    expect(
+      retry.stableRetryMs,
+      `shake가 끝난 뒤 안정 촬영이 ${budget.budgetMs}ms 안에 끝나야 한다`
+      + ` (base ${STABLE_RETRY_BASE_MS}ms × 기계보정 ${budget.ratio.toFixed(2)}, raw ${budget.rawRatio.toFixed(2)}, cap ${PACE_CAP})`,
+    ).toBeLessThan(budget.budgetMs);
   } finally {
     await new Promise<void>((stop) => { server.close(() => stop()); server.closeAllConnections(); });
   }
