@@ -762,6 +762,47 @@ TB 'APP-AC-239 runtime: Deep slice process tree와 stream drain을 wall-clock �
     }
 }
 
+# 2026-08-05 CI에서 위 게이트가 한 판만 이렇게 실패했다 (같은 commit 재실행은 통과):
+#   bounded processor launch error: Exception calling "Assign" with "1" argument(s): "Access is denied"
+#   exit=-1 timedOut=False elapsed=14.44s
+# `AssignProcessToJobObject`는 **이미 죽은 프로세스**에 대해 ERROR_ACCESS_DENIED를 준다. 원인은
+# `New-DeepProcessTreeJob`이 첫 호출에서 `Add-Type`으로 C#을 컴파일하는데 그 호출이 `Start()`
+# **뒤에** 있었던 것 — 느린 기계에서 그 수 초 동안 8초짜리 자식이 먼저 죽었다.
+#
+# 컴파일은 창 밖으로 뺐지만 창 자체는 남는다. 그래서 남은 창에서 프로세스가 죽는 경우를
+# 여기서 못 박는다: **담을 프로세스가 없는 것은 봉쇄 실패가 아니다.** 이 게이트가 없으면 그
+# 구분은 다음에 또 launch error로 둔갑하고, 사람이 재실행으로 판정하게 된다.
+TB 'APP-AC-239 containment: 처리기가 담기기도 전에 끝나면 봉쇄 실패가 아니라 정상 종료다' {
+    $oldMode = $CardCaptureWatcherTestMode
+    $oldCodex = $Codex
+    $oldTimeout = $DeepSliceTimeoutSeconds
+    $oldVault = $Vault
+    $oldArguments = $BoundedProcessorTestArguments
+    $oldDelay = $BoundedProcessorContainmentDelayMs
+    try {
+        $CardCaptureWatcherTestMode = $false
+        $Codex = 'powershell.exe'
+        # 즉시 끝나는 처리기 + 벌어진 창. 둘을 합치면 `Assign` 시점에 프로세스는 **반드시** 죽어 있다.
+        # 우연을 기다리지 않고 그 조건을 직접 만든다 — 환경이 친절할 때만 초록인 게이트는 게이트가 아니다.
+        $BoundedProcessorTestArguments = '-NoProfile -Command "exit 7"'
+        $BoundedProcessorContainmentDelayMs = 1500
+        $DeepSliceTimeoutSeconds = 30
+        $Vault = $sandbox
+        $bounded = Invoke-BoundedDeepProcessor '합성 즉시 종료 prompt' (Join-Path $sbLog 'instant.log')
+        Write-Host ('  instant-exit probe: exit=' + $bounded.exit + ' timedOut=' + $bounded.timedOut)
+        # 처리기가 스스로 준 종료 코드가 그대로 올라와야 한다. `-1`(launch error)이면 봉쇄 계층이
+        # 정상 경로를 삼킨 것이다 — catch를 지우면 정확히 그렇게 실패한다(확인함).
+        return ((-not $bounded.timedOut) -and [int]$bounded.exit -eq 7)
+    } finally {
+        $CardCaptureWatcherTestMode = $oldMode
+        $Codex = $oldCodex
+        $DeepSliceTimeoutSeconds = $oldTimeout
+        $Vault = $oldVault
+        $BoundedProcessorTestArguments = $oldArguments
+        $BoundedProcessorContainmentDelayMs = $oldDelay
+    }
+}
+
 # ISS-000232의 실제 원인. 2026-08-04에 처리기 raw 로그가 아직 살아 있는 상태로 재현돼 확정됐다:
 # 세 번의 시도가 전부 `Failed to read prompt from stdin: input is not valid UTF-8
 # (invalid byte at offset 0)`이었다. 프롬프트를 stdin으로 넘길 때 인코딩이 UTF-8이 아니었고,

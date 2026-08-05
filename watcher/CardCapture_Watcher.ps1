@@ -56,6 +56,8 @@ $DeepSliceTimeoutSeconds = ($DeepSliceTimeCapMinutes * 60)
 # Protocol tests may replace only the child-process arguments. Production leaves
 # this unset and always launches `codex exec ... -` with the prompt on stdin.
 $BoundedProcessorTestArguments = $null
+# 시험 전용. `Start()`와 봉쇄 `Assign()` 사이의 창을 결정적으로 벌린다. 운영은 0이다.
+$BoundedProcessorContainmentDelayMs = 0
 
 # 조사 깊이 → 처리 모델 (DEC-000110 / TSK-000565).
 #
@@ -2088,13 +2090,42 @@ function Invoke-BoundedDeepProcessor($targeted, $procLog, $timeoutSeconds = $Dee
             $savedConsoleInputEncoding = $null
             Write-Log ('processor stdin console encoding not adjusted: ' + $_.Exception.Message)
         }
+        # Job Object를 **프로세스보다 먼저** 만든다 (TSK-000571).
+        #
+        # `New-DeepProcessTreeJob`은 첫 호출에서 `Add-Type`으로 C#을 컴파일한다 — 차갑거나 부하가
+        # 걸린 기계에서 수 초가 걸린다. 예전에는 그 컴파일이 `Start()`와 `Assign()` **사이**에 있었고,
+        # 그 창이 두 가지를 만들었다:
+        #   · 그동안 처리기가 띄운 browser/helper 자식은 job 밖에서 태어나 kill-on-close를 벗어난다.
+        #     상한에 걸려 job을 종료해도 그 자식들은 살아남는다 — 이 게이트가 막으려던 바로 그 상태다.
+        #   · 짧게 사는 프로세스는 assign 전에 죽고, 죽은 프로세스에 대한 `AssignProcessToJobObject`는
+        #     ERROR_ACCESS_DENIED로 실패한다. 2026-08-05 CI에서 실제로 그렇게 관측됐다
+        #     (`bounded processor launch error: ... "Assign" ... "Access is denied"`, elapsed 14.44s).
+        #     같은 판이 이 기계에서는 통과했다 — 즉 컴파일 시간이 판정을 정하고 있었다.
+        #
+        # 컴파일을 창 밖으로 빼면 `Start()`와 `Assign()` 사이에 남는 것은 API 호출 하나뿐이다.
+        # `Assign`은 여전히 프롬프트를 주기 전이라, 처리기가 실제로 일을 시작하기 전에 job에 든다.
+        $processJob = New-DeepProcessTreeJob
         $processor = New-Object System.Diagnostics.Process
         $processor.StartInfo = $startInfo
         if (-not $processor.Start()) { throw 'processor did not start' }
-        # Assign before providing the prompt, so every subsequently spawned
-        # browser/helper child inherits the kill-on-close Job Object.
-        $processJob = New-DeepProcessTreeJob
-        $processJob.Assign($processor)
+        # 시험 전용 seam. 기본 0이라 운영에서는 존재하지 않는 것과 같다 ($BoundedProcessorTestArguments와
+        # 같은 방식). `Start()`와 `Assign()` 사이의 창을 결정적으로 벌려, 그 창에서 프로세스가 죽는
+        # 경우를 게이트가 우연이 아니라 매번 재현할 수 있게 한다.
+        if ($BoundedProcessorContainmentDelayMs -gt 0) { Start-Sleep -Milliseconds $BoundedProcessorContainmentDelayMs }
+        try {
+            $processJob.Assign($processor)
+        } catch {
+            # 컴파일을 창 밖으로 뺐어도 창 자체는 남는다 — `Start()`와 `Assign()` 사이에서 프로세스가
+            # 죽을 수 있고, 죽은 프로세스에 대한 `AssignProcessToJobObject`는 ERROR_ACCESS_DENIED다.
+            # 그것은 **봉쇄 실패가 아니라 봉쇄 대상이 없는 상태**다. 담을 프로세스가 없는데 slice를
+            # 죽이면, 처리기가 스스로 즉시 끝난 정상 경로가 launch error로 둔갑한다.
+            #
+            # 반대로 **살아 있는데 실패했다면 그것은 진짜 봉쇄 실패다.** 그때 계속 진행하면 처리기가
+            # 띄우는 자식이 job 밖에서 태어나 상한에 걸려도 살아남는다 — 이 함수가 존재하는 이유가
+            # 정확히 그것을 막는 것이므로 그대로 던진다.
+            if (-not $processor.HasExited) { throw }
+            Write-Log ('processor exited before containment assign (exit=' + $processor.ExitCode + ') — 담을 프로세스가 없다')
+        }
         $stdoutTask = $processor.StandardOutput.ReadToEndAsync()
         $stderrTask = $processor.StandardError.ReadToEndAsync()
         # 프롬프트는 UTF-8 바이트로 직접 쓴다. `StandardInput.Write`는 StreamWriter의 인코딩을 타고,
