@@ -1,0 +1,71 @@
+/* 접었다 펴는 조작 하나 — Kairen-Ref: TSK-000573 (ISS-000246)
+
+   `components/DisclosureToggle.tsx`만 이 파일을 들여온다. 공용 `app.css`에는 아무것도 더하지 않는다.
+
+   여기서 정하는 것은 **문법**뿐이다: 표시 하나, 회전 하나, 손가락이 닿는 바닥 하나, 초점 하나.
+   면적·색·글자 두께처럼 자리마다 달라야 하는 것은 호출부 class(`.brief-summary`,
+   `.context-toggle`, `.section-toggle`, `.int30-support-toggle`, `.profile-metadata-toggle`)가
+   그대로 소유한다 — 이 파일이 그것까지 가져가면 다섯 자리의 생김새가 한꺼번에 바뀐다. */
+
+/* ── 손가락이 닿는 바닥 ──
+   `명함 기록` 줄이 21px이라 44px 상자의 위아래 여섯 곳이 다른 것 위에 떨어졌다(실측).
+
+   가상 요소로 hit area만 넓히는 수법(`int30-refresh.css`)을 여기서는 쓰지 않는다. 그 수법은
+   넓힐 **빈 자리**가 있을 때만 정직하다. 이 줄 바로 아래에는 `명함 기록` 목록이 붙어 있고
+   그것이 DOM에서 뒤에 있으므로, 아래로 넓힌 자리는 목록이 도로 가져간다 — 넓혔다고 적어 놓고
+   실제로는 안 넓어지거나, 넓어지는 만큼 첫 카드의 위쪽을 훔친다. 그래서 **보이는 줄 자체**를
+   44px로 만든다. 누르는 것과 보이는 것이 같으면 나중에 어긋날 자리도 없다.
+
+   `@layer`에 두는 이유: 계층에 없는 규칙은 어떤 계층 규칙보다도 세다. 그래서 이 44px은
+   **바닥**으로만 작동하고, 더 두꺼워야 하는 자리(`.brief-summary` 76px, `.context-toggle` 58px,
+   `.int30-support-toggle` 62px)가 자기 값으로 언제나 이긴다. 로드 순서에 기대지 않는다. */
+@layer components {
+  .k-disclosure {
+    min-height: 44px;
+  }
+}
+
+.k-disclosure {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ── 표시 ──
+   `.k-disclosure .k-disclosure-chevron`은 class 둘이라, 자리별 규칙(`.context-toggle > svg` 같은
+   class 하나 + 요소 하나)보다 세다. 자리마다 색을 다시 정하지 않아도 여기서 한 번에 선다. */
+.k-disclosure .k-disclosure-chevron {
+  flex: 0 0 auto;
+  color: var(--cc-muted);
+  transition: transform 160ms ease;
+}
+
+/* 닫힘은 아래(누르면 아래로 열린다), 열림은 위(누르면 위로 접힌다).
+   상태를 `is-open` 같은 class로 다시 적지 않는다 — `aria-expanded`가 이미 그 사실을 들고 있고,
+   두 곳에 적으면 언젠가 둘이 어긋난다. */
+.k-disclosure[aria-expanded='true'] .k-disclosure-chevron {
+  transform: rotate(180deg);
+}
+
+/* 키보드 초점은 반드시 보여야 한다. 전역 `button:focus-visible`이 이미 서지만, 접는 조작은
+   카드 **안쪽 가장자리**에 붙어 있어 바깥으로 그린 테두리가 카드에 잘린다 — 안쪽으로 그린다. */
+.k-disclosure:focus-visible {
+  outline: 3px solid rgba(var(--cc-accent), 0.4);
+  outline-offset: -3px;
+}
+
+/* ── 접히는 영역 ──
+   `hidden`은 UA 기본 규칙이라 다른 `display` 선언에 쉽게 진다. 이 class는 class 둘(`[hidden]`
+   포함)이라 `.records-feed { display: grid }` 같은 자리별 선언을 이긴다. 접히는 영역은
+   확실히 접힌다 — 반쯤 접힌 영역은 낭독기와 Tab 순회에 그대로 남는다. */
+.k-disclosure-region[hidden] {
+  display: none;
+}
+
+/* ── 움직임 줄이기 ──
+   폰의 접근성 설정이 언제나 이긴다. `app.css`의 전역 규칙이 이미 모든 전환을 0.01ms로 만들지만,
+   그 규칙이 언젠가 좁아져도 이 표시만은 멎도록 여기서 다시 못 박는다. */
+@media (prefers-reduced-motion: reduce) {
+  .k-disclosure .k-disclosure-chevron {
+    transition: none;
+  }
+}
