@@ -98,9 +98,16 @@ function sceneScript({
         runtime.__burstCancellationTriggered = true;
         const action = runtime.__cancelOnBurst;
         queueMicrotask(() => {
+          /* 나가는 조작은 이제 `ion-button`이 아니라 표식을 가진 native button이다
+             (`components/SheetClose.tsx`, TSK-000564). 자동 촬영 토글은 그대로 `ion-button`이라
+             둘을 각자의 방식으로 찾는다 — 한쪽 규칙으로 둘 다 찾으려 하면 조용히 아무것도
+             안 눌리고, 이 시험은 "취소가 늦었다"가 아니라 "취소를 안 했다"로 실패한다. */
+          if (action === 'close') {
+            document.querySelector<HTMLElement>('ion-modal.camera-preview-modal [data-sheet-close]')?.click();
+            return;
+          }
           const buttons = Array.from(document.querySelectorAll('ion-button')) as HTMLElement[];
-          const label = action === 'auto-off' ? '자동 촬영 켜짐' : '닫기';
-          buttons.find((button) => button.textContent?.includes(label))?.click();
+          buttons.find((button) => button.textContent?.includes('자동 촬영 켜짐'))?.click();
         });
       }
       return requestVideoFrame.call(this, callback);
