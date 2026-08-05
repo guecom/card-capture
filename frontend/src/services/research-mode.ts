@@ -98,17 +98,22 @@ export function researchDepthSummary(depth: unknown): string {
 }
 
 // ── 접수 조건 ────────────────────────────────────────────────────────────────
-// Product 계약 (`63_Research_Instruction_Contract.md`):
-//   "사용자-facing mode는 `빠른 조사·일반 조사·깊은 조사`이고 신규 요청 기본값은 `일반 조사`다.
-//    **깊은 조사는 목적을 하나 이상 골라야 접수된다.**"
+// founder 판정 2026-08-05 (DEC-000110 / TSK-000565):
+//   "빠른 조사, 일반 조사, 깊은 조사는 … 오직 모델만 차이가 있는 거야. 그러고 깊은 조사를
+//    클릭했을 때 조사 범위를 골라야 한다는 둥, 이런 것이 아니야."
+//
+// 그래서 **깊이를 고르는 것은 사용자에게 아무 숙제도 만들지 않는다.** 예전에는 `깊은 조사`가
+// 조사 범위 1개 이상을 요구했고(`deep_requires_scope`), 그 한 조건 때문에 세 선택지 중 하나만
+// 다른 종류의 선택이 됐다 — 고르면 할 일이 생기는 선택. 그 조건은 사라졌다.
+//
+// 조사 범위는 그대로 고를 수 있고 고르면 조사를 좁힌다. 다만 **접수의 조건이 아니다.**
 //
 // 왜 규칙이 여기 사는가: 이 판정을 JSX 안에 두면 두 화면(촬영 탭·인물 시트)이 각자 한 벌씩
 // 갖게 되고, 그중 하나만 고쳐지는 날이 반드시 온다. 순수 함수 하나가 판정하고 화면은 그 결과를
 // **그리기만** 한다.
 //
-// 막을 때 지키는 두 가지 (founder 요구 아님 — 계약이 그렇게 읽힌다):
-//   1. 깊이를 몰래 낮추지 않는다. `깊은 조사`를 골랐으면 골라진 채로 막힌다.
-//   2. 범위를 대신 골라 주지 않는다. 고르는 것은 언제나 사람의 손이다.
+// 막을 때 지키는 것 하나 (founder 요구 아님 — 계약이 그렇게 읽힌다):
+//   깊이를 몰래 낮추지 않는다. `깊은 조사`를 골랐으면 골라진 채로 막힌다.
 // 그래서 이 함수는 값을 고치지 않고 **왜 막혔고 무엇을 하면 풀리는지**만 돌려준다.
 
 /** 지금 접수할 수 있는가. `empty`는 아직 보낼 것이 없다는 뜻이지 거절이 아니다. */
@@ -212,19 +217,18 @@ export const RESEARCH_DEEP_CLOSED: ResearchDeepClosedCopy = Object.freeze({
 });
 
 /**
- * 막는 규칙의 닫힌 목록.
+ * 막는 규칙의 닫힌 목록. **지금은 하나뿐이다.**
  *
- * - `deep_requires_scope` — 계약의 "깊은 조사는 목적 1개 이상". 사용자가 범위를 고르면 풀린다.
  * - `deep_unavailable` — 서버가 지금 깊은 조사를 열어 두지 않았다고 **말했다**(`closed`).
- *   사용자가 이 자리에서 풀 수 있는 조건이 아니므로 **먼저** 판정한다. 풀 수 있는 조건(범위)을
- *   앞세우면 사용자는 범위를 다 고른 뒤에야 못 보낸다는 것을 알게 된다 — 헛수고를 시키는 순서다.
+ *   `DEEP_RESEARCH_ENABLED` fail-closed 경계이고, 사용자가 이 자리에서 풀 수 있는 조건이 아니다.
+ *   이것은 사용자에게 시키는 일이 아니라 **안전장치**이므로 DEC-000110에서도 그대로 남는다.
+ *
+ * 예전에 여기 있던 `deep_requires_scope`(깊은 조사는 범위 1개 이상)는 사라졌다 — DEC-000110.
+ * 깊이는 모델만 바꾸고, 고르는 것만으로 사용자에게 숙제를 만들지 않는다.
  *
  * `unknown`은 이 목록에 없다. 못 들은 것은 막는 이유가 아니다.
  */
-export type ResearchSubmitBlock = 'deep_requires_scope' | 'deep_unavailable';
-
-/** 깊은 조사가 접수되기 위해 필요한 최소 범위 수. 계약의 `하나 이상`이 이 숫자다. */
-export const RESEARCH_DEEP_MIN_SCOPES = 1;
+export type ResearchSubmitBlock = 'deep_unavailable';
 
 /**
  * 사람에게 그대로 읽히는 말. **막히기 전과 막힌 뒤가 같은 문장이다** — 범위를 0개로 둔 채
@@ -235,9 +239,9 @@ export interface ResearchSubmitNotice {
   block: ResearchSubmitBlock;
   /** 한 줄 제목. 아직 아무것도 안 적었을 때도 거짓이 되지 않아야 한다. */
   title: string;
-  /** 왜. 자유 입력만으로는 안 된다는 사실까지 말한다 — 그것이 가장 흔한 오해다. */
+  /** 왜 지금 접수되지 않는가. */
   reason: string;
-  /** 무엇을 하면 풀리는가. **두 갈래를 모두** 말한다: 범위를 고르거나, 깊이를 낮추거나. */
+  /** 무엇을 하면 풀리는가. */
   fix: string;
 }
 
@@ -251,7 +255,12 @@ export interface ResearchSubmitGate {
 
 export interface ResearchSubmitInput {
   depth: unknown;
-  /** 지금 켜져 있는 조사 범위 수. */
+  /**
+   * 지금 켜져 있는 조사 범위 수.
+   *
+   * **접수 조건이 아니다** (DEC-000110). 이 값이 여전히 필요한 이유는 `보낼 것이 있는가`를
+   * 판정하기 위해서다 — 자유 입력이 비어 있어도 범위를 골랐으면 보낼 것이 있다.
+   */
   scopeCount: number;
   /** 자유 입력에 실제 글자가 있는가(공백 제외). */
   hasText: boolean;
@@ -266,13 +275,6 @@ export interface ResearchSubmitInput {
    */
   deepState: ResearchDeepState;
 }
-
-const DEEP_SCOPE_NOTICE: ResearchSubmitNotice = Object.freeze({
-  block: 'deep_requires_scope',
-  title: '깊은 조사는 조사 범위를 골라야 해요',
-  reason: '조사 범위를 하나 이상 골라야 깊은 조사가 접수돼요. 직접 적은 내용만으로는 시작하지 않습니다.',
-  fix: '위에서 범위를 고르거나, 깊이를 일반 조사로 바꾸면 바로 보낼 수 있어요.',
-});
 
 /**
  * 서버가 "지금 안 연다"고 **말했을 때**의 접수 조건 안내.
@@ -292,27 +294,24 @@ const DEEP_UNAVAILABLE_NOTICE: ResearchSubmitNotice = Object.freeze({
 /**
  * 접수 가능 여부 한 번의 판정.
  *
- * 다섯 갈래다:
- *  - `깊은 조사` + 서버가 **닫혔다고 말함**(`closed`) → **막는다**. 사용자가 이 자리에서 풀 수
- *    있는 조건이 아니므로 범위 규칙보다 먼저 판정한다.
- *  - `깊은 조사` + **아직 못 들음**(`unknown`) → 막지 않고 아무 말도 하지 않는다. 못 들은 것은
- *    거절이 아니다. 이 요청의 판정은 서버가 하고(`Code.gs`가 두 입구에서 다시 검사한다),
- *    거절되면 그 사실이 접수 실패로 정직하게 돌아온다. 여기서 막으면 연결 warm-up이 조건이 되고,
- *    그것이 founder가 지적한 "왜 시간이 지나야 하지"의 실제 원인이다.
- *  - `깊은 조사` + 범위 0개 + 보낼 내용 있음 → **막는다**. 사용자가 보낼 것을 갖고 있는데
- *    계약이 받지 않는 상태이므로, 이유를 보이고 제출을 거절한다.
- *  - `깊은 조사` + 범위 0개 + 보낼 내용 없음 → 막지 않되 **같은 설명을 미리 보인다**.
- *    긴 글을 다 적은 뒤에 처음 막히는 것보다, 고른 직후에 조건을 아는 편이 낫다.
- *  - 그 밖 → `빠른`·`일반`의 기존 규칙 그대로. 이 함수는 그 둘을 조금도 조이지 않는다.
+ * 세 갈래다 (DEC-000110 이후):
+ *  - `깊은 조사` + 서버가 **닫혔다고 말함**(`closed`) → **막는다**. 이것 하나가 남은 유일한
+ *    막힘이고, 사용자의 숙제가 아니라 서버 쪽 안전장치다.
+ *  - `깊은 조사` + **아직 못 들음**(`unknown`) 또는 **열려 있음**(`open`) → 막지 않는다.
+ *    못 들은 것은 거절이 아니다. 이 요청의 판정은 서버가 하고(`Code.gs`가 두 입구에서 다시
+ *    검사한다), 거절되면 그 사실이 접수 실패로 정직하게 돌아온다.
+ *  - 그 밖 → `빠른`·`일반`과 **완전히 같다**. 세 깊이 사이에 사용자가 더 해야 하는 일은 없다.
+ *
+ * 조사 범위 수는 이제 막힘을 만들지 않는다. `보낼 것이 있는가`(`filled`)만 정한다.
  */
 export function evaluateResearchSubmit(input: ResearchSubmitInput): ResearchSubmitGate {
   const scopeCount = Number.isFinite(input.scopeCount) ? Math.max(0, Math.trunc(input.scopeCount)) : 0;
   const hasText = Boolean(input.hasText);
   const filled = scopeCount > 0 || hasText;
-  const notice = normalizeResearchDepth(input.depth) !== 'deep' ? null
-    : normalizeResearchDeepState(input.deepState) === 'closed' ? DEEP_UNAVAILABLE_NOTICE
-      : scopeCount < RESEARCH_DEEP_MIN_SCOPES ? DEEP_SCOPE_NOTICE
-        : null;
+  const notice = normalizeResearchDepth(input.depth) === 'deep'
+    && normalizeResearchDeepState(input.deepState) === 'closed'
+    ? DEEP_UNAVAILABLE_NOTICE
+    : null;
 
   if (notice) {
     return filled
@@ -345,6 +344,15 @@ export function researchSubmitLabel(label: string, gate: ResearchSubmitGate): st
 // ── 내부 라우팅 설정 ──────────────────────────────────────────────────────────
 // 여기부터는 **개발자만** 보는 값이다. 이 아래의 어떤 문자열도 화면·접근성 이름·영수증에
 // 나타나면 안 된다. `research-mode.test.ts`와 `e2e/int30-research.spec.ts`가 그것을 검사한다.
+//
+// **실제 모델을 고르는 자리는 여기가 아니다** (DEC-000110). 앱은 외부 모델을 직접 부르지 않는다 —
+// 앱이 하는 일은 고른 깊이를 요청에 실어 보내는 것뿐이고(`services/research.ts` → `api.ts` →
+// `Code.gs` → `capture.json`), 깊이를 실제 모델 id로 바꾸는 것은 처리기를 띄우는 워처다
+// (`config/research-models.json` + `watcher/CardCapture_Watcher.ps1`의 `Resolve-ResearchModel`).
+//
+// 그러면 이 표는 무엇인가 — **개발자 telemetry의 기록 축**이다. "이 요청은 어느 깊이로 접수됐고
+// 그때 설정 판이 무엇이었나"를 영수증에 남기기 위한 값이며, 여기 적힌 코드명(luna·terra·sol)은
+// 워처 설정 파일의 코드명과 같은 이름을 쓰되 **모델 id는 아니다.** 진짜 id는 이 저장소에 없다.
 
 /** 라우팅 설정 한 벌. 버전이 붙어 있어야 "그때 무엇으로 보냈나"를 되짚을 수 있다. */
 export interface ResearchRouteConfig {

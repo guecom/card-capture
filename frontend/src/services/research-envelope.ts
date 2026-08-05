@@ -6,7 +6,7 @@
 //   | ----------- | ------------------------ | ------------------------------------------- |
 //   | `raw`       | owner 입력               | 최대 2,000자, **선택 항목과 별도 저장**      |
 //   | `mode`      | client 요청 + server 허용 | `quick`·`standard`·`deep_evidence_graph`     |
-//   | `purposes`  | client 선택 + server 허용 | Deep에서 1개 이상, 네 목적 밖은 제거         |
+//   | `purposes`  | client 선택 + server 허용 | 네 목적 밖은 제거 (DEC-000110: 깊이와 무관)  |
 //   | `focusIds`  | client 선택 + server 허용 | 8개 추천 ID 밖은 제거                        |
 //   | `requestId` | client 생성 + server 검증 | 재시도 idempotency key                       |
 //
@@ -67,8 +67,10 @@ export const RESEARCH_FOCUS_IDS: readonly string[] = [
  * - `focusId`가 `null`인 칸은 서버 allowlist가 표현하지 못하는 항목이다. 그런 항목은 조용히
  *   버리지 않고 `raw`(계약이 허용한 자유 입력 자리)로 사람이 읽는 말로 넘어간다. **제 칸이 있는
  *   항목을 `raw`로 밀어 넣지는 않는다** — 그것은 구조화된 값을 자유 텍스트에 숨기는 짓이다.
- * - `purpose`는 모든 칸에 있다. 계약이 "깊은 조사는 목적 1개 이상"을 요구하고 화면의 접수 조건은
- *   "범위 1개 이상"이므로, 범위마다 목적이 하나씩 있어야 두 조건이 **같은 뜻**이 된다.
+ * - `purpose`는 모든 칸에 있다. 고른 범위는 어느 깊이에서든 조사를 좁히므로, 범위 하나가 언제나
+ *   목적 하나를 뜻해야 서버가 그 좁힘을 읽을 수 있다. (예전에는 "깊은 조사는 목적 1개 이상"이라는
+ *   접수 조건과 화면의 "범위 1개 이상"을 **같은 뜻**으로 만들기 위한 표였다. 그 조건은
+ *   DEC-000110에서 사라졌지만, 범위→목적 대응은 좁힘의 의미로 그대로 남는다.)
  */
 export interface ResearchScopeWire {
   /** 서버 allowlist의 focus ID. 표현할 수 없으면 null. */
@@ -174,6 +176,8 @@ export const RESEARCH_BAD_REQUEST_ERROR = 'bad_research_request';
 
 export interface ResearchModeCarrier {
   mode?: ResearchMode | string;
+  /** 봉투가 깊이를 들고 있으면 되돌릴 때 함께 본다. 옛 봉투에는 이 칸이 없다. */
+  depth?: ResearchDepth | string;
 }
 
 /** 이 거절이 "서버가 아직 `quick`을 모른다"로 설명되는가. `quick`이 아니었으면 절대 참이 아니다. */
@@ -183,12 +187,16 @@ export function quickModeRejected(envelope: ResearchModeCarrier | null | undefin
 }
 
 /**
- * 같은 요청을 `standard`로 되돌린 봉투. **mode 한 칸만 바뀐다** — `raw`·`purposes`·`focusIds`·
- * `requestId`는 그대로다. 같은 요청이므로 멱등 키도 같아야 하고, 서버가 이미 무언가 남겼다면
- * 그 사실을 알아볼 수 있어야 한다.
+ * 같은 요청을 `standard`로 되돌린 봉투. `raw`·`purposes`·`focusIds`·`requestId`는 그대로다 —
+ * 같은 요청이므로 멱등 키도 같아야 하고, 서버가 이미 무언가 남겼다면 그 사실을 알아볼 수 있어야 한다.
+ *
+ * **깊이도 함께 내려간다** (DEC-000110). 깊이는 이제 서버 envelope에 남아 처리 모델을 고르는 값이라,
+ * `mode`만 내리고 `depth: 'quick'`을 남겨 두면 "표준으로 처리하면서 빠른 조사의 모델을 쓴 요청"이라는
+ * 실재하지 않는 상태가 기록된다. 깊이 칸이 없는 옛 봉투는 그대로 둔다 — 없는 칸을 만들지 않는다.
  */
 export function downgradeQuickMode<T extends ResearchModeCarrier>(envelope: T): T {
-  return { ...envelope, mode: 'standard' as ResearchMode };
+  const lowered = envelope.depth === 'quick' ? { depth: 'standard' as ResearchDepth } : {};
+  return { ...envelope, mode: 'standard' as ResearchMode, ...lowered };
 }
 
 // ── 등록소 자체 검사용 ────────────────────────────────────────────────────────

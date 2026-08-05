@@ -28,6 +28,7 @@ import {
   type ManualSubmitRefusal,
 } from '../services/manual-person';
 import { putQueueItemVerified, QueueWriteError } from '../services/queue';
+import { SheetClose } from './SheetClose';
 
 export interface ManualPersonEntryProps {
   /** 연결 설정이 끝났는가. 아직이면 기기에만 저장된다는 사실을 그대로 말한다. */
@@ -212,9 +213,13 @@ export function ManualPersonEntry({ configured, context, queue, onQueued, open: 
         <IonHeader>
           <IonToolbar>
             <IonTitle>직접 입력</IonTitle>
-            <IonButton slot="end" fill="clear" disabled={phase === 'saving'} onClick={closeSheet}>
-              {phase === 'receipt' ? '닫기' : '취소'}
-            </IonButton>
+            {/* 껍데기의 나가기는 언제나 `닫기` 하나다 (TSK-000564). 예전에는 이 자리 문구가
+                단계에 따라 `닫기`/`취소`로 갈렸다 — 같은 자리의 같은 손잡이가 화면 상태에 따라
+                다른 이름으로 읽히면 문법이 반쪽이 된다.
+                적던 글은 이 버튼으로 닫아도 사라지지 않는다: `updateText`가 글자마다
+                `saveManualDraft`로 저장하고, 진입 카드가 `이어서 쓰기`로 그 사실을 말한다.
+                아래 `취소`는 껍데기가 아니라 **폼의 행동**이라 그대로 둔다. */}
+            <SheetClose slot="end" disabled={phase === 'saving'} onClose={closeSheet} />
           </IonToolbar>
         </IonHeader>
         <IonContent>

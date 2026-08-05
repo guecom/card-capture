@@ -310,6 +310,11 @@ export function addPersonNote(config: RuntimeConfig, target: PersonTarget, text:
  * `text`는 봉투를 모르는 서버를 위한 자리다 — 그래서 **자유 입력 원문 그대로**를 담는다.
  * 고른 항목을 이 문자열에 다시 섞지 않는다: 제 칸이 있는 값을 자유 텍스트에 숨기면
  * 서버의 allowlist 검사와 요청 지문이 그 값을 보지 못한다.
+ *
+ * `depth`는 DEC-000110에서 이 자리에 들어왔다. 그 전까지 이 경로는 깊이를 **아예 보내지 않았고**,
+ * 촬영 업로드 경로만 보냈다 — 같은 선택이 어느 화면에서 눌렸느냐에 따라 서버에 도착하기도 하고
+ * 사라지기도 했다. 서버는 이 값을 allowlist로 정규화해 capture envelope에 남기고, 워처가 그것으로
+ * 처리 모델을 고른다. 모델 id는 여기서 정하지도, 보내지도 않는다.
  */
 function researchInstructionPayload(target: PersonTarget, submission: ResearchSubmission): Record<string, unknown> {
   return {
@@ -318,6 +323,7 @@ function researchInstructionPayload(target: PersonTarget, submission: ResearchSu
     text: submission.raw,
     instruction: {
       raw: submission.raw,
+      depth: submission.depth,
       mode: submission.mode,
       purposes: submission.purposes,
       focusIds: submission.focusIds,

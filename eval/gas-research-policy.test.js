@@ -165,10 +165,54 @@ assert.strictEqual(initialMeta.researchInstruction.policy.humanGateOverride, fal
 assert.match(initialMeta.researchRequestFingerprint, /^sha256:[a-f0-9]{64}$/);
 assert.strictEqual(initialMeta.researchInstruction.requestFingerprint, initialMeta.researchRequestFingerprint);
 
+/* DEC-000110 / TSK-000565 — founder: "깊은 조사를 클릭했을 때 조사 범위를 골라야 한다는 둥,
+   이런 것이 아니야." 예전에는 목적 없는 deep 요청을 서버가 `bad_research_request`로 거절했고,
+   그 한 줄이 화면의 "깊은 조사는 조사 범위를 골라야 해요"를 서버에서 강제하던 자리였다.
+   검사를 지우지 않고 뒤집는다 — 지우면 조건이 슬며시 돌아와도 아무도 모른다. */
 var missingPurpose = body(sandbox.researchInstruction_({
-  k: 'owner-token', person: 'PER-999904', instruction: { raw: '깊게 조사', mode: 'deep_evidence_graph' }
+  k: 'owner-token', person: 'PER-999904',
+  instruction: { raw: '깊게 조사', mode: 'deep_evidence_graph', requestId: 'request-nopurpose-01' }
 }));
-assert.deepStrictEqual(missingPurpose, { ok: false, error: 'bad_research_request' });
+assert.strictEqual(missingPurpose.ok, true, 'deep research must no longer require a purpose');
+var missingPurposeMeta = JSON.parse(created[created.length - 1].files[0].getBlob().getDataAsString());
+assert.strictEqual(missingPurposeMeta.researchInstruction.mode, 'deep_evidence_graph', 'deep must not be silently lowered');
+assert.deepStrictEqual(Array.from(missingPurposeMeta.researchInstruction.purposes), []);
+/* 그러면서 fail-closed 경계는 그대로다: 보낼 것이 하나도 없는 요청은 여전히 거절된다. */
+assert.deepStrictEqual(
+  body(sandbox.researchInstruction_({
+    k: 'owner-token', person: 'PER-999904',
+    instruction: { raw: '   ', mode: 'deep_evidence_graph', requestId: 'request-empty-deep-1' }
+  })),
+  { ok: false, error: 'bad_research_request' }
+);
+
+/* 깊이는 사용자 축이고 서버는 판정에 쓰지 않는다 — 다만 워처가 처리 모델을 고르는 조회 키이므로
+   allowlist로 접어 둔다. 모르는 값 때문에 조사를 잃지 않는다: 거절이 아니라 계약 기본값이다. */
+assert.deepStrictEqual(Array.from(sandbox.RESEARCH_DEPTHS_), ['quick', 'standard', 'deep']);
+assert.strictEqual(sandbox.normalizeResearchRequest_({ raw: '조사' }).depth, 'standard');
+assert.strictEqual(sandbox.normalizeResearchRequest_({ raw: '조사', depth: 'quick' }).depth, 'quick');
+assert.strictEqual(sandbox.normalizeResearchRequest_({ raw: '조사', depth: 'deep' }).depth, 'deep');
+['turbo', 'DEEP', '', null, 42, 'deep_evidence_graph', {}].forEach(function (value) {
+  assert.strictEqual(
+    sandbox.normalizeResearchRequest_({ raw: '조사', depth: value }).depth, 'standard',
+    'unknown depth must fold to the contract default instead of dropping the request'
+  );
+});
+/* 그리고 capture envelope에 **남는다**. 남지 않으면 세 선택이 서버를 지나는 순간 사라진다 —
+   실제로 그랬고, 그때 세 깊이는 처리기에서 완전히 같은 요청이었다. */
+var depthReceipt = body(sandbox.researchInstruction_({
+  k: 'owner-token', person: 'PER-999914', instruction: {
+    raw: '깊이가 실려 나가는지', depth: 'deep', mode: 'deep_evidence_graph', requestId: 'request-depth-0001'
+  }
+}));
+assert.strictEqual(depthReceipt.ok, true);
+var depthMeta = JSON.parse(created[created.length - 1].files[0].getBlob().getDataAsString());
+assert.strictEqual(depthMeta.researchInstruction.depth, 'deep', 'capture envelope must keep the chosen depth');
+/* 모델 id는 서버에 없다. envelope 어디에도 모델·공급자 이름이 실리지 않는다. */
+assert.ok(
+  !/luna|terra|sol|gpt|claude|gemini|openai|anthropic/i.test(JSON.stringify(depthMeta.researchInstruction)),
+  'no model or provider name may reach the capture envelope'
+);
 
 /* mode allowlist는 계약(`63_Research_Instruction_Contract.md` §Request Contract)의 셋이다.
    `quick`은 계약에 처음부터 있었는데 서버만 빠져 있어, 앱의 `빠른 조사`가 요청 자체로 거절됐다. */
@@ -191,8 +235,12 @@ assert.ok(quickMeta.researchInstruction.policy.branchCap < 10, 'quick budget mus
 assert.ok(quickMeta.researchInstruction.policy.timeCapMinutes < 30, 'quick budget must be shorter than standard');
 assert.strictEqual(quickMeta.researchInstruction.policy.publicLawfulSourcesOnly, true, 'client cannot widen quick authority');
 assert.strictEqual(quickMeta.researchInstruction.policy.sensitiveTraitInference, false);
-/* quick은 Deep이 아니므로 목적을 저장하지 않고 Deep switch도 통과하지 않는다. */
-assert.deepStrictEqual(Array.from(quickMeta.researchInstruction.purposes), []);
+/* 목적은 **깊이와 무관하게** 저장한다 (DEC-000110). 예전에는 deep에서만 저장했는데, 그것은
+   "깊은 조사는 목적 1개 이상"이라는 옛 접수 규칙의 그림자였다. 고른 범위는 어느 깊이에서든
+   조사를 좁히므로, 저장하지 않으면 처리기가 그 좁힘을 볼 수 없다. */
+assert.deepStrictEqual(Array.from(quickMeta.researchInstruction.purposes), ['expertise_execution']);
+/* 그래도 Deep switch는 통과하지 않는다 — 목적을 저장한다고 권한이 넓어지지 않는다. */
+assert.strictEqual(quickMeta.researchInstruction.policy.version, 'public-research-v1');
 assert.deepStrictEqual(Array.from(quickMeta.researchInstruction.focusIds), ['outcomes']);
 assert.strictEqual(quickMeta.researchInstruction.requestId, 'request-quick-001');
 

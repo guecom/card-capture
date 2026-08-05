@@ -1259,6 +1259,13 @@ var RESEARCH_FOCUS_IDS_ = ['expertise', 'authority', 'reputation', 'outcomes', '
    `quick`은 계약에 처음부터 있었는데 이 서버만 빠져 있었다 — 앱이 `빠른 조사`를 보내면 요청
    전체가 `bad_research_request`로 거절됐다. 누락 시 기본값은 계약대로 `standard`다. */
 var RESEARCH_MODES_ = ['quick', 'standard', 'deep_evidence_graph'];
+/* 사용자가 고른 조사 깊이. `DEC-000110`: 세 깊이는 **오직 처리 모델만** 다르다.
+   서버는 이 값을 판정에 쓰지 않고 capture envelope에 그대로 남긴다 — 실제로 어떤 모델을 쓸지는
+   처리기를 띄우는 워처가 `config/research-models.json`에서 고른다(모델 id는 이 파일에 없다).
+   그래도 allowlist를 두는 이유는, 남은 값이 곧 워처의 조회 키가 되기 때문이다. 모르는 값은
+   요청을 거절하지 않고 계약 기본값 `standard`로 접는다 — 깊이 한 칸 때문에 조사를 잃지 않는다. */
+var RESEARCH_DEPTHS_ = ['quick', 'standard', 'deep'];
+var RESEARCH_DEFAULT_DEPTH_ = 'standard';
 
 function allowedStrings_(values, allowlist) {
   var result = [];
@@ -1274,7 +1281,15 @@ function sanitizeRequestId_(value) {
   return /^[A-Za-z0-9-]{8,64}$/.test(id) ? id : '';
 }
 
-/* 요청 데이터만 정규화한다. 정책·권한·예산은 researchEnvelope_가 서버 상수로 다시 만든다. */
+/* 요청 데이터만 정규화한다. 정책·권한·예산은 researchEnvelope_가 서버 상수로 다시 만든다.
+
+   `DEC-000110`으로 사라진 규칙 하나: 예전에는 `mode === 'deep_evidence_graph'`인데 `purposes`가
+   비어 있으면 요청 전체를 `null`로 떨어뜨렸다(= `bad_research_request`). 그 한 줄이 화면의
+   "깊은 조사는 조사 범위를 골라야 해요"를 서버에서 강제하던 자리다. 깊이는 모델만 바꾸므로
+   그 조건은 없다. `purposes`는 이제 깊이와 무관하게 **온 대로** 저장한다 — 고른 범위는 어느
+   깊이에서든 조사를 좁히는 값이고, 저장하지 않으면 처리기가 그 좁힘을 볼 수 없다.
+
+   빈 요청 판정은 남는다: 세 칸이 전부 비어 있으면 보낼 것이 없는 요청이다. */
 function normalizeResearchRequest_(value) {
   if (value === null || value === undefined || value === '') return null;
   var input = value && typeof value === 'object' ? value : { raw: value };
@@ -1282,19 +1297,26 @@ function normalizeResearchRequest_(value) {
   var requestedMode = String(input.mode || '');
   if (input.mode && RESEARCH_MODES_.indexOf(requestedMode) < 0) return null;
   var mode = RESEARCH_MODES_.indexOf(requestedMode) >= 0 ? requestedMode : 'standard';
+  var requestedDepth = String(input.depth || '');
+  var depth = RESEARCH_DEPTHS_.indexOf(requestedDepth) >= 0 ? requestedDepth : RESEARCH_DEFAULT_DEPTH_;
   var purposes = allowedStrings_(input.purposes, RESEARCH_PURPOSES_);
   var focusIds = allowedStrings_(input.focusIds, RESEARCH_FOCUS_IDS_);
-  if (mode === 'deep_evidence_graph' && !purposes.length) return null;
-  if (!raw && !focusIds.length && !(mode === 'deep_evidence_graph' && purposes.length)) return null;
+  if (!raw && !focusIds.length && !purposes.length) return null;
   return {
     raw: raw,
+    depth: depth,
     mode: mode,
-    purposes: mode === 'deep_evidence_graph' ? purposes : [],
+    purposes: purposes,
     focusIds: focusIds,
     requestId: sanitizeRequestId_(input.requestId)
   };
 }
 
+/* 요청 지문. **`depth`는 일부러 넣지 않는다.**
+   세 깊이는 이미 서로 다른 `mode`로 옮겨지므로(quick / standard / deep_evidence_graph) 깊이를
+   더해도 구별력이 늘지 않는다. 반면 넣으면 재배포 창에서 손해가 난다: 옛 배포본이 남긴 receipt의
+   지문은 깊이 없이 계산됐는데, 새 배포본이 같은 요청을 다시 계산하면 값이 달라져 in-flight 재시도가
+   `request_id_conflict`로 튕긴다. 구별력 0에 회귀 위험만 있는 칸은 지문에 넣지 않는다. */
 function researchRequestFingerprint_(requestValue) {
   var request = normalizeResearchRequest_(requestValue);
   if (!request) return '';
@@ -1330,7 +1352,8 @@ function sameResearchReceipt_(meta, requestedBy, target, requestFingerprint) {
 }
 
 function researchEnvelope_(requestValue, requestedBy, target, receiptId) {
-  var request = normalizeResearchRequest_(requestValue) || { raw: '', mode: 'standard', purposes: [], focusIds: [], requestId: '' };
+  var request = normalizeResearchRequest_(requestValue) ||
+    { raw: '', depth: RESEARCH_DEFAULT_DEPTH_, mode: 'standard', purposes: [], focusIds: [], requestId: '' };
   var deep = request.mode === 'deep_evidence_graph';
   /* 계약 flowchart: `빠른 조사`는 `public-research-v1`의 **quick budget**으로 간다. 정책 자체는
      standard와 같은 판이고 예산만 좁다 — 사용자가 고른 것은 "기다리는 시간이 가장 짧은 것"이지
@@ -1339,6 +1362,9 @@ function researchEnvelope_(requestValue, requestedBy, target, receiptId) {
   var quick = request.mode === 'quick';
   return {
     raw: request.raw,
+    /* 사용자가 고른 깊이. 워처가 이 값 하나로 처리 모델을 고른다 (`DEC-000110`).
+       여기 남지 않으면 세 선택은 서버를 지나는 순간 사라지고, 실제로 그랬다. */
+    depth: request.depth,
     mode: request.mode,
     purposes: request.purposes,
     focusIds: request.focusIds,

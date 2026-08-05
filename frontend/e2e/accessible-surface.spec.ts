@@ -222,7 +222,9 @@ test('announces status changes and returns focus after a dialog closes', async (
     await trigger.click();
     await expect(page.getByRole('button', { name: '연결 해제하기' })).toBeVisible();
 
-    await page.getByRole('button', { name: '취소' }).click();
+    // 껍데기의 나가기는 어느 표면에서나 `닫기` 하나다 (TSK-000564). 되돌릴 수 없는 행동은
+    // 본문의 `연결 해제하기`가, 그대로 두는 선택은 `그대로 두기`가 자기 이름으로 소유한다.
+    await page.getByRole('button', { name: '닫기' }).click();
     await expect(page.getByRole('button', { name: '연결 해제하기' })).toBeHidden();
     // 시트를 닫으면 포커스가 시트를 연 버튼으로 돌아와야 한다 — 아니면 낭독기가 문서 처음으로 튕긴다.
     await expect(trigger).toBeFocused();

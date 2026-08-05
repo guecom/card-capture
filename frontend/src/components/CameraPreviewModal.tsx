@@ -9,6 +9,7 @@ import {
 } from '@ionic/react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Camera as CameraIcon, Image as ImageIcon, Lightbulb } from 'lucide-react';
+import { SheetClose } from './SheetClose';
 import {
   CandidateCameraError,
   type CandidateCameraErrorCode,
@@ -772,7 +773,9 @@ export function CameraCaptureModal({
       <IonHeader>
         <IonToolbar>
           <IonTitle>{side === 'front' ? '명함 앞면' : '명함 뒷면'}</IonTitle>
-          <IonButton slot="end" fill="clear" onClick={() => { stopPreview(); onDismiss(); }}>닫기</IonButton>
+          {/* 나가는 조작은 모든 덮인 표면과 같은 것 하나다 (TSK-000564). 예전에는 여기만 텍스트
+              `닫기`, 옆 시트는 텍스트 `취소`였다 — 같은 일을 하는 손잡이가 표면마다 달랐다. */}
+          <SheetClose slot="end" onClose={() => { stopPreview(); onDismiss(); }} />
         </IonToolbar>
       </IonHeader>
       <IonContent className="camera-preview-content ion-padding">

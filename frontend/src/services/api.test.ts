@@ -58,8 +58,10 @@ describe('legacy GAS contract adapter', () => {
         captureId: 'CAP-1',
         // 옛 서버를 위한 자유 입력 자리. 고른 항목을 여기 다시 섞지 않는다.
         text: 'research',
-        // 계약 §Request Contract의 다섯 칸이 구조화된 봉투로 나간다.
-        instruction: { raw: 'research', mode: 'standard', purposes: [], focusIds: ['career'], requestId: 'rr-fixture01' },
+        // 계약 §Request Contract의 칸들이 구조화된 봉투로 나간다.
+        // `depth`는 DEC-000110에서 들어왔다 — 그 전까지 이 경로는 고른 깊이를 **아예 보내지 않았고**,
+        // 촬영 업로드 경로만 보냈다. 같은 선택이 어느 화면에서 눌렸느냐에 따라 사라졌다는 뜻이다.
+        instruction: { raw: 'research', depth: 'standard', mode: 'standard', purposes: [], focusIds: ['career'], requestId: 'rr-fixture01' },
         k: 'fixture-token',
       },
       { action: 'correction', captureId: 'CAP-1', text: 'correction', k: 'fixture-token' },
@@ -423,8 +425,12 @@ describe('quick mode fallback — 배포 창을 건너는 한 번의 되돌림',
     const [first, second] = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)));
     expect(first.instruction.mode).toBe('quick');
     expect(second.instruction.mode).toBe('standard');
+    // 깊이도 함께 내려간다 (DEC-000110). 깊이는 이제 서버 envelope에 남아 처리 모델을 고르는
+    // 값이라, `mode`만 내리고 `depth: 'quick'`을 남기면 "표준으로 처리하면서 빠른 조사의 모델을
+    // 쓴 요청"이라는 실재하지 않는 상태가 기록된다.
+    expect([first.instruction.depth, second.instruction.depth]).toEqual(['quick', 'standard']);
     // 같은 요청이므로 멱등 키를 포함한 나머지 칸은 한 글자도 달라지지 않는다.
-    expect({ ...second.instruction, mode: 'quick' }).toEqual(first.instruction);
+    expect({ ...second.instruction, mode: 'quick', depth: 'quick' }).toEqual(first.instruction);
   });
 
   it('내려간 사실은 개발자 채널에만 남는다 — 사용자 응답에는 아무 표식도 없다', async () => {

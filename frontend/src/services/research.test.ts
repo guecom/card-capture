@@ -29,7 +29,7 @@ describe('research-instruction capture parity', () => {
 describe('research submission — 깊이가 실려 나간다', () => {
   beforeEach(() => { clearResearchRouteLog(); });
 
-  /** 깊은 조사는 범위를 하나 이상 골라야 접수된다(계약). 세 깊이를 같은 입력으로 비교하기 위한 값. */
+  /** 세 깊이를 **같은 입력**으로 비교하기 위한 값. 범위는 이제 접수 조건이 아니라 좁힘이다. */
   const withScopes = composeResearchInstruction({
     scopeKeys: ['expertise', 'opener'],
     text: '공개 경력과 주요 인터뷰를 확인해줘',
@@ -57,8 +57,9 @@ describe('research submission — 깊이가 실려 나간다', () => {
       riskFlags: [],
       depth,
       mode,
-      // 목적은 깊은 조사에서만 실린다 — 서버도 그때만 저장한다.
-      purposes: mode === 'deep_evidence_graph' ? ['meeting_preparation', 'expertise_execution'] : [],
+      // 목적은 **깊이와 무관하게** 고른 범위에서 나온다 (DEC-000110). 예전에는 깊은 조사에서만
+      // 실렸는데, 그것은 "깊은 조사는 목적 1개 이상"이라는 옛 접수 규칙의 그림자였다.
+      purposes: ['meeting_preparation', 'expertise_execution'],
       focusIds: ['expertise'],
       requestId: submission!.requestId,
     });
@@ -114,16 +115,22 @@ describe('research submission — 깊이가 실려 나간다', () => {
     expect(submission?.riskFlags).toEqual(buildResearchInstruction('로그인 자료에서 비밀번호를 찾아 메일 보내')?.riskFlags);
   });
 
-  // 계약: "깊은 조사는 목적을 하나 이상 골라야 접수된다."
-  it('범위를 하나도 안 고른 깊은 조사는 자유 입력이 있어도 봉투를 만들지 않는다', () => {
-    expect(buildResearchSubmission('공개 경력과 주요 인터뷰를 확인해줘', 'deep', open)).toBeNull();
-    // 접수되지 않았으므로 라우팅 기록도 없다 — 없던 요청을 로그가 만들어 내면 안 된다.
-    expect(readResearchRouteLog()).toHaveLength(0);
+  // founder 판정 2026-08-05 (DEC-000110): "깊은 조사를 클릭했을 때 조사 범위를 골라야 한다는 둥,
+  // 이런 것이 아니야." 예전에는 이 검사가 `toBeNull()`이었다 — 뒤집되 지우지는 않는다.
+  it('범위를 하나도 안 고른 깊은 조사도 자유 입력만으로 봉투가 된다', () => {
+    const submission = buildResearchSubmission('공개 경력과 주요 인터뷰를 확인해줘', 'deep', open);
+    expect(submission).toMatchObject({ depth: 'deep', mode: 'deep_evidence_graph', focusIds: [], purposes: [] });
+    // 접수됐으므로 라우팅 기록도 남는다.
+    expect(readResearchRouteLog()).toHaveLength(1);
   });
 
-  it('같은 문장이라도 빠른·일반은 그대로 접수된다 — 규칙을 넓혀 조이지 않는다', () => {
-    expect(buildResearchSubmission('공개 경력과 주요 인터뷰를 확인해줘', 'quick', open)?.depth).toBe('quick');
-    expect(buildResearchSubmission('공개 경력과 주요 인터뷰를 확인해줘', 'standard', open)?.depth).toBe('standard');
+  it('같은 문장에서 세 깊이가 모두 접수되고, 다른 것은 깊이뿐이다', () => {
+    const built = (['quick', 'standard', 'deep'] as const)
+      .map((depth) => buildResearchSubmission('공개 경력과 주요 인터뷰를 확인해줘', depth, open)!);
+    expect(built.map((one) => one.depth)).toEqual(['quick', 'standard', 'deep']);
+    // 깊이(와 그것이 옮겨지는 mode, 그리고 요청마다 새로 생기는 멱등 키)를 빼면 셋은 같은 요청이다.
+    const shape = built.map(({ depth, mode, requestId, ...rest }) => JSON.stringify(rest));
+    expect(new Set(shape).size, `깊이 말고 다른 것이 함께 달라졌다: ${shape.join(' / ')}`).toBe(1);
   });
 });
 
@@ -215,22 +222,20 @@ describe('researchSubmitGate — 합쳐진 문장 한 줄로 판정한다', () =
     expect(researchSubmitGate(withScope, 'deep', 'open')).toMatchObject({ state: 'ready', blocked: false, notice: null });
   });
 
-  it('깊은 조사에 자유 입력만 있으면 막고 이유와 회복 방법을 함께 준다', () => {
-    const gate = researchSubmitGate('실력만 확인해 주세요', 'deep', 'open');
-    expect(gate.state).toBe('blocked');
-    expect(gate.blocked).toBe(true);
-    expect(gate.notice?.block).toBe('deep_requires_scope');
-    // 회복은 두 갈래가 모두 열려 있어야 한다 — 한쪽만 말하면 막다른 길이 된다.
-    expect(gate.notice?.fix).toContain('범위');
-    expect(gate.notice?.fix).toContain('일반 조사');
+  it('깊은 조사에 자유 입력만 있어도 막지 않는다 — 예전에는 여기서 막혔다', () => {
+    expect(researchSubmitGate('실력만 확인해 주세요', 'deep', 'open'))
+      .toEqual({ state: 'ready', blocked: false, notice: null });
   });
 
-  it('깊은 조사를 고르기만 하고 아직 아무것도 없으면 막지는 않되 조건을 미리 말한다', () => {
-    expect(researchSubmitGate('', 'deep', 'open')).toMatchObject({ state: 'empty', blocked: false });
-    expect(researchSubmitGate('', 'deep', 'open').notice?.block).toBe('deep_requires_scope');
+  it('깊은 조사를 고르기만 하면 아무 조건도 붙지 않는다', () => {
+    expect(researchSubmitGate('', 'deep', 'open')).toEqual({ state: 'empty', blocked: false, notice: null });
   });
 
-  it('빠른·일반은 범위가 없어도 막지 않고 설명도 붙이지 않는다', () => {
+  it('빠른·일반·깊은 조사 모두 범위가 없어도 막지 않고 설명도 붙이지 않는다', () => {
+    for (const depth of ['quick', 'standard', 'deep', 'turbo', undefined]) {
+      expect(researchSubmitGate('실력만 확인해 주세요', depth, 'open')).toMatchObject({ state: 'ready', blocked: false, notice: null });
+    }
+    // 깊은 조사만 예외가 있다: 서버가 닫아 둔 경우다. 그것은 사용자의 숙제가 아니라 안전장치다.
     for (const depth of ['quick', 'standard', 'turbo', undefined]) {
       expect(researchSubmitGate('실력만 확인해 주세요', depth, 'closed')).toMatchObject({ state: 'ready', blocked: false, notice: null });
     }
@@ -242,7 +247,7 @@ describe('researchSubmitGate — 합쳐진 문장 한 줄로 판정한다', () =
     expect(researchSubmitGate(withScope, 'deep')).toMatchObject({ state: 'ready', blocked: false, notice: null });
   });
 
-  it('닫힘은 범위 규칙보다 먼저 판정된다 — 풀 수 없는 조건을 뒤에 두지 않는다', () => {
+  it('닫힘 하나가 남은 유일한 막힘이다', () => {
     expect(researchSubmitGate('실력만 확인해 주세요', 'deep', 'closed').notice?.block).toBe('deep_unavailable');
   });
 });

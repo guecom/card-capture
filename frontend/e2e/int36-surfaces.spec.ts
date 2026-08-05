@@ -37,7 +37,8 @@
 //     `다시 시도` 조작은 0개다.
 //   · 자동 켜짐/꺼짐이 2곳, 마지막 갱신 시점이 2곳에서 읽힌다.
 //   · 서버가 깊은 조사를 닫으면 **고르는 것 자체가** 막힌다 (제출만 막히지 않는다).
-//   · 범위 0개로 막혔을 때 focus가 범위 영역이 아니라 안내 문단(`research-block`)으로 간다.
+//   · (DEC-000110로 뒤집힘) 범위 0개인 깊은 조사가 제출에서 막힌다. 지금 이 파일이 잠그는 것은
+//     그 조건이 **다시 생기지 않는가**다 — 깊이는 모델만 바꾸므로 고르는 것에 숙제가 붙지 않는다.
 //
 // 오늘 이미 PASS하는 것들 (lane이 깨면 안 되는 계약): 배경 갱신 침묵 · 두 표면 모순 없음 ·
 // 320px 상단 바 · 색 토큰화 · 전체 화면 촬영 모달 · 아래→위 시트(850px → 66px 관측) ·
@@ -1545,7 +1546,10 @@ async function openPersonResearch(page: Page): Promise<void> {
   await settleDialog(page);
 }
 
-test('깊은 조사 + 범위 0개 제출은 막히고, 범위를 하나 고르면 즉시 풀린다', async ({ page }) => {
+/* founder 판정 2026-08-05 (DEC-000110): "깊은 조사를 클릭했을 때 조사 범위를 골라야 한다는 둥,
+   이런 것이 아니야." 예전 이 검사는 "범위 0개인 깊은 조사가 막히는가 / 막혔을 때 손이 범위 영역으로
+   가는가"를 잠갔다. 지우지 않고 뒤집는다 — 지우면 그 조건이 슬며시 돌아와도 아무도 모른다. */
+test('깊은 조사 + 범위 0개도 그대로 접수되고, 고른 깊이는 조용히 바뀌지 않는다', async ({ page }) => {
   const harness = await boot(page, { active: false, deepOpen: true });
   try {
     await openPersonResearch(page);
@@ -1553,51 +1557,20 @@ test('깊은 조사 + 범위 0개 제출은 막히고, 범위를 하나 고르�
     await chooseDepth(sheet, '깊은 조사');
     await sheet.locator('ion-textarea textarea').first().fill('의사결정 권한을 확인해 주세요');
 
+    // 깊이를 고른 것만으로는 아무 조건도 생기지 않는다.
+    const stillDeep = (await depthState(page, sheet)).find((state) => state.checked)?.label ?? '(없음)';
+    expect.soft(stillDeep, `고른 깊이가 조용히 바뀌었다 (지금: ${stillDeep})`).toContain('깊은 조사');
+    expect.soft(
+      await sheet.locator('.research-block').count(),
+      '깊이를 고른 것만으로 사용자가 더 해야 하는 일이 생겼다',
+    ).toBe(0);
+
     const submit = sheet.getByRole('button', { name: /조사 요청 접수|접수/ }).first();
     await submit.click();
-    await page.waitForTimeout(700);
 
-    expect.soft(harness.submitted.length, `범위 0개인 깊은 조사가 서버로 ${harness.submitted.length}건 나갔다`).toBe(0);
-
-    const recovery = await page.evaluate(() => {
-      const helpers = window.__int36;
-      let active: Element | null = document.activeElement;
-      while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
-      const chain = active ? helpers.chain(active) : [];
-      const scopeRegion = helpers.walk(document.body).find((node) => {
-        const label = node.getAttribute('aria-label') ?? '';
-        return /조사 범위|조사 항목/.test(label) && helpers.painted(node);
-      }) ?? null;
-      const composer = helpers.walk(document.body).find((node) => node.getAttribute('role') === 'radiogroup'
-        && helpers.text(node).includes('깊은 조사')) ?? null;
-      const composerRoot = composer ? helpers.chain(composer).find((node) => helpers.text(node).includes('AI 조사 요청')) ?? null : null;
-      return {
-        focused: active ? helpers.where(active) : '(없음)',
-        focusedText: active ? helpers.text(active).slice(0, 90) : '',
-        inScopeRegion: Boolean(scopeRegion && active && (scopeRegion === active || chain.includes(scopeRegion))),
-        inComposer: Boolean(composerRoot && active && (composerRoot === active || chain.includes(composerRoot))),
-      };
-    });
-
-    expect.soft(recovery.inComposer, `막혔는데 focus가 작성 자리 밖에 있다 (지금: ${recovery.focused})`).toBe(true);
-    expect.soft(
-      recovery.inScopeRegion,
-      `막혔을 때 focus가 범위 영역으로 가지 않았다 (지금: ${recovery.focused} "${recovery.focusedText}")`,
-    ).toBe(true);
-    expect.soft(
-      /범위|항목|고르|선택/.test(recovery.focusedText),
-      `막힌 자리가 무엇을 하면 풀리는지 말하지 않는다: "${recovery.focusedText}"`,
-    ).toBe(true);
-
-    // 깊이를 몰래 낮추지 않는다.
-    const stillDeep = (await depthState(page, sheet)).find((state) => state.checked)?.label ?? '(없음)';
-    expect.soft(stillDeep, `막히면서 고른 깊이가 조용히 바뀌었다 (지금: ${stillDeep})`).toContain('깊은 조사');
-
-    // 범위를 하나 고르면 즉시 풀린다 — 풀린 증거는 문구가 아니라 **실제로 나간 요청**이다.
-    await sheet.getByRole('button', { name: /모두 선택/ }).first().click();
-    await submit.click();
+    // 접수됐다는 증거는 문구가 아니라 **실제로 나간 요청**이다.
     await expect
-      .poll(() => harness.submitted.length, { timeout: 10_000, message: '범위를 골랐는데도 요청이 나가지 않는다' })
+      .poll(() => harness.submitted.length, { timeout: 10_000, message: '범위 0개인 깊은 조사가 접수되지 않았다' })
       .toBe(1);
   } finally {
     await teardown(harness);

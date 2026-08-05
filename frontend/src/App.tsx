@@ -37,6 +37,7 @@ import { focusCaptureProgress, focusResearchNotice, ResearchComposer, type Resea
 import { CaptureEntry } from './components/CaptureEntry';
 import { CaptureIntake, type CaptureIntakeHandle } from './components/CaptureIntake';
 import { AuthoringField } from './components/AuthoringField';
+import { SheetClose } from './components/SheetClose';
 import type { CaptureMethodId, CaptureMethodRecovery } from './contracts/int30';
 import { CONTEXT_EXAMPLE_LABEL, contextWeight } from './services/capture-entry';
 import {
@@ -255,6 +256,22 @@ function personActionRequestKey(target: PersonTarget, text: string, depth: Resea
   return JSON.stringify([target.person ?? '', target.captureId ?? '', depth, text]);
 }
 
+/**
+ * 작성 중이던 글을 어느 자리에 돌려놓을지 가리키는 값 — Kairen-Ref: TSK-000564.
+ *
+ * 껍데기의 `닫기`는 "이 표면을 나간다" 하나만 뜻해야 한다. 나간다는 이유로 쓰던 글이
+ * 사라지면 그 약속이 깨지고, 사용자는 닫기 전에 "이거 눌러도 되나"를 매번 저울질하게 된다.
+ * 그래서 대상+종류마다 자리를 하나 잡고, 같은 자리로 돌아오면 쓰던 데서 이어 쓴다.
+ *
+ * 요청 키(`personActionRequestKey`)와 일부러 다르다 — 저쪽은 깊이와 글까지 봐야 "같은 요청"을
+ * 가리지만, 여기서는 **같은 사람의 같은 작성면**이면 같은 자리다.
+ */
+function personActionDraftKey(composer: PersonActionComposer): string {
+  return composer.kind === 'correction'
+    ? JSON.stringify(['correction', composer.captureId])
+    : JSON.stringify([composer.kind, composer.target.person ?? '', composer.target.captureId ?? '']);
+}
+
 function formatMoment(value?: string): string {
   if (!value) return '시간 정보 없음';
   const date = new Date(value);
@@ -466,6 +483,11 @@ function App() {
   const [documentNoteTarget, setDocumentNoteTarget] = useState<PersonTarget | null>(null);
   const [personActionComposer, setPersonActionComposer] = useState<PersonActionComposer | null>(null);
   const [personActionText, setPersonActionText] = useState('');
+  /* 닫아도 사라지지 않게 적던 글을 잠시 들고 있는 자리 (TSK-000564).
+     이 폰의 세션 안에서만 산다 — 조사 지시·메모는 개인정보라 저장소로 내려보내지 않는다.
+     접수에 성공하면 그 자리를 비운다: 보낸 글이 다음에 또 떠오르면 "안 보내진 건가" 하고
+     읽힌다. */
+  const personActionDrafts = useRef(new Map<string, string>());
   // 시트는 열릴 때마다 새 요청이다. 깊이도 그때마다 기본값으로 되돌린다 (TSK-000542).
   const [personActionDepth, setPersonActionDepth] = useState<ResearchDepth>(DEFAULT_RESEARCH_DEPTH);
   const [personActionSubmitting, setPersonActionSubmitting] = useState(false);
@@ -986,7 +1008,8 @@ function App() {
     setDeviceEnv((current) => (current.lastCameraFailure === failure ? current : { ...current, lastCameraFailure: failure }));
   }, []);
 
-  // 조사 요청의 접수 조건 (계약: "깊은 조사는 목적을 하나 이상 골라야 접수된다").
+  // 조사 요청의 접수 조건. **깊이는 조건을 만들지 않는다** (DEC-000110) — 남은 막힘은 서버가
+  // 깊은 조사를 열어 두지 않았다고 말한 경우 하나뿐이다.
   //
   // 판정은 `services/research-mode.ts`가 소유하고 이 화면은 결과만 읽는다. 두 자리(촬영 탭의
   // `완료`, 인물 시트의 `조사 요청 접수`)가 같은 함수를 부르므로 한쪽만 고쳐지는 일이 없다.
@@ -1643,37 +1666,49 @@ function App() {
     }
   }, [refresh]);
 
-  const promptNote = useCallback((target: PersonTarget) => {
-    setPersonActionText('');
+  /* 작성면을 여는 한 자리 (TSK-000564). 셋이 각자 열던 때는 "열 때 무엇을 되돌리는가"가
+     함수마다 조금씩 달라졌다 — 되돌릴 것이 하나 늘 때마다 세 곳을 같이 고쳐야 한다. */
+  const openPersonAction = useCallback((composer: PersonActionComposer) => {
+    // 지난번에 닫으면서 두고 간 글이 있으면 그 자리에서 이어 쓴다.
+    setPersonActionText(personActionDrafts.current.get(personActionDraftKey(composer)) ?? '');
     setPersonActionOutcome(null);
-    setPersonActionComposer({ kind: 'note', target });
+    setPersonActionComposer(composer);
   }, []);
+
+  const promptNote = useCallback((target: PersonTarget) => {
+    openPersonAction({ kind: 'note', target });
+  }, [openPersonAction]);
 
   const promptResearch = useCallback((target: PersonTarget) => {
-    setPersonActionText('');
+    // 깊이는 물려받지 않는다 — 지난번에 깊게 봤다는 이유로 이번에도 깊게 보지 않는다 (TSK-000542).
     setPersonActionDepth(DEFAULT_RESEARCH_DEPTH);
-    setPersonActionOutcome(null);
-    setPersonActionComposer({ kind: 'research', target });
-  }, []);
+    openPersonAction({ kind: 'research', target });
+  }, [openPersonAction]);
 
   const promptCorrection = useCallback((captureId: string) => {
-    setPersonActionText('');
-    setPersonActionOutcome(null);
-    setPersonActionComposer({ kind: 'correction', captureId });
-  }, []);
+    openPersonAction({ kind: 'correction', captureId });
+  }, [openPersonAction]);
 
   const closePersonActionComposer = useCallback(() => {
     if (personActionSubmitting) return;
+    /* 닫기가 적던 글을 버리지 않는다 (TSK-000564). 예전에는 이 자리가 `취소`였고 정말로
+       지웠다 — 껍데기 문구를 `닫기`로 통일하면서 그 동작을 그대로 두면 이름과 결과가
+       어긋난다. 접수는 여전히 `접수` 버튼만 한다. 여기서는 자리만 지켜 준다. */
+    if (personActionComposer) {
+      const key = personActionDraftKey(personActionComposer);
+      if (personActionText.trim()) personActionDrafts.current.set(key, personActionText);
+      else personActionDrafts.current.delete(key);
+    }
     // 닫으면 이 시트의 요청은 끝난 것이다. 다시 열면 새 요청이므로 멱등 키도 새로 만든다.
     personActionRequestIdRef.current = null;
     setPersonActionComposer(null);
     setPersonActionText('');
     setPersonActionOutcome(null);
-  }, [personActionSubmitting]);
+  }, [personActionComposer, personActionSubmitting, personActionText]);
 
   const submitPersonAction = useCallback(async () => {
     if (!personActionComposer || !personActionText.trim() || personActionSubmitting) return;
-    // 접수 조건을 못 채운 깊은 조사는 여기서 멈춘다. 시트 안의 안내가 이미 이유를 말하고 있다.
+    // 서버가 깊은 조사를 닫아 둔 경우 여기서 멈춘다. 시트 안의 안내가 이미 이유를 말하고 있다.
     if (personActionGate.blocked) return;
     setPersonActionSubmitting(true);
     let success = false;
@@ -1728,6 +1763,9 @@ function App() {
     }
     setPersonActionSubmitting(false);
     if (success) {
+      // 보낸 글은 붙들지 않는다 (TSK-000564). 접수된 뒤에도 다음에 열 때 그 글이 다시 떠 있으면
+      // "안 보내진 건가"로 읽힌다 — 닫기가 지키는 것은 **아직 안 보낸** 글이다.
+      personActionDrafts.current.delete(personActionDraftKey(personActionComposer));
       // 접수된 요청의 멱등 키는 여기서 수명을 다한다. 남겨 두면 다음에 같은 글로 여는 요청이
       // 이미 접수된 요청의 중복으로 판정돼 새 조사가 시작되지 않는다.
       personActionRequestIdRef.current = null;
@@ -2626,7 +2664,10 @@ function App() {
 
         {/* FI-007: 되돌릴 수 없는 정리 전에 무엇이 지워지고 무엇이 남는지 정확히 보여 준다. */}
         <IonModal className="signout-modal" isOpen={signOutOpen} onDidDismiss={() => setSignOutOpen(false)} initialBreakpoint={0.55} breakpoints={[0, 0.55]}>
-          <IonHeader><IonToolbar><IonTitle>이 기기에서 연결 해제</IonTitle><IonButton slot="end" fill="clear" onClick={() => setSignOutOpen(false)}>취소</IonButton></IonToolbar></IonHeader>
+          {/* 껍데기의 나가기는 `닫기` 하나다 (TSK-000564). 되돌릴 수 없는 행동(`연결 해제하기`)과
+              그대로 두는 선택(`그대로 두기`)은 아래 본문이 자기 이름으로 소유한다 — 그래서 이
+              자리가 `취소`일 이유가 없다. */}
+          <IonHeader><IonToolbar><IonTitle>이 기기에서 연결 해제</IonTitle><SheetClose slot="end" onClose={() => setSignOutOpen(false)} /></IonToolbar></IonHeader>
           <IonContent className="ion-padding">
             <div className="signout-confirm">
               <p><b>지웁니다</b> — 개인 링크 코드, 촬영자 이름, 이 기기에 저장된 브리핑 사본, 최근 검색어, 만남 맥락.</p>
@@ -2654,7 +2695,7 @@ function App() {
         >
           {personActionComposer && (
             <>
-              <IonHeader><IonToolbar><IonTitle>{personActionCopy[personActionComposer.kind].title}</IonTitle><IonButton slot="end" fill="clear" disabled={personActionSubmitting} onClick={closePersonActionComposer}>취소</IonButton></IonToolbar></IonHeader>
+              <IonHeader><IonToolbar><IonTitle>{personActionCopy[personActionComposer.kind].title}</IonTitle><SheetClose slot="end" disabled={personActionSubmitting} onClose={closePersonActionComposer} /></IonToolbar></IonHeader>
               <IonContent className="ion-padding">
                 <div className="person-action-composer">
                   {personActionComposer.kind === 'research' ? (
@@ -2706,7 +2747,7 @@ function App() {
           )}
         </IonModal>
         <IonModal isOpen={documentOpen} onDidDismiss={() => setDocumentOpen(false)}>
-          <IonHeader><IonToolbar><IonTitle>{documentTitle}</IonTitle><IonButton slot="end" fill="clear" onClick={() => setDocumentOpen(false)}>닫기</IonButton></IonToolbar></IonHeader>
+          <IonHeader><IonToolbar><IonTitle>{documentTitle}</IonTitle><SheetClose slot="end" onClose={() => setDocumentOpen(false)} /></IonToolbar></IonHeader>
           <IonContent className="ion-padding profile-document">
             {documentLoading && <div className="center-state"><IonSpinner name="crescent" /><span>프로필 불러오는 중</span></div>}
             {!documentLoading && documentError && <p className="document-error">{documentError}</p>}
@@ -2723,7 +2764,7 @@ function App() {
           </IonContent>
         </IonModal>
         <IonModal isOpen={Boolean(queueEdit)} onDidDismiss={() => setQueueEdit(null)}>
-          <IonHeader><IonToolbar><IonTitle>캡처 상세</IonTitle><IonButton slot="end" fill="clear" onClick={() => setQueueEdit(null)}>닫기</IonButton></IonToolbar></IonHeader>
+          <IonHeader><IonToolbar><IonTitle>캡처 상세</IonTitle><SheetClose slot="end" onClose={() => setQueueEdit(null)} /></IonToolbar></IonHeader>
           <IonContent className="ion-padding queue-edit-modal">
             {queueEdit && (
               <>
