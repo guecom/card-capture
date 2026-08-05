@@ -1,10 +1,11 @@
-import { type ReactNode, useMemo } from 'react';
+import { type ReactNode, useMemo, useState } from 'react';
 import { ArrowUpRight, Link2, Mail, MessageCircle, Phone, Plus, Sparkles, UserPlus } from 'lucide-react';
 import type { PersonTarget } from '../contracts/capture';
 import { buildHighlights, highlightLabel } from '../services/highlights';
 import { labelImageEmbeds, type PersonFrontmatter, parsePersonFrontmatter, safeExternalUrl } from '../services/markdown';
 import { type ContactCard, buildVCard, contactCardFromFrontmatter, hasContactActions } from '../services/contacts';
 import { MarkdownLite } from './MarkdownLite';
+import { DisclosureToggle } from './DisclosureToggle';
 
 export function downloadContactVCard(contact: ContactCard): void {
   const anchor = document.createElement('a');
@@ -85,6 +86,10 @@ export function PersonDocument({
   const body = useMemo(() => labelImageEmbeds(parsed.body), [parsed.body]);
   const profileLinks = useMemo(() => profileLinksFromFrontmatter(parsed), [parsed]);
   const highlights = useMemo(() => buildHighlights(markdown), [markdown]);
+  /* 예전에는 이 자리가 `<details>`였다. 브라우저가 그리는 세모는 앱의 다른 접기 조작과 크기·색·
+     회전이 모두 달랐고, 낭독기는 열림·닫힘을 읽지만 **무엇이** 열렸는지는 말하지 못했다.
+     상태를 컴포넌트가 들면 나머지 접기 조작과 같은 문법을 그대로 쓴다 (TSK-000573). */
+  const [metadataOpen, setMetadataOpen] = useState(false);
   return (
     <div className="person-document">
       {/* 전문을 읽기 전에 지금 쓸 만한 사실 1~3줄. 기록에 있는 문장만 인용하고 출처 섹션을 함께 보여 준다. */}
@@ -121,7 +126,19 @@ export function PersonDocument({
           </ActionSection>
         )}
       </section>
-      {parsed.raw && <details className="profile-metadata"><summary>기록 정보 보기</summary><pre className="md-frontmatter">{parsed.raw}</pre></details>}
+      {parsed.raw && (
+        <div className="profile-metadata">
+          <DisclosureToggle
+            className="profile-metadata-toggle"
+            open={metadataOpen}
+            onToggle={() => setMetadataOpen((open) => !open)}
+            controls="profile-metadata-body"
+          >
+            기록 정보 보기
+          </DisclosureToggle>
+          <pre className="md-frontmatter k-disclosure-region" id="profile-metadata-body" hidden={!metadataOpen}>{parsed.raw}</pre>
+        </div>
+      )}
       <MarkdownLite text={body} />
     </div>
   );

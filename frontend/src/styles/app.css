@@ -322,9 +322,9 @@ ion-toolbar {
 .retry-action { flex: 0 0 auto; border: 0; border-radius: var(--cc-r-sm); background: var(--cc-danger-soft); color: var(--cc-danger); font-size: 10px; font-weight: 720; padding: 9px 10px; }
 
 .brief-card { overflow: hidden; border: 1px solid var(--cc-line); border-radius: var(--cc-r-lg); background: var(--cc-surface); box-shadow: var(--cc-elev-1); }
+/* 표시(열림·닫힘을 그리는 것)는 `int37-disclosure.css`가 소유한다. 이 자리에만 있던
+   `> svg.expanded { rotate(90deg) }`는 다른 접기 조작과 각도가 달라 지웠다 (TSK-000573). */
 .brief-summary { display: flex; width: 100%; min-height: 76px; align-items: center; gap: 11px; padding: 12px 14px; border: 0; background: transparent; color: inherit; text-align: left; }
-.brief-summary > svg { flex: 0 0 auto; color: var(--cc-muted); transition: transform 160ms ease; }
-.brief-summary > svg.expanded { transform: rotate(90deg); }
 .processing-line { display: grid; gap: 7px; padding: 0 14px 12px 67px; color: var(--cc-warn); font-size: 10px; }
 .processing-line.late { color: var(--cc-danger); }
 .processing-line > div { display: flex; flex-wrap: wrap; gap: 7px; }
@@ -483,8 +483,10 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(var(--cc-accent)
 .profile-links > span { display: inline-flex; align-items: center; gap: 5px; color: var(--cc-muted); font-size: 10px; font-weight: 760; }
 .profile-links > div { display: flex; flex-wrap: wrap; gap: 7px; }
 .profile-links a { display: inline-flex; min-height: 34px; align-items: center; gap: 4px; padding: 7px 9px; border: 1px solid rgba(var(--cc-accent), 0.18); border-radius: var(--cc-r-sm); background: rgba(var(--cc-accent), 0.055); color: var(--cc-blue); font-size: 10.5px; font-weight: 700; text-decoration: none; }
+/* 예전에는 `<details>/<summary>`였다. 브라우저가 그리는 세모는 앱의 다른 접기 표시와 크기·
+   색·회전이 전부 달랐다 — 이제 나머지와 같은 조작을 쓴다 (TSK-000573). */
 .profile-metadata { border: 1px solid var(--cc-line); border-radius: var(--cc-r-md); background: rgba(42,63,89,0.025); }
-.profile-metadata summary { padding: 11px 13px; color: var(--cc-muted); cursor: pointer; font-size: 11px; font-weight: 700; }
+.profile-metadata-toggle { display: flex; width: 100%; align-items: center; gap: 8px; padding: 6px 13px; border: 0; background: transparent; color: var(--cc-muted); font-size: 11px; font-weight: 700; text-align: left; }
 .profile-metadata .md-frontmatter { max-height: 220px; margin: 0 10px 10px; }
 .document-error { margin: 20px 8px; color: var(--cc-muted); font-size: 13px; text-align: center; }
 
@@ -536,8 +538,12 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(var(--cc-accent)
 .last-saved-actions button[disabled] { opacity: 0.55; }
 
 .section-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 2px 3px -8px; }
+/* 이 줄은 앱에서 **가장 얇은** 접기 조작이었다 — 21px이라 44px 상자의 위아래가 다른 것 위에
+   떨어졌다(실측). 가상 요소로 hit area만 넓히는 수법은 여기서 쓸 수 없다: 바로 아래에 명함
+   기록 목록이 DOM 뒤쪽으로 붙어 있어 아래로 넓힌 자리를 목록이 도로 가져간다. 그래서 보이는
+   줄 자체를 키운다 — 높이는 `int37-disclosure.css`의 바닥값(44px)이 준다 (TSK-000573).
+   표시는 이제 글자 세모가 아니라 공용 아이콘이므로 `.caret` 규칙도 함께 사라졌다. */
 .section-toggle { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; color: var(--cc-muted); font-size: 13px; font-weight: 750; cursor: pointer; padding: 4px 0; }
-.section-toggle .caret { width: 12px; }
 .refresh-chip { border: 1px solid var(--cc-line); border-radius: var(--cc-r-md); background: var(--cc-solid); color: var(--cc-muted); font-size: 12px; font-weight: 650; padding: 7px 12px; min-height: 34px; }
 .sending-note { color: var(--cc-blue); font-size: 11px; font-weight: 700; }
 /* 지금 회선을 타고 있는 그 행만 이 줄을 갖는다. */
@@ -785,8 +791,7 @@ button:focus-visible, a:focus-visible { outline: 3px solid rgba(var(--cc-accent)
 .context-mic { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: var(--cc-r-pill); background: rgba(31,143,130,0.12); color: var(--cc-teal-ink); font-size: 10px; font-weight: 740; white-space: nowrap; }
 .context-toggle-copy small { overflow: hidden; color: var(--cc-muted); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
 .context-count { flex: 0 0 auto; padding: 4px 8px; border-radius: var(--cc-r-pill); background: rgba(31,143,130,0.12); color: var(--cc-teal-ink); font-size: 10px; font-weight: 760; }
-.context-toggle > svg { flex: 0 0 auto; color: var(--cc-muted); transition: transform 160ms ease; }
-.context-toggle > svg.expanded { transform: rotate(90deg); }
+/* 표시는 `int37-disclosure.css`가 소유한다 (TSK-000573). 이 자리의 90도 회전은 지웠다. */
 .context-note { margin: 0; padding: 9px 11px; border-radius: var(--cc-r-sm); background: rgba(42,63,89,0.045); color: var(--cc-muted); font-size: 11px; line-height: 1.55; word-break: keep-all; }
 .context-field { display: grid; gap: 8px; }
 .context-label { color: var(--cc-ink); font-size: 12.5px; font-weight: 760; letter-spacing: -0.015em; }
