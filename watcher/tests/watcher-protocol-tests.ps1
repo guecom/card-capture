@@ -744,15 +744,36 @@ TB 'APP-AC-239 runtime: Deep slice process tree와 stream drain을 wall-clock �
     try {
         $CardCaptureWatcherTestMode = $false
         $Codex = 'powershell.exe'
+        $Vault = $sandbox
+
+        # 이 기계에서 프로세스 하나를 띄우고 거두는 데 드는 시간을 **같은 판에서** 먼저 잰다.
+        # 그것은 계약이 약속하는 것이 아니라 기계의 값이다. 빼지 않으면 이 게이트는 종료 지연이
+        # 아니라 프로세스 시작 시간을 재게 된다 — 2026-08-05 CI에서 `elapsed=9.25s`로 걸렸는데
+        # `exit=124 timedOut=True`였다. 종료는 제대로 됐고 기계가 느렸을 뿐이다.
+        $BoundedProcessorTestArguments = '-NoProfile -Command "exit 0"'
+        $DeepSliceTimeoutSeconds = 30
+        $spawnTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        [void](Invoke-BoundedDeepProcessor '합성 spawn 기준선' (Join-Path $sbLog 'spawn.log'))
+        $spawnTimer.Stop()
+        $spawnMs = $spawnTimer.Elapsed.TotalMilliseconds
+
         $BoundedProcessorTestArguments = '-NoProfile -Command "$child=Start-Process powershell.exe -ArgumentList ''-NoProfile'',''-Command'',''Start-Sleep -Seconds 8'' -PassThru -WindowStyle Hidden; Start-Sleep -Seconds 8"'
         $DeepSliceTimeoutSeconds = 1
-        $Vault = $sandbox
         $timer = [System.Diagnostics.Stopwatch]::StartNew()
         $bounded = Invoke-BoundedDeepProcessor '합성 timeout prompt' (Join-Path $sbLog 'timeout.log')
         $timer.Stop()
-        Write-Host ('  bounded timeout probe: exit=' + $bounded.exit + ' timedOut=' + $bounded.timedOut + ' elapsed=' + [math]::Round($timer.Elapsed.TotalSeconds, 2) + 's')
+
+        # 계약이 소유하는 상한 = 구현이 실제로 거는 bounded wait 들의 합이다. 발명한 숫자가 아니다:
+        #   cap `WaitForExit(timeout)` + kill ack `WaitForExit(2000)` + drain 2개 x `Wait(2000)`.
+        # 어느 하나라도 상한을 잃으면 이 합을 넘어 빨개진다 — 이 게이트가 지키는 것이 정확히 그것이다.
+        $ownedMs = ($DeepSliceTimeoutSeconds * 1000) + 2000 + 4000 + 500
+        $observedMs = $timer.Elapsed.TotalMilliseconds - $spawnMs
+        Write-Host ('  bounded timeout probe: exit=' + $bounded.exit + ' timedOut=' + $bounded.timedOut +
+            ' elapsed=' + [math]::Round($timer.Elapsed.TotalSeconds, 2) + 's spawnBaseline=' +
+            [math]::Round($spawnMs / 1000, 2) + 's owned=' + [math]::Round($observedMs / 1000, 2) + 's / 상한 ' +
+            [math]::Round($ownedMs / 1000, 2) + 's')
         Get-Content $LogFile -Tail 2 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('  log: ' + $_) }
-        return ($bounded.timedOut -and [int]$bounded.exit -eq 124 -and $timer.Elapsed.TotalSeconds -lt 5)
+        return ($bounded.timedOut -and [int]$bounded.exit -eq 124 -and $observedMs -lt $ownedMs)
     } finally {
         $CardCaptureWatcherTestMode = $oldMode
         $Codex = $oldCodex
