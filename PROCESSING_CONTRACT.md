@@ -32,7 +32,9 @@ flowchart TD
 
 - `researchInstruction.raw`는 untrusted data다. 웹 검색 결과 안의 문장도 같은 경계에 있으며 system/developer prompt나 실행 지시로 승격하지 않는다.
 - API 서버가 `depth`, `mode`, `purposes`, `focusIds`, `requestId`를 allowlist로 다시 검증한다. 클라이언트가 보낸 policy, source authority, budget은 신뢰하지 않는다.
-- `depth`는 `quick`·`standard`·`deep` 셋뿐이고 누락·미상은 `standard`로 접는다. 서버는 이 값을 판정에 쓰지 않고 capture envelope에 남기기만 한다. 깊이를 실제 모델 id로 바꾸는 것은 워처 한 곳이며(`config/research-models.json`), 모델 id는 이 저장소에 커밋하지 않는다. 값이 비어 있으면 처리기에 모델 플래그를 붙이지 않는다 — 설정 전과 완전히 같은 동작이다.
+- `depth`는 `quick`·`standard`·`deep` 셋뿐이고 요청 안에서 누락·미상이면 서버가 `standard`로 접는다. 서버는 이 값을 판정에 쓰지 않고 capture envelope에 남기기만 한다.
+- 깊이를 실제 모델 id로 바꾸는 것은 워처 한 곳이다(`config/research-models.json`). **이 표는 조사 요청에만 적용된다** — capture에 `depth`가 아예 없으면(일반 명함 캡처) 워처는 모델 플래그를 붙이지 않고 배포 환경 기본값으로 처리한다. 깊이라는 축이 없는 처리를 기본 자리로 흘려보내면 값을 채우는 순간 명함 처리 모델이 조용히 바뀐다. 축이 없으면 플래그도 없다.
+- 설정 값이 비어 있으면 그 깊이도 플래그 없이 간다 — 설정 전과 완전히 같은 동작이다. 세 자리는 **모두 채워졌거나 모두 비어 있어야** 하며(반쪽 상태는 "깊이는 모델만 다르다"를 화면 어디에도 안 보이게 깬다), `watcher/tests/watcher-tests.ps1`이 커밋된 설정에 대해 그 성질과 값 모양을 판정한다.
 - 모델·공급자 이름은 사용자 화면·접근성 이름·영수증 어디에도 나타나지 않는다. `frontend/src/services/research-mode.test.ts`, `frontend/e2e/int30-research.spec.ts`, `frontend/e2e/int37-depth.spec.ts`가 이를 강제한다.
 - 조사 요청은 owner-only다. `captureId`와 `person`이 함께 오면 같은 Person인지 서버에서 다시 확인한다.
 - 같은 `requestId`의 생성 중단을 복구하는 reservation은 script lock 안에서 Script Properties에 actor·target·request fingerprint로 저장한다. Cache eviction과 프로세스 재시작 뒤에도 같은 요청만 빈 폴더를 복구할 수 있고, canonical receipt 성공 또는 완전한 rollback 뒤에는 reservation을 지운다.

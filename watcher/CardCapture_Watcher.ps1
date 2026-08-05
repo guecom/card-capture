@@ -1935,12 +1935,17 @@ function Get-ResearchModelMap {
 
 # 깊이 하나를 모델 id로 옮긴다. 세 갈래뿐이다:
 #   1. 아는 깊이 + 값이 채워져 있다 → 그 값.
-#   2. 모르는 깊이(또는 깊이 없음) → standard 자리를 본다. 조사 요청이 아닌 일반 명함 캡처가
-#      여기로 온다 — 깊이라는 축 자체가 없는 처리이므로 기본 자리를 쓴다.
-#   3. 값이 비어 있다 → 빈 문자열. 호출한 쪽이 플래그를 아예 붙이지 않는다.
+#   2. **깊이가 없거나 모르는 값이다** → 빈 문자열. 조사 요청이 아닌 일반 명함 캡처가 여기로 온다.
+#   3. 아는 깊이인데 값이 비어 있다 → 빈 문자열. 호출한 쪽이 플래그를 아예 붙이지 않는다.
+#
+# 2번이 이 함수에서 가장 중요한 줄이다 (TSK-000571). 첫 판은 깊이가 없으면 `standard` 자리를 썼다.
+# 값이 전부 비어 있는 동안에는 아무 차이가 없었지만, **값을 채우는 순간 명함 처리 전체의 모델이
+# 조용히 바뀐다.** founder가 정한 것은 `조사 깊이 세 갈래가 모델만 다르다`이지 명함 처리 모델을
+# 바꾸라는 것이 아니었다. 깊이라는 축이 없는 처리는 축이 없는 채로 둔다 — 플래그를 붙이지 않고
+# 배포 환경의 기본값으로 간다. 모르는 깊이 문자열도 같다: 모르는 값을 아는 자리에 끼워 맞추지 않는다.
 function Resolve-ResearchModel($depth) {
     $key = [string]$depth
-    if ($ResearchDepths -notcontains $key) { $key = $ResearchDefaultDepth }
+    if ($ResearchDepths -notcontains $key) { return '' }
     $map = Get-ResearchModelMap
     if ($map.ContainsKey($key)) { return [string]$map[$key] }
     return ''

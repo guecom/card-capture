@@ -210,9 +210,12 @@ Set-ModelConfig 'model-q' 'model-s' 'model-d'
 T ((Resolve-ResearchModel 'quick') -eq 'model-q') 'model: 빠른 조사는 자기 자리로 간다'
 T ((Resolve-ResearchModel 'standard') -eq 'model-s') 'model: 일반 조사는 자기 자리로 간다'
 T ((Resolve-ResearchModel 'deep') -eq 'model-d') 'model: 깊은 조사는 자기 자리로 간다'
-T ((Resolve-ResearchModel 'turbo') -eq 'model-s') 'model: 모르는 깊이는 기본 자리를 쓴다'
-T ((Resolve-ResearchModel '') -eq 'model-s') 'model: 깊이가 없는 캡처는 기본 자리를 쓴다'
-T ((Resolve-ResearchModel $null) -eq 'model-s') 'model: 깊이가 null이어도 기본 자리를 쓴다'
+# 이 표는 **조사 요청에만** 적용된다 (TSK-000571). 깊이라는 축이 없는 처리(일반 명함 캡처)를
+# 기본 자리로 흘려보내면, 값을 채우는 순간 명함 처리 모델이 조용히 바뀐다 — 아무도 그것을
+# 승인하지 않았다. 축이 없으면 플래그도 없다.
+T ((Resolve-ResearchModel 'turbo') -eq '') 'model: 모르는 깊이는 아무 자리도 쓰지 않는다'
+T ((Resolve-ResearchModel '') -eq '') 'model: 깊이가 없는 일반 명함 캡처는 모델을 바꾸지 않는다'
+T ((Resolve-ResearchModel $null) -eq '') 'model: 깊이가 null이어도 모델을 바꾸지 않는다'
 
 # 값 하나가 곧 자식 프로세스의 argv가 된다. 모양이 어긋나면 쓰지 않고, 나머지 자리는 그대로 산다.
 Set-ModelConfig '-rf --dangerous' 'ok-model' 'has space'
@@ -223,12 +226,23 @@ T ((Resolve-ResearchModel 'standard') -eq 'ok-model') 'model: 모양이 어긋�
 Set-ModelConfig 'model-q' 'model-s' 'model-d' 'card-capture-research-models-v0'
 T ((Resolve-ResearchModel 'deep') -eq '') 'model: 모르는 설정 판은 쓰지 않는다'
 
-# 저장소에 커밋된 설정은 비어 있어야 한다 — 모델 id를 이 저장소에 넣지 않는다.
+# 커밋된 설정은 세 자리가 **모두 채워져 있거나 모두 비어 있어야** 한다 (TSK-000571).
+# 반쪽만 채우면 어떤 깊이는 지정 모델로, 어떤 깊이는 배포 기본값으로 가면서 "깊이는 모델만
+# 다르다"가 조용히 깨진다 — 그 상태는 화면 어디에도 나타나지 않아 아무도 눈치채지 못한다.
+# 값 자체는 여기서 판정하지 않는다. 무엇이 루나·테라·솔인지는 founder가 정하고, 이 게이트가
+# 지키는 것은 **셋의 상태가 같다**는 성질 하나다.
 $repoModelConfig = Join-Path (Split-Path -Parent $here) 'config\research-models.json'
 T (Test-Path $repoModelConfig) 'model: 저장소에 설정 파일이 있다'
 $repoModels = Get-Content $repoModelConfig -Raw -Encoding UTF8 | ConvertFrom-Json
-T ((@(@('quick', 'standard', 'deep') | Where-Object { ([string]$repoModels.models.$_).Trim() -ne '' })).Count -eq 0) `
-    'model: 커밋된 설정은 세 자리 모두 비어 있다 (모델 id를 커밋하지 않는다)'
+$repoFilled = @(@('quick', 'standard', 'deep') | Where-Object { ([string]$repoModels.models.$_).Trim() -ne '' }).Count
+T ($repoFilled -eq 0 -or $repoFilled -eq 3) `
+    'model: 커밋된 설정은 세 자리가 모두 채워졌거나 모두 비었다 (반쪽 상태 금지)'
+# 채워져 있다면 모양 검사를 통과해야 한다 — 통과하지 못하는 값은 워처가 조용히 버리고,
+# 그러면 설정이 있는데 아무 일도 안 일어나는 가장 알기 어려운 상태가 된다.
+if ($repoFilled -eq 3) {
+    $repoShapeOk = @(@('quick', 'standard', 'deep') | Where-Object { ([string]$repoModels.models.$_).Trim() -match $ResearchModelShape }).Count
+    T ($repoShapeOk -eq 3) 'model: 커밋된 값 셋 다 워처가 실제로 쓸 수 있는 모양이다'
+}
 
 # 그리고 그 값이 실제로 처리기 명령줄에 붙는지 — 해석이 아니라 argv를 직접 본다.
 $argLog = Join-Path $sandbox 'model-args.txt'
