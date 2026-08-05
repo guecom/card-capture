@@ -1008,7 +1008,8 @@ function App() {
     setDeviceEnv((current) => (current.lastCameraFailure === failure ? current : { ...current, lastCameraFailure: failure }));
   }, []);
 
-  // 조사 요청의 접수 조건 (계약: "깊은 조사는 목적을 하나 이상 골라야 접수된다").
+  // 조사 요청의 접수 조건. **깊이는 조건을 만들지 않는다** (DEC-000110) — 남은 막힘은 서버가
+  // 깊은 조사를 열어 두지 않았다고 말한 경우 하나뿐이다.
   //
   // 판정은 `services/research-mode.ts`가 소유하고 이 화면은 결과만 읽는다. 두 자리(촬영 탭의
   // `완료`, 인물 시트의 `조사 요청 접수`)가 같은 함수를 부르므로 한쪽만 고쳐지는 일이 없다.
@@ -1707,7 +1708,7 @@ function App() {
 
   const submitPersonAction = useCallback(async () => {
     if (!personActionComposer || !personActionText.trim() || personActionSubmitting) return;
-    // 접수 조건을 못 채운 깊은 조사는 여기서 멈춘다. 시트 안의 안내가 이미 이유를 말하고 있다.
+    // 서버가 깊은 조사를 닫아 둔 경우 여기서 멈춘다. 시트 안의 안내가 이미 이유를 말하고 있다.
     if (personActionGate.blocked) return;
     setPersonActionSubmitting(true);
     let success = false;

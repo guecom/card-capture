@@ -1,21 +1,24 @@
-// Product 계약 적합성 게이트 — `깊은 조사`의 접수 조건 (INT-000030 / TSK-000542).
+// Product 계약 적합성 게이트 — `깊은 조사`의 접수 조건 (INT-000030 / TSK-000542 / DEC-000110).
 //
 // 계약 원본은 vault `03_Product/Kairen_Card_Capture_Product_Docs/63_Research_Instruction_Contract.md`이고
-// 이 저장소는 그 구현이다. 계약이 말하는 문장은 하나다:
+// 이 저장소는 그 구현이다. **계약 문장이 2026-08-05에 뒤집혔다.**
 //
-//   "사용자-facing mode는 `빠른 조사·일반 조사·깊은 조사`이고 신규 요청 기본값은 `일반 조사`다.
-//    **깊은 조사는 목적을 하나 이상 골라야 접수된다.**"
+// 옛 문장: "깊은 조사는 목적을 하나 이상 골라야 접수된다."
+// founder 판정 (DEC-000110): "빠른 조사, 일반 조사, 깊은 조사는 … 오직 모델만 차이가 있는 거야.
+//   그러고 깊은 조사를 클릭했을 때 조사 범위를 골라야 한다는 둥, 이런 것이 아니야."
 //
-// 이 파일이 재는 것은 그 문장이 **화면에서 실제로 성립하는가**다. 규칙이 서비스 계층에 있다는
-// 것은 단위 테스트가 이미 증명하므로, 여기서는 그 규칙이 사용자의 손과 낭독기에 도달하는지만 본다:
-//   막히는가 / 왜 막혔는지 보이는가 / 어떻게 푸는지 보이는가 / 눌렀을 때 막다른 길이 아닌가 /
-//   깊이를 몰래 낮추지 않는가 / 빠른·일반을 조이지 않는가.
+// 그래서 이 파일의 A·B 묶음은 **지워지지 않고 뒤집혔다.** 예전에는 "범위 0개인 깊은 조사가
+// 막히는가"를 잠갔고 지금은 "그 조건이 다시 생기지 않는가"를 잠근다. 지우면 조건이 슬며시
+// 돌아와도 아무도 모른다 — 이 파일이 있는 이유가 바로 그것이다.
 //
-// ── 이 게이트가 형식적이지 않다는 근거 ──
-// 수정 **전** 번들(lane B/C/D/E 병합 직후)에서 아래 5개가 실제로 FAIL한다. 그 상태에서는
-// `깊은 조사` + 범위 0개로도 요청이 그대로 서버로 나갔다. 통과만 하는 검사는 검사가 아니므로
-// 접근성 이름 검사는 **shadow DOM 안의 native button**을 읽는다 — host에 얹은 `aria-label`을
-// 그대로 되읽으면 자기가 쓴 값을 자기가 확인하는 자기충족 검사가 된다.
+// 여기서 재는 것은 규칙이 **사용자의 손과 낭독기에 도달하는가**다:
+//   깊이를 고르는 것만으로 숙제가 생기지 않는가 / 세 깊이의 조건이 서로 같은가 /
+//   깊이를 몰래 낮추지 않는가 / 범위를 대신 골라 주지 않는가 /
+//   그러면서도 서버가 닫아 둔 경우(D 묶음)의 fail-closed는 그대로인가.
+//
+// 통과만 하는 검사는 검사가 아니므로 접근성 이름 검사는 **shadow DOM 안의 native button**을
+// 읽는다 — host에 얹은 `aria-label`을 그대로 되읽으면 자기가 쓴 값을 자기가 확인하는
+// 자기충족 검사가 된다.
 import { expect, test, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
@@ -141,152 +144,115 @@ async function openPersonSheet(page: Page): Promise<void> {
   await expect(sheetComposer(page)).toBeVisible();
 }
 
-/** 범위 0개 + 자유 입력만 있는 깊은 조사 — 계약이 받지 않는 바로 그 상태를 만든다. */
-async function makeBlockedRequest(page: Page): Promise<void> {
+/** 범위 0개 + 자유 입력만 있는 깊은 조사 — 예전 계약이 **받지 않던** 바로 그 상태를 만든다. */
+async function makeZeroScopeDeepRequest(page: Page): Promise<void> {
   await openPersonSheet(page);
   await sheetComposer(page).locator('ion-textarea textarea').fill('공개 경력과 최근 발표를 확인해 주세요');
   await depthOption(sheetComposer(page), 'deep').click();
   await expect(sheetComposer(page).locator('.research-scope-count')).toHaveText(`${SCOPE_COUNT}개 중 0개 선택`);
 }
 
-// ── A. 막힌다 ────────────────────────────────────────────────────────────────
+// ── A. 막지 않는다 ───────────────────────────────────────────────────────────
 
-test('범위 0개인 깊은 조사는 접수되지 않는다 — 눌러도 서버로 나가지 않는다', async ({ page }) => {
+test('범위 0개인 깊은 조사가 그대로 접수된다 — 누르면 서버로 나간다', async ({ page }) => {
   const harness = await boot(page);
   try {
-    await makeBlockedRequest(page);
+    await makeZeroScopeDeepRequest(page);
     await sheetSubmitNative(page).click();
 
-    // 나가지 않았다는 것은 "아직 안 왔다"와 다르다. 실제로 나갔다면 이 사이에 도착한다.
-    await page.waitForTimeout(700);
-    expect(harness.submitted, '범위 0개인 깊은 조사가 서버로 나갔다').toEqual([]);
-    // 시트도 닫히지 않는다 — 적어 둔 내용과 고른 깊이가 그대로 남아 있어야 고칠 수 있다.
-    await expect(sheetComposer(page)).toBeVisible();
-    await expect(sheetComposer(page).locator('ion-textarea textarea')).toHaveValue('공개 경력과 최근 발표를 확인해 주세요');
+    // 접수됐다는 증거는 문구가 아니라 **실제로 나간 요청**이다.
+    await expect.poll(() => harness.submitted.length, { timeout: 10_000 }).toBe(1);
+    const envelope = harness.submitted[0].instruction as Record<string, unknown>;
+    // 낮춰서 보내지 않는다. 사용자가 고른 깊이 그대로 나간다 — 서버가 읽는 두 칸에서 확인한다.
+    expect(envelope.mode, '깊이를 몰래 낮춰 보냈다').toBe('deep_evidence_graph');
+    expect(envelope.depth, '고른 깊이가 요청에 실리지 않았다').toBe('deep');
+    // 고른 범위가 없으므로 자리도 비어 있다 — 비어 있다고 거절되지 않는다는 것이 이 검사의 전부다.
+    expect(envelope.focusIds).toEqual([]);
   } finally {
     await stopServer(harness.server);
   }
 });
 
-test('막히기 전에 이유와 회복 방법이 먼저 보인다 — 누른 뒤에야 알게 되지 않는다', async ({ page }) => {
+test('깊은 조사를 골라도 사용자가 더 해야 하는 일이 생기지 않는다', async ({ page }) => {
   const harness = await boot(page);
   try {
     const composer = captureComposer(page);
-    // 아무것도 적지 않은 상태에서 깊이만 고른다. 긴 글을 다 적은 뒤에 처음 막히면 늦다.
+    // 아무것도 적지 않은 상태에서 깊이만 고른다. 예전에는 이 순간 조건 안내가 떴다.
     await depthOption(composer, 'deep').click();
+    await expect(composer.locator('.research-depth-option[data-depth="deep"] input')).toBeChecked();
 
-    const block = composer.locator('.research-block');
-    await expect(block, '깊은 조사를 골라도 조건이 어디에도 없다').toBeVisible();
-    await expect(block).toHaveAttribute('role', 'status');
-    // 왜 막혔는가.
-    await expect(block).toContainText('조사 범위');
-    // 자유 입력만으로는 안 된다는 사실 — 가장 흔한 오해다.
-    await expect(block).toContainText('직접 적은 내용');
-    // 무엇을 하면 풀리는가. **두 갈래가 모두** 있어야 막다른 길이 아니다.
-    await expect(block).toContainText('일반 조사');
+    await expect(composer.locator('.research-block'), '깊이를 고른 것만으로 숙제가 생겼다').toHaveCount(0);
+    await expect(page.locator('ion-button.primary-action'), '깊이를 고른 것만으로 완료가 막혔다')
+      .toHaveAttribute('data-blocked', 'no');
 
-    // 조건이 붙은 칸(깊은 조사)과 그것을 푸는 가장 큰 조작(모두 선택)이 이 설명과 이어져 있다.
-    const wiring = await composer.evaluate((root) => {
-      const blockId = root.querySelector('.research-block')?.id ?? '';
-      const deepInput = root.querySelector('.research-depth-option[data-depth="deep"] input');
-      const cta = root.querySelector('.research-scope-all');
-      return {
-        blockId,
-        deepDescribed: (deepInput?.getAttribute('aria-describedby') ?? '').split(/\s+/).includes(blockId),
-        ctaDescribed: (cta?.getAttribute('aria-describedby') ?? '').split(/\s+/).includes(blockId),
-      };
-    });
-    expect(wiring.blockId, '설명에 이름이 없어 어디서도 가리킬 수 없다').not.toBe('');
-    expect(wiring.deepDescribed, '깊은 조사 칸이 자기 조건과 이어져 있지 않다').toBe(true);
-    expect(wiring.ctaDescribed, '모두 선택이 왜 필요한지와 이어져 있지 않다').toBe(true);
+    // 깊은 조사 칸이 자기와 무관한 조건을 낭독기에 물고 있지도 않다.
+    const described = await composer.evaluate((root) =>
+      root.querySelector('.research-depth-option[data-depth="deep"] input')?.getAttribute('aria-describedby') ?? '');
+    expect(described, `깊은 조사 칸이 아직 조건과 이어져 있다: ${described}`).toBe('');
   } finally {
     await stopServer(harness.server);
   }
 });
 
-// ── B. 막다른 길이 아니다 ─────────────────────────────────────────────────────
+// ── B. 세 깊이는 서로 같다 ────────────────────────────────────────────────────
 
-test('막힌 제출 버튼은 키보드로 닿고, 이름 자체로 이유를 말한다', async ({ page }) => {
+test('제출 버튼 이름이 깊이에 따라 달라지지 않는다', async ({ page }) => {
   const harness = await boot(page);
   try {
-    await makeBlockedRequest(page);
+    await openPersonSheet(page);
+    await sheetComposer(page).locator('ion-textarea textarea').fill('공개 경력과 최근 발표를 확인해 주세요');
     const native = sheetSubmitNative(page);
 
-    // 꺼 버리면 키보드로 닿을 수 없어 "왜 안 되는지" 물어볼 방법이 사라진다.
-    await expect(native, '막힌 버튼을 아예 꺼서 키보드가 닿을 수 없다').not.toBeDisabled();
-    await native.focus();
-    await expect(native).toBeFocused();
-
-    // 진실값은 shadow DOM 안 native button의 접근 이름이다 — host에 얹은 값을 되읽지 않는다.
-    await expect(native, '막힌 이유가 낭독기에 도달하지 않는다').toHaveAccessibleName(/보낼 수 없어요/);
-    await expect(native).toHaveAccessibleName(/일반 조사/);
+    for (const depth of ['quick', 'standard', 'deep'] as const) {
+      await depthOption(sheetComposer(page), depth).click();
+      await expect(sheetComposer(page).locator(`.research-depth-option[data-depth="${depth}"] input`)).toBeChecked();
+      // 꺼 버리면 키보드로 닿을 수 없다. 어느 깊이에서도 그런 일은 없다.
+      await expect(native, `${depth}에서 제출 버튼이 꺼졌다`).not.toBeDisabled();
+      // 진실값은 shadow DOM 안 native button의 접근 이름이다 — host에 얹은 값을 되읽지 않는다.
+      await expect(native, `${depth}에서 제출 버튼 이름이 달라졌다`).toHaveAccessibleName('조사 요청 접수');
+    }
   } finally {
     await stopServer(harness.server);
   }
 });
 
-/* 예전에는 이 검사가 안내 **문단**(`.research-block`)이 포커스를 받는지를 봤다. 문단은 읽히지만
-   다음 키 입력으로 할 수 있는 것이 없다 — 막다른 곳이다. 승인된 acceptance는 「실패 시 **목적
-   영역으로 focus**와 inline 안내를 제공한다」이고, INT-000036 독립 게이트가 그 차이를 잡아냈다.
-
-   그래서 검사가 조여진다: 손이 가는 곳은 **이 막힘을 실제로 푸는 조작**이어야 하고, 그러면서도
-   이유는 여전히 보이고 그 자리에서 함께 읽혀야 한다. 문단 하나만 보던 때보다 재는 것이 늘었다. */
-test('막힌 버튼을 누르면 풀 수 있는 자리로 손이 간다 — 아무 일도 없는 버튼이 아니다', async ({ page }) => {
+test('제출은 곧바로 접수로 이어진다 — 다른 자리로 튕겨 보내지 않는다', async ({ page }) => {
   const harness = await boot(page);
   try {
-    await makeBlockedRequest(page);
-    const composer = sheetComposer(page);
-    const block = composer.locator('.research-block');
-    const blockId = await block.getAttribute('id');
-    expect(blockId, '막힘 안내에 고정 id가 없다 — 이유를 이어 줄 방법이 없다').toBeTruthy();
-
+    await makeZeroScopeDeepRequest(page);
     await sheetSubmitNative(page).click();
 
-    // 1. 손은 범위를 켜는 조작 위에 선다. 다음 키 입력(Enter/Space)이 곧 회복이다.
-    const selectAll = composer.locator('.research-scope-all');
-    await expect(selectAll, '눌러도 막힘을 풀 수 있는 자리로 데려다주지 않는다').toBeFocused();
-    // 2. 이유는 사라지지 않고, 그 자리에서 함께 읽힌다.
-    await expect(block, '손만 옮기고 왜 막혔는지는 보이지 않는다').toBeVisible();
-    expect(
-      ((await selectAll.getAttribute('aria-describedby')) ?? '').split(/\s+/),
-      '손이 닿은 자리가 막힘 이유와 이어져 있지 않다',
-    ).toContain(blockId!);
-    // 3. 그 자리에서 정말로 풀린다 — 문구가 아니라 실제 상태로 확인한다.
-    await page.keyboard.press('Enter');
-    await expect(block, '풀 수 있는 자리라고 데려다 놓고 눌러도 안 풀린다').toHaveCount(0);
-    await expect(sheetSubmitNative(page)).toHaveAccessibleName('조사 요청 접수');
+    await expect.poll(() => harness.submitted.length, { timeout: 10_000 }).toBe(1);
+    // 접수됐으므로 시트는 닫힌다. 예전에는 여기서 시트가 남고 손이 범위 영역으로 옮겨졌다.
+    await expect(sheet(page), '접수됐는데 작성 자리가 그대로 남아 있다').toBeHidden({ timeout: 10_000 });
   } finally {
     await stopServer(harness.server);
   }
 });
 
-test('범위를 하나 고르면 즉시 풀리고 깊은 조사가 그대로 접수된다', async ({ page }) => {
+test('범위를 고르면 그 범위가 함께 실려 나간다 — 좁힘은 그대로 살아 있다', async ({ page }) => {
   const harness = await boot(page);
   try {
-    await makeBlockedRequest(page);
-    const block = sheetComposer(page).locator('.research-block');
-    await expect(block).toBeVisible();
-
+    await makeZeroScopeDeepRequest(page);
     await sheetComposer(page).locator('.research-scope-chip').first().click();
-    await expect(block, '범위를 골랐는데도 막힘 안내가 남아 있다').toHaveCount(0);
-    await expect(sheetSubmitNative(page)).toHaveAccessibleName('조사 요청 접수');
+    await expect(sheetComposer(page).locator('.research-scope-count')).toHaveText(`${SCOPE_COUNT}개 중 1개 선택`);
 
     await sheetSubmitNative(page).click();
     await expect.poll(() => harness.submitted.length, { timeout: 10_000 }).toBe(1);
-    // 낮춰서 보내지 않는다. 사용자가 고른 깊이 그대로 나간다 — 서버가 읽는 칸에서 확인한다.
-    expect((harness.submitted[0].instruction as Record<string, unknown>)?.mode, '풀린 뒤에도 깊이가 그대로 실려 나가지 않는다')
-      .toBe('deep_evidence_graph');
+    const envelope = harness.submitted[0].instruction as Record<string, unknown>;
+    expect(envelope.mode).toBe('deep_evidence_graph');
+    // 고른 범위가 서버가 읽는 자리로 옮겨졌다. 조건이 아니게 됐다고 값이 사라지면 안 된다.
+    expect((envelope.focusIds as string[]).length, '고른 범위가 요청에서 사라졌다').toBeGreaterThanOrEqual(1);
+    expect((envelope.purposes as string[]).length, '고른 범위의 목적이 요청에서 사라졌다').toBeGreaterThanOrEqual(1);
   } finally {
     await stopServer(harness.server);
   }
 });
 
-test('막는 동안 깊이를 몰래 낮추지도, 범위를 대신 고르지도 않는다', async ({ page }) => {
+test('깊이를 고른다고 범위를 대신 골라 주지 않는다', async ({ page }) => {
   const harness = await boot(page);
   try {
-    await makeBlockedRequest(page);
-    await expect(sheetComposer(page).locator('.research-block')).toBeVisible();
-    await sheetSubmitNative(page).click();
+    await makeZeroScopeDeepRequest(page);
     await page.waitForTimeout(400);
 
     // 고른 깊이는 고른 그대로다.
@@ -299,22 +265,21 @@ test('막는 동안 깊이를 몰래 낮추지도, 범위를 대신 고르지도
   }
 });
 
-test('깊은 조사를 고른 뒤 범위를 모두 해제하면 촬영 탭의 완료가 다시 막힌다', async ({ page }) => {
+test('깊은 조사를 고른 뒤 범위를 모두 해제해도 촬영 탭의 완료가 막히지 않는다', async ({ page }) => {
   const harness = await boot(page);
   try {
     const composer = captureComposer(page);
     await composer.locator('ion-textarea textarea').fill('의사결정 권한을 확인해 주세요');
     await composer.locator('.research-scope-all').click();
     await depthOption(composer, 'deep').click();
-    // 범위가 있는 동안에는 막지 않는다.
     await expect(composer.locator('.research-block')).toHaveCount(0);
 
-    // 다 골라 둔 상태에서 같은 버튼이 `모두 해제`가 된다 — 그 순간 조건이 깨진다.
+    // 다 골라 둔 상태에서 같은 버튼이 `모두 해제`가 된다. 예전에는 그 순간 조건이 깨졌다.
     await composer.locator('.research-scope-all').click();
     await expect(composer.locator('.research-scope-count')).toHaveText(`${SCOPE_COUNT}개 중 0개 선택`);
-    await expect(composer.locator('.research-block'), '범위를 모두 해제했는데 아무 말이 없다').toBeVisible();
-    await expect(page.locator('ion-button.primary-action'), '완료가 막힌 상태를 표시하지 않는다')
-      .toHaveAttribute('data-blocked', 'research');
+    await expect(composer.locator('.research-block'), '범위를 모두 해제했더니 조건이 되살아났다').toHaveCount(0);
+    await expect(page.locator('ion-button.primary-action'), '범위를 모두 해제했더니 완료가 막혔다')
+      .toHaveAttribute('data-blocked', 'no');
   } finally {
     await stopServer(harness.server);
   }

@@ -27,7 +27,7 @@ import {
   researchScopeWireGaps,
   sanitizeResearchRequestId,
 } from './research-envelope';
-import { RESEARCH_DEPTHS } from './research-mode';
+import { DEFAULT_RESEARCH_DEPTH, RESEARCH_DEPTHS } from './research-mode';
 import { RESEARCH_SCOPES } from './research-scope';
 
 /** `var NAME_ = ['a', 'b'];` 한 줄에서 값만 뽑는다. 없으면 빈 배열이 아니라 실패다. */
@@ -152,6 +152,42 @@ describe('배포 창 되돌림 — 진짜 실패를 감추지 않는가', () => 
   it('되돌린 봉투는 mode 한 칸만 다르다 — 같은 요청이므로 멱등 키도 그대로다', () => {
     const envelope = { raw: '확인', mode: 'quick' as const, purposes: [], focusIds: ['career'], requestId: 'rr-abcdefghij' };
     expect(downgradeQuickMode(envelope)).toEqual({ ...envelope, mode: 'standard' });
+  });
+
+  it('깊이를 들고 있으면 깊이도 함께 내려간다 — 없는 상태를 기록으로 남기지 않는다', () => {
+    // 깊이는 이제 서버 envelope에 남아 **처리 모델을 고르는 값**이다 (DEC-000110).
+    // `mode`만 내리고 `depth: 'quick'`을 남기면 "표준으로 처리하면서 빠른 조사의 모델을 쓴 요청"이
+    // 기록되는데, 그런 요청은 실재하지 않는다.
+    const envelope = { raw: '확인', depth: 'quick' as const, mode: 'quick' as const, purposes: [], focusIds: ['career'], requestId: 'rr-abcdefghij' };
+    expect(downgradeQuickMode(envelope)).toEqual({ ...envelope, depth: 'standard', mode: 'standard' });
+  });
+
+  it('깊이 칸이 없는 옛 봉투에는 깊이를 만들어 넣지 않는다', () => {
+    expect('depth' in downgradeQuickMode({ mode: 'quick' as const })).toBe(false);
+  });
+});
+
+// ── 깊이 자체가 서버로 나가는가 (DEC-000110 / TSK-000565) ─────────────────────
+//
+// founder: "빠른 조사, 일반 조사, 깊은 조사는 … 오직 모델만 차이가 있는 거야."
+// 그 말이 참이려면 깊이가 **처리기까지** 살아서 도착해야 한다. 클라이언트가 보내도 서버가
+// 모르는 값이면 그 자리에서 사라지므로, 여기서도 `Code.gs` 원문을 읽어 대조한다.
+describe('depth wire — 서버가 깊이를 아는가', () => {
+  it('보내는 세 깊이가 서버 allowlist 안에 있다', () => {
+    const server = serverAllowlist('RESEARCH_DEPTHS_');
+    const unknown = RESEARCH_DEPTHS.map((option) => option.depth).filter((depth) => !server.includes(depth));
+    expect(unknown, `서버가 모르는 깊이를 보낸다: ${unknown.join(', ')}`).toEqual([]);
+  });
+
+  it('서버가 깊이를 capture envelope에 남긴다 — 읽고 버리면 처리기가 볼 수 없다', () => {
+    // 문자열 대조는 무딘 도구지만, 이 한 칸이 조용히 빠지는 것이 정확히 예전에 일어난 일이다.
+    expect(/depth:\s*request\.depth/.test(serverSource), 'researchEnvelope_가 깊이를 남기지 않는다').toBe(true);
+  });
+
+  it('서버 기본 깊이가 계약 기본값과 같다', () => {
+    const match = /var\s+RESEARCH_DEFAULT_DEPTH_\s*=\s*'([a-z_]+)'/.exec(serverSource);
+    expect(match, 'Code.gs에 기본 깊이가 없다').not.toBeNull();
+    expect(match![1]).toBe(DEFAULT_RESEARCH_DEPTH);
   });
 });
 

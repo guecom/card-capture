@@ -316,8 +316,10 @@ test('고른 깊이가 서버가 읽는 mode로 실려 나간다', async ({ page
     const envelope = harness.submitted[0].instruction as Record<string, unknown> | undefined;
     expect(envelope, '요청에 구조화된 봉투가 없다').toBeTruthy();
     expect(envelope!.mode, '깊은 조사가 서버 mode로 옮겨지지 않았다').toBe('deep_evidence_graph');
-    // 계약: 깊은 조사는 목적 1개 이상. 화면의 `범위 1개 이상`이 실제로 그 조건을 만족시켜야 한다.
-    expect((envelope!.purposes as string[]).length, '깊은 조사에 목적이 실리지 않았다').toBeGreaterThanOrEqual(1);
+    // 고른 깊이 자체도 실려 나간다 (DEC-000110). 이 칸이 없으면 처리기가 어떤 모델을 쓸지 모른다.
+    expect(envelope!.depth, '고른 깊이가 요청에 실리지 않았다').toBe('deep');
+    // 고른 범위는 조건이 아니라 **좁힘**이다. 조건이 아니게 됐다고 값이 사라지면 안 된다.
+    expect((envelope!.purposes as string[]).length, '고른 범위의 목적이 요청에서 사라졌다').toBeGreaterThanOrEqual(1);
     // 아홉 개를 다 골랐으면 서버 여덟 자리가 모두 채워진다.
     expect(envelope!.focusIds).toEqual(['expertise', 'authority', 'reputation', 'outcomes', 'interests', 'career', 'company', 'connection']);
     expect(String(envelope!.requestId), '재시도 멱등 키가 없다').toMatch(/^[A-Za-z0-9-]{8,64}$/);
@@ -354,6 +356,9 @@ test('세 깊이가 서버에서 서로 다른 요청이 된다', async ({ page 
     const modes = harness.submitted.map((body) => (body.instruction as Record<string, unknown>).mode);
     // 예전에는 셋 다 서버에서 같은 요청이었다 — 화면만 달랐다.
     expect(modes, `세 깊이가 같은 요청이 됐다: ${JSON.stringify(modes)}`).toEqual(['quick', 'standard', 'deep_evidence_graph']);
+    // 깊이 자체도 셋 다 따로 도착한다 (DEC-000110). 처리 모델을 고르는 값이 이것이다.
+    const depths = harness.submitted.map((body) => (body.instruction as Record<string, unknown>).depth);
+    expect(depths, `고른 깊이가 서버에 도착하지 않았다: ${JSON.stringify(depths)}`).toEqual(['quick', 'standard', 'deep']);
     // 요청마다 자기 멱등 키를 갖는다 — 서로 다른 요청이 같은 이름으로 접수되면 안 된다.
     const ids = harness.submitted.map((body) => String((body.instruction as Record<string, unknown>).requestId));
     expect(new Set(ids).size, `서로 다른 요청이 같은 멱등 키를 썼다: ${ids.join(', ')}`).toBe(3);
@@ -589,17 +594,15 @@ test('서버가 닫혔다고 말해도 깊은 조사는 고를 수 있고, 막�
   }
 });
 
-// ── 막혔을 때 손이 가는 곳은 이유마다 다르다 (INT-000036 / TSK-000562) ──────────
+// ── 막혔을 때 손은 **풀 수 있는 자리**로 간다 (INT-000036 / TSK-000562) ─────────
 //
-// 승인된 acceptance: 「깊은 조사 목적 1개 이상은 mode 선택이 아니라 제출 validation이 검사하고,
-// 실패 시 **목적 영역으로 focus**와 inline 안내를 제공한다.」
+// 예전에는 막힘이 둘이었고(범위 0개 / 서버 닫힘) 둘 다 안내 **문단**으로 손이 갔다. 문단은
+// 읽히지만 다음 키 입력으로 할 수 있는 것이 없다 — 막다른 곳이다. 그래서 이유마다 실제로 푸는
+// 손잡이로 나눠 보냈다.
 //
-// 예전에는 두 막힘 모두 안내 **문단**으로 손이 갔다. 문단은 읽히지만 다음 키 입력으로 할 수 있는
-// 것이 없다 — 막다른 곳이다. 그리고 두 막힘을 한 곳으로 몰면 그중 하나는 반드시 거짓말이 된다:
-// 서버가 닫아 둔 상태에서 범위 영역으로 데려가면, 사용자는 범위를 다 골라 놓고 여전히 못 보낸다.
-//
-// 그래서 **풀 수 있는 자리**로 나눠 보낸다. 아래는 그중 닫힘 쪽이다 (범위 쪽은
-// `int36-surfaces.spec.ts`가 독립적으로 잰다).
+// DEC-000110으로 범위 쪽 막힘은 사라졌고(깊이는 모델만 바꾼다) **닫힘 하나만 남았다.**
+// 남은 하나는 사용자가 이 자리에서 풀 수 없는 조건이므로, 갈 곳은 깊이 라디오뿐이다 —
+// 범위를 아무리 골라도 닫힘은 풀리지 않기 때문이다.
 
 /** 지금 포커스가 어디에 있는가. shadow DOM을 뚫고 가장 안쪽 활성 요소를 찾는다. */
 async function focusedTrail(page: Page): Promise<{ tag: string; value: string; inDepth: boolean; inScopes: boolean; describedBy: string }> {

@@ -17,7 +17,7 @@ function Pass($m) { Write-Host "PASS  $m" }
 # ---------- 1. required files ----------
 $required = @(
   'AGENTS.md','SECURITY.md','CHANGELOG.md','RELEASE.md','README.md','Code.gs',
-  'config/public-runtime.json','docs/index.html','docs/sw.js','docs/manifest.json','docs/camera-quality.js',
+  'config/public-runtime.json','config/research-models.json','docs/index.html','docs/sw.js','docs/manifest.json','docs/camera-quality.js',
   'docs/vendor/tesseract/tesseract.min.js','docs/vendor/tesseract/worker.min.js',
   'docs/vendor/tesseract/tesseract-core-simd-lstm.wasm.js',
   'docs/vendor/tesseract/kor.traineddata.gz','docs/vendor/tesseract/eng.traineddata.gz','docs/vendor/tesseract/README.md',

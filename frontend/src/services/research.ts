@@ -68,11 +68,13 @@ export function buildResearchInstruction(value: string): ResearchInstruction | n
  * 봉투는 그 뒤에 생긴 것이다. 새 필드를 옛 봉투에 몰래 넣는 대신 새 봉투를 하나 만든다.
  *
  * 두 축이 함께 실린다:
- *  - `depth` — **사용자 축**. 사람이 고른 결과·기다림이고 화면·telemetry가 읽는다. 서버는 안 읽는다.
+ *  - `depth` — **사용자 축**. 사람이 고른 결과·기다림이다. DEC-000110부터 **서버도 읽는다** —
+ *    `Code.gs`가 allowlist로 정규화해 capture envelope에 남기고, 워처가 그 값으로 처리 모델을
+ *    고른다. 예전에는 이 칸이 화면과 telemetry 안에서만 살다 사라졌다.
  *  - `mode`·`purposes`·`focusIds`·`requestId` — **계약 축**. 서버 allowlist가 판정하는 값이다.
  *
- * 어디로 보낼지(내부 binding)는 여기서 정하지 않고 실어 보내지도 않는다 —
- * 그 판정(`resolveResearchRoute`)의 결과는 개발자 telemetry에만 남고 화면으로 돌아가지 않는다.
+ * 어느 모델로 보낼지(내부 binding)는 여기서 정하지 않고 실어 보내지도 않는다 — 요청에 실리는
+ * 것은 깊이라는 **뜻**이고, 그 뜻을 모델 id로 바꾸는 것은 처리기를 띄우는 워처 한 곳뿐이다.
  */
 export interface ResearchSubmission extends ResearchInstruction {
   depth: ResearchDepth;
@@ -178,7 +180,9 @@ export function researchFailureReason(error: unknown): string {
  *  - `raw`는 **사람이 적은 글**이다. 예전처럼 범위 이름을 앞에 붙여 보내지 않는다 —
  *    계약이 "선택 항목과 별도 저장"이라고 못박고 있고, 제 칸이 있는 값을 자유 텍스트에 숨기면
  *    서버의 allowlist 검사·지문·중복 판정이 전부 헛돈다.
- *  - `purposes`는 깊은 조사에서만 실린다. 서버도 그때만 저장한다.
+ *  - `purposes`는 **깊이와 무관하게** 고른 범위에서 나온다 (DEC-000110). 예전에는 깊은 조사에서만
+ *    실렸는데, 그 조건은 "깊은 조사는 목적 1개 이상"이라는 옛 접수 규칙의 그림자였다. 규칙이
+ *    사라진 지금 목적을 깊이에 묶어 둘 이유가 없다 — 고른 범위는 어느 깊이에서든 조사를 좁힌다.
  */
 export function buildResearchSubmission(
   value: string,
@@ -196,11 +200,11 @@ export function buildResearchSubmission(
   const mode = researchModeOf(normalizedDepth);
   const raw = sanitizeResearchInstruction(composeResearchRaw(draft.text, scopeKeys));
   const focusIds = researchFocusIds(scopeKeys);
-  const purposes = mode === 'deep_evidence_graph' ? researchPurposes(scopeKeys) : [];
+  const purposes = researchPurposes(scopeKeys);
 
   // 서버 `normalizeResearchRequest_`의 빈 요청 판정과 **같은 식**이다. 서버가 받지 않을 요청을
   // 만들어 두면 사용자는 이유 없는 접수 실패를 본다.
-  if (!raw && !focusIds.length && !(mode === 'deep_evidence_graph' && purposes.length)) return null;
+  if (!raw && !focusIds.length && !purposes.length) return null;
 
   const requestId = sanitizeResearchRequestId(options.requestId) || createResearchRequestId(options.random);
   // 라우팅은 지금 일어나지 않는다. 지금 남기는 것은 "이 깊이로 접수됐고, 이 설정 판에서는

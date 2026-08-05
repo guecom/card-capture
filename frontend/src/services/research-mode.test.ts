@@ -9,7 +9,6 @@ import { DEFAULT_RESEARCH_DEPTH } from '../contracts/int30';
 import {
   DEFAULT_RESEARCH_DEEP_STATE,
   RESEARCH_DEEP_CLOSED,
-  RESEARCH_DEEP_MIN_SCOPES,
   RESEARCH_DELAY_WORDS,
   RESEARCH_DEPTHS,
   RESEARCH_ROUTE_R1,
@@ -53,16 +52,14 @@ function deepClosedCopy(): string[] {
 
 /** 사용자가 실제로 읽는 문자열만 모은다 — 키 이름(`depth`)은 화면에 나가지 않으므로 뺀다. */
 function userFacingCopy(): string[] {
-  const blocked = evaluateResearchSubmit({ depth: 'deep', scopeCount: 0, hasText: true, deepState: 'open' });
   // 깊은 조사가 닫혔을 때의 안내도 사용자가 읽는 말이다. 서버 설정 이름·오류 코드가 새기 가장 쉬운 자리다.
   const closed = evaluateResearchSubmit({ depth: 'deep', scopeCount: 1, hasText: true, deepState: 'closed' });
   return RESEARCH_DEPTHS.flatMap((option) => [option.label, option.short, option.detail])
     .concat(RESEARCH_DEPTHS.map((option) => researchDepthSummary(option.depth)))
     // 막힘 안내도 사용자가 읽는 말이다. 새로 생긴 문장이 이름 유출 검사 밖에 있으면 안 된다.
-    .concat([blocked.notice!.title, blocked.notice!.reason, blocked.notice!.fix])
     .concat([closed.notice!.title, closed.notice!.reason, closed.notice!.fix])
     .concat(deepClosedCopy())
-    .concat([researchSubmitLabel('완료', blocked), researchSubmitLabel('완료', closed)]);
+    .concat([researchSubmitLabel('완료', closed)]);
 }
 
 describe('research depth — 사용자가 고르는 것', () => {
@@ -129,65 +126,57 @@ describe('research depth — 무엇이 연결되는지는 사용자에게 없다
   });
 });
 
-// 계약 (`63_Research_Instruction_Contract.md` §Product Behavior):
-//   "깊은 조사는 목적을 하나 이상 골라야 접수된다."
-// 이 규칙이 화면이 아니라 여기 있어야 두 제출 자리가 같은 판정을 쓴다.
-describe('research submit — 깊은 조사의 접수 조건', () => {
+// founder 판정 2026-08-05 (DEC-000110 / TSK-000565):
+//   "빠른 조사, 일반 조사, 깊은 조사는 … 오직 모델만 차이가 있는 거야. 그러고 깊은 조사를
+//    클릭했을 때 조사 범위를 골라야 한다는 둥, 이런 것이 아니야."
+//
+// 예전 계약은 "깊은 조사는 목적을 하나 이상 골라야 접수된다"였고, 아래 검사들은 그 조건이
+// **실제로 막는지**를 잠갔다. 이제 잠그는 것은 정반대다 — 그 조건이 **다시 생기지 않는지**.
+// 검사를 지우지 않고 뒤집는 이유: 지우면 조건이 슬며시 돌아와도 아무도 모른다.
+describe('research submit — 깊은 조사에 조사 범위를 요구하지 않는다', () => {
   const gate = (depth: unknown, scopeCount: number, hasText: boolean, deepState: ResearchDeepState = 'open') =>
     evaluateResearchSubmit({ depth, scopeCount, hasText, deepState });
 
-  it('계약의 `하나 이상`이 실제로 1이다', () => {
-    expect(RESEARCH_DEEP_MIN_SCOPES).toBe(1);
-    expect(gate('deep', RESEARCH_DEEP_MIN_SCOPES, false).blocked).toBe(false);
-    expect(gate('deep', RESEARCH_DEEP_MIN_SCOPES - 1, true).blocked).toBe(true);
+  it('깊은 조사 + 범위 0개 + 적은 내용 있음 → 그대로 접수된다', () => {
+    expect(gate('deep', 0, true)).toEqual({ state: 'ready', blocked: false, notice: null });
   });
 
-  it('깊은 조사 + 범위 0개 + 적은 내용 있음 → 막는다', () => {
-    const result = gate('deep', 0, true);
-    expect(result.state).toBe('blocked');
-    expect(result.notice?.block).toBe('deep_requires_scope');
+  it('범위를 골라도 안 골라도 판정이 같다 — 범위는 조건이 아니라 좁힘이다', () => {
+    for (const scopeCount of [0, 1, 5, 9]) {
+      expect(gate('deep', scopeCount, true), `범위 ${scopeCount}개에서 판정이 달라진다`)
+        .toEqual({ state: 'ready', blocked: false, notice: null });
+    }
   });
 
-  it('막을 때 깊이를 몰래 낮추지도, 범위를 대신 고르지도 않는다', () => {
-    const result = gate('deep', 0, true);
-    // 판정 결과에는 "고쳐 놓은 값"이 아예 없다. 고치는 것은 언제나 사람의 손이다.
-    expect(Object.keys(result).sort()).toEqual(['blocked', 'notice', 'state']);
+  it('아무것도 없으면 막지 않고 아무 말도 하지 않는다 — 촬영 저장까지 인질로 잡지 않는다', () => {
+    // 예전에는 여기서 "범위를 고르세요"라는 안내가 미리 떴다. 고르는 것만으로 숙제가 생기던
+    // 그 자리가 founder가 지적한 지점이다. 지금은 말할 조건 자체가 없다.
+    expect(gate('deep', 0, false)).toEqual({ state: 'empty', blocked: false, notice: null });
   });
 
-  it('아직 아무것도 없으면 막지 않는다 — 촬영 저장까지 인질로 잡지 않는다', () => {
-    const result = gate('deep', 0, false);
-    expect(result.blocked).toBe(false);
-    // 그래도 조건은 미리 말해 준다. 긴 글을 다 적은 뒤에 처음 알게 되면 늦다.
-    expect(result.notice?.block).toBe('deep_requires_scope');
-  });
-
-  it('범위를 하나라도 고르면 즉시 풀리고 설명도 사라진다', () => {
-    expect(gate('deep', 1, false)).toEqual({ state: 'ready', blocked: false, notice: null });
-  });
-
-  it.each(['quick', 'standard', 'turbo', undefined, null])('%s는 범위 0개여도 조이지 않는다', (depth) => {
+  it.each(['quick', 'standard', 'deep', 'turbo', undefined, null])('%s는 범위 0개여도 조이지 않는다', (depth) => {
     expect(gate(depth, 0, true)).toEqual({ state: 'ready', blocked: false, notice: null });
     expect(gate(depth, 0, false)).toEqual({ state: 'empty', blocked: false, notice: null });
   });
 
-  it('이상한 숫자가 와도 규칙이 느슨해지지 않는다', () => {
+  it('세 깊이의 판정이 글자 하나까지 같다 — 사용자가 더 해야 하는 일이 없다', () => {
+    // 이것이 founder 문장의 기계 판정이다: 깊이는 모델만 바꾸므로 접수 조건이 서로 달라질 수 없다.
+    const verdicts = (['quick', 'standard', 'deep'] as const)
+      .map((depth) => JSON.stringify(gate(depth, 0, true)));
+    expect(new Set(verdicts).size, `깊이마다 접수 조건이 다르다: ${verdicts.join(' / ')}`).toBe(1);
+  });
+
+  it('이상한 숫자가 와도 접수를 막지 않는다', () => {
     for (const count of [Number.NaN, -3, 0.4]) {
-      expect(gate('deep', count, true).blocked, `범위 수 ${count}에서 규칙이 풀린다`).toBe(true);
+      expect(gate('deep', count, true).blocked, `범위 수 ${count}에서 막힘이 생긴다`).toBe(false);
     }
   });
 
-  it('막힌 제출 버튼은 이름 자체로 이유와 회복 방법을 말한다', () => {
-    // Ionic이 안쪽 버튼에 옮겨 주는 것은 `aria-label`뿐이라 이유가 **이름에** 실려야 도착한다.
-    const label = researchSubmitLabel('완료', gate('deep', 0, true));
-    expect(label).toContain('완료');
-    expect(label).toContain('보낼 수 없어요');
-    expect(label).toContain('일반 조사');
-  });
-
-  it('풀리면 이름이 원래대로 돌아온다 — 빈 값이 아니라 원래 글자로', () => {
+  it('막을 이유가 없으면 제출 버튼 이름은 원래 글자 그대로다', () => {
     // `undefined`를 돌려주면 `ion-button`이 물려받은 옛 이름을 그대로 기억한 채 계속 읽는다.
     // 그 결함을 `e2e/int30-conformance.spec.ts`가 실제로 잡았으므로 여기서 형태로 못 박는다.
     expect(researchSubmitLabel('완료', gate('deep', 2, true))).toBe('완료');
+    expect(researchSubmitLabel('완료', gate('deep', 0, true))).toBe('완료');
     expect(researchSubmitLabel('완료', gate('standard', 0, true))).toBe('완료');
     expect(researchSubmitLabel('완료', gate('deep', 0, false))).toBe('완료');
   });
@@ -234,9 +223,11 @@ describe('research submit — 못 들음과 닫힘은 다른 사실이다', () =
     expect(normalizeResearchDeepState('closed')).toBe('closed');
   });
 
-  it('못 들은 동안에도 범위 규칙은 그대로 산다 — 한 조건을 풀면서 다른 조건까지 풀지 않는다', () => {
-    expect(gate('unknown', 0, true).notice?.block).toBe('deep_requires_scope');
-    expect(gate('unknown', 0, true).blocked).toBe(true);
+  it('못 들은 동안에는 범위가 0개여도 그대로 접수된다 — 남은 조건은 닫힘 하나뿐이다', () => {
+    // 예전에는 이 자리에서 "범위를 하나 이상"이 살아 있었다(`deep_requires_scope`).
+    // DEC-000110 이후 사용자가 풀어야 하는 조건은 존재하지 않는다.
+    expect(gate('unknown', 0, true)).toEqual({ state: 'ready', blocked: false, notice: null });
+    expect(gate('open', 0, true)).toEqual({ state: 'ready', blocked: false, notice: null });
   });
 
   it('빠른·일반은 세 값 어디서도 조여지지 않는다', () => {
@@ -310,7 +301,7 @@ describe('research submit — 깊은 조사가 닫혀 있을 때', () => {
     expect(result.notice?.block).toBe('deep_unavailable');
   });
 
-  it('범위 조건보다 먼저 판정한다 — 풀 수 없는 조건을 뒤에 두면 사용자가 헛수고한다', () => {
+  it('범위를 하나도 안 골라도 이유는 닫힘 하나다 — 다른 조건을 덧붙이지 않는다', () => {
     expect(gate(0, true).notice?.block).toBe('deep_unavailable');
   });
 

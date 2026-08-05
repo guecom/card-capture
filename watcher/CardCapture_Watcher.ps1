@@ -57,6 +57,24 @@ $DeepSliceTimeoutSeconds = ($DeepSliceTimeCapMinutes * 60)
 # this unset and always launches `codex exec ... -` with the prompt on stdin.
 $BoundedProcessorTestArguments = $null
 
+# 조사 깊이 → 처리 모델 (DEC-000110 / TSK-000565).
+#
+# founder: "빠른 조사, 일반 조사, 깊은 조사는 … 오직 모델만 차이가 있는 거야."
+# 그 말이 코드에서 참이 되려면 **깊이가 실제로 무언가를 바꾸는 자리**가 하나 있어야 한다.
+# 그 자리가 여기다 — 앱은 깊이를 실어 보내고, 서버는 capture.json에 남기고, 워처는 그 값으로
+# 처리기에 붙일 `-m` 를 고른다. 지금까지는 이 마지막 한 칸이 없어서 세 선택이 같은 모델로 갔다.
+#
+# 모델 id는 **이 저장소에 없다.** 커밋된 설정 파일은 빈 값으로 오고 사람이 채운다. 비어 있으면
+# 플래그를 붙이지 않으므로 채우기 전까지는 지금과 완전히 같은 동작이다.
+$RepoRoot = if ($PSScriptRoot) { Split-Path -Parent $PSScriptRoot } else { '' }
+$ResearchModelConfig = if ($RepoRoot) { Join-Path $RepoRoot 'config\research-models.json' } else { '' }
+$ResearchDepths = @('quick', 'standard', 'deep')
+$ResearchDefaultDepth = 'standard'
+# 값 하나가 곧 자식 프로세스의 argv가 된다. 모양을 좁게 못 박아 두지 않으면 설정 파일 한 줄이
+# 처리기 명령줄에 임의의 플래그를 끼워 넣는 통로가 된다. 모양이 어긋난 값은 **쓰지 않는다**.
+$ResearchModelShape = '\A[A-Za-z0-9][A-Za-z0-9._:/@-]{0,119}\z'
+$script:ResearchModelWarned = @{}
+
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
 
@@ -1368,7 +1386,9 @@ function Test-CaptureCommitted($captureId, $observedSliceMinutes = $null) {
 
 # 처리 자격 판정 한 곳: 안전한 이름 → 대기 상태(received/재전송) → 같은 입력의 commit 없음 → 미격리.
 function Get-CaptureEligibility($dir) {
-    $res = [PSCustomObject]@{ id = $dir.Name; dir = $dir.FullName; mtime = $null; fingerprint = ''; lane = 0; eligible = $false; reason = '' }
+    # `depth`는 사용자가 고른 조사 깊이다. 조사 요청이 아닌 캡처에는 없고(빈 문자열),
+    # 그 경우 `Resolve-ResearchModel`이 기본 자리를 쓴다.
+    $res = [PSCustomObject]@{ id = $dir.Name; dir = $dir.FullName; mtime = $null; fingerprint = ''; lane = 0; depth = ''; eligible = $false; reason = '' }
     $safe = Get-SafeCaptureId $dir.Name
     if (-not $safe) { $res.reason = 'unsafe_name'; return $res }
     $json = Get-CaptureJson $dir.FullName
@@ -1395,6 +1415,7 @@ function Get-CaptureEligibility($dir) {
     if ($m -and [string]$m.type -eq 'research_instruction') {
         $res.lane = if ($m.researchInstruction -and [string]$m.researchInstruction.mode -eq 'deep_evidence_graph') { 2 } else { 1 }
     }
+    if ($m -and $m.researchInstruction) { $res.depth = [string]$m.researchInstruction.depth }
     $res.fingerprint = Get-CaptureFingerprint $dir.FullName
     $marker = Get-CaptureCommitMarker $safe
     if ($marker -and ([string]$marker.inputFingerprint -eq [string]$res.fingerprint)) { $res.reason = 'already_committed'; return $res }
@@ -1413,7 +1434,7 @@ function Get-Backlog {
     foreach ($d in (Get-ChildItem $Inbox -Directory -ErrorAction SilentlyContinue)) {
         $e = Get-CaptureEligibility $d
         if ($e.eligible) {
-            [void]$items.Add([PSCustomObject]@{ id = $e.id; mtime = $e.mtime; dir = $e.dir; fingerprint = $e.fingerprint; lane = $e.lane })
+            [void]$items.Add([PSCustomObject]@{ id = $e.id; mtime = $e.mtime; dir = $e.dir; fingerprint = $e.fingerprint; lane = $e.lane; depth = $e.depth })
         } elseif ($e.reason -eq 'unsafe_name') {
             if (-not $script:UnsafeNames.ContainsKey($e.id)) {
                 $script:UnsafeNames[$e.id] = $true
@@ -1881,8 +1902,55 @@ function Invoke-QuickExtract {
     }
 }
 
-function Invoke-StandardProcessor($targeted, $procLog) {
-    & $Codex exec -C $Vault -s workspace-write -c 'tools.web_search=true' -c 'windows.sandbox="unelevated"' $targeted 2>&1 |
+# ---------------------------------------------------------------------------
+# 조사 깊이 → 처리 모델 (DEC-000110 / TSK-000565)
+
+# 설정을 캐시하지 않고 그때그때 읽는다. 캐시하면 사람이 값을 채운 뒤 워처를 다시 띄워야 하고,
+# 그 순간 "값 하나 바꾸기"가 운영 절차가 된다. 파일은 작고 처리 한 건당 한 번만 읽힌다.
+#
+# 못 읽거나 모양이 틀리면 **빈 표**를 돌려준다 — 그러면 플래그가 붙지 않고 지금 동작 그대로다.
+# 설정 파일 하나가 깨졌다고 명함 처리가 멈추면 안 된다.
+function Get-ResearchModelMap {
+    $map = @{}
+    if (-not $ResearchModelConfig -or -not (Test-Path -LiteralPath $ResearchModelConfig)) { return $map }
+    $raw = $null
+    try { $raw = Get-Content -LiteralPath $ResearchModelConfig -Raw -Encoding UTF8 | ConvertFrom-Json } catch { return $map }
+    if (-not $raw -or [string]$raw.version -ne 'card-capture-research-models-v1' -or -not $raw.models) { return $map }
+    foreach ($depth in $ResearchDepths) {
+        $value = ([string]$raw.models.$depth).Trim()
+        if (-not $value) { continue }
+        # 모양이 어긋난 값은 조용히 쓰지 않는다. 로그에는 **어느 깊이인지만** 남긴다 —
+        # 모델 이름은 사용자에게도, 로그에도 남길 이유가 없다.
+        if ($value -notmatch $ResearchModelShape) {
+            if (-not $script:ResearchModelWarned.ContainsKey($depth)) {
+                $script:ResearchModelWarned[$depth] = $true
+                Write-Log ('research model config value has an unexpected shape — ignoring depth=' + $depth)
+            }
+            continue
+        }
+        $map[$depth] = $value
+    }
+    return $map
+}
+
+# 깊이 하나를 모델 id로 옮긴다. 세 갈래뿐이다:
+#   1. 아는 깊이 + 값이 채워져 있다 → 그 값.
+#   2. 모르는 깊이(또는 깊이 없음) → standard 자리를 본다. 조사 요청이 아닌 일반 명함 캡처가
+#      여기로 온다 — 깊이라는 축 자체가 없는 처리이므로 기본 자리를 쓴다.
+#   3. 값이 비어 있다 → 빈 문자열. 호출한 쪽이 플래그를 아예 붙이지 않는다.
+function Resolve-ResearchModel($depth) {
+    $key = [string]$depth
+    if ($ResearchDepths -notcontains $key) { $key = $ResearchDefaultDepth }
+    $map = Get-ResearchModelMap
+    if ($map.ContainsKey($key)) { return [string]$map[$key] }
+    return ''
+}
+
+function Invoke-StandardProcessor($targeted, $procLog, $model) {
+    # 값이 없으면 인자 자체가 생기지 않는다 — 설정 전 동작과 바이트 단위로 같다.
+    $modelArgs = @()
+    if ([string]$model) { $modelArgs = @('-m', [string]$model) }
+    & $Codex exec @modelArgs -C $Vault -s workspace-write -c 'tools.web_search=true' -c 'windows.sandbox="unelevated"' $targeted 2>&1 |
         Write-ProcessorOutput $procLog
     return $LASTEXITCODE
 }
@@ -1951,12 +2019,12 @@ public sealed class KairenProcessTreeJob : IDisposable {
     return (New-Object KairenProcessTreeJob)
 }
 
-function Invoke-BoundedDeepProcessor($targeted, $procLog, $timeoutSeconds = $DeepSliceTimeoutSeconds, $processorWorkdir = $Vault) {
+function Invoke-BoundedDeepProcessor($targeted, $procLog, $timeoutSeconds = $DeepSliceTimeoutSeconds, $processorWorkdir = $Vault, $model = '') {
     # 테스트 stub은 마지막 argv에서 TARGET-CAPTURE-ID를 읽는다. 운영만 stdin UTF-8 파일과
     # 별도 프로세스를 사용해 wall-clock 12분을 실제로 강제한다.
     if ($CardCaptureWatcherTestMode) {
         $testTimer = [System.Diagnostics.Stopwatch]::StartNew()
-        $testExit = Invoke-StandardProcessor $targeted $procLog
+        $testExit = Invoke-StandardProcessor $targeted $procLog $model
         $testTimer.Stop()
         return [PSCustomObject]@{ exit = $testExit; timedOut = $false; elapsedMinutes = $testTimer.Elapsed.TotalMinutes }
     }
@@ -1969,7 +2037,10 @@ function Invoke-BoundedDeepProcessor($targeted, $procLog, $timeoutSeconds = $Dee
     $timer = [System.Diagnostics.Stopwatch]::StartNew()
     try {
         $quotedVault = '"' + ([string]$processorWorkdir).Replace('"', '\"') + '"'
-        $arguments = 'exec -C ' + $quotedVault + ' -s workspace-write -c "tools.web_search=true" -c "windows.sandbox=''unelevated''" -'
+        # 값이 없으면 문자열에 한 글자도 더해지지 않는다. 값은 `Resolve-ResearchModel`이 모양을
+        # 이미 좁혀 두었으므로(영숫자 시작 + 몇 개 기호) 인용부호를 깨고 나갈 수 없다.
+        $modelArg = if ([string]$model) { ' -m "' + [string]$model + '"' } else { '' }
+        $arguments = 'exec' + $modelArg + ' -C ' + $quotedVault + ' -s workspace-write -c "tools.web_search=true" -c "windows.sandbox=''unelevated''" -'
         if ($BoundedProcessorTestArguments) { $arguments = [string]$BoundedProcessorTestArguments }
 
         # Start-Process can throw when Windows exposes both Path and PATH. Use
@@ -2131,6 +2202,13 @@ function Invoke-Processing {
                 $sliceTimeoutSeconds = [math]::Min($DeepSliceTimeoutSeconds, $remainingSeconds)
             }
             $phaseLabel = if ($isDeep) { 'deep' } else { 'standard' }
+            # 사용자가 고른 깊이 하나가 여기서 처리 모델이 된다 (DEC-000110). 값이 비어 있으면
+            # 플래그가 붙지 않는다 — 설정을 채우기 전에는 지금 동작 그대로다. 로그에는 어느 깊이로
+            # 어느 자리를 골랐는지만 남기고 모델 이름은 남기지 않는다.
+            $processorModel = Resolve-ResearchModel $item.depth
+            $depthLabel = if ([string]$item.depth) { [string]$item.depth } else { 'none' }
+            $boundLabel = if ($processorModel) { 'yes' } else { 'no' }
+            Write-Log ('processor model ' + $itemId + ' depth=' + $depthLabel + ' bound=' + $boundLabel)
             Write-Log ("processing card (" + $phaseLabel + ") " + $itemId + " attempt=" + $claim.attempt + "/" + $MaxAttempts +
                 " — 남은 대기 " + (Get-Backlog).Count)
             # 처리기 raw 출력(명함 내용)은 캡처별·시도별 파일로 분리한다. watcher.log에는 위치만 남긴다.
@@ -2154,11 +2232,11 @@ function Invoke-Processing {
                     if ($sliceTimeoutSeconds -le 0) { throw 'deep total watcher time budget exhausted' }
                     # Deep processor의 workspace-write root는 이 캡처 폴더 하나다. Person과 다른
                     # vault 산출물은 OS sandbox 경계 밖이므로 검증 전에 수정할 수 없다.
-                    $processorResult = Invoke-BoundedDeepProcessor $targeted $procLog $sliceTimeoutSeconds $item.dir
+                    $processorResult = Invoke-BoundedDeepProcessor $targeted $procLog $sliceTimeoutSeconds $item.dir $processorModel
                     $exit = [int]$processorResult.exit
                     if ($processorResult.timedOut) { Write-Log ('processor hard-timeout ' + $itemId + ' after=' + [math]::Round($sliceTimeoutSeconds, 1) + 's') }
                 } else {
-                    $exit = Invoke-StandardProcessor $targeted $procLog
+                    $exit = Invoke-StandardProcessor $targeted $procLog $processorModel
                 }
             } catch {
                 Write-Log ("processor error for " + $itemId + ": " + $_.Exception.Message)
