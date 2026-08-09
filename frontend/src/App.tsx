@@ -2669,15 +2669,18 @@ function App() {
         </IonFooter>
 
         {/* 첫 실행 온보딩: legacy처럼 이름만 묻는다 — 토큰은 개인 링크가 자동 저장 (ISS-000091 항목 17) */}
+        {/* --height:auto 모달 안의 IonContent는 absolute라 wrapper 높이가 0으로 접힌다 —
+            모달이 투명한 채 화면 전체 클릭을 먹는다(connect.kairenhq.com 첫 실행에서 실측,
+            e2e/name-onboard-visible.spec.ts가 기하로 잠근다). 일반 div로 감싼다. */}
         <IonModal className="name-onboard-modal" isOpen={nameOnboardOpen} backdropDismiss={false} onDidDismiss={() => setNameOnboardOpen(false)}>
-          <IonContent className="ion-padding">
+          <div className="ion-padding">
             <div className="name-onboard">
               <h3>처음 오셨네요 👋</h3>
               <p>캡처한 명함에 "누가 찍었는지"를 남기기 위해 이름이 필요해요. 한 번만 입력하면 기억합니다.</p>
               <IonInput aria-label="이름" placeholder="이름" autocomplete="name" value={nameDraft} onIonInput={(inputEvent) => setNameDraft(String(inputEvent.detail.value ?? ''))} />
               <IonButton expand="block" disabled={!nameDraft.trim()} onClick={commitOnboardName}>시작하기</IonButton>
             </div>
-          </IonContent>
+          </div>
         </IonModal>
 
         {/* FI-007: 되돌릴 수 없는 정리 전에 무엇이 지워지고 무엇이 남는지 정확히 보여 준다. */}
